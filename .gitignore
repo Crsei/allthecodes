@@ -74,7 +74,7 @@ board.md
 architecture/
 tests/
 scripts/
-docs/architecture/
+docs/
 web-ui/
 sdk/
 .tmp/
