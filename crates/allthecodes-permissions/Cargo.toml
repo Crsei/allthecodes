@@ -1,0 +1,22 @@
+[package]
+name = "allthecodes-permissions"
+version = "0.1.0"
+edition = "2021"
+description = "Per-tool allow/deny model for cc-rust"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+parking_lot = { workspace = true }
+url = { workspace = true }
+
+allthecodes-types = { workspace = true }
+allthecodes-utils = { workspace = true }
+allthecodes-bootstrap = { workspace = true }
+allthecodes-shell-command = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

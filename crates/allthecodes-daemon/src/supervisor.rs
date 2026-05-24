@@ -1,0 +1,415 @@
+//! Supervisor/worker lifecycle management for daemon mode.
+//!
+//! Phase 2 keeps the existing KAIROS HTTP service in the supervisor process
+//! while adding a real child-worker registry. Later phases can move query,
+//! bridge, and scheduler responsibilities into richer worker kinds without
+//! changing the process-state contract introduced here.
+
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use chrono::Utc;
+use tracing::{info, warn};
+
+use super::{
+    gateway_bridge::{handle_worker_command, AssistantWorkerRuntime},
+    process_state::{self, DaemonWorkerStatus},
+};
+
+pub const ASSISTANT_WORKER_ID: &str = "assistant-session-1";
+const REGISTRY_TICK_INTERVAL: Duration = Duration::from_secs(1);
+const WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const WORKER_STALE_AFTER: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerKind {
+    AssistantSession,
+}
+
+impl WorkerKind {
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "assistant-session" => Ok(Self::AssistantSession),
+            other => anyhow::bail!("unknown daemon worker kind: {other}"),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AssistantSession => "assistant-session",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartPolicy {
+    pub max_restarts: u32,
+    pub delay: Duration,
+}
+
+impl Default for RestartPolicy {
+    fn default() -> Self {
+        Self {
+            max_restarts: 3,
+            delay: Duration::from_millis(250),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerSpec {
+    pub worker_id: String,
+    pub kind: WorkerKind,
+    pub cwd: PathBuf,
+    pub env: Vec<(String, String)>,
+    pub log_path: PathBuf,
+    pub restart_policy: RestartPolicy,
+    pub required: bool,
+}
+
+impl WorkerSpec {
+    fn assistant_session(cwd: &Path) -> Self {
+        Self {
+            worker_id: ASSISTANT_WORKER_ID.to_string(),
+            kind: WorkerKind::AssistantSession,
+            cwd: cwd.to_path_buf(),
+            env: Vec::new(),
+            log_path: process_state::worker_log_path(ASSISTANT_WORKER_ID),
+            restart_policy: RestartPolicy::default(),
+            required: true,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ManagedWorker {
+    spec: WorkerSpec,
+    child: Child,
+    restart_count: u32,
+}
+
+#[derive(Debug)]
+pub struct WorkerRegistry {
+    specs: HashMap<String, WorkerSpec>,
+    workers: HashMap<String, ManagedWorker>,
+}
+
+impl WorkerRegistry {
+    pub fn new(specs: Vec<WorkerSpec>) -> Self {
+        let specs = specs
+            .into_iter()
+            .map(|spec| (spec.worker_id.clone(), spec))
+            .collect();
+        Self {
+            specs,
+            workers: HashMap::new(),
+        }
+    }
+
+    fn start_all(&mut self) -> Result<()> {
+        let ids: Vec<String> = self.specs.keys().cloned().collect();
+        for id in ids {
+            self.start_worker(&id, 0)?;
+        }
+        Ok(())
+    }
+
+    async fn poll(&mut self) -> Result<()> {
+        let mut remove_ids = Vec::new();
+        let mut restart_ids = Vec::new();
+
+        for (worker_id, managed) in &mut self.workers {
+            if let Some(status) = managed
+                .child
+                .try_wait()
+                .with_context(|| format!("failed to poll worker {worker_id}"))?
+            {
+                let status_text = exit_status_text(status);
+                process_state::write_worker_stopped(worker_id, Some(status_text.clone()))?;
+                warn!(
+                    worker_id,
+                    status = %status_text,
+                    "daemon worker exited"
+                );
+                if managed.restart_count < managed.spec.restart_policy.max_restarts {
+                    restart_ids.push((worker_id.clone(), managed.restart_count + 1));
+                }
+                remove_ids.push(worker_id.clone());
+                continue;
+            }
+
+            if worker_heartbeat_stale(worker_id)? {
+                process_state::write_worker_stale(worker_id, "heartbeat stale")?;
+                if let Some(pid) = process_state::read_worker_state(worker_id)?.and_then(|s| s.pid)
+                {
+                    let _ = process_state::terminate_process_tree(pid);
+                }
+                warn!(worker_id, "daemon worker heartbeat is stale");
+                if managed.restart_count < managed.spec.restart_policy.max_restarts {
+                    restart_ids.push((worker_id.clone(), managed.restart_count + 1));
+                }
+                remove_ids.push(worker_id.clone());
+            }
+        }
+
+        for worker_id in remove_ids {
+            self.workers.remove(&worker_id);
+        }
+
+        for (worker_id, restart_count) in restart_ids {
+            let delay = self
+                .specs
+                .get(&worker_id)
+                .map(|spec| spec.restart_policy.delay)
+                .unwrap_or_default();
+            tokio::time::sleep(delay).await;
+            self.start_worker(&worker_id, restart_count)?;
+        }
+
+        Ok(())
+    }
+
+    fn terminate_all(&mut self) -> Result<()> {
+        for (worker_id, managed) in &mut self.workers {
+            if let Some(pid) = process_state::read_worker_state(worker_id)?.and_then(|s| s.pid) {
+                if process_state::process_is_alive(pid) {
+                    process_state::terminate_process_tree(pid)
+                        .with_context(|| format!("failed to terminate worker {worker_id}"))?;
+                }
+            } else {
+                let _ = managed.child.kill();
+            }
+            process_state::write_worker_stopped(worker_id, None)?;
+        }
+        self.workers.clear();
+        Ok(())
+    }
+
+    fn start_worker(&mut self, worker_id: &str, restart_count: u32) -> Result<()> {
+        let spec = self
+            .specs
+            .get(worker_id)
+            .with_context(|| format!("daemon worker spec not found: {worker_id}"))?
+            .clone();
+        let managed = spawn_worker(spec, restart_count)?;
+        self.workers.insert(worker_id.to_string(), managed);
+        Ok(())
+    }
+}
+
+pub fn default_worker_specs(cwd: &Path) -> Vec<WorkerSpec> {
+    vec![WorkerSpec::assistant_session(cwd)]
+}
+
+pub async fn run_supervisor_loop(cwd: PathBuf, port: u16) -> Result<()> {
+    let mut registry = WorkerRegistry::new(default_worker_specs(&cwd));
+    registry.start_all()?;
+    process_state::write_supervisor_heartbeat(port, &cwd)?;
+
+    let mut tick = tokio::time::interval(REGISTRY_TICK_INTERVAL);
+    loop {
+        tick.tick().await;
+        if process_state::shutdown_requested() {
+            info!("daemon supervisor shutdown requested");
+            registry.terminate_all()?;
+            process_state::write_supervisor_heartbeat(port, &cwd)?;
+            return Ok(());
+        }
+        registry.poll().await?;
+        process_state::write_supervisor_heartbeat(port, &cwd)?;
+    }
+}
+
+pub async fn run_worker_mode(kind: &str, worker_id: &str, cwd: PathBuf) -> Result<()> {
+    let kind = WorkerKind::parse(kind)?;
+    let mut runtime = AssistantWorkerRuntime::new(&cwd)?;
+    if process_state::read_worker_state(worker_id)?.is_none() {
+        let log_path = process_state::worker_log_path(worker_id);
+        process_state::write_worker_running(
+            worker_id,
+            kind.as_str(),
+            std::process::id(),
+            &cwd,
+            &log_path,
+            0,
+            true,
+        )?;
+    }
+
+    let mut tick = tokio::time::interval(WORKER_HEARTBEAT_INTERVAL);
+    loop {
+        tick.tick().await;
+        if process_state::shutdown_requested() {
+            process_state::write_worker_stopped(worker_id, None)?;
+            return Ok(());
+        }
+        process_state::write_worker_heartbeat(worker_id)?;
+        let mut processed = 0usize;
+        while let Some(command) =
+            super::protocol_store().claim_next_pending_command(worker_id, kind.as_str())?
+        {
+            processed += 1;
+            let shutdown_requested =
+                handle_worker_command(worker_id, &mut runtime, command).await?;
+            if shutdown_requested {
+                process_state::write_worker_stopped(worker_id, None)?;
+                return Ok(());
+            }
+        }
+        if processed > 0 {
+            info!(
+                worker_id,
+                processed, "daemon worker processed command files"
+            );
+        }
+    }
+}
+
+pub fn terminate_known_workers() -> Result<()> {
+    for worker in process_state::read_worker_states()? {
+        if matches!(
+            worker.status,
+            DaemonWorkerStatus::Running | DaemonWorkerStatus::Starting | DaemonWorkerStatus::Stale
+        ) {
+            if let Some(pid) = worker.pid {
+                if process_state::process_is_alive(pid) {
+                    process_state::terminate_process_tree(pid).with_context(|| {
+                        format!("failed to terminate worker {}", worker.worker_id)
+                    })?;
+                }
+            }
+        }
+        process_state::write_worker_stopped(&worker.worker_id, None)?;
+    }
+    Ok(())
+}
+
+fn spawn_worker(spec: WorkerSpec, restart_count: u32) -> Result<ManagedWorker> {
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    if let Some(parent) = spec.log_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&spec.log_path)
+        .with_context(|| format!("failed to open worker log {}", spec.log_path.display()))?;
+    let log_file_err = log_file
+        .try_clone()
+        .with_context(|| format!("failed to clone worker log {}", spec.log_path.display()))?;
+
+    let mut cmd = Command::new(exe);
+    cmd.arg("--daemon-worker")
+        .arg(spec.kind.as_str())
+        .arg("--worker-id")
+        .arg(&spec.worker_id)
+        .current_dir(&spec.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_file_err));
+    for (key, value) in &spec.env {
+        cmd.env(key, value);
+    }
+
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("failed to spawn daemon worker {}", spec.worker_id))?;
+    process_state::write_worker_running(
+        &spec.worker_id,
+        spec.kind.as_str(),
+        child.id(),
+        &spec.cwd,
+        &spec.log_path,
+        restart_count,
+        spec.required,
+    )?;
+    info!(
+        worker_id = %spec.worker_id,
+        pid = child.id(),
+        restart_count,
+        "daemon worker started"
+    );
+    Ok(ManagedWorker {
+        spec,
+        child,
+        restart_count,
+    })
+}
+
+fn worker_heartbeat_stale(worker_id: &str) -> Result<bool> {
+    let Some(state) = process_state::read_worker_state(worker_id)? else {
+        return Ok(false);
+    };
+    if state.status != DaemonWorkerStatus::Running {
+        return Ok(false);
+    }
+    let Some(last_heartbeat_at) = state.last_heartbeat_at else {
+        return Ok(true);
+    };
+    let age = Utc::now()
+        .signed_duration_since(last_heartbeat_at)
+        .to_std()
+        .unwrap_or_default();
+    Ok(age > WORKER_STALE_AFTER)
+}
+
+fn exit_status_text(status: ExitStatus) -> String {
+    status
+        .code()
+        .map(|code| format!("exit code {code}"))
+        .unwrap_or_else(|| "terminated by signal".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn default_worker_spec_uses_daemon_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let specs = default_worker_specs(temp.path());
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].worker_id, ASSISTANT_WORKER_ID);
+        assert_eq!(specs[0].kind, WorkerKind::AssistantSession);
+        assert!(specs[0].log_path.starts_with(temp.path()));
+        assert!(specs[0].required);
+    }
+
+    #[test]
+    fn worker_kind_rejects_unknown_values() {
+        assert!(WorkerKind::parse("assistant-session").is_ok());
+        assert!(WorkerKind::parse("bridge-sync").is_err());
+    }
+}

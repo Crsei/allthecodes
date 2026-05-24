@@ -1,0 +1,164 @@
+//! Overlay / modal dialog infrastructure.
+//!
+//! Provides the z-indexed [`OverlayStack`] and themed [`Dialog`] component.
+
+pub mod dialog;
+#[cfg(test)]
+pub mod overlay_stack;
+
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::widgets::{Clear, Paragraph, Widget, Wrap};
+
+use crate::ui::theme::ThemeColors;
+
+use self::dialog::{Dialog, ExitGuard};
+use super::panel_layout::{centered_rect, PanelSizePreset, PanelSizeSpec};
+
+const _: fn() = production_symbol_anchors;
+
+fn production_symbol_anchors() {
+    let _ = CenteredOverlayFrame::new("Overlay")
+        .width(24, 96)
+        .height(5, 24);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CenteredOverlayFrame<'a> {
+    pub title: &'a str,
+    pub color: Option<&'a str>,
+    pub min_width: u16,
+    pub max_width: u16,
+    pub min_height: u16,
+    pub max_height: u16,
+}
+
+impl<'a> CenteredOverlayFrame<'a> {
+    pub fn new(title: &'a str) -> Self {
+        Self {
+            title,
+            color: None,
+            min_width: 24,
+            max_width: 96,
+            min_height: 5,
+            max_height: 24,
+        }
+    }
+
+    pub fn with_preset(title: &'a str, preset: PanelSizePreset) -> Self {
+        Self::with_spec(title, preset.spec())
+    }
+
+    pub fn with_spec(title: &'a str, spec: PanelSizeSpec) -> Self {
+        Self {
+            title,
+            color: None,
+            min_width: spec.min_width,
+            max_width: spec.max_width,
+            min_height: spec.min_height,
+            max_height: spec.max_height,
+        }
+    }
+
+    pub fn color(mut self, color: &'a str) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn width(mut self, min: u16, max: u16) -> Self {
+        self.min_width = min;
+        self.max_width = max.max(min);
+        self
+    }
+
+    pub fn height(mut self, min: u16, max: u16) -> Self {
+        self.min_height = min;
+        self.max_height = max.max(min);
+        self
+    }
+}
+
+pub fn render_centered_dialog_lines(
+    frame: CenteredOverlayFrame<'_>,
+    body: Vec<Line<'static>>,
+    area: Rect,
+    buf: &mut Buffer,
+    colors: &ThemeColors,
+    style: Style,
+) {
+    if area.width < 8 || area.height < 4 {
+        return;
+    }
+
+    let max_width = frame.max_width.min(area.width.saturating_sub(2)).max(1);
+    let min_width = frame.min_width.min(max_width);
+    let width = area.width.saturating_sub(4).min(max_width).max(min_width);
+
+    let mut dialog = Dialog::new().title(frame.title).hide_input_guide();
+    if let Some(color) = frame.color {
+        dialog = dialog.color(color);
+    }
+    let lines = dialog.render(colors, width as usize, body, &ExitGuard::new(), false);
+
+    let max_height = frame.max_height.min(area.height.saturating_sub(2)).max(1);
+    let min_height = frame.min_height.min(max_height);
+    let height = (lines.len() as u16).max(min_height).min(max_height);
+    let overlay = centered_rect(area, width, height);
+
+    Clear.render(overlay, buf);
+    if style.bg.is_some() {
+        for y in overlay.y..overlay.y + overlay.height {
+            for x in overlay.x..overlay.x + overlay.width {
+                buf[(x, y)].set_style(style);
+            }
+        }
+    }
+    Paragraph::new(lines)
+        .style(style)
+        .wrap(Wrap { trim: false })
+        .render(overlay, buf);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::theme::{get_theme, ThemeName};
+
+    #[test]
+    fn centered_overlay_frame_renders_body_lines() {
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buffer = Buffer::empty(area);
+        let frame = CenteredOverlayFrame::new("Overlay")
+            .color("permission")
+            .width(30, 60)
+            .height(6, 10);
+
+        render_centered_dialog_lines(
+            frame,
+            vec![Line::from("body")],
+            area,
+            &mut buffer,
+            get_theme(&ThemeName::Dark),
+            Style::default(),
+        );
+
+        let content = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(content.contains("Overlay"));
+        assert!(content.contains("body"));
+    }
+
+    #[test]
+    fn centered_rect_stays_inside_area() {
+        let rect = centered_rect(Rect::new(10, 5, 20, 10), 8, 4);
+        assert_eq!(rect, Rect::new(16, 8, 8, 4));
+    }
+}

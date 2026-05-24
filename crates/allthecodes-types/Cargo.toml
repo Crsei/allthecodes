@@ -1,0 +1,18 @@
+[package]
+name = "allthecodes-types"
+version = "0.1.0"
+edition = "2021"
+description = "Pure leaf types for cc-rust: message, state, transitions (no runtime deps on root crate)"
+
+[features]
+default = ["runtime-types"]
+runtime-types = ["dep:anyhow", "dep:async-trait", "dep:tokio"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }

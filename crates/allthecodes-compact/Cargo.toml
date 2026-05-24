@@ -1,0 +1,17 @@
+[package]
+name = "allthecodes-compact"
+version = "0.1.0"
+edition = "2021"
+description = "Conversation-history compaction pipeline for allthecodes"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+
+allthecodes-types = { workspace = true }
+allthecodes-utils = { workspace = true }

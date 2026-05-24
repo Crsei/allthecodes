@@ -1,0 +1,35 @@
+[package]
+name = "allthecodes-api"
+version = "0.1.0"
+edition = "2021"
+description = "Provider API clients, streaming transport, retry, and token-counting for allthecodes"
+
+[dependencies]
+anyhow = { workspace = true }
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+allthecodes-auth = { workspace = true }
+allthecodes-config = { workspace = true }
+allthecodes-models = { workspace = true }
+allthecodes-types = { workspace = true }
+allthecodes-utils = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+reqwest = { workspace = true }
+ring = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+keyring = { workspace = true }

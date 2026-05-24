@@ -1,0 +1,85 @@
+[package]
+name = "allthecodes-engine"
+version = "0.1.0"
+edition = "2021"
+description = "QueryEngine + query loop + AppState + Tool trait + status-line runner (Phase 6 extraction)."
+
+# Phase 6 is being landed incrementally:
+#
+#   Step 1 (this crate, landed): publish an empty scaffold wired into the
+#   workspace.
+#
+#   Step 2 (in progress): move `src/ui/status_line/` and
+#   `src/types/{tool, app_state, config}.rs` into this crate — these are the
+#   last runtime-free-ish items blocking `ToolUseContext` / `AppState` from
+#   leaving the root crate.
+#
+#   Step 3 (follow-up): move `src/engine/` and `src/query/` into this crate.
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Errors / logging
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-langfuse = { workspace = true, optional = true }
+
+# Shared primitives
+chrono = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+
+# Git (for status-line payload repo lookups)
+git2 = { workspace = true }
+
+# Workspace siblings (only leaf / already-extracted crates)
+allthecodes-types = { workspace = true }
+allthecodes-config = { workspace = true }
+allthecodes-bootstrap = { workspace = true }
+allthecodes-observability = { workspace = true }
+allthecodes-permissions = { workspace = true }
+allthecodes-models = { workspace = true }
+allthecodes-compact = { workspace = true }
+allthecodes-keybindings = { workspace = true }
+allthecodes-utils = { workspace = true }
+allthecodes-session = { workspace = true }
+allthecodes-sandbox = { workspace = true }
+allthecodes-api = { workspace = true }
+allthecodes-mcp = { workspace = true }
+allthecodes-browser = { workspace = true }
+allthecodes-lsp-service = { workspace = true }
+allthecodes-skills = { workspace = true }
+allthecodes-ipc-protocol = { workspace = true }
+dirs = { workspace = true }
+allthecodes-tasks = { workspace = true }
+allthecodes-tools = { workspace = true }
+allthecodes-shell-command = { workspace = true }
+
+[features]
+default = []
+# Telemetry enables engine-owned Langfuse and bridge call sites.
+telemetry = [
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-langfuse",
+]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serial_test = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

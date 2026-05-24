@@ -1,0 +1,69 @@
+[package]
+name = "allthecodes-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Shared tool specs and pure registry helpers."
+
+[features]
+default = ["full"]
+contract = []
+full = [
+    "dep:base64",
+    "dep:allthecodes-browser",
+    "dep:allthecodes-ipc-protocol",
+    "dep:allthecodes-permissions",
+    "dep:allthecodes-sandbox",
+    "dep:allthecodes-skills",
+    "dep:allthecodes-tasks",
+    "dep:allthecodes-utils",
+    "dep:chrono",
+    "dep:dirs",
+    "dep:glob",
+    "dep:hex",
+    "dep:ignore",
+    "dep:libc",
+    "dep:regex",
+    "dep:reqwest",
+    "dep:sha2",
+    "dep:similar",
+    "dep:tokio-util",
+    "dep:tracing",
+    "dep:url",
+    "dep:uuid",
+]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+allthecodes-config = { workspace = true }
+allthecodes-types = { workspace = true }
+base64 = { workspace = true, optional = true }
+allthecodes-browser = { workspace = true, optional = true }
+allthecodes-ipc-protocol = { workspace = true, optional = true }
+allthecodes-permissions = { workspace = true, optional = true }
+allthecodes-sandbox = { workspace = true, optional = true }
+allthecodes-skills = { workspace = true, optional = true }
+allthecodes-tasks = { workspace = true, optional = true }
+allthecodes-utils = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
+glob = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+ignore = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+parking_lot = { workspace = true }
+regex = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true, optional = true }
+similar = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+tokio = { workspace = true }
+tracing = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serial_test = { workspace = true }

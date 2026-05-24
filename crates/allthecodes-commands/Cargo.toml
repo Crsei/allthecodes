@@ -1,0 +1,49 @@
+[package]
+name = "allthecodes-commands"
+version = "0.1.0"
+edition = "2021"
+description = "Slash-command contracts and extracted command implementations."
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+allthecodes-bootstrap = { workspace = true }
+allthecodes-config = { workspace = true }
+allthecodes-browser = { workspace = true }
+allthecodes-api = { workspace = true }
+allthecodes-auth = { workspace = true }
+allthecodes-compact = { workspace = true }
+allthecodes-engine = { workspace = true }
+allthecodes-ipc-protocol = { workspace = true }
+allthecodes-keybindings = { workspace = true }
+allthecodes-mcp = { workspace = true }
+allthecodes-models = { workspace = true }
+allthecodes-permissions = { workspace = true }
+allthecodes-plugins = { workspace = true }
+allthecodes-sandbox = { workspace = true }
+allthecodes-services = { workspace = true }
+allthecodes-session = { workspace = true }
+allthecodes-skills = { workspace = true }
+allthecodes-tasks = { workspace = true }
+allthecodes-tools = { workspace = true }
+allthecodes-types = { workspace = true }
+allthecodes-utils = { workspace = true }
+allthecodes-voice = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+dotenvy = { workspace = true }
+futures = { workspace = true }
+allthecodes-gateway = { workspace = true }
+git2 = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serial_test = { workspace = true }

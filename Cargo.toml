@@ -1,0 +1,201 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# ============================================================
+# Shared dependency versions.
+# ------------------------------------------------------------
+# All member crates declare deps via `dep.workspace = true`, so
+# versions live in one place. Features remain crate-local: a
+# crate adds `features = [...]` on top of the workspace entry.
+# ============================================================
+
+[workspace.dependencies]
+# 异步运行时
+tokio = { version = "1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+    "io-std",
+    "net",
+    "fs",
+    "process",
+    "signal",
+    "sync",
+    "time",
+] }
+futures = "0.3"
+async-trait = "0.1"
+async-stream = "0.3"
+tokio-stream = "0.1"
+tokio-util = "0.7"
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 错误处理
+anyhow = "1"
+thiserror = "2"
+
+# CLI 参数解析
+clap = { version = "4", features = ["derive"] }
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# 时间处理
+chrono = { version = "0.4", features = ["serde"] }
+
+# LRU 缓存
+lru = "0.12"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+tracing-opentelemetry = "0.32.1"
+opentelemetry = { version = "0.31", features = ["trace"] }
+opentelemetry_sdk = { version = "0.31.0", features = ["trace", "rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
+opentelemetry-langfuse = "0.6.1"
+
+# LSP 协议类型
+lsp-types = "0.97"
+
+# 文件搜索 & 路径
+glob = "0.3"
+ignore = "0.4"
+walkdir = "2"
+dirs = "6"
+
+# 正则
+regex = "1"
+
+# Git 操作
+git2 = { version = "0.19", default-features = false, features = ["https"] }
+
+# 文本 Diff
+similar = "2"
+
+# 进程管理
+shell-words = "1"
+
+# 终端 UI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# 语法高亮
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+
+# 文本处理
+textwrap = "0.16"
+unicode-width = "0.2"
+strip-ansi-escapes = "0.2"
+
+# Markdown 渲染
+pulldown-cmark = "0.12"
+
+# 哈希
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+ring = "0.17"
+
+# 编码
+base64 = "0.22"
+bytes = "1"
+url = "2"
+urlencoding = "2"
+semver = "1"
+
+# 网络
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "native-tls"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+eventsource-stream = "0.2"
+
+# 认证
+keyring = "3"
+dotenvy = "0.15.7"
+
+# 同步原语
+parking_lot = "0.12"
+
+# 内部 crates (workspace split)
+allthecodes-keybindings = { path = "crates/allthecodes-keybindings" }
+allthecodes-observability = { path = "crates/allthecodes-observability" }
+allthecodes-types = { path = "crates/allthecodes-types" }
+allthecodes-models = { path = "crates/allthecodes-models" }
+allthecodes-bootstrap = { path = "crates/allthecodes-bootstrap" }
+allthecodes-auth = { path = "crates/allthecodes-auth" }
+allthecodes-api = { path = "crates/allthecodes-api" }
+allthecodes-skills = { path = "crates/allthecodes-skills" }
+allthecodes-config = { path = "crates/allthecodes-config" }
+allthecodes-utils = { path = "crates/allthecodes-utils" }
+allthecodes-shell-command = { path = "crates/allthecodes-shell-command" }
+allthecodes-mcp = { path = "crates/allthecodes-mcp" }
+allthecodes-services = { path = "crates/allthecodes-services" }
+allthecodes-computer-use = { path = "crates/allthecodes-computer-use" }
+allthecodes-safety = { path = "crates/allthecodes-safety" }
+allthecodes-compact = { path = "crates/allthecodes-compact" }
+allthecodes-sandbox = { path = "crates/allthecodes-sandbox" }
+allthecodes-permissions = { path = "crates/allthecodes-permissions" }
+allthecodes-browser = { path = "crates/allthecodes-browser" }
+allthecodes-session = { path = "crates/allthecodes-session" }
+allthecodes-gateway = { path = "crates/allthecodes-gateway" }
+# Phase 6 / Phase 7 scaffolds (issues #75, #76).
+allthecodes-engine = { path = "crates/allthecodes-engine" }
+allthecodes-query = { path = "crates/allthecodes-query" }
+allthecodes-tools = { path = "crates/allthecodes-tools" }
+allthecodes-tasks = { path = "crates/allthecodes-tasks" }
+allthecodes-lsp-service = { path = "crates/allthecodes-lsp-service" }
+allthecodes-plugins = { path = "crates/allthecodes-plugins" }
+allthecodes-teams = { path = "crates/allthecodes-teams" }
+allthecodes-daemon = { path = "crates/allthecodes-daemon" }
+allthecodes-commands = { path = "crates/allthecodes-commands" }
+allthecodes-ipc = { path = "crates/allthecodes-ipc" }
+allthecodes-ipc-protocol = { path = "crates/allthecodes-ipc-protocol" }
+allthecodes-ipc-transport = { path = "crates/allthecodes-ipc-transport" }
+allthecodes-ipc-adapters = { path = "crates/allthecodes-ipc-adapters" }
+allthecodes-ipc-client = { path = "crates/allthecodes-ipc-client" }
+allthecodes-startup = { path = "crates/allthecodes-startup" }
+allthecodes-voice = { path = "crates/allthecodes-voice" }
+allthecodes-web = { path = "crates/allthecodes-web" }
+allthecodes-worktree = { path = "crates/allthecodes-worktree" }
+
+# Daemon HTTP server
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+hmac = "0.12"
+notify-rust = "4"
+
+# Web UI
+rust-embed = "8"
+mime_guess = "2"
+
+# AST / 图像
+tree-sitter = "0.24"
+tree-sitter-bash = "0.21"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# POSIX syscalls
+libc = "0.2"
+
+# Dev / test
+assert_cmd = "2"
+predicates = "3"
+assert_fs = "1"
+insta = "1"
+tempfile = "3"
+portable-pty = "0.9"
+vt100 = "0.15"
+which = "7"
+serial_test = "3"
+
+# ============================================================
+# Profiles (apply to the whole workspace)
+# ============================================================
+
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "packed"

@@ -1,0 +1,205 @@
+[package]
+name = "allthecodes"
+version = "0.1.0"
+edition = "2021"
+description = "allthecodes CLI"
+build = "build.rs"
+
+# ============================================================
+# Features
+# ============================================================
+#
+# default 闂?minimal build: no telemetry, no embedded web assets,
+#           no image/syntect/tree-sitter pulls. Keeps `cargo build`
+#           fast and avoids heavy native deps (onig, tonic/prost).
+#
+# Opt-in:
+#   telemetry   闂?Langfuse + OpenTelemetry export (pulls tonic/prost).
+#   web-ui      闂?Embed the React SPA (rust-embed) into the binary.
+#   image       闂?Image decoding (png/jpeg only).
+#   syntect     闂?Syntax highlighting via fancy-regex (no onig C dep).
+#   tree-sitter 闂?AST parsing.
+
+[features]
+default = []
+telemetry = [
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-langfuse",
+    "allthecodes-engine/telemetry",
+    "allthecodes-services/telemetry",
+    "allthecodes-startup/telemetry",
+]
+web-ui = ["allthecodes-web/web-ui"]
+image = ["dep:image"]
+syntect = ["dep:syntect"]
+tree-sitter = ["dep:tree-sitter"]
+
+[dependencies]
+# 閻庢鍠栭崐褰掝敆閻愬瓨浜ら柟閭﹀灱閺€浠嬫煛?
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+
+# 闁瑰吋娼欑换鎰板垂椤忓牆绀?
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 闂備焦瀵ч悷銊╊敋閵堝棗绶為柛鏇ㄥ幗閸?
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# 闂佸搫鍟悥鐓幬?
+chrono = { workspace = true }
+
+# LRU
+lru = { workspace = true }
+
+# 闂佸搫鍟ㄩ崕杈╂崲?
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-langfuse = { workspace = true, optional = true }
+
+# LSP
+lsp-types = { workspace = true }
+
+# 闂佸搫鍊稿ú锝呪枎?& 闁荤姳璀﹂崹鎵?
+glob = { workspace = true }
+ignore = { workspace = true }
+walkdir = { workspace = true }
+dirs = { workspace = true }
+
+# 濠殿喗绻愮徊浠嬪垂?
+regex = { workspace = true }
+
+# Git
+git2 = { workspace = true }
+
+# Diff
+similar = { workspace = true }
+
+# 闁哄鏅滅粙鎾诲煝?
+shell-words = { workspace = true }
+
+# 缂傚倷绀侀悧蹇涱敂?UI
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+
+# 闁荤姴娴傞崢鐣屾兜閼告娈楁俊顖滄嚀閻?
+syntect = { workspace = true, optional = true }
+
+# 闂佸搫鍊稿ú锕€锕?
+textwrap = { workspace = true }
+unicode-width = { workspace = true }
+strip-ansi-escapes = { workspace = true }
+
+# Markdown
+pulldown-cmark = { workspace = true }
+
+# Hashing
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+ring = { workspace = true }
+
+# 缂傚倸鍊归悧婊堟偉?
+base64 = { workspace = true }
+bytes = { workspace = true }
+url = { workspace = true }
+urlencoding = { workspace = true }
+semver = { workspace = true }
+
+# 缂傚倸鍟崹鍦垝?
+reqwest = { workspace = true }
+tokio-tungstenite = { workspace = true }
+eventsource-stream = { workspace = true }
+
+# 闁荤姳闄嶉崐娑㈡儊?
+keyring = { workspace = true }
+dotenvy = { workspace = true }
+
+# 闂佸憡鑹鹃張顒勵敆閻愬搫鍌ㄩ柣鏃€妞块崵?
+parking_lot = { workspace = true }
+
+# 闂佸憡鍔曢幊姗€宕?workspace crates (P1/P2/P3)
+allthecodes-keybindings = { workspace = true }
+allthecodes-observability = { workspace = true }
+allthecodes-types = { workspace = true }
+allthecodes-models = { workspace = true }
+allthecodes-bootstrap = { workspace = true }
+allthecodes-auth = { workspace = true }
+allthecodes-api = { workspace = true }
+allthecodes-skills = { workspace = true }
+allthecodes-config = { workspace = true }
+allthecodes-utils = { workspace = true }
+allthecodes-mcp = { workspace = true }
+allthecodes-plugins = { workspace = true }
+allthecodes-services = { workspace = true }
+allthecodes-computer-use = { workspace = true }
+allthecodes-safety = { workspace = true }
+allthecodes-compact = { workspace = true }
+allthecodes-sandbox = { workspace = true }
+allthecodes-permissions = { workspace = true }
+allthecodes-browser = { workspace = true }
+allthecodes-lsp-service = { workspace = true }
+allthecodes-session = { workspace = true }
+allthecodes-engine = { workspace = true }
+allthecodes-query = { workspace = true }
+allthecodes-tools = { workspace = true }
+allthecodes-tasks = { workspace = true }
+allthecodes-teams = { workspace = true }
+allthecodes-commands = { workspace = true }
+allthecodes-daemon = { workspace = true }
+allthecodes-ipc = { workspace = true }
+allthecodes-ipc-protocol = { workspace = true }
+allthecodes-ipc-adapters = { workspace = true }
+allthecodes-ipc-client = { workspace = true }
+allthecodes-startup = { workspace = true }
+allthecodes-voice = { workspace = true }
+allthecodes-web = { workspace = true }
+allthecodes-worktree = { workspace = true }
+allthecodes-gateway = { workspace = true }
+
+# Daemon
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hmac = { workspace = true }
+notify-rust = { workspace = true }
+
+# AST / 闂佹悶鍎查崕鎶藉磿?
+tree-sitter = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+
+# 闂佸憡鐟崹杈ㄦ櫠閻ｅ本鍋橀悘鐐靛亾閻庮喖霉閻樺搫鐓愰柣鎿勭節楠?(sandbox/availability.rs 闂佹椿娼块崝宀勬偩閻樿绠抽柕蹇ョ磿閵?bwrap/sandbox-exec)
+which = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+assert_fs = { workspace = true }
+insta = { workspace = true }
+tempfile = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }
+portable-pty = { workspace = true }
+vt100 = { workspace = true }
+serial_test = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

@@ -1,0 +1,26 @@
+[package]
+name = "allthecodes-lsp-service"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone LSP client service and tool adapter."
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+allthecodes-config = { workspace = true }
+chrono = { workspace = true }
+allthecodes-ipc-protocol = { workspace = true }
+allthecodes-mcp = { workspace = true }
+allthecodes-tools = { path = "../allthecodes-tools", default-features = false, features = ["contract"] }
+allthecodes-types = { workspace = true }
+lsp-types = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serial_test = { workspace = true }

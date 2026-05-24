@@ -1,0 +1,41 @@
+[env]
+LIB = { value = "", force = true }
+INCLUDE = { value = "", force = true }
+
+# ============================================================
+# target-dir 为什么不在这里
+# ------------------------------------------------------------
+# 绝对路径（如 F:/cargo-target/cc-rust）会污染 CI，报
+#   "failed to create directory F:/cargo-target"
+# 需要把构建产物放到其他盘的话，在你**自己的** ~/.cargo/config.toml
+# 里加：
+#
+#   [build]
+#   target-dir = "F:/cargo-target/cc-rust"
+#
+# 或用环境变量 CARGO_TARGET_DIR。两者都会覆盖仓库级配置。
+# ============================================================
+
+# ============================================================
+# 链接器加速: 使用 rust-lld 替换 MSVC link.exe
+# ------------------------------------------------------------
+# rust-lld 随 rustup 分发，无需额外安装；相比 link.exe 在增量
+# 构建阶段通常快 30-50%。
+# 如遇到 MSVC 库定位失败，可注释掉本段回退到默认 link.exe。
+# ============================================================
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+rustflags = ["-C", "linker-flavor=lld-link"]
+
+[target.aarch64-pc-windows-msvc]
+linker = "rust-lld.exe"
+rustflags = ["-C", "linker-flavor=lld-link"]
+
+# Linux: 如果安装了 mold 或 lld，取消注释以启用
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# macOS: Apple Silicon 自带的 ld 已经足够快，通常无需改动
+# [target.aarch64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]

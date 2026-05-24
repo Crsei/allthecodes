@@ -1,0 +1,386 @@
+//! Setup helpers for the first-party Chrome integration.
+//!
+//! Extension detection + native-host-manifest install + wrapper script.
+//!
+//! Scope for this file in the #4 skeleton PR:
+//!
+//! * **Implemented**: extension detection (scans browser `Extensions/` dirs
+//!   across profiles), wrapper script generation, native-host-manifest
+//!   writer (writes the JSON manifest to the per-browser
+//!   `NativeMessagingHosts/` dir; Windows registers the registry key).
+//! * **Deferred to #5**: the actual native host binary mode
+//!   (`--chrome-native-host`) and the companion MCP stdio mode
+//!   (`--claude-in-chrome-mcp`) that the manifest points at. Until #5
+//!   lands, the manifest points at the current allthecodes binary with a flag
+//!   we haven't wired — which is fine: an end-user who enables Chrome today
+//!   gets the right files on disk, and the second half turns on when #5
+//!   ships.
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use tracing::{debug, warn};
+
+use super::common::{
+    all_browser_data_paths, all_native_messaging_paths, all_windows_registry_keys, extension_ids,
+    BrowserDataPath, ChromiumBrowser, NATIVE_HOST_IDENTIFIER,
+};
+
+// ---------------------------------------------------------------------------
+// Extension detection
+// ---------------------------------------------------------------------------
+
+/// Result of scanning every browser + profile for our extension.
+///
+/// `profile` is currently debug-logged during detection but not surfaced to
+/// callers — the #5 transport layer is what needs to know which profile owns
+/// the extension, and it will read the field then.
+#[derive(Debug, Clone, Default)]
+pub struct ExtensionDetection {
+    pub is_installed: bool,
+    pub browser: Option<ChromiumBrowser>,
+    /// Profile directory where the extension was found (e.g. `"Default"`).
+    pub profile: Option<String>,
+}
+
+/// Scan every supported browser's `Extensions/` directories and return the
+/// first hit. Mirrors the bun `detectExtensionInstallationPortable`.
+///
+/// A "profile" is any subdirectory of the browser's user-data dir named
+/// `Default` or `Profile N`. Within each profile, the extension is installed
+/// iff `Extensions/{extension_id}/` exists.
+pub fn detect_extension_installed() -> ExtensionDetection {
+    let paths = all_browser_data_paths();
+    if paths.is_empty() {
+        debug!("claude-in-chrome: no browser data paths on this platform");
+        return ExtensionDetection::default();
+    }
+
+    let ids = extension_ids();
+
+    for BrowserDataPath { browser, path } in &paths {
+        let Ok(entries) = fs::read_dir(path) else {
+            continue;
+        };
+
+        let profile_dirs: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|name| name == "Default" || name.starts_with("Profile "))
+            .collect();
+
+        for profile in &profile_dirs {
+            for ext_id in &ids {
+                let candidate = path.join(profile).join("Extensions").join(ext_id);
+                if candidate.is_dir() {
+                    debug!(
+                        %ext_id,
+                        browser = browser.slug(),
+                        %profile,
+                        "claude-in-chrome: extension found"
+                    );
+                    return ExtensionDetection {
+                        is_installed: true,
+                        browser: Some(*browser),
+                        profile: Some(profile.clone()),
+                    };
+                }
+            }
+        }
+    }
+
+    debug!("claude-in-chrome: extension not found in any browser");
+    ExtensionDetection::default()
+}
+
+// ---------------------------------------------------------------------------
+// Wrapper script
+// ---------------------------------------------------------------------------
+
+/// Create a wrapper script in `~/.allthecodes/chrome/` that invokes `command`.
+///
+/// Chrome's native-host manifest `path` field cannot contain arguments, so we
+/// install a tiny shim that execs the real command. Returns the absolute path
+/// to the shim (that's what goes into the manifest).
+///
+/// If the shim already has the exact content we'd write, we leave it alone —
+/// Chrome watches manifest paths for mtime changes and avoiding a no-op
+/// rewrite is cheap.
+pub fn create_wrapper_script(command: &str) -> Result<PathBuf> {
+    let chrome_dir = cc_rust_chrome_dir()?;
+    fs::create_dir_all(&chrome_dir)
+        .with_context(|| format!("creating {}", chrome_dir.display()))?;
+
+    let (wrapper_path, content) = if cfg!(windows) {
+        let p = chrome_dir.join("chrome-native-host.bat");
+        let c = format!(
+            "@echo off\r\n\
+             REM Chrome native host wrapper script\r\n\
+             REM Generated by allthecodes - do not edit manually\r\n\
+             {command}\r\n",
+            command = command,
+        );
+        (p, c)
+    } else {
+        let p = chrome_dir.join("chrome-native-host");
+        let c = format!(
+            "#!/bin/sh\n\
+             # Chrome native host wrapper script\n\
+             # Generated by allthecodes - do not edit manually\n\
+             exec {command}\n",
+            command = command,
+        );
+        (p, c)
+    };
+
+    if let Ok(existing) = fs::read_to_string(&wrapper_path) {
+        if existing == content {
+            return Ok(wrapper_path);
+        }
+    }
+
+    fs::write(&wrapper_path, &content)
+        .with_context(|| format!("writing {}", wrapper_path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&wrapper_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&wrapper_path, perms)?;
+    }
+
+    debug!(path = %wrapper_path.display(), "claude-in-chrome: wrote wrapper script");
+    Ok(wrapper_path)
+}
+
+fn cc_rust_chrome_dir() -> Result<PathBuf> {
+    Ok(allthecodes_config::settings::global_claude_dir()?.join("chrome"))
+}
+
+// ---------------------------------------------------------------------------
+// Native host manifest
+// ---------------------------------------------------------------------------
+
+/// JSON shape Chrome expects in the native-host manifest.
+///
+/// Chrome discovers native hosts by reading a manifest at a well-known
+/// location; the manifest `path` field points at the binary Chrome should
+/// launch. `allowed_origins` whitelists which extensions may talk to it.
+fn build_manifest_json(binary_path: &Path) -> serde_json::Value {
+    use super::common::{ANT_EXTENSION_ID, DEV_EXTENSION_ID, PROD_EXTENSION_ID};
+
+    let mut origins = vec![format!("chrome-extension://{}/", PROD_EXTENSION_ID)];
+    if std::env::var("USER_TYPE").as_deref() == Ok("ant") {
+        origins.push(format!("chrome-extension://{}/", DEV_EXTENSION_ID));
+        origins.push(format!("chrome-extension://{}/", ANT_EXTENSION_ID));
+    }
+
+    serde_json::json!({
+        "name": NATIVE_HOST_IDENTIFIER,
+        "description": "allthecodes browser extension native host",
+        "path": binary_path.to_string_lossy(),
+        "type": "stdio",
+        "allowed_origins": origins,
+    })
+}
+
+/// Write the native-host manifest to every supported browser's
+/// NativeMessagingHosts directory (on macOS/Linux) OR to a single allthecodes
+/// directory with registry entries pointing at it (on Windows).
+///
+/// Returns the number of manifests that were *newly written or updated* —
+/// zero means every browser already had an up-to-date manifest. Callers can
+/// use that count to decide whether to open the reconnect URL.
+pub fn install_native_host_manifest(binary_path: &Path) -> Result<usize> {
+    let manifest = build_manifest_json(binary_path);
+    let manifest_content = serde_json::to_string_pretty(&manifest)?;
+    let manifest_filename = format!("{}.json", NATIVE_HOST_IDENTIFIER);
+
+    let mut updated = 0usize;
+
+    if cfg!(windows) {
+        // Windows: write one manifest to a allthecodes-owned dir, then point each
+        // browser's registry key at it.
+        let manifest_dir = cc_rust_chrome_dir()?.join("native-host");
+        fs::create_dir_all(&manifest_dir)
+            .with_context(|| format!("creating {}", manifest_dir.display()))?;
+        let manifest_path = manifest_dir.join(&manifest_filename);
+        if write_if_changed(&manifest_path, &manifest_content)? {
+            updated += 1;
+        }
+
+        if let Err(e) = register_windows_native_hosts(&manifest_path) {
+            warn!(error = %e, "claude-in-chrome: Windows registry registration had errors");
+        }
+    } else {
+        // macOS / Linux: write one manifest per browser directory.
+        for path in all_native_messaging_paths() {
+            let dir = path.path;
+            if let Err(e) = fs::create_dir_all(&dir) {
+                // Browser may not be installed — skip gracefully.
+                debug!(
+                    browser = path.browser.slug(),
+                    dir = %dir.display(),
+                    error = %e,
+                    "claude-in-chrome: could not create native messaging dir (browser missing?)"
+                );
+                continue;
+            }
+            let manifest_path = dir.join(&manifest_filename);
+            match write_if_changed(&manifest_path, &manifest_content) {
+                Ok(true) => updated += 1,
+                Ok(false) => {}
+                Err(e) => warn!(
+                    browser = path.browser.slug(),
+                    path = %manifest_path.display(),
+                    error = %e,
+                    "claude-in-chrome: failed to write manifest"
+                ),
+            }
+        }
+    }
+
+    Ok(updated)
+}
+
+fn write_if_changed(path: &Path, content: &str) -> io::Result<bool> {
+    if let Ok(existing) = fs::read_to_string(path) {
+        if existing == content {
+            return Ok(false);
+        }
+    }
+    fs::write(path, content)?;
+    Ok(true)
+}
+#[cfg(windows)]
+fn register_windows_native_hosts(manifest_path: &Path) -> Result<()> {
+    use std::process::Command;
+    let manifest_path_str = manifest_path.to_string_lossy().to_string();
+
+    for entry in all_windows_registry_keys() {
+        let full_key = format!("HKCU\\{}\\{}", entry.key, NATIVE_HOST_IDENTIFIER);
+        let output = Command::new("reg")
+            .args([
+                "add",
+                &full_key,
+                "/ve",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &manifest_path_str,
+                "/f",
+            ])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                debug!(
+                    browser = entry.browser.slug(),
+                    key = %full_key,
+                    "claude-in-chrome: registered Windows native host"
+                );
+            }
+            Ok(o) => {
+                warn!(
+                    browser = entry.browser.slug(),
+                    stderr = %String::from_utf8_lossy(&o.stderr),
+                    "claude-in-chrome: reg add failed"
+                );
+            }
+            Err(e) => warn!(
+                browser = entry.browser.slug(),
+                error = %e,
+                "claude-in-chrome: could not spawn reg.exe"
+            ),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn register_windows_native_hosts(_: &Path) -> Result<()> {
+    // No-op on non-Windows — the manifest files in per-browser
+    // NativeMessagingHosts/ dirs are sufficient.
+    let _ = all_windows_registry_keys; // silence unused-import linting
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_json_has_expected_shape() {
+        let m = build_manifest_json(Path::new("/tmp/allthecodes-native-host"));
+        assert_eq!(m["name"], NATIVE_HOST_IDENTIFIER);
+        assert_eq!(m["type"], "stdio");
+        let origins = m["allowed_origins"].as_array().unwrap();
+        assert!(!origins.is_empty());
+        assert!(origins[0]
+            .as_str()
+            .unwrap()
+            .starts_with("chrome-extension://"));
+    }
+
+    #[test]
+    fn wrapper_script_round_trips() {
+        // Use a tempdir to avoid touching the real ~/.allthecodes.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        let prev_userprofile = std::env::var("USERPROFILE").ok();
+        let prev_cc_rust_home = std::env::var("ALLTHECODES_HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("USERPROFILE", tmp.path());
+        std::env::set_var("ALLTHECODES_HOME", tmp.path());
+
+        let path = create_wrapper_script("\"/bin/echo\" hello").unwrap();
+        assert!(path.exists(), "wrapper should have been created");
+        assert!(path.starts_with(tmp.path()));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("hello"));
+
+        // Idempotent: second call with same command should not rewrite.
+        let mtime1 = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let path2 = create_wrapper_script("\"/bin/echo\" hello").unwrap();
+        let mtime2 = fs::metadata(&path2).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime1, mtime2,
+            "wrapper should not be rewritten when unchanged"
+        );
+
+        if let Some(v) = prev_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(v) = prev_userprofile {
+            std::env::set_var("USERPROFILE", v);
+        } else {
+            std::env::remove_var("USERPROFILE");
+        }
+        if let Some(v) = prev_cc_rust_home {
+            std::env::set_var("ALLTHECODES_HOME", v);
+        } else {
+            std::env::remove_var("ALLTHECODES_HOME");
+        }
+    }
+
+    #[test]
+    fn detect_extension_handles_missing_browsers() {
+        // On most test machines no Claude extension is installed. The
+        // function should just report is_installed=false without panicking.
+        let result = detect_extension_installed();
+        // Either result is fine (depends on the machine); this test just
+        // proves the function doesn't crash.
+        let _ = result.is_installed;
+        let _ = result.profile;
+    }
+}

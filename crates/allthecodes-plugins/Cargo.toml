@@ -1,0 +1,34 @@
+[package]
+name = "allthecodes-plugins"
+version = "0.1.0"
+edition = "2021"
+description = "Plugin loader, registry, refresh, installation, marketplace, and contribution discovery."
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+allthecodes-config = { workspace = true }
+allthecodes-mcp = { workspace = true }
+allthecodes-tools = { workspace = true }
+allthecodes-types = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+flate2 = "1"
+lru = { workspace = true }
+semver = { workspace = true }
+url = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+zip = "2"
+
+[dev-dependencies]
+chrono = { workspace = true }
+serial_test = { workspace = true }
+uuid = { workspace = true }
+tempfile = "3"

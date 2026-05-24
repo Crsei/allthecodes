@@ -1,0 +1,39 @@
+[package]
+name = "allthecodes-daemon"
+version = "0.1.0"
+edition = "2021"
+description = "KAIROS daemon: HTTP/SSE server, proactive tick, webhooks, team-memory proxy. Phase 7 workspace split (scaffold)."
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+allthecodes-commands = { workspace = true }
+allthecodes-config = { workspace = true }
+allthecodes-engine = { workspace = true }
+allthecodes-tools = { workspace = true }
+allthecodes-types = { workspace = true }
+allthecodes-utils = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+allthecodes-gateway = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+mime_guess = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
+tempfile = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

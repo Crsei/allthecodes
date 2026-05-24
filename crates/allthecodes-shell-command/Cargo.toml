@@ -1,0 +1,16 @@
+[package]
+name = "allthecodes-shell-command"
+version = "0.1.0"
+edition = "2021"
+description = "Shell command parsing DTOs, fallback parser, and shared contract for Bash/PowerShell tools"
+
+[dependencies]
+base64 = { workspace = true }
+regex = { workspace = true }
+shell-words = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-bash = { workspace = true }
+
+[dev-dependencies]

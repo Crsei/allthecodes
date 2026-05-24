@@ -1,0 +1,24 @@
+[package]
+name = "allthecodes-worktree"
+version = "0.1.0"
+edition = "2021"
+description = "Worktree tools and session state."
+
+[lib]
+path = "src/mod.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+allthecodes-engine = { workspace = true }
+allthecodes-types = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
+tempfile = { workspace = true }

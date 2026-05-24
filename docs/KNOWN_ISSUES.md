@@ -1,0 +1,97 @@
+# cc-rust 当前问题汇总
+
+> 更新日期: 2026-05-23
+
+本文是当前开放问题、代码审查发现和文档状态问题的唯一活跃入口。已修复、已失效或只具历史价值的问题已迁移到：
+
+- [archive/resolved-known-issues-2026-05-07.md](archive/resolved-known-issues-2026-05-07.md)
+- [archive/issues/](archive/issues/)
+
+## 1. 构建与实现阻塞
+
+| ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
+| --- | --- | --- | --- | --- | --- |
+
+## 2. 安全与权限
+
+| ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
+| --- | --- | --- | --- | --- | --- |
+| SAFETY-001 | 高 | Fixed | Auto mode | `permissions.enableAutoMode=false` 现在由统一的 permission transition helper 强制执行，启动配置、Web、`/permissions`、`/config` 与子上下文不能绕过进入 Auto。 | [2026-05-07 review](archive/issues/2026-05-07-code-review-findings.md) §四 |
+| SAFETY-002 | 高 | Fixed | Plan `allowedPrompts` | Auto -> Plan -> ExitPlanMode 追加的 `allowedPrompts` 规则会在恢复 Auto mode 后立即复用危险 allow 规则剥离逻辑，宽泛/解释器/package runner Bash 规则进入 Auto mode stripped side buffer。 | 同上 |
+| SAFETY-003 | 高 | Fixed | Sandbox `allowedCommands` | `allowedCommands` 仅在 workspace sandbox 且 OS-level sandbox 可用时预批准；匹配改为 argv 结构化检查，链式/管道命令中未显式允许的子命令不会搭车放行。 | 同上 |
+| SAFETY-004 | 高 | Fixed | classifier redaction | classifier redaction 覆盖 JSON/object-like secret 字段，包括 `password`、`apiKey`、`api_key`、`token`、`accessToken`、`refreshToken`、`secret` 等。 | 同上 |
+| SAFETY-005 | 中 | Fixed | Plan approval UI | ExitPlanMode 审批提示现在列出将写入的去重后 transient allowed prompt rules，而不是只显示数量。 | 同上 |
+| SAFETY-006 | 中 | Fixed | Auto classifier Thinking stage | ApiClient-backed classifier 的 Thinking stage 不能用 `budget_tokens=2048` 搭配 `max_tokens=512`，否则 Anthropic thinking 请求会被 provider 拒绝；现已把 Thinking 请求上限提高到大于 thinking budget。 | 2026-05-18 permission classifier review follow-up |
+| SAFETY-007 | 低 | Fixed | Auto classifier policy context | Runtime 接线最初传入空 `AutoModeSettings`，导致 `permissions.autoMode` 中的 environment/allow/softDeny 说明不会进入 classifier prompt；现已把合并后的配置传入 classifier request。 | 2026-05-18 permission classifier review follow-up |
+
+## 3. 模型与 provider 文档/兼容性
+
+| ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
+| --- | --- | --- | --- | --- | --- |
+
+当前无开放项。已关闭记录见 [archive/resolved-model-context-2026-05-07.md](archive/resolved-model-context-2026-05-07.md)。
+
+## 4. Context / compact
+
+| ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
+| --- | --- | --- | --- | --- | --- |
+
+当前无开放项。已关闭记录见 [archive/resolved-model-context-2026-05-07.md](archive/resolved-model-context-2026-05-07.md)。
+
+## 5. UI / runtime residuals
+
+| ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
+| --- | --- | --- | --- | --- | --- |
+| UI-001 | 中 | Open | TS/OpenTUI resize | Rust TUI resize 已收口；TS/OpenTUI 在 Windows maximize/fullscreen 后仍可能留下白色横行或未完整 repaint。 | 历史 #1/#17 |
+| UI-002 | 中 | Fixed | Rust TUI shell output | 最新 Bash/PowerShell tool result 现在由 runtime context 自动展开；历史长输出默认折叠，选中后可展开/折叠查看 detail。 | 历史 #21 |
+| UI-003 | 中 | Fixed | Rust TUI Ctrl+R | Ctrl+R 现在按当前 workspace 读取跨会话持久 prompt history，条目带 session/title/cwd 来源和时间；无后端数据时显示明确空态。 | 历史 #22 |
+| UI-004 | 中 | Evidence pending | Browser MCP | Browser MCP / Chrome native host / Chrome MCP bridge 已有 fake bridge/native-host 端到端证据；真实第三方 Browser MCP server 与 Chrome extension 仍是 release 手动证据，缺失时不声称 live server 已验证。 | 历史 Browser MCP |
+| UI-006 | 中 | Open | Rust TUI theme parity | 组件层主题接线已补齐，但 `/config theme` 允许的 `solarized`、`monokai`、`nord` 等主题名尚未映射到新的 design theme palette。 | 当前未知主题会按 fallback 主题渲染；完成组件 parity 前需要补齐所有配置主题名到 `ThemeProvider`/design palette 的映射与快照覆盖。 |
+| UI-007 | 低 | Review | Rust TUI dialog overlays | `Dialog::handle_key()`、`ExitGuard`、直接 dialog 路径和 Ctrl+C/Ctrl+D exit guard 已进入生产构建；overlay stack 仍主要保存 overlay metadata。 | 当前真实弹窗路径已有 Esc/取消/确认和 exit guard；只有需要多 overlay z-index/集中 dispatch 时，才继续补 overlay-stack runtime contract。 |
+| UI-008 | 低 | Review | Rust TUI tabs parity | `Tabs` production API、header/navigation helpers、content height/header focus 读路径和 snapshots 已接入；content-pane callback parity 仍是组件增强项。 | 已不属于 cfg-test 未接线问题；后续如调用方需要受控 pane callbacks，再按具体 surface 补测试。 |
+| UI-009 | 中 | Fixed | Rust TUI cfg-test production wiring | Phase 1-16 已完成：`CommandSurface`、agent create/edit、MCP detail/tools、permissions、tasks/team、dialog/tabs helpers 和 runtime snapshots 已进入生产构建。 | 验证: `cargo test -p claude-code-rs ui::`、`cargo build --workspace --release`、`git diff --check`；实现提交 `9ac3ae5`。 |
+| UI-010 | 中 | Fixed | Rust TUI prompt/resume/permissions/scroll | 用户反馈输入框未继承用户消息背景、运行中无法继续输入、`/resume` 缺少面板、permissions 弹窗窄终端下 `Always exact` 不完整、session 不默认显示底部且鼠标无法滚动。 | 已让 prompt 输入行整行使用用户消息背景；运行中输入保持可编辑，`Tab` 才显式排队并在当前 turn 结束后发送；`/resume` 空参数打开 session 面板；permission dialog 加宽并支持按钮换行；TUI 启动同步已恢复历史并默认定位底部；mouse capture 默认开启以支持滚轮滚动聊天记录，`CLAUDE_CODE_DISABLE_MOUSE=1` 可恢复终端原生选择。 |
+| UI-011 | 中 | Fixed | Rust TUI mouse focus + subagent task alias | 用户反馈鼠标滚轮应滚动聊天记录，输入框历史只应通过键盘上/下键切换；聊天框中要求调用 subagent 时模型可能发出上游 `Task` 工具名并显示调用失败。 | App 对滚轮事件统一滚动 session/transcript；prompt 历史只由键盘上/下键触发。Agent runtime 同时注册 `Agent` 和上游兼容 `Task` 工具名，`Task` 复用同一 subagent 实现。 |
+
+## 6. 文档状态问题
+
+| ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
+| --- | --- | --- | --- | --- | --- |
+| DOC-002 | 中 | Open | Extensibility implementation map | Phase 5/6 closure 与旧“部分实现”状态冲突；Phase 5 实施记录、future fields、WebSocket/out-of-scope 口径需收口。 | [2026-05-07 review](archive/issues/2026-05-07-code-review-findings.md) §五 |
+| DOC-003 | 中 | Review | stale Lite wording | 顶层 release/current-state/CLI docs 已改为 Full Build 与当前 crate 路径口径；command reference、TUI command UI reference、final release plan、implementation gaps 已同步 2026-05-21 production wiring 状态。plan/archive/mvp 文档中的历史 Lite 文字只按历史上下文保留，后续成为活跃 release reference 时继续清理。 | 本轮文档清理发现 |
+
+## 7. 更新规则
+
+1. 新增开放问题写入本文，不再新增 `docs/issues*.md` 或 `docs/issues/` 下的活跃问题文档。
+2. 只读审查原文、长日志和历史复盘放入 [archive/issues/](archive/issues/)。
+3. 修复完成后，把问题从本文移到 [archive/resolved-known-issues-2026-05-07.md](archive/resolved-known-issues-2026-05-07.md) 或后续同类 resolved archive。
+4. 文档中若只有“已实现/已修复”历史，不应留在活跃入口；迁入 `docs/archive/`。
+
+## 8. Remote-Control Gateway Residuals (2026-05-08)
+
+| ID | Severity | Status | Scope | Summary | Detail |
+| --- | --- | --- | --- | --- | --- |
+| REMOTE-001 | Medium | Open | Gateway busy policy | Mid-turn `steer` is intentionally unsupported. | `GatewayPolicy::supports_steer` defaults to false and `BusyPolicy::Steer` returns `501 unsupported`. Capabilities must not imply live steering until `QueryEngine` has explicit mid-turn injection semantics. |
+| REMOTE-002 | Medium | Open | Telegram/Lark adapters | Telegram and Lark are outbound-control adapters only. | The first gateway release supports adapter configuration status, HTTP connect/health checks, and allowlisted test messages. Full inbound conversational remote control remains follow-up work. |
+| REMOTE-003 | Medium | Open | Webhook configuration | Declarative webhook routes are code-backed but not yet backed by a full admin CRUD surface. | Built-in route ids resolve secrets from environment variables and use generic defaults for unknown route ids. A durable route-management UX/API is still needed before broad operator use. |
+| REMOTE-004 | Medium | Open | Release verification | Session 16 performed docs-gate verification, not full remote-control code verification. | The next release step must run the Session 17 command set before claiming the gateway implementation is fully green. |
+| REMOTE-005 | Low | Open | Public exposure | Public hosted gateway and multi-tenant SaaS are non-goals for this release. | Non-loopback use requires explicit remote-token policy and origin controls; production hosting design remains out of scope. |
+
+## 9. Ratatui UI parity OMX verification residuals (2026-05-10)
+
+| ID | Severity | Status | Scope | Summary | Detail |
+| --- | --- | --- | --- | --- | --- |
+| UI-005 | Low | Open | line endings | `git diff --check` passes but reports CRLF-to-LF normalization warnings for several touched files. | The warnings are not whitespace errors, but commit packaging should expect Git normalization on touched Rust/docs files. |
+
+## 10. Agent Teams / Swarm residuals (2026-05-18)
+
+| ID | Severity | Status | Scope | Summary | Detail |
+| --- | --- | --- | --- | --- | --- |
+| TEAMS-001 | Medium | Open | teammate session resume | TeamContext resume by session id is wired for team leads, but teammate self-session resume still depends on persisting `TeamMember.session_id`. | `restore_team_context_for_session()` matches `TeamFile.lead_session_id` and member `session_id`. Current in-process spawn records teammate members with `session_id: None`, so a teammate's own saved session cannot be restored by session id until runner/spawn records the child session id back into the team file. |
+
+## 11. PTY E2E 测试发现的问题 (2026-05-23)
+
+| ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
+| --- | --- | --- | --- | --- | --- |
+| PTY-001 | 低 | Fixed | PTY harness `status_bar()` | `status_bar()` 不再只读取最后一行；当 vt100 当前 screen buffer 最后一行为空时，会自底向上查找状态栏候选行，并从累积纯文本回退提取最近一次状态栏片段。 | 修复文件：`crates/claude-code-rs/tests/pty_tui_e2e/harness.rs`。验证：`cargo test -p claude-code-rs --test pty_tui_e2e status -- --nocapture`，状态栏相关离线用例通过。 |
+| PTY-002 | 中 | Fixed | PTY model_flow 测试 | `ask_model_identity`/完整 model flow 的模型身份询问现在会检测首轮 `Conversation interrupted` 或 `Error:`，并对真实后端 transient interruption 自动重试一次。 | 修复文件：`crates/claude-code-rs/tests/pty_tui_e2e/model_flow.rs`。在线用例仍保留 `#[ignore]`，需要真实 API key/network；修复目标是让已观察到的首轮 transient interruption 不再直接导致测试失败。 |

@@ -1,0 +1,88 @@
+/target
+/target2
+**/*.rs.bk
+*.pdb
+
+# CI/CD infrastructure
+.github/
+Dockerfile.ci
+docker-compose.test.yml
+.dockerignore
+
+# Environment secrets
+.env
+.env.*
+.env.example
+
+# Examples (ink-panel etc.)
+examples/
+!ui/examples/
+ui/examples/upstream-patterns/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# E2E test logs (timestamped subdirectories)
+logs/**/*.log
+logs/**/*.logs
+logs/**/*.raw
+logs/**/*.html
+logs/**/*.png
+.logs/
+# macOS
+.DS_Store
+
+
+sdk/typescript/node_modules/
+sdk/typescript/dist/
+sdk/typescript/package-lock.json
+.worktrees
+
+# terminal frontend
+/ui/
+ui/node_modules/
+ui/dist/
+ui/bun.lockb
+ui/bun.lock
+ui/package-lock.json
+
+# web-ui frontend (React SPA embedded via rust-embed)
+web-ui/node_modules/
+web-ui/dist/
+web-ui/bun.lockb
+web-ui/bun.lock
+web-ui/package-lock.json
+web-ui/tsconfig.tsbuildinfo
+
+# Global data dir junction
+.allthecodes
+.codex/
+.omx/
+.claude/launch.json
+.claude/
+AGENTS.md
+board.md
+architecture/
+tests/
+scripts/
+docs/architecture/
+web-ui/
+sdk/
+.tmp/
+crates/allthecodes/logs/
+
+# Test logs (generated at runtime)
+crates/*/logs/
+logs/
+
+# Snapshot directories anywhere in the tree
+**/snapshots/

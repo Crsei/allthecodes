@@ -1,0 +1,143 @@
+[package]
+name = "allthecodes"
+version = "0.1.0"
+edition = "2024"
+description = "allthecodes CLI - Rust implementation"
+
+[dependencies]
+# ============================================================
+# P0 - 核心基础
+# ============================================================
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 错误处理
+anyhow = "1"
+thiserror = "2"
+
+# CLI 参数解析
+clap = { version = "4", features = ["derive"] }
+
+# HTTP 客户端 & 网络
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "socks"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+eventsource-stream = "0.2"
+
+# 终端 UI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# ============================================================
+# P0 - 工具系统
+# ============================================================
+
+# 文件搜索 & 路径
+glob = "0.3"
+ignore = "0.4"
+walkdir = "2"
+dirs = "6"
+
+# 正则表达式
+regex = "1"
+
+# Git 操作
+git2 = "0.19"
+
+# 文本 Diff
+similar = "2"
+
+# 进程管理
+shell-words = "1"
+
+# 文件监听
+notify = "7"
+
+# 文件锁
+fs4 = "0.12"
+
+# ============================================================
+# P1 - 重要功能
+# ============================================================
+
+# 认证 & 安全
+keyring = "3"
+jsonwebtoken = "9"
+oauth2 = "5"
+
+# AWS SDK
+aws-config = "1"
+aws-sdk-bedrockruntime = "1"
+aws-sdk-sts = "1"
+
+# GCP 认证
+gcp_auth = "0.12"
+
+# Markdown �析 & 渲染
+pulldown-cmark = "0.12"
+
+# 语法高亮
+syntect = "5"
+
+# 文本处理
+textwrap = "0.16"
+unicode-width = "0.2"
+strip-ansi-escapes = "0.2"
+
+# 配置文件格式
+serde_yaml = "0.9"
+toml = "0.8"
+
+# ============================================================
+# P2 - 增强功能
+# ============================================================
+
+# LSP 协议
+lsp-types = "0.97"
+
+# OpenTelemetry 遥测
+opentelemetry = "0.27"
+opentelemetry_sdk = "0.27"
+
+# 结构化日志
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Tree-sitter AST 解析
+tree-sitter = "0.24"
+
+# 模糊搜索
+nucleo = "0.5"
+
+# ============================================================
+# P3 - 辅助工具
+# ============================================================
+
+# 版本号
+semver = "1"
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+# 时间处理
+chrono = "0.4"
+
+# LRU 缓存
+lru = "0.12"
+
+# QR 码
+qrcode = "0.14"
+
+# 图像处理
+image = "0.25"
+
+# 编码
+base64 = "0.22"
+
+# URL 解析
+url = "2"

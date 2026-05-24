@@ -1,0 +1,15 @@
+[package]
+name = "allthecodes-keybindings"
+version = "0.1.0"
+edition = "2021"
+description = "Keybinding system for cc-rust: action vocabulary + JSON config + hot reload"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+crossterm = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

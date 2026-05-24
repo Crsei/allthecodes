@@ -1,0 +1,18 @@
+[package]
+name = "allthecodes-observability"
+version = "0.1.0"
+edition = "2021"
+description = "Runtime audit event logging for cc-rust (single source of truth for traceable logs)"
+
+[features]
+default = []
+telemetry = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,48 @@
+[package]
+name = "allthecodes-services"
+version = "0.1.0"
+edition = "2021"
+description = "Background services for allthecodes: LSP lifecycle, prompt suggestions, session memory, tool-use summaries"
+
+[features]
+default = []
+telemetry = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-langfuse",
+    "dep:tracing-opentelemetry",
+    "allthecodes-observability/telemetry",
+    "dep:allthecodes-observability",
+]
+
+[dependencies]
+anyhow = { workspace = true }
+ignore = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-langfuse = { workspace = true, optional = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+
+allthecodes-api = { workspace = true }
+allthecodes-config = { workspace = true }
+allthecodes-engine = { workspace = true }
+allthecodes-ipc-protocol = { workspace = true }
+allthecodes-observability = { workspace = true, optional = true }
+allthecodes-session = { workspace = true }
+allthecodes-types = { workspace = true }
+
+[dev-dependencies]
+git2 = { workspace = true }
+serial_test = { workspace = true }
+tempfile = { workspace = true }

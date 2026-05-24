@@ -1,0 +1,20 @@
+[package]
+name = "allthecodes-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "Remote-control gateway models and foundations for cc-rust"
+
+[dependencies]
+axum = { workspace = true }
+allthecodes-config = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }

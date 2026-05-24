@@ -1,0 +1,15 @@
+[package]
+name = "allthecodes-bootstrap"
+version = "0.1.0"
+edition = "2021"
+description = "Process-level singleton layer (session IDs, model strings, timing, diagnostics) for cc-rust"
+
+[dependencies]
+serde = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+allthecodes-models = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

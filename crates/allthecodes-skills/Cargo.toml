@@ -1,0 +1,17 @@
+[package]
+name = "allthecodes-skills"
+version = "0.1.0"
+edition = "2021"
+description = "Skill discovery, loading, and registry for allthecodes (bundled + user + project + plugin)"
+
+[dependencies]
+allthecodes-config = { path = "../allthecodes-config" }
+allthecodes-types = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

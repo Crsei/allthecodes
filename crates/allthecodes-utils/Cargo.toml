@@ -1,0 +1,23 @@
+[package]
+name = "allthecodes-utils"
+version = "0.1.0"
+edition = "2021"
+description = "Workspace-shared utilities: bash exec, git ops, cwd, messages, tokens, and pure helpers"
+build = "build.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
+git2 = { workspace = true }
+shell-words = { workspace = true }
+serde_json = { workspace = true }
+
+allthecodes-types = { workspace = true }
+allthecodes-config = { workspace = true }
+allthecodes-shell-command = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+uuid = { workspace = true }

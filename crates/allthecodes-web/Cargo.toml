@@ -1,0 +1,34 @@
+[package]
+name = "allthecodes-web"
+version = "0.1.0"
+edition = "2021"
+description = "Axum web UI server for cc-rust."
+
+[features]
+default = []
+web-ui = ["dep:rust-embed"]
+
+[lib]
+path = "src/mod.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+allthecodes-bootstrap = { workspace = true }
+allthecodes-commands = { workspace = true }
+allthecodes-daemon = { workspace = true }
+allthecodes-engine = { workspace = true }
+allthecodes-permissions = { workspace = true }
+allthecodes-session = { workspace = true }
+allthecodes-types = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+rust-embed = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

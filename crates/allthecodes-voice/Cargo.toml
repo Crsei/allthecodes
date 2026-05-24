@@ -1,0 +1,17 @@
+[package]
+name = "allthecodes-voice"
+version = "0.1.0"
+edition = "2021"
+description = "Voice dictation compatibility state machine and backend contracts."
+
+[lib]
+path = "src/mod.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+allthecodes-auth = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }

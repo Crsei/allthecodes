@@ -1,0 +1,29 @@
+[package]
+name = "allthecodes-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Model Context Protocol client, transport, and manager for allthecodes"
+
+[dependencies]
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+tokio-util = { workspace = true }
+url = { workspace = true }
+
+allthecodes-config = { workspace = true }
+allthecodes-types = { path = "../allthecodes-types", default-features = false }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serial_test = { workspace = true }
