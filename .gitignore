@@ -3,8 +3,7 @@
 **/*.rs.bk
 *.pdb
 
-# CI/CD infrastructure
-.github/
+# CI/CD generated artifacts (NOT the workflow definitions themselves)
 Dockerfile.ci
 docker-compose.test.yml
 .dockerignore
@@ -73,12 +72,17 @@ AGENTS.md
 board.md
 architecture/
 tests/
-scripts/
 docs/
 web-ui/
 sdk/
 .tmp/
 crates/allthecodes/logs/
+
+# npm packaging artifacts
+dist/
+*.tgz
+!scripts/build_npm_package.py
+!scripts/stage_npm_packages.py
 
 # Test logs (generated at runtime)
 crates/*/logs/

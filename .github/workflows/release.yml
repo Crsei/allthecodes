@@ -1,0 +1,412 @@
+# Release workflow for allthecodes.
+# Trigger: git tag -a v0.1.0 -m "Release 0.1.0" && git push origin v0.1.0
+
+name: release
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Skip npm publish, only build and stage."
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tag-check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate tag matches Cargo.toml version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "Not a tag push"; exit 1; }
+
+          tag_ver="${GITHUB_REF_NAME#v}"
+          cargo_ver="$(grep -m1 '^version' crates/allthecodes/Cargo.toml \
+                        | sed -E 's/version *= *"([^"]+)".*/\1/')"
+
+          [[ "${tag_ver}" == "${cargo_ver}" ]] \
+            || { echo "Tag v${tag_ver} != Cargo.toml ${cargo_ver}"; exit 1; }
+
+          echo "Tag and Cargo.toml agree (${tag_ver})"
+
+  build:
+    needs: tag-check
+    name: build-${{ matrix.target }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runs_on: ubuntu-22.04
+            artifact_name: linux-x64
+            binary_name: allthecodes
+          - target: aarch64-unknown-linux-gnu
+            runs_on: ubuntu-22.04-arm
+            artifact_name: linux-arm64
+            binary_name: allthecodes
+          - target: x86_64-apple-darwin
+            runs_on: macos-13
+            artifact_name: darwin-x64
+            binary_name: allthecodes
+          - target: aarch64-apple-darwin
+            runs_on: macos-14
+            artifact_name: darwin-arm64
+            binary_name: allthecodes
+          - target: x86_64-pc-windows-msvc
+            runs_on: windows-2022
+            artifact_name: win32-x64
+            binary_name: allthecodes.exe
+          - target: aarch64-pc-windows-msvc
+            runs_on: windows-2022-arm
+            artifact_name: win32-arm64
+            binary_name: allthecodes.exe
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libcap-dev
+          cargo build --release --target ${{ matrix.target }} --bin allthecodes
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin allthecodes
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin allthecodes
+
+      - name: Stage binary (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          dest="dist/allthecodes"
+          mkdir -p "$dest"
+          cp "target/${{ matrix.target }}/release/allthecodes" "$dest/allthecodes"
+
+      - name: Stage binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          dest="dist/allthecodes"
+          mkdir -p "$dest"
+          cp "target/${{ matrix.target }}/release/allthecodes.exe" "$dest/allthecodes.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/
+
+  release:
+    needs: build
+    name: release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      version: ${{ steps.release_name.outputs.name }}
+      tag: ${{ github.ref_name }}
+      should_publish_npm: ${{ steps.npm_settings.outputs.should_publish }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Extract version
+        id: release_name
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "name=${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/artifacts
+
+      - name: Organize artifacts
+        shell: bash
+        run: |
+          version="${{ steps.release_name.outputs.name }}"
+          mkdir -p dist/npm dist/release
+
+          for artifact in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+            artifact_dir="dist/artifacts/${artifact}/allthecodes"
+            if [ -d "$artifact_dir" ]; then
+              target_dir="dist/release/${artifact}"
+              mkdir -p "$target_dir"
+              cp -r "$artifact_dir/"* "$target_dir/"
+            fi
+          done
+
+          echo "=== dist/release ==="
+          find dist/release -type f | sort
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Stage npm packages
+        id: npm_stage
+        env:
+          VERSION: ${{ steps.release_name.outputs.name }}
+        shell: bash
+        run: |
+          version="${VERSION}"
+
+          # Build package for each platform
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+            echo "--- Staging allthecodes-${platform} ---"
+
+            staging_dir="$(mktemp -d)"
+            pack_output="dist/npm/allthecodes-npm-${platform}-${version}.tgz"
+
+            # Prepare vendor directory structure
+            vendor_dir="${staging_dir}/vendor"
+            mkdir -p "${vendor_dir}"
+
+            # Map platform to target triple
+            case "${platform}" in
+              linux-x64)    target="x86_64-unknown-linux-gnu" ;;
+              linux-arm64)  target="aarch64-unknown-linux-gnu" ;;
+              darwin-x64)   target="x86_64-apple-darwin" ;;
+              darwin-arm64) target="aarch64-apple-darwin" ;;
+              win32-x64)    target="x86_64-pc-windows-msvc" ;;
+              win32-arm64)  target="aarch64-pc-windows-msvc" ;;
+            esac
+
+            binary_name="allthecodes"
+            [ "${platform}" = "win32-x64" ] || [ "${platform}" = "win32-arm64" ] && binary_name="allthecodes.exe"
+
+            # Copy binary into vendor layout
+            mkdir -p "${vendor_dir}/${target}/allthecodes"
+            cp "dist/release/${platform}/${binary_name}" "${vendor_dir}/${target}/allthecodes/${binary_name}"
+            chmod 0755 "${vendor_dir}/${target}/allthecodes/${binary_name}"
+
+            # Write package.json for platform package
+            os="${platform%%-*}"
+            case "${os}" in
+              linux) os="linux" ;;
+              darwin) os="darwin" ;;
+              win32) os="win32" ;;
+            esac
+            cpu="${platform#*-}"
+
+            cat > "${staging_dir}/package.json" << JSONEOF
+        {
+          "name": "allthecodes",
+          "version": "${version}-${platform}",
+          "license": "Apache-2.0",
+          "os": ["${os}"],
+          "cpu": ["${cpu}"],
+          "files": ["vendor"],
+          "repository": {
+            "type": "git",
+            "url": "git+https://github.com/Crsei/allthecodes.git",
+            "directory": "allthecodes"
+          }
+        }
+        JSONEOF
+
+            cp README.md "${staging_dir}/README.md" 2>/dev/null || true
+
+            # npm pack
+            npm pack --json --pack-destination "$(dirname "${pack_output}")" "${staging_dir}" > /dev/null
+            mv "allthecodes-${version//./_}-${platform}".tgz "${pack_output}" 2>/dev/null || \
+            mv *.tgz "${pack_output}" 2>/dev/null || true
+
+            echo "Created ${pack_output}"
+            rm -rf "${staging_dir}"
+          done
+
+          # Stage root wrapper package
+          echo "--- Staging allthecodes root wrapper ---"
+          root_staging="$(mktemp -d)"
+          root_pack_output="dist/npm/allthecodes-npm-${version}.tgz"
+
+          mkdir -p "${root_staging}/bin"
+          cp "bin/allthecodes.js" "${root_staging}/bin/allthecodes.js"
+          cp README.md "${root_staging}/README.md" 2>/dev/null || true
+
+          # Generate root package.json
+          cat > "${root_staging}/package.json" << JSONEOF
+        {
+          "name": "allthecodes",
+          "version": "${version}",
+          "description": "allthecodes CLI - AI-powered coding assistant",
+          "license": "Apache-2.0",
+          "bin": {
+            "allthecodes": "bin/allthecodes.js"
+          },
+          "type": "module",
+          "engines": { "node": ">=18" },
+          "files": ["bin"],
+          "repository": {
+            "type": "git",
+            "url": "git+https://github.com/Crsei/allthecodes.git",
+            "directory": "allthecodes"
+          },
+          "optionalDependencies": {
+            "allthecodes-linux-x64": "npm:allthecodes@${version}-linux-x64",
+            "allthecodes-linux-arm64": "npm:allthecodes@${version}-linux-arm64",
+            "allthecodes-darwin-x64": "npm:allthecodes@${version}-darwin-x64",
+            "allthecodes-darwin-arm64": "npm:allthecodes@${version}-darwin-arm64",
+            "allthecodes-win32-x64": "npm:allthecodes@${version}-win32-x64",
+            "allthecodes-win32-arm64": "npm:allthecodes@${version}-win32-arm64"
+          }
+        }
+        JSONEOF
+
+          npm pack --json --pack-destination "$(dirname "${root_pack_output}")" "${root_staging}" > /dev/null
+          mv "allthecodes-${version//./_}".tgz "${root_pack_output}" 2>/dev/null || \
+          mv *.tgz "${root_pack_output}" 2>/dev/null || true
+
+          echo "Created ${root_pack_output}"
+          rm -rf "${root_staging}"
+
+          echo "=== dist/npm ==="
+          ls -lh dist/npm/
+
+      - name: Determine npm publish settings
+        id: npm_settings
+        shell: bash
+        run: |
+          version="${{ steps.release_name.outputs.name }}"
+
+          if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$ ]]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.release_name.outputs.name }}
+          tag_name: ${{ github.ref_name }}
+          files: dist/npm/*.tgz
+
+  publish-npm:
+    if: ${{ needs.release.outputs.should_publish_npm == 'true' }}
+    name: publish-npm
+    needs: release
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download npm tarballs from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+          VERSION: ${{ needs.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/npm
+          patterns=(
+            "allthecodes-npm-${VERSION}.tgz"
+            "allthecodes-npm-linux-x64-${VERSION}.tgz"
+            "allthecodes-npm-linux-arm64-${VERSION}.tgz"
+            "allthecodes-npm-darwin-x64-${VERSION}.tgz"
+            "allthecodes-npm-darwin-arm64-${VERSION}.tgz"
+            "allthecodes-npm-win32-x64-${VERSION}.tgz"
+            "allthecodes-npm-win32-arm64-${VERSION}.tgz"
+          )
+          for pattern in "${patterns[@]}"; do
+            gh release download "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern "$pattern" \
+              --dir dist/npm
+          done
+          ls -lh dist/npm/
+
+      - name: Publish to npm
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          platform_tarballs=(
+            "dist/npm/allthecodes-npm-linux-x64-${VERSION}.tgz"
+            "dist/npm/allthecodes-npm-linux-arm64-${VERSION}.tgz"
+            "dist/npm/allthecodes-npm-darwin-x64-${VERSION}.tgz"
+            "dist/npm/allthecodes-npm-darwin-arm64-${VERSION}.tgz"
+            "dist/npm/allthecodes-npm-win32-x64-${VERSION}.tgz"
+            "dist/npm/allthecodes-npm-win32-arm64-${VERSION}.tgz"
+          )
+
+          root_tarball="dist/npm/allthecodes-npm-${VERSION}.tgz"
+
+          # Verify all required tarballs exist
+          for t in "${platform_tarballs[@]}" "${root_tarball}"; do
+            if [[ ! -f "$t" ]]; then
+              echo "Missing: $t"
+              exit 1
+            fi
+          done
+
+          # Publish platform packages first, then root wrapper.
+          for tarball in "${platform_tarballs[@]}"; do
+            filename="$(basename "${tarball}")"
+            platform="${filename#allthecodes-npm-}"
+            platform="${platform%-${VERSION}.tgz}"
+            echo "Publishing ${filename} with tag ${platform}..."
+            npm publish "${tarball}" --tag "${platform}" || true
+          done
+
+          # Publish root wrapper with the default tag (latest).
+          echo "Publishing root wrapper..."
+          npm publish "${root_tarball}" || true
