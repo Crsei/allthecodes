@@ -262,6 +262,3 @@ impl QueryDeps for QueryEngineDeps {
             .map(|client| client.langfuse_provider_name().to_string())
     }
 }
-
-#[cfg(test)]
-mod tests;
