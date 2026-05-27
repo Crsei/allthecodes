@@ -126,6 +126,8 @@ pub struct CommandResponse {
     #[serde(rename = "type")]
     pub response_type: String, // "output" | "clear" | "error"
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +388,7 @@ pub async fn command_handler(
             return Json(CommandResponse {
                 response_type: "error".into(),
                 content: format!("Unknown command: /{}", req.command),
+                session_id: None,
             });
         }
     };
@@ -419,6 +422,7 @@ pub async fn command_handler(
                 allthecodes_commands::CommandResult::Output(text) => Json(CommandResponse {
                     response_type: "output".into(),
                     content: text,
+                    session_id: None,
                 }),
                 allthecodes_commands::CommandResult::SwitchSession {
                     session_id,
@@ -430,6 +434,7 @@ pub async fn command_handler(
                     Json(CommandResponse {
                         response_type: "switch_session".into(),
                         content: format!("{notice}\nSession: {session_id}"),
+                        session_id: Some(session_id.to_string()),
                     })
                 }
                 allthecodes_commands::CommandResult::Clear => {
@@ -437,11 +442,13 @@ pub async fn command_handler(
                     Json(CommandResponse {
                         response_type: "clear".into(),
                         content: format!("Started a new session: {}", session_id),
+                        session_id: Some(session_id.to_string()),
                     })
                 }
                 allthecodes_commands::CommandResult::Exit(msg) => Json(CommandResponse {
                     response_type: "output".into(),
                     content: msg,
+                    session_id: None,
                 }),
                 allthecodes_commands::CommandResult::Query(_msgs) => {
                     // TODO: inject messages and start a new SSE stream
@@ -449,17 +456,20 @@ pub async fn command_handler(
                         response_type: "output".into(),
                         content: "Command queued (query commands not yet supported in web UI)"
                             .into(),
+                        session_id: None,
                     })
                 }
                 allthecodes_commands::CommandResult::None => Json(CommandResponse {
                     response_type: "output".into(),
                     content: "OK".into(),
+                    session_id: None,
                 }),
             }
         }
         Err(e) => Json(CommandResponse {
             response_type: "error".into(),
             content: format!("Command error: {}", e),
+            session_id: None,
         }),
     }
 }
