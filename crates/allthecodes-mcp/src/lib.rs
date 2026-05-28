@@ -216,6 +216,22 @@ pub struct McpResource {
     pub mime_type: Option<String>,
 }
 
+/// Resource definition annotated with the connected server that provides it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpResourceWithServer {
+    /// Server that provides this resource.
+    pub server: String,
+    /// Resource URI.
+    pub uri: String,
+    /// Human-readable name.
+    pub name: String,
+    /// Description.
+    pub description: Option<String>,
+    /// MIME type.
+    #[serde(rename = "mimeType")]
+    pub mime_type: Option<String>,
+}
+
 /// Content returned from `resources/read`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpResourceContent {

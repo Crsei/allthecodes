@@ -17,6 +17,7 @@ pub mod file_read;
 pub mod file_write;
 pub mod glob_tool;
 pub mod grep;
+pub mod notebook_edit;
 pub mod safe_write;
 
 /// Returns every tool owned by the filesystem sub-domain.
@@ -28,6 +29,7 @@ pub fn tools() -> Tools {
         Arc::new(file_read::FileReadTool::new()),
         Arc::new(file_write::FileWriteTool::new()),
         Arc::new(file_edit::FileEditTool::new()),
+        Arc::new(notebook_edit::NotebookEditTool::new()),
         Arc::new(glob_tool::GlobTool::new()),
         Arc::new(grep::GrepTool),
     ]

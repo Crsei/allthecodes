@@ -15,6 +15,7 @@ fn root_owned_base_tools() -> Tools {
     let mut tools: Tools = Tools::new();
 
     tools.extend(exec::tools());
+    tools.extend(allthecodes_engine::mcp_resource_tools::tools());
     tools.extend([
         Arc::new(allthecodes_engine::agent::AgentTool) as _,
         Arc::new(allthecodes_engine::agent::TaskAgentTool) as _,
@@ -101,6 +102,21 @@ mod tests {
 
         let todo_write = tools.iter().find(|t| t.name() == "TodoWrite");
         assert!(todo_write.is_some(), "should find TodoWrite tool");
+
+        let notebook_edit = tools.iter().find(|t| t.name() == "NotebookEdit");
+        assert!(notebook_edit.is_some(), "should find NotebookEdit P0 tool");
+
+        let list_mcp_resources = tools.iter().find(|t| t.name() == "ListMcpResources");
+        assert!(
+            list_mcp_resources.is_some(),
+            "should find ListMcpResources P0 tool"
+        );
+
+        let read_mcp_resource = tools.iter().find(|t| t.name() == "ReadMcpResource");
+        assert!(
+            read_mcp_resource.is_some(),
+            "should find ReadMcpResource P0 tool"
+        );
 
         let task = tools.iter().find(|t| t.name() == "Task");
         assert!(task.is_some(), "should find Task compatibility tool");

@@ -93,6 +93,9 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
     ];
 
     let has_task_tool = enabled_tools.contains(&"TaskCreate");
+    let has_notebook_edit = enabled_tools.contains(&"NotebookEdit");
+    let has_mcp_resource_tools =
+        enabled_tools.contains(&"ListMcpResources") && enabled_tools.contains(&"ReadMcpResource");
 
     let mut items: Vec<String> = vec![
         "Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:".into(),
@@ -106,6 +109,18 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
     if has_task_tool {
         items.push(
             "Break down and manage your work with the TaskCreate tool. These tools are helpful for planning your work and helping the user track your progress. Mark each task as completed as soon as you are done with the task. Do not batch up multiple tasks before marking them as completed.".into()
+        );
+    }
+
+    if has_notebook_edit {
+        items.push(
+            "When editing Jupyter notebooks (.ipynb), use NotebookEdit instead of editing raw notebook JSON with Edit. Read the notebook first, then target the specific cell by cell id or cell-N index.".into()
+        );
+    }
+
+    if has_mcp_resource_tools {
+        items.push(
+            "When you need data exposed as MCP resources, use ListMcpResources to discover the server and URI, then ReadMcpResource to read the exact resource. Do not guess MCP resource URIs.".into()
         );
     }
 

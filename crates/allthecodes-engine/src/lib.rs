@@ -19,6 +19,7 @@ pub mod hooks;
 pub mod input_processing;
 pub mod ipc_compat;
 pub mod lifecycle;
+pub mod mcp_resource_tools;
 pub mod mcp_tool_adapter;
 pub mod output_style;
 pub mod prompt_sections;

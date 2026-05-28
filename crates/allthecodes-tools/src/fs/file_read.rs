@@ -416,8 +416,18 @@ impl FileReadTool {
     }
 
     /// Read a Jupyter notebook (.ipynb) and extract cells with outputs
-    async fn read_notebook(file_path: &str) -> Result<ToolResult> {
+    async fn read_notebook(
+        file_path: &str,
+        read_state: Option<(&ToolUseContext, &ReadTarget)>,
+    ) -> Result<ToolResult> {
         let content = tokio::fs::read_to_string(file_path).await?;
+        if let Some((ctx, target)) = read_state {
+            let modified_at = tokio::fs::metadata(file_path)
+                .await
+                .map(|metadata| Self::modified_millis(&metadata))
+                .unwrap_or(0);
+            Self::record_text_read(ctx, target, &content, modified_at);
+        }
         let notebook: Value = serde_json::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse notebook JSON: {}", e))?;
 
@@ -433,11 +443,21 @@ impl FileReadTool {
                 .get("cell_type")
                 .and_then(|t| t.as_str())
                 .unwrap_or("unknown");
+            let editable_id = cell
+                .get("id")
+                .and_then(|id| id.as_str())
+                .map(|id| format!("id: {}; index: cell-{}", id, i))
+                .unwrap_or_else(|| format!("index: cell-{}", i));
 
             // Extract source content
             let source = Self::extract_notebook_text(cell.get("source"));
 
-            result.push_str(&format!("# Cell [{}] (type: {})\n", i + 1, cell_type));
+            result.push_str(&format!(
+                "# Cell [{}] (type: {}) ({})\n",
+                i + 1,
+                cell_type,
+                editable_id
+            ));
             result.push_str(&source);
             if !source.ends_with('\n') {
                 result.push('\n');
@@ -865,7 +885,7 @@ impl Tool for FileReadTool {
         }
 
         if Self::target_matches(&target, Self::is_notebook_file) {
-            return match Self::read_notebook(&read_path).await {
+            return match Self::read_notebook(&read_path, Some((ctx, &target))).await {
                 Ok(mut result) => {
                     Self::attach_read_target(&mut result, &target);
                     Ok(result)
@@ -1210,7 +1230,7 @@ mod tests {
             .unwrap();
         }
 
-        let result = FileReadTool::read_notebook(file_path.to_str().unwrap())
+        let result = FileReadTool::read_notebook(file_path.to_str().unwrap(), None)
             .await
             .unwrap();
 
