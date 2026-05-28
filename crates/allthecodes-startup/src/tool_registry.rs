@@ -15,7 +15,9 @@ fn root_owned_base_tools() -> Tools {
     let mut tools: Tools = Tools::new();
 
     tools.extend(exec::tools());
+    tools.extend(allthecodes_engine::browser_tool::tools());
     tools.extend(allthecodes_engine::mcp_resource_tools::tools());
+    tools.extend(allthecodes_services::scheduler_tools::tools());
     tools.extend([
         Arc::new(allthecodes_engine::agent::AgentTool) as _,
         Arc::new(allthecodes_engine::agent::TaskAgentTool) as _,
@@ -117,6 +119,13 @@ mod tests {
             read_mcp_resource.is_some(),
             "should find ReadMcpResource P0 tool"
         );
+
+        for name in ["CronCreate", "CronDelete", "CronList", "WebBrowser"] {
+            assert!(
+                tools.iter().any(|t| t.name() == name),
+                "should find {name} Phase 2 tool"
+            );
+        }
 
         let task = tools.iter().find(|t| t.name() == "Task");
         assert!(task.is_some(), "should find Task compatibility tool");

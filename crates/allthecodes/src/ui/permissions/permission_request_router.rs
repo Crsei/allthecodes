@@ -97,6 +97,7 @@ pub enum PermissionRouteKind {
     Sandbox,
     SedEdit,
     Skill,
+    WebBrowser,
     WebFetch,
 }
 
@@ -132,6 +133,7 @@ fn render_exact_kind(
     match kind {
         PermissionRouteKind::Bash => route_shell(request, kind, selected_index),
         PermissionRouteKind::PowerShell => route_shell(request, kind, selected_index),
+        PermissionRouteKind::WebBrowser => route_web_browser(request, selected_index),
         PermissionRouteKind::WebFetch => route_web_fetch(request, selected_index),
         PermissionRouteKind::FileWrite => route_file_write(request, selected_index),
         PermissionRouteKind::FileEdit => route_file_edit(request, selected_index),
@@ -161,6 +163,8 @@ fn render_heuristic(
         || normalized_tool.contains("exec_command")
     {
         PermissionRouteKind::Bash
+    } else if normalized_tool.contains("webbrowser") || normalized_tool.contains("web_browser") {
+        PermissionRouteKind::WebBrowser
     } else if normalized_tool.contains("webfetch")
         || normalized_tool.contains("web_fetch")
         || normalized_tool.contains("fetch")
@@ -220,6 +224,18 @@ fn route_web_fetch(
     Some(RoutedPermissionRequest {
         kind: PermissionRouteKind::WebFetch,
         rendered: render_web_fetch_permission_request(&url, &method, selected_index),
+        options: merge_options(request, option_labels(default_permission_options())),
+    })
+}
+
+fn route_web_browser(
+    request: &PermissionDialogRequest,
+    selected_index: usize,
+) -> Option<RoutedPermissionRequest> {
+    let url = string_field(&request.tool_input, &["url", "uri", "href"])?;
+    Some(RoutedPermissionRequest {
+        kind: PermissionRouteKind::WebBrowser,
+        rendered: render_web_fetch_permission_request(&url, "BROWSER", selected_index),
         options: merge_options(request, option_labels(default_permission_options())),
     })
 }
@@ -528,6 +544,7 @@ fn exact_tool_kind(tool_name: &str) -> Option<PermissionRouteKind> {
     match tool_name {
         "Bash" | "bash" => Some(PermissionRouteKind::Bash),
         "PowerShell" | "powershell" | "Pwsh" | "pwsh" => Some(PermissionRouteKind::PowerShell),
+        "WebBrowser" | "web_browser" | "Web_Browser" => Some(PermissionRouteKind::WebBrowser),
         "WebFetch" | "web_fetch" | "Web_Fetch" => Some(PermissionRouteKind::WebFetch),
         "Write" | "write" => Some(PermissionRouteKind::FileWrite),
         "Edit" | "edit" | "MultiEdit" | "multiedit" => Some(PermissionRouteKind::FileEdit),
@@ -862,6 +879,11 @@ mod tests {
                 "WebFetch",
                 json!({"url":"https://example.com/json","method":"POST"}),
                 PermissionRouteKind::WebFetch,
+            ),
+            (
+                "WebBrowser",
+                json!({"url":"https://example.com/app","extract":"text"}),
+                PermissionRouteKind::WebBrowser,
             ),
             (
                 "Write",

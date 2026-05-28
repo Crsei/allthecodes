@@ -1412,6 +1412,7 @@ async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
 
         let http_state = daemon_state.clone();
         let tick_state = daemon_state.clone();
+        let scheduler_state = daemon_state.clone();
         let tick_enabled = features::enabled(Feature::Proactive);
         let supervisor_cwd = std::path::PathBuf::from(cwd.clone());
 
@@ -1420,6 +1421,9 @@ async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
                 result.map(|()| ExitCode::SUCCESS)
             }
             _ = allthecodes_daemon::tick::tick_loop(tick_state), if tick_enabled => {
+                Ok(ExitCode::SUCCESS)
+            }
+            _ = allthecodes_daemon::scheduler_loop::scheduler_loop(scheduler_state) => {
                 Ok(ExitCode::SUCCESS)
             }
             _ = tokio::signal::ctrl_c() => {

@@ -13,8 +13,10 @@
 //! Cron rejection messages are intentionally specific so users understand
 //! why their expression was only partially respected.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,34 @@ pub enum IntervalParseError {
     CronUnsupported(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CronSchedule {
+    minutes: BTreeSet<u32>,
+    hours: BTreeSet<u32>,
+    days_of_month: BTreeSet<u32>,
+    months: BTreeSet<u32>,
+    days_of_week: BTreeSet<u32>,
+}
+
+#[derive(Debug, Error)]
+pub enum CronParseError {
+    #[error("cron expression must have exactly 5 fields")]
+    WrongFieldCount,
+    #[error("cron field '{field}' contains invalid token '{token}'")]
+    InvalidToken { field: &'static str, token: String },
+    #[error("cron field '{field}' value {value} is outside {min}-{max}")]
+    OutOfRange {
+        field: &'static str,
+        value: u32,
+        min: u32,
+        max: u32,
+    },
+    #[error("cron field '{field}' step must be positive")]
+    NonPositiveStep { field: &'static str },
+    #[error("cron expression has no possible run time")]
+    Empty,
+}
+
 const ONE_YEAR_SECS: u64 = 365 * 86_400;
 
 pub fn parse_interval(raw: &str) -> Result<Interval, IntervalParseError> {
@@ -82,6 +112,145 @@ pub fn parse_interval(raw: &str) -> Result<Interval, IntervalParseError> {
     }
 
     parse_duration(input)
+}
+
+pub fn parse_cron(raw: &str) -> Result<CronSchedule, CronParseError> {
+    let fields: Vec<&str> = raw.split_whitespace().collect();
+    if fields.len() != 5 {
+        return Err(CronParseError::WrongFieldCount);
+    }
+
+    let schedule = CronSchedule {
+        minutes: parse_cron_field(fields[0], "minute", 0, 59, false)?,
+        hours: parse_cron_field(fields[1], "hour", 0, 23, false)?,
+        days_of_month: parse_cron_field(fields[2], "day-of-month", 1, 31, false)?,
+        months: parse_cron_field(fields[3], "month", 1, 12, false)?,
+        days_of_week: parse_cron_field(fields[4], "day-of-week", 0, 7, true)?,
+    };
+    if schedule.minutes.is_empty()
+        || schedule.hours.is_empty()
+        || schedule.days_of_month.is_empty()
+        || schedule.months.is_empty()
+        || schedule.days_of_week.is_empty()
+    {
+        return Err(CronParseError::Empty);
+    }
+    Ok(schedule)
+}
+
+impl CronSchedule {
+    pub fn next_after(&self, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let mut candidate = after + chrono::Duration::seconds(60 - i64::from(after.second()))
+            - chrono::Duration::nanoseconds(i64::from(after.nanosecond()));
+        let end = after + chrono::Duration::days(366 * 5);
+        while candidate <= end {
+            if self.matches(candidate) {
+                return Some(candidate);
+            }
+            candidate += chrono::Duration::minutes(1);
+        }
+        None
+    }
+
+    fn matches(&self, dt: DateTime<Utc>) -> bool {
+        let cron_weekday = match dt.weekday().num_days_from_sunday() {
+            0 => 0,
+            n => n,
+        };
+        self.minutes.contains(&dt.minute())
+            && self.hours.contains(&dt.hour())
+            && self.days_of_month.contains(&dt.day())
+            && self.months.contains(&dt.month())
+            && self.days_of_week.contains(&cron_weekday)
+    }
+}
+
+fn parse_cron_field(
+    raw: &str,
+    field: &'static str,
+    min: u32,
+    max: u32,
+    sunday_alias: bool,
+) -> Result<BTreeSet<u32>, CronParseError> {
+    let mut values = BTreeSet::new();
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(CronParseError::InvalidToken {
+                field,
+                token: raw.to_string(),
+            });
+        }
+        let (base, step) = if let Some((base, step)) = token.split_once('/') {
+            let step = step
+                .parse::<u32>()
+                .map_err(|_| CronParseError::InvalidToken {
+                    field,
+                    token: token.to_string(),
+                })?;
+            if step == 0 {
+                return Err(CronParseError::NonPositiveStep { field });
+            }
+            (base, step)
+        } else {
+            (token, 1)
+        };
+
+        let (start, end) = if base == "*" {
+            (min, max)
+        } else if let Some((start, end)) = base.split_once('-') {
+            (
+                parse_cron_number(start, field, min, max, sunday_alias)?,
+                parse_cron_number(end, field, min, max, sunday_alias)?,
+            )
+        } else {
+            let value = parse_cron_number(base, field, min, max, sunday_alias)?;
+            (value, value)
+        };
+
+        if start > end {
+            return Err(CronParseError::InvalidToken {
+                field,
+                token: token.to_string(),
+            });
+        }
+
+        let mut value = start;
+        while value <= end {
+            values.insert(if sunday_alias && value == 7 { 0 } else { value });
+            value = match value.checked_add(step) {
+                Some(next) => next,
+                None => break,
+            };
+        }
+    }
+    Ok(values)
+}
+
+fn parse_cron_number(
+    raw: &str,
+    field: &'static str,
+    min: u32,
+    max: u32,
+    sunday_alias: bool,
+) -> Result<u32, CronParseError> {
+    let value = raw
+        .parse::<u32>()
+        .map_err(|_| CronParseError::InvalidToken {
+            field,
+            token: raw.to_string(),
+        })?;
+    if value < min || value > max {
+        if !(sunday_alias && value == 7) {
+            return Err(CronParseError::OutOfRange {
+                field,
+                value,
+                min,
+                max,
+            });
+        }
+    }
+    Ok(value)
 }
 
 fn parse_duration(input: &str) -> Result<Interval, IntervalParseError> {
@@ -250,5 +419,29 @@ mod tests {
         assert_eq!(Interval::from_seconds(3_600).human(), "1h");
         assert_eq!(Interval::from_seconds(86_400).human(), "1d");
         assert_eq!(Interval::from_seconds(45).human(), "45s");
+    }
+
+    #[test]
+    fn parses_full_cron_and_finds_next_run() {
+        let cron = parse_cron("15 9 * * 1-5").unwrap();
+        let start = DateTime::parse_from_rfc3339("2026-05-29T09:14:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            cron.next_after(start).unwrap().to_rfc3339(),
+            "2026-05-29T09:15:00+00:00"
+        );
+    }
+
+    #[test]
+    fn cron_supports_lists_ranges_and_steps() {
+        let cron = parse_cron("*/10 8-18 * 1,6 0,7").unwrap();
+        let start = DateTime::parse_from_rfc3339("2026-06-07T08:01:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            cron.next_after(start).unwrap().to_rfc3339(),
+            "2026-06-07T08:10:00+00:00"
+        );
     }
 }

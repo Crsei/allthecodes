@@ -104,6 +104,7 @@ pub enum QuerySource {
     SessionMemory,
     Agent(String),
     ProactiveTick,
+    ScheduledTask,
     WebhookEvent,
     ChannelNotification,
 }
@@ -117,6 +118,7 @@ impl QuerySource {
             QuerySource::SessionMemory => "session_memory",
             QuerySource::Agent(_) => "agent:",
             QuerySource::ProactiveTick => "proactive_tick",
+            QuerySource::ScheduledTask => "scheduled_task",
             QuerySource::WebhookEvent => "webhook_event",
             QuerySource::ChannelNotification => "channel_notification",
         }
@@ -137,6 +139,7 @@ impl QuerySource {
         matches!(
             self,
             QuerySource::ProactiveTick
+                | QuerySource::ScheduledTask
                 | QuerySource::WebhookEvent
                 | QuerySource::ChannelNotification
         )

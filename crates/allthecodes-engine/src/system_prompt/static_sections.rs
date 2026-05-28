@@ -96,6 +96,10 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
     let has_notebook_edit = enabled_tools.contains(&"NotebookEdit");
     let has_mcp_resource_tools =
         enabled_tools.contains(&"ListMcpResources") && enabled_tools.contains(&"ReadMcpResource");
+    let has_cron_tools = enabled_tools.contains(&"CronCreate")
+        && enabled_tools.contains(&"CronDelete")
+        && enabled_tools.contains(&"CronList");
+    let has_web_browser = enabled_tools.contains(&"WebBrowser");
 
     let mut items: Vec<String> = vec![
         "Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:".into(),
@@ -121,6 +125,18 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
     if has_mcp_resource_tools {
         items.push(
             "When you need data exposed as MCP resources, use ListMcpResources to discover the server and URI, then ReadMcpResource to read the exact resource. Do not guess MCP resource URIs.".into()
+        );
+    }
+
+    if has_cron_tools {
+        items.push(
+            "When the user asks to schedule or repeat future work, use CronCreate/CronList/CronDelete instead of asking them to run a command manually. Cron jobs persist under the allthecodes data root and require explicit user approval.".into()
+        );
+    }
+
+    if has_web_browser {
+        items.push(
+            "Use WebBrowser for pages that require JavaScript rendering or browser state. Use WebFetch for ordinary static pages and direct HTTP content.".into()
         );
     }
 

@@ -56,6 +56,19 @@ pub enum SchedulerKind {
     RemoteTrigger,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleKind {
+    Interval,
+    Cron,
+}
+
+impl Default for ScheduleKind {
+    fn default() -> Self {
+        Self::Interval
+    }
+}
+
 impl SchedulerKind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -116,6 +129,15 @@ pub struct ScheduledTask {
     /// Cron-like expression (e.g. `*/5 * * * *`) or interval spec
     /// (e.g. `5m`) — stored verbatim and re-parsed at tick time.
     pub schedule: String,
+    /// Whether `schedule` is an interval shorthand or a real 5-field cron
+    /// expression. Defaults to interval for backward compatibility with older
+    /// `scheduled_tasks.json` files.
+    #[serde(default)]
+    pub schedule_kind: ScheduleKind,
+    /// IANA timezone name reserved for future local-time cron evaluation.
+    /// Phase 2 evaluates cron in UTC and records the field for compatibility.
+    #[serde(default)]
+    pub timezone: Option<String>,
     /// Interval in seconds, derived from `schedule` at creation time.
     /// Stored so polling doesn't have to re-parse on every tick.
     pub interval_seconds: u64,
@@ -145,6 +167,8 @@ impl ScheduledTask {
             kind,
             name: name.into(),
             schedule: schedule.into(),
+            schedule_kind: ScheduleKind::Interval,
+            timezone: None,
             interval_seconds,
             payload,
             created_at: now,
@@ -158,12 +182,37 @@ impl ScheduledTask {
     /// by one interval.
     pub fn mark_fired(&mut self, now: DateTime<Utc>) {
         self.last_run_at = Some(now);
-        self.next_run_at = now + chrono::Duration::seconds(self.interval_seconds as i64);
+        self.next_run_at = self.compute_next_run(now);
     }
 
     /// Is this task due to fire relative to `now`?
     pub fn is_due(&self, now: DateTime<Utc>) -> bool {
         !self.paused && self.next_run_at <= now
+    }
+
+    pub fn with_cron_schedule(
+        mut self,
+        schedule: impl Into<String>,
+        next_run_at: DateTime<Utc>,
+        timezone: Option<String>,
+    ) -> Self {
+        self.schedule = schedule.into();
+        self.schedule_kind = ScheduleKind::Cron;
+        self.timezone = timezone;
+        self.interval_seconds = 60;
+        self.next_run_at = next_run_at;
+        self
+    }
+
+    pub fn compute_next_run(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+        if self.schedule_kind == ScheduleKind::Cron {
+            if let Ok(cron) = super::parse_cron(&self.schedule) {
+                if let Some(next) = cron.next_after(now) {
+                    return next;
+                }
+            }
+        }
+        now + chrono::Duration::seconds(self.interval_seconds as i64)
     }
 }
 

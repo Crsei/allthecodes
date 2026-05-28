@@ -11,6 +11,7 @@ pub mod process_state;
 pub mod protocol;
 pub mod routes;
 pub mod runtime;
+pub mod scheduler_loop;
 pub mod server;
 pub mod sse;
 pub mod state;

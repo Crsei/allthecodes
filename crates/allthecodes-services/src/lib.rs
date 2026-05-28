@@ -7,6 +7,7 @@ pub mod lsp_lifecycle;
 pub mod onboarding;
 pub mod prompt_suggestion;
 pub mod scheduler;
+pub mod scheduler_tools;
 pub mod session_analytics;
 pub mod session_memory;
 #[cfg(feature = "telemetry")]

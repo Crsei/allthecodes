@@ -12,6 +12,7 @@ extern crate self as allthecodes_engine;
 
 pub mod agent;
 pub mod agent_runtime;
+pub mod browser_tool;
 pub mod codex_exec;
 pub mod command_runtime;
 pub mod effort;

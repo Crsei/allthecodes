@@ -40,6 +40,7 @@ opentelemetry-langfuse = { workspace = true, optional = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 parking_lot = { workspace = true }
+url = { workspace = true }
 
 # Git (for status-line payload repo lookups)
 git2 = { workspace = true }

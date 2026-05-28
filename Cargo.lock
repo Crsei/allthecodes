@@ -329,6 +329,7 @@ dependencies = [
  "allthecodes-config",
  "allthecodes-engine",
  "allthecodes-gateway",
+ "allthecodes-services",
  "allthecodes-tools",
  "allthecodes-types",
  "allthecodes-utils",
@@ -399,6 +400,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-opentelemetry",
+ "url",
  "uuid",
 ]
 
@@ -685,6 +687,7 @@ dependencies = [
  "allthecodes-session",
  "allthecodes-types",
  "anyhow",
+ "async-trait",
  "chrono",
  "dirs",
  "git2",
@@ -928,6 +931,7 @@ dependencies = [
  "allthecodes-commands",
  "allthecodes-daemon",
  "allthecodes-engine",
+ "allthecodes-ipc-protocol",
  "allthecodes-permissions",
  "allthecodes-session",
  "allthecodes-types",

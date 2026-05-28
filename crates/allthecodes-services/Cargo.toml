@@ -17,6 +17,7 @@ telemetry = [
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 ignore = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
