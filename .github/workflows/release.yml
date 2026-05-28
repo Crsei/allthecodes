@@ -33,7 +33,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "Not a tag push"; exit 1; }
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+              echo "Dry run from ${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}; using Cargo.toml version."
+              exit 0
+            fi
+            echo "Release publishing requires a tag push or tag-based workflow_dispatch."
+            exit 1
+          fi
 
           tag_ver="${GITHUB_REF_NAME#v}"
           cargo_ver="$(grep -m1 '^version' crates/allthecodes/Cargo.toml \
@@ -84,9 +91,23 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.91.1
           targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}
+          cache-targets: true
+
+      - name: Show Rust toolchain
+        shell: bash
+        run: |
+          cargo --version
+          rustc --version
+          rustup show active-toolchain
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
@@ -152,7 +173,12 @@ jobs:
         id: release_name
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(grep -m1 '^version' crates/allthecodes/Cargo.toml \
+                      | sed -E 's/version *= *"([^"]+)".*/\1/')"
+          fi
           echo "name=${version}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
@@ -323,6 +349,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
+        if: ${{ github.event.inputs.dry_run != 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.release_name.outputs.name }}
@@ -404,9 +431,9 @@ jobs:
             platform="${filename#allthecodes-npm-}"
             platform="${platform%-${VERSION}.tgz}"
             echo "Publishing ${filename} with tag ${platform}..."
-            npm publish "${tarball}" --tag "${platform}" || true
+            npm publish "${tarball}" --tag "${platform}"
           done
 
           # Publish root wrapper with the default tag (latest).
           echo "Publishing root wrapper..."
-          npm publish "${root_tarball}" || true
+          npm publish "${root_tarball}"

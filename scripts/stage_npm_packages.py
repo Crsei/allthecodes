@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -144,6 +145,7 @@ def main() -> int:
             pack_output = output_dir / tarball_name_for_package(package, args.release_version)
 
             cmd = [
+                sys.executable,
                 str(BUILD_SCRIPT),
                 "--package",
                 package,

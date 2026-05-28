@@ -90,6 +90,23 @@ Web UI 模式：
 target/release/allthecodes --web --web-port 3001
 ```
 
+发布构建使用 GitHub Actions 的 `release` workflow。推送 `vX.Y.Z` tag
+时，tag 版本必须与 `crates/allthecodes/Cargo.toml` 一致；手动
+`workflow_dispatch` 设置 `dry_run=true` 时只构建并暂存 npm tarball，不创建
+GitHub Release，也不发布 npm。
+
+本地验证 npm staging 时使用：
+
+```bash
+npm_config_cache=/tmp/allthecodes-npm-cache \
+python3 scripts/stage_npm_packages.py \
+  --release-version 0.1.0-test.1 \
+  --package allthecodes-linux-x64 \
+  --output-dir /tmp/allthecodes-npm-host-stage
+```
+
+`npm_config_cache` 只在当前机器的默认 npm cache/log 目录不可写时需要。
+
 ## 开发说明
 
 仓库按 Rust workspace 拆分，核心 crate 位于 `crates/` 下。

@@ -79,6 +79,7 @@ sdk/
 crates/allthecodes/logs/
 
 # npm packaging artifacts
+/package-lock.json
 dist/
 *.tgz
 !scripts/build_npm_package.py
