@@ -27,6 +27,11 @@ pub fn build_router(state: WebState) -> Router {
         // Phase 3: Settings and command endpoints
         .route("/api/settings", post(handlers::settings_handler))
         .route("/api/command", post(handlers::command_handler))
+        .route("/api/debug/state", get(handlers::debug_state_handler))
+        .route(
+            "/api/debug/actions/{*action}",
+            post(handlers::debug_action_handler),
+        )
         // Phase 2 of the web UI overhaul: session management
         .route("/api/sessions", get(handlers::sessions_list_handler))
         .route("/api/sessions/new", post(handlers::session_new_handler))

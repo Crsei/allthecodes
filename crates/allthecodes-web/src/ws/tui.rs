@@ -26,15 +26,18 @@ use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use portable_pty::{ChildKiller, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
-use serde::Deserialize;
+use portable_pty::{
+    Child, ChildKiller, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem,
+};
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::state::WebState;
+use crate::state::{SessionOwner, WebState};
 
 /// Query parameters for the TUI WebSocket endpoint.
 #[derive(Deserialize, Default)]
@@ -59,12 +62,46 @@ pub struct PtyDiagnostics {
     pub error: Arc<Mutex<Option<String>>>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PtyDiagnosticsSnapshot {
+    pub pid: u64,
+    pub cols: u64,
+    pub rows: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub uptime_ms: Option<u128>,
+    pub last_resize: Option<(u16, u16)>,
+    pub exit_code: Option<i32>,
+    pub connected: bool,
+    pub error: Option<String>,
+}
+
+impl PtyDiagnostics {
+    pub fn snapshot(&self) -> PtyDiagnosticsSnapshot {
+        PtyDiagnosticsSnapshot {
+            pid: self.pid.load(Ordering::SeqCst),
+            cols: self.cols.load(Ordering::SeqCst),
+            rows: self.rows.load(Ordering::SeqCst),
+            bytes_in: self.bytes_in.load(Ordering::SeqCst),
+            bytes_out: self.bytes_out.load(Ordering::SeqCst),
+            uptime_ms: self
+                .start_time
+                .lock()
+                .map(|start| start.elapsed().as_millis()),
+            last_resize: *self.last_resize.lock(),
+            exit_code: *self.exit_code.lock(),
+            connected: *self.connected.lock(),
+            error: self.error.lock().clone(),
+        }
+    }
+}
+
 /// GET /api/tui/ws — Upgrade to WebSocket PTY bridge.
 pub async fn tui_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<WebState>,
     Query(params): Query<TuiWsParams>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     info!(
         cwd = ?params.cwd,
         session_id = ?params.session_id,
@@ -72,19 +109,89 @@ pub async fn tui_ws_handler(
         "GET /api/tui/ws — WebSocket upgrade"
     );
 
-    let diag = state.pty_diagnostics.clone();
+    if state.is_streaming.load(Ordering::SeqCst) {
+        return (
+            StatusCode::CONFLICT,
+            "A chat query is already in progress for this session",
+        )
+            .into_response();
+    }
 
-    ws.on_upgrade(move |socket| handle_tui_socket(socket, params, diag))
+    let engine = state.engine();
+    let active_session_id = params
+        .session_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| engine.current_session_id().to_string());
+
+    if let Err(owner) = state.try_claim_tui(active_session_id) {
+        return (
+            StatusCode::CONFLICT,
+            format!(
+                "Session is currently owned by {:?}{}",
+                owner.owner,
+                owner
+                    .session_id
+                    .as_deref()
+                    .map(|id| format!(" ({id})"))
+                    .unwrap_or_default()
+            ),
+        )
+            .into_response();
+    }
+
+    let diag = state.pty_diagnostics.clone();
+    let workspace_cwd = std::path::PathBuf::from(engine.cwd())
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(engine.cwd()));
+
+    ws.on_upgrade(move |socket| handle_tui_socket(socket, params, diag, state, workspace_cwd))
+        .into_response()
 }
 
 /// Drive the PTY x WebSocket bridge for the lifetime of the connection.
-async fn handle_tui_socket(mut socket: WebSocket, params: TuiWsParams, diag: PtyDiagnostics) {
+async fn handle_tui_socket(
+    mut socket: WebSocket,
+    params: TuiWsParams,
+    diag: PtyDiagnostics,
+    state: WebState,
+    workspace_cwd: std::path::PathBuf,
+) {
     // Resolve working directory
-    let cwd = params
-        .cwd
-        .filter(|s| !s.is_empty())
-        .and_then(|s| std::path::PathBuf::from(s).canonicalize().ok())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let cwd = match params.cwd.clone().filter(|s| !s.is_empty()) {
+        Some(raw) => match std::path::PathBuf::from(raw).canonicalize() {
+            Ok(path) if path.starts_with(&workspace_cwd) => path,
+            Ok(_) => {
+                let err_msg = "PTY cwd must stay inside the current workspace".to_string();
+                *diag.error.lock() = Some(err_msg.clone());
+                let _ = socket
+                    .send(Message::Text(
+                        serde_json::json!({"type":"error","message": err_msg})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await;
+                let _ = socket.close().await;
+                state.release_owner(SessionOwner::TuiPty);
+                return;
+            }
+            Err(e) => {
+                let err_msg = format!("PTY cwd is invalid: {}", e);
+                *diag.error.lock() = Some(err_msg.clone());
+                let _ = socket
+                    .send(Message::Text(
+                        serde_json::json!({"type":"error","message": err_msg})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await;
+                let _ = socket.close().await;
+                state.release_owner(SessionOwner::TuiPty);
+                return;
+            }
+        },
+        None => workspace_cwd,
+    };
 
     // Try to find the allthecodes binary — first check for a local binary,
     // then fall back to PATH.
@@ -98,7 +205,7 @@ async fn handle_tui_socket(mut socket: WebSocket, params: TuiWsParams, diag: Pty
     // Spawn PTY via portable-pty
     let result = spawn_pty(binary, &cwd, &params).await;
 
-    let (mut pty_writer, mut pty_reader, child_killer, mut child, master_pty) = match result {
+    let (pty_writer, pty_reader, child, master_pty) = match result {
         Ok(tuple) => tuple,
         Err(e) => {
             let err_msg = format!("PTY spawn failed: {}", e);
@@ -107,27 +214,39 @@ async fn handle_tui_socket(mut socket: WebSocket, params: TuiWsParams, diag: Pty
             *diag.error.lock() = Some(err_msg.clone());
             let _ = socket
                 .send(Message::Text(
-                    serde_json::json!({"type":"error","message": err_msg}).to_string(),
+                    serde_json::json!({"type":"error","message": err_msg})
+                        .to_string()
+                        .into(),
                 ))
                 .await;
             let _ = socket.close().await;
+            state.release_owner(SessionOwner::TuiPty);
             return;
         }
     };
 
     // Track PID
-    if let Ok(pid) = child_kinder_pid(&*child_killer) {
+    if let Ok(pid) = child_kinder_pid(&*child) {
         diag.pid.store(pid, Ordering::SeqCst);
     }
 
-    info!("PTY spawned for TUI WebSocket (binary={})", binary_for_display);
+    info!(
+        "PTY spawned for TUI WebSocket (binary={})",
+        binary_for_display.display()
+    );
 
-    // Channels: WS reader → PTY writer, PTY reader → WS writer
-    let (tx, mut rx) = mpsc::channel::<String>(256);
+    // Split WebSocket into sender/receiver parts
+    let (mut ws_sender, ws_receiver) = socket.split();
 
-    // Task 1: Read from PTY stdout, send to WebSocket
+    // Wrap child in Arc<Mutex> for sharing between tasks
+    let child = Arc::new(std::sync::Mutex::new(child));
+
+    // Channels: PTY reader → channel → WS sender
+    let (tx, rx) = mpsc::channel::<String>(256);
+
+    // Task 1: Read from PTY stdout, send to channel
     let diag_out = diag.clone();
-    let pty_read_task = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let mut reader = pty_reader;
         let mut buf = [0u8; 4096];
         loop {
@@ -136,10 +255,10 @@ async fn handle_tui_socket(mut socket: WebSocket, params: TuiWsParams, diag: Pty
                 Ok(n) => {
                     let data = &buf[..n];
                     diag_out.bytes_out.fetch_add(n as u64, Ordering::SeqCst);
-                    // Send as JSON text frame
-                    if let Ok(json) = serde_json::json!({"type":"output","data": String::from_utf8_lossy(data)}).to_string().as_str().to_string() {
-                        let _ = tx.blocking_send(json);
-                    }
+                    let json =
+                        serde_json::json!({"type":"output","data": String::from_utf8_lossy(data)})
+                            .to_string();
+                    let _ = tx.blocking_send(json);
                 }
                 Err(e) => {
                     warn!("PTY read error: {}", e);
@@ -149,15 +268,20 @@ async fn handle_tui_socket(mut socket: WebSocket, params: TuiWsParams, diag: Pty
         }
     });
 
-    // Task 2: Read from WebSocket, write to PTY stdin
+    // Task 2: Main I/O bridge — WS ↔ PTY, with PTY exit handling
     let diag_in = diag.clone();
-    let ws_read_task = tokio::spawn(async move {
+    let child_io = child.clone();
+    let ws_io_task = tokio::spawn(async move {
+        let mut pty_writer = pty_writer;
+        let mut rx = rx;
+        let mut ws_receiver = ws_receiver;
+        let master_pty = master_pty;
+
         loop {
             tokio::select! {
-                msg = socket.recv() => {
+                msg = ws_receiver.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            // Parse JSON message
                             match serde_json::from_str::<serde_json::Value>(&text) {
                                 Ok(val) => {
                                     let msg_type = val["type"].as_str().unwrap_or("");
@@ -183,14 +307,13 @@ async fn handle_tui_socket(mut socket: WebSocket, params: TuiWsParams, diag: Pty
                                         }
                                         "close" => {
                                             info!("TUI WebSocket close frame received");
-                                            let _ = child_killer.kill();
+                                            let _ = child_io.lock().unwrap().kill();
                                             break;
                                         }
                                         _ => {}
                                     }
                                 }
                                 Err(_) => {
-                                    // Raw text — treat as terminal input
                                     diag_in.bytes_in.fetch_add(text.len() as u64, Ordering::SeqCst);
                                     if let Err(e) = pty_writer.write_all(text.as_bytes()) {
                                         warn!("PTY write error: {}", e);
@@ -210,8 +333,11 @@ async fn handle_tui_socket(mut socket: WebSocket, params: TuiWsParams, diag: Pty
                         }
                         Some(Ok(Message::Close(_))) => {
                             info!("TUI WebSocket closed by client");
-                            let _ = child_killer.kill();
+                            let _ = child_io.lock().unwrap().kill();
                             break;
+                        }
+                        Some(Ok(_)) => {
+                            // Ping/Pong — ignore
                         }
                         Some(Err(e)) => {
                             warn!("TUI WebSocket error: {}", e);
@@ -220,45 +346,62 @@ async fn handle_tui_socket(mut socket: WebSocket, params: TuiWsParams, diag: Pty
                         None => break,
                     }
                 }
-                // Task 2.5: Forward PTY output received via channel
-                Some(data) = rx.recv() => {
-                    if socket.send(Message::Text(data)).await.is_err() {
-                        break;
+                data = rx.recv() => {
+                    match data {
+                        Some(json) => {
+                            if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
                     }
                 }
                 else => break,
             }
         }
-    });
 
-    // Wait for either task to finish (PTY exit or WS disconnect)
-    tokio::select! {
-        _ = pty_read_task => {
-            // PTY closed — wait for exit
-            match child.wait() {
+        // The MVP policy is to terminate the PTY process when the WebSocket
+        // disconnects, even if the browser did not send an explicit close.
+        let _ = child_io.lock().unwrap().kill();
+
+        // Wait for child process and send exit code
+        let exit_code = {
+            let mut child_guard = child_io.lock().unwrap();
+            match child_guard.wait() {
                 Ok(status) => {
-                    let code = status.exit_code();
-                    *diag.exit_code.lock() = Some(code);
+                    let code = status.exit_code() as i32;
+                    *diag_in.exit_code.lock() = Some(code);
                     info!("PTY exited with code {}", code);
-                    let _ = socket.send(Message::Text(
-                        serde_json::json!({"type":"exit","code": code}).to_string()
-                    )).await;
+                    code
                 }
                 Err(e) => {
                     warn!("PTY wait error: {}", e);
+                    -1
                 }
             }
-        }
-        _ = ws_read_task => {
-            // WS disconnected — kill the child
-            let _ = child_killer.kill();
-        }
-    }
+        };
 
-    // Cleanup
+        // Send exit message
+        let _ = ws_sender
+            .send(Message::Text(
+                serde_json::json!({"type":"exit","code": exit_code})
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+
+        // Cleanup
+        *diag_in.connected.lock() = false;
+        let _ = ws_sender.close().await;
+        info!("TUI WebSocket connection closed");
+    });
+
+    // Wait for the I/O task to complete
+    let _ = ws_io_task.await;
+
+    // Update connected state in outer diagnostics
     *diag.connected.lock() = false;
-    let _ = socket.close().await;
-    info!("TUI WebSocket connection closed");
+    state.release_owner(SessionOwner::TuiPty);
 }
 
 /// Spawn a PTY running the allthecodes binary.
@@ -270,7 +413,6 @@ async fn spawn_pty(
     (
         Box<dyn std::io::Write + Send>,
         Box<dyn std::io::Read + Send>,
-        Box<dyn ChildKiller + Send>,
         Box<dyn Child + Send>,
         Box<dyn MasterPty + Send>,
     ),
@@ -301,11 +443,7 @@ async fn spawn_pty(
             cmd
         }
         None => {
-            // Build command: just run `bash` so there's a working terminal
-            // In production, this would be the path to the allthecodes binary.
-            let mut cmd = CommandBuilder::new("bash");
-            cmd.cwd(cwd);
-            cmd
+            return Err("allthecodes binary was not found in target/debug or PATH".into());
         }
     };
 
@@ -324,7 +462,7 @@ async fn spawn_pty(
         .take_writer()
         .map_err(|e| format!("failed to take PTY writer: {}", e))?;
 
-    Ok((writer, reader, child, Box::new(pair.master)))
+    Ok((writer, reader, child, pair.master))
 }
 
 /// Find the allthecodes binary: first check for a local debug binary, then
@@ -345,17 +483,20 @@ fn find_allthecodes_binary() -> Option<std::path::PathBuf> {
     }
 
     // Fall back to PATH
-    std::env::var_os("PATH")
-        .and_then(|paths| {
-            std::env::split_paths(&paths).find_map(|dir| {
-                let candidate = dir.join("allthecodes");
-                if candidate.exists() { Some(candidate) } else { None }
-            })
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let candidate = dir.join("allthecodes");
+            if candidate.exists() {
+                Some(candidate)
+            } else {
+                None
+            }
         })
+    })
 }
 
 /// Extract a numeric PID from a ChildKiller (portable-pty internal).
-fn child_kinder_pid(killer: &dyn ChildKiller) -> Result<u64, ()> {
+fn child_kinder_pid(_killer: &dyn ChildKiller) -> Result<u64, ()> {
     // portable-pty doesn't expose PID directly, so we report 0.
     // The diagnostics can track the connection ID instead.
     Ok(0)

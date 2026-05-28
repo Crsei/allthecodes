@@ -16,11 +16,11 @@ use axum::{http::Uri, response::IntoResponse};
 use rust_embed::Embed;
 
 // The `folder` attribute is resolved relative to the crate's manifest dir.
-// With the workspace split, `web-ui/dist` lives two levels up at the
-// workspace root.
+// With the workspace split, the Next.js static export lives in the sibling
+// frontend repository at `<workspace-parent>/allthecodes-web/dist`.
 #[cfg(feature = "web-ui")]
 #[derive(Embed)]
-#[folder = "../../web-ui/dist"]
+#[folder = "../../../allthecodes-web/dist"]
 struct WebAssets;
 
 /// Fallback handler: serve embedded static files or SPA index.html.

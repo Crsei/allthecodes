@@ -4,11 +4,12 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::{OnceLock, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     extract::{Path as AxumPath, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,7 @@ use allthecodes_session::{resume as session_resume, storage};
 use allthecodes_types::message::{ContentBlock, Message, MessageContent};
 use allthecodes_types::sdk::SdkMessage;
 
-use super::state::WebState;
+use super::state::{SessionOwner, WebState};
 
 type CommandProvider = fn() -> Vec<Command>;
 
@@ -130,6 +131,34 @@ pub struct CommandResponse {
     pub session_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct DebugActionRequest {
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+#[derive(Serialize)]
+pub struct DebugActionResponse {
+    pub action_id: String,
+    pub session_id: String,
+    pub trace_ref: String,
+    pub mutates_runtime: bool,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct DebugStateResponse {
+    pub enabled: bool,
+    pub session_id: String,
+    pub ownership: super::state::SessionOwnership,
+    pub is_streaming: bool,
+    pub pty: crate::ws::tui::PtyDiagnosticsSnapshot,
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -151,7 +180,32 @@ pub async fn chat_handler(
             .into_response();
     }
 
-    let requested_session = req.session_id.as_deref().unwrap_or("");
+    let engine = state.engine();
+    let active_session_id = req
+        .session_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| engine.current_session_id().to_string());
+    if let Err(owner) = state.try_claim_chat(active_session_id.clone()) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: format!(
+                    "Session is currently owned by {:?}{}",
+                    owner.owner,
+                    owner
+                        .session_id
+                        .as_deref()
+                        .map(|id| format!(" ({id})"))
+                        .unwrap_or_default()
+                ),
+                code: "session_owned".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    let requested_session = active_session_id.as_str();
     info!(
         message = %req.message,
         session_id = %requested_session,
@@ -161,15 +215,14 @@ pub async fn chat_handler(
     state.is_streaming.store(true, Ordering::SeqCst);
 
     // Get the stream from the engine
-    let stream = state
-        .engine()
-        .submit_message(&req.message, QuerySource::Sdk);
+    let stream = engine.submit_message(&req.message, QuerySource::Sdk);
 
     // Wrap in a stream that clears is_streaming when done
     let is_streaming = state.is_streaming.clone();
+    let release_state = state.clone();
     let wrapped_stream = Box::pin(futures::stream::unfold(
-        (stream, is_streaming, false),
-        |(mut stream, flag, done)| async move {
+        (stream, is_streaming, release_state, false),
+        |(mut stream, flag, release_state, done)| async move {
             if done {
                 return None;
             }
@@ -179,11 +232,13 @@ pub async fn chat_handler(
                     let is_result = matches!(&msg, SdkMessage::Result(_));
                     if is_result {
                         flag.store(false, Ordering::SeqCst);
+                        release_state.release_owner(SessionOwner::ChatStream);
                     }
-                    Some((msg, (stream, flag, is_result)))
+                    Some((msg, (stream, flag, release_state, is_result)))
                 }
                 None => {
                     flag.store(false, Ordering::SeqCst);
+                    release_state.release_owner(SessionOwner::ChatStream);
                     None
                 }
             }
@@ -202,6 +257,7 @@ pub async fn abort_handler(
     info!(session_id = %requested_session, "POST /api/abort");
     state.engine().abort();
     state.is_streaming.store(false, Ordering::SeqCst);
+    state.release_owner(SessionOwner::ChatStream);
     StatusCode::OK
 }
 
@@ -244,6 +300,77 @@ pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
         },
         commands,
     })
+}
+
+/// GET /api/debug/state -- Dev-only diagnostics snapshot.
+pub async fn debug_state_handler(State(state): State<WebState>) -> Response {
+    if !debug_enabled() {
+        return debug_disabled_response();
+    }
+
+    let engine = state.engine();
+    Json(DebugStateResponse {
+        enabled: true,
+        session_id: engine.current_session_id().to_string(),
+        ownership: state.ownership_snapshot(),
+        is_streaming: state.is_streaming.load(Ordering::SeqCst),
+        pty: state.pty_diagnostics.snapshot(),
+    })
+    .into_response()
+}
+
+/// POST /api/debug/actions/{*action} -- Dev-only scripted action endpoint.
+pub async fn debug_action_handler(
+    AxumPath(path_action): AxumPath<String>,
+    State(state): State<WebState>,
+    Json(req): Json<DebugActionRequest>,
+) -> Response {
+    if !debug_enabled() {
+        return debug_disabled_response();
+    }
+
+    let _params = req.params;
+    let action = req.action.unwrap_or(path_action);
+    let mutates_runtime = matches!(action.as_str(), "chat/abort");
+    let mut ok = true;
+    let mut error = None;
+
+    match action.as_str() {
+        "ui/state" | "fixtures/load" | "tui/open" | "tui/input" | "tui/resize" | "tui/close" => {}
+        "chat/abort" => {
+            state.engine().abort();
+            state.is_streaming.store(false, Ordering::SeqCst);
+            state.release_owner(SessionOwner::ChatStream);
+        }
+        "chat/submit" => {
+            ok = false;
+            error = Some(
+                "chat/submit must use /api/chat so the caller receives the SSE stream".to_string(),
+            );
+        }
+        _ => {
+            ok = false;
+            error = Some(format!("Unknown debug action: {}", action));
+        }
+    }
+
+    let session_id = state.engine().current_session_id().to_string();
+    let action_id = format!(
+        "debug-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default()
+    );
+    Json(DebugActionResponse {
+        trace_ref: format!("debug/actions/{action_id}"),
+        action_id,
+        session_id,
+        mutates_runtime,
+        ok,
+        error,
+    })
+    .into_response()
 }
 
 /// POST /api/settings -- Mutate application settings.
@@ -658,6 +785,9 @@ pub async fn session_new_handler(State(state): State<WebState>) -> impl IntoResp
         )
             .into_response();
     }
+    if let Some(response) = ownership_conflict_response(&state) {
+        return response;
+    }
 
     let engine = rebuild_engine(&state, None);
     let new_id = engine.current_session_id().to_string();
@@ -681,6 +811,9 @@ pub async fn session_resume_handler(
             }),
         )
             .into_response();
+    }
+    if let Some(response) = ownership_conflict_response(&state) {
+        return response;
     }
 
     info!(session_id = %id, "POST /api/sessions/:id/resume");
@@ -734,6 +867,48 @@ pub async fn session_resume_handler(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn ownership_conflict_response(state: &WebState) -> Option<Response> {
+    let owner = state.ownership_snapshot();
+    if owner.owner == SessionOwner::None {
+        return None;
+    }
+    Some(
+        (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: format!(
+                    "Session is currently owned by {:?}{}",
+                    owner.owner,
+                    owner
+                        .session_id
+                        .as_deref()
+                        .map(|id| format!(" ({id})"))
+                        .unwrap_or_default()
+                ),
+                code: "session_owned".into(),
+            }),
+        )
+            .into_response(),
+    )
+}
+
+fn debug_enabled() -> bool {
+    std::env::var("ALLTHECODES_WEB_DEBUG")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn debug_disabled_response() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiError {
+            error: "Debug API is disabled".into(),
+            code: "debug_disabled".into(),
+        }),
+    )
+        .into_response()
+}
 
 /// Build a fresh engine that inherits the current engine's config, with an
 /// optional seed message list. The new engine gets a freshly minted session id.
