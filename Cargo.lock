@@ -935,6 +935,7 @@ dependencies = [
  "axum",
  "futures",
  "parking_lot",
+ "portable-pty",
  "rust-embed",
  "serde",
  "serde_json",

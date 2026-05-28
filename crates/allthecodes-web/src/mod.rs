@@ -3,11 +3,12 @@
 pub mod handlers;
 pub mod state;
 pub mod static_files;
+pub mod ws;
 
 use std::net::SocketAddr;
 
 use axum::{
-    routing::{get, post},
+    routing::{any, get, post},
     Router,
 };
 use tower_http::cors::CorsLayer;
@@ -34,6 +35,8 @@ pub fn build_router(state: WebState) -> Router {
             "/api/sessions/{id}/resume",
             post(handlers::session_resume_handler),
         )
+        // Phase 4: xterm.js TUI WebSocket bridge
+        .route("/api/tui/ws", any(ws::tui::tui_ws_handler))
         // Static files (SPA)
         .fallback(static_files::static_handler)
         // Middleware

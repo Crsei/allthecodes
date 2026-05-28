@@ -7,6 +7,8 @@ use parking_lot::RwLock;
 
 use allthecodes_engine::lifecycle::QueryEngine;
 
+use crate::ws::tui::PtyDiagnostics;
+
 /// Shared state passed to all Axum handlers via State extractor.
 ///
 /// The engine is held behind an `RwLock<Arc<QueryEngine>>` so the web layer
@@ -20,6 +22,8 @@ pub struct WebState {
     pub engine_slot: Arc<RwLock<Arc<QueryEngine>>>,
     /// Flag: is a query currently in progress?
     pub is_streaming: Arc<AtomicBool>,
+    /// PTY diagnostics for the active TUI WebSocket connection.
+    pub pty_diagnostics: PtyDiagnostics,
 }
 
 impl WebState {
@@ -28,6 +32,7 @@ impl WebState {
         Self {
             engine_slot: Arc::new(RwLock::new(engine)),
             is_streaming,
+            pty_diagnostics: PtyDiagnostics::default(),
         }
     }
 
