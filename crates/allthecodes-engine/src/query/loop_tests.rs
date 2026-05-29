@@ -2493,3 +2493,37 @@ async fn test_computer_use_screenshot_click_round_trip() {
         "final message should mention clicking"
     );
 }
+
+#[test]
+fn snip_projection_removes_requested_messages_only() {
+    let keep = Message::User(UserMessage {
+        uuid: Uuid::new_v4(),
+        timestamp: 1,
+        role: "user".to_string(),
+        content: MessageContent::Text("keep".to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    });
+    let remove = Message::User(UserMessage {
+        uuid: Uuid::new_v4(),
+        timestamp: 2,
+        role: "user".to_string(),
+        content: MessageContent::Text("remove".to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    });
+    let remove_id = remove.uuid().to_string();
+    let keep_id = keep.uuid();
+    let mut messages = vec![keep, remove];
+
+    let removed = apply_snip_projection(
+        &mut messages,
+        &serde_json::json!({ "message_ids": [remove_id] }),
+    );
+
+    assert_eq!(removed, 1);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].uuid(), keep_id);
+}

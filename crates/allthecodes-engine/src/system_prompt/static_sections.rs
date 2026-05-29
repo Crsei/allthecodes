@@ -100,6 +100,12 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
         && enabled_tools.contains(&"CronDelete")
         && enabled_tools.contains(&"CronList");
     let has_web_browser = enabled_tools.contains(&"WebBrowser");
+    let has_product_context_tools = enabled_tools.contains(&"CtxInspect")
+        || enabled_tools.contains(&"Snip")
+        || enabled_tools.contains(&"TerminalCapture")
+        || enabled_tools.contains(&"ReviewArtifact");
+    let has_remote_peer_tools =
+        enabled_tools.contains(&"ListPeers") && enabled_tools.contains(&"RemoteTrigger");
 
     let mut items: Vec<String> = vec![
         "Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:".into(),
@@ -137,6 +143,18 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
     if has_web_browser {
         items.push(
             "Use WebBrowser for pages that require JavaScript rendering or browser state. Use WebFetch for ordinary static pages and direct HTTP content.".into()
+        );
+    }
+
+    if has_product_context_tools {
+        items.push(
+            "Use CtxInspect to inspect context usage, TerminalCapture to re-read recent shell output, ReviewArtifact to present structured annotations, and Snip only when you need to mark older messages for compaction.".into()
+        );
+    }
+
+    if has_remote_peer_tools {
+        items.push(
+            "Use ListPeers to discover allthecodes daemon peers before RemoteTrigger. RemoteTrigger submits a prompt to another allthecodes instance and requires explicit permission.".into()
         );
     }
 

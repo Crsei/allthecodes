@@ -4,7 +4,9 @@ use allthecodes_engine::tools::exec;
 use allthecodes_engine::types::tool::Tools;
 
 use allthecodes_lsp_service::tool::LspTool;
-use allthecodes_teams::pr_activity::{SubscribePrActivityTool, UnsubscribePrActivityTool};
+use allthecodes_teams::pr_activity::{
+    SubscribePrActivityTool, SubscribePrTool, UnsubscribePrActivityTool,
+};
 use allthecodes_teams::send_message::SendMessageTool;
 use allthecodes_teams::team_spawn::TeamSpawnTool;
 pub use allthecodes_tools::registry::ToolPolicy;
@@ -26,6 +28,7 @@ fn root_owned_base_tools() -> Tools {
         Arc::new(ExitWorktreeTool) as _,
         Arc::new(LspTool) as _,
         Arc::new(SendMessageTool) as _,
+        Arc::new(SubscribePrTool) as _,
         Arc::new(SubscribePrActivityTool) as _,
         Arc::new(UnsubscribePrActivityTool) as _,
         Arc::new(TeamSpawnTool) as _,
@@ -124,6 +127,21 @@ mod tests {
             assert!(
                 tools.iter().any(|t| t.name() == name),
                 "should find {name} Phase 2 tool"
+            );
+        }
+
+        for name in [
+            "SubscribePR",
+            "TerminalCapture",
+            "ReviewArtifact",
+            "Snip",
+            "CtxInspect",
+            "RemoteTrigger",
+            "ListPeers",
+        ] {
+            assert!(
+                tools.iter().any(|t| t.name() == name),
+                "should find {name} P2 product tool"
             );
         }
 

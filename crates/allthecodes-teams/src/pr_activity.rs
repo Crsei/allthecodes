@@ -17,6 +17,8 @@ pub struct PrActivitySubscription {
     pub owner: String,
     pub repo: String,
     pub pr_number: u64,
+    #[serde(default)]
+    pub events: Vec<String>,
     pub team_name: String,
     pub mailbox_name: String,
     pub created_at: String,
@@ -29,6 +31,7 @@ pub struct GithubPrActivity {
     pub owner: String,
     pub repo: String,
     pub pr_number: u64,
+    pub event_name: Option<String>,
     pub action: String,
     pub sender: Option<String>,
     pub title: Option<String>,
@@ -47,6 +50,8 @@ struct SubscribeInput {
     owner: Option<String>,
     repo: String,
     pr_number: u64,
+    #[serde(default)]
+    events: Vec<String>,
     #[serde(default)]
     team: Option<String>,
     #[serde(default)]
@@ -68,6 +73,7 @@ struct UnsubscribeInput {
 }
 
 pub struct SubscribePrActivityTool;
+pub struct SubscribePrTool;
 pub struct UnsubscribePrActivityTool;
 
 #[async_trait]
@@ -100,6 +106,14 @@ impl Tool for SubscribePrActivityTool {
                 "team": {
                     "type": "string",
                     "description": "Optional team name. Defaults to the active team."
+                },
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["comment", "review", "ci", "merge", "close"]
+                    },
+                    "description": "Optional event filters. Empty means all PR activity."
                 },
                 "mailbox": {
                     "type": "string",
@@ -162,7 +176,14 @@ impl Tool for SubscribePrActivityTool {
             .filter(|value| !value.is_empty())
             .unwrap_or(constants::TEAM_LEAD_NAME)
             .to_string();
-        let subscription = subscribe(owner, repo, params.pr_number, team_name, mailbox_name)?;
+        let subscription = subscribe_with_events(
+            owner,
+            repo,
+            params.pr_number,
+            normalize_events(&params.events),
+            team_name,
+            mailbox_name,
+        )?;
 
         Ok(ToolResult {
             data: json!({
@@ -177,6 +198,133 @@ impl Tool for SubscribePrActivityTool {
     async fn prompt(&self) -> String {
         "Subscribe to GitHub PR activity and route matching webhook events into the coordinator mailbox."
             .to_string()
+    }
+}
+
+#[async_trait]
+impl Tool for SubscribePrTool {
+    fn name(&self) -> &str {
+        "SubscribePR"
+    }
+
+    async fn description(&self, _input: &Value) -> String {
+        "Subscribe to GitHub pull request activity via the allthecodes KAIROS webhook subsystem."
+            .to_string()
+    }
+
+    fn input_json_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/repo format."
+                },
+                "pr_number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Pull request number to subscribe to."
+                },
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["comment", "review", "ci", "merge", "close"]
+                    },
+                    "description": "Event types to subscribe to. Defaults to all PR activity."
+                },
+                "team": {
+                    "type": "string",
+                    "description": "Optional team name. Defaults to the active team."
+                },
+                "mailbox": {
+                    "type": "string",
+                    "description": "Optional mailbox recipient. Defaults to team-lead."
+                }
+            },
+            "required": ["repo", "pr_number"]
+        })
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        true
+    }
+
+    async fn validate_input(&self, input: &Value, _ctx: &ToolUseContext) -> ValidationResult {
+        if input
+            .get("repo")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            return ValidationResult::Error {
+                message: "'repo' is required".to_string(),
+                error_code: 400,
+            };
+        }
+        if input.get("pr_number").and_then(Value::as_u64).unwrap_or(0) == 0 {
+            return ValidationResult::Error {
+                message: "'pr_number' must be a positive integer".to_string(),
+                error_code: 400,
+            };
+        }
+        ValidationResult::Ok
+    }
+
+    async fn call(
+        &self,
+        input: Value,
+        ctx: &ToolUseContext,
+        _parent: &AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
+    ) -> Result<ToolResult> {
+        let params: SubscribeInput = serde_json::from_value(input)?;
+        let app_state = (ctx.get_app_state)();
+        let team_name = params
+            .team
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                app_state
+                    .team_context
+                    .as_ref()
+                    .map(|team| team.team_name.clone())
+            })
+            .ok_or_else(|| anyhow::anyhow!("No active team. Start coordinator mode first."))?;
+        let (owner, repo) = normalize_repo(params.owner.as_deref(), &params.repo)?;
+        let mailbox_name = params
+            .mailbox
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(constants::TEAM_LEAD_NAME)
+            .to_string();
+        let events = normalize_events(&params.events);
+        let subscription = subscribe_with_events(
+            owner,
+            repo,
+            params.pr_number,
+            events,
+            team_name,
+            mailbox_name,
+        )?;
+
+        Ok(ToolResult {
+            data: json!({
+                "subscribed": true,
+                "subscription_id": subscription.id,
+                "subscription": subscription,
+            }),
+            new_messages: vec![],
+            ..Default::default()
+        })
+    }
+
+    async fn prompt(&self) -> String {
+        "Subscribe to GitHub pull request activity. Events are delivered into the coordinator team's mailbox through the KAIROS GitHub webhook endpoint.".to_string()
     }
 }
 
@@ -251,7 +399,11 @@ pub fn parse_github_pr_activity(
 ) -> Option<GithubPrActivity> {
     if !matches!(
         event_name,
-        None | Some("pull_request") | Some("pull_request_review") | Some("issue_comment")
+        None | Some("pull_request")
+            | Some("pull_request_review")
+            | Some("issue_comment")
+            | Some("check_run")
+            | Some("check_suite")
     ) {
         return None;
     }
@@ -263,17 +415,28 @@ pub fn parse_github_pr_activity(
         .and_then(|owner| owner.get("login").or_else(|| owner.get("name")))
         .and_then(Value::as_str)?
         .to_string();
-    let pr = payload.get("pull_request").or_else(|| {
-        payload
-            .get("issue")
-            .filter(|issue| issue.get("pull_request").is_some())
-    })?;
+    let pr = match event_name {
+        Some("check_run") => payload
+            .get("check_run")
+            .and_then(|check_run| check_run.get("pull_requests"))
+            .and_then(Value::as_array)
+            .and_then(|pull_requests| pull_requests.first())?,
+        Some("check_suite") => payload
+            .get("check_suite")
+            .and_then(|check_suite| check_suite.get("pull_requests"))
+            .and_then(Value::as_array)
+            .and_then(|pull_requests| pull_requests.first())?,
+        _ => payload.get("pull_request").or_else(|| {
+            payload
+                .get("issue")
+                .filter(|issue| issue.get("pull_request").is_some())
+        })?,
+    };
     let pr_number = pr.get("number")?.as_u64()?;
-    let action = payload
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
+    let mut action = pr_activity_action(payload, event_name);
+    if action == "closed" && pr.get("merged").and_then(Value::as_bool).unwrap_or(false) {
+        action = "merged".to_string();
+    }
     let sender = payload
         .get("sender")
         .and_then(|sender| sender.get("login"))
@@ -292,18 +455,71 @@ pub fn parse_github_pr_activity(
                 .and_then(|comment| comment.get("html_url"))
                 .and_then(Value::as_str)
         })
+        .or_else(|| {
+            payload
+                .get("check_run")
+                .and_then(|check_run| check_run.get("html_url"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            payload
+                .get("check_suite")
+                .and_then(|check_suite| check_suite.get("html_url"))
+                .and_then(Value::as_str)
+        })
         .map(ToOwned::to_owned);
 
     Some(GithubPrActivity {
         owner,
         repo,
         pr_number,
+        event_name: event_name.map(ToOwned::to_owned),
         action,
         sender,
         title,
         html_url,
         delivery_id: delivery_id.map(ToOwned::to_owned),
     })
+}
+
+fn pr_activity_action(payload: &Value, event_name: Option<&str>) -> String {
+    let action = payload
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    match event_name {
+        Some("check_run") => {
+            let check_run = payload.get("check_run");
+            let name = check_run
+                .and_then(|check_run| check_run.get("name"))
+                .and_then(Value::as_str);
+            let status = check_run
+                .and_then(|check_run| check_run.get("conclusion"))
+                .or_else(|| check_run.and_then(|check_run| check_run.get("status")))
+                .and_then(Value::as_str);
+            format_ci_action("check_run", action, name, status)
+        }
+        Some("check_suite") => {
+            let check_suite = payload.get("check_suite");
+            let status = check_suite
+                .and_then(|check_suite| check_suite.get("conclusion"))
+                .or_else(|| check_suite.and_then(|check_suite| check_suite.get("status")))
+                .and_then(Value::as_str);
+            format_ci_action("check_suite", action, None, status)
+        }
+        _ => action.to_string(),
+    }
+}
+
+fn format_ci_action(kind: &str, action: &str, name: Option<&str>, status: Option<&str>) -> String {
+    let mut parts = vec!["ci".to_string(), kind.to_string(), action.to_string()];
+    if let Some(status) = status.filter(|value| !value.is_empty()) {
+        parts.push(status.to_string());
+    }
+    if let Some(name) = name.filter(|value| !value.is_empty()) {
+        parts.push(name.to_string());
+    }
+    parts.join(" ")
 }
 
 pub fn route_github_pr_activity(activity: &GithubPrActivity) -> Result<PrActivityRouteResult> {
@@ -315,6 +531,11 @@ pub fn route_github_pr_activity(activity: &GithubPrActivity) -> Result<PrActivit
                 && subscription.owner.eq_ignore_ascii_case(&activity.owner)
                 && subscription.repo.eq_ignore_ascii_case(&activity.repo)
                 && subscription.pr_number == activity.pr_number
+                && subscription_events_match(
+                    &subscription.events,
+                    activity.event_name.as_deref(),
+                    &activity.action,
+                )
         })
         .collect();
 
@@ -341,10 +562,22 @@ pub fn route_github_pr_activity(activity: &GithubPrActivity) -> Result<PrActivit
     })
 }
 
+#[cfg(test)]
 pub(crate) fn subscribe(
     owner: String,
     repo: String,
     pr_number: u64,
+    team_name: String,
+    mailbox_name: String,
+) -> Result<PrActivitySubscription> {
+    subscribe_with_events(owner, repo, pr_number, Vec::new(), team_name, mailbox_name)
+}
+
+pub(crate) fn subscribe_with_events(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    events: Vec<String>,
     team_name: String,
     mailbox_name: String,
 ) -> Result<PrActivitySubscription> {
@@ -357,6 +590,7 @@ pub(crate) fn subscribe(
             && subscription.mailbox_name == mailbox_name
     }) {
         existing.active = true;
+        existing.events = events;
         let subscription = existing.clone();
         save_subscriptions(&subscriptions)?;
         return Ok(subscription);
@@ -367,6 +601,7 @@ pub(crate) fn subscribe(
         owner,
         repo,
         pr_number,
+        events,
         team_name,
         mailbox_name,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -375,6 +610,45 @@ pub(crate) fn subscribe(
     subscriptions.push(subscription.clone());
     save_subscriptions(&subscriptions)?;
     Ok(subscription)
+}
+
+fn normalize_events(events: &[String]) -> Vec<String> {
+    let mut normalized = events
+        .iter()
+        .map(|event| event.trim().to_ascii_lowercase())
+        .filter(|event| {
+            matches!(
+                event.as_str(),
+                "comment" | "review" | "ci" | "merge" | "close"
+            )
+        })
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn subscription_events_match(events: &[String], event_name: Option<&str>, action: &str) -> bool {
+    if events.is_empty() {
+        return true;
+    }
+    let action = action.to_ascii_lowercase();
+    let event_name = event_name.unwrap_or_default().to_ascii_lowercase();
+    events.iter().any(|event| match event.as_str() {
+        "comment" => event_name == "issue_comment" || action.contains("comment"),
+        "review" => event_name == "pull_request_review" || action.contains("review"),
+        "ci" => {
+            matches!(event_name.as_str(), "check_run" | "check_suite" | "status")
+                || action.contains("check")
+                || action.contains("status")
+                || action.contains("ci")
+        }
+        "merge" => action.contains("merge"),
+        "close" => {
+            event_name == "pull_request" && (action.contains("close") || action.contains("closed"))
+        }
+        other => action.contains(other),
+    })
 }
 
 fn unsubscribe(params: UnsubscribeInput) -> Result<usize> {
@@ -523,6 +797,28 @@ mod tests {
         })
     }
 
+    fn sample_check_run_payload() -> Value {
+        json!({
+            "action": "completed",
+            "repository": {
+                "name": "allthecodes",
+                "owner": { "login": "AIclassmanager" }
+            },
+            "check_run": {
+                "name": "ci/build",
+                "conclusion": "success",
+                "html_url": "https://github.com/AIclassmanager/allthecodes/runs/123",
+                "pull_requests": [
+                    {
+                        "number": 42,
+                        "html_url": "https://github.com/AIclassmanager/allthecodes/pull/42"
+                    }
+                ]
+            },
+            "sender": { "login": "github-actions[bot]" }
+        })
+    }
+
     #[test]
     #[serial]
     fn subscribe_dedupes_and_unsubscribe_is_idempotent() {
@@ -599,5 +895,23 @@ mod tests {
     #[test]
     fn parse_github_pr_activity_rejects_unrelated_events() {
         assert!(parse_github_pr_activity(&sample_payload(), Some("push"), None).is_none());
+    }
+
+    #[test]
+    fn parse_github_pr_activity_accepts_ci_events() {
+        let activity =
+            parse_github_pr_activity(&sample_check_run_payload(), Some("check_run"), None).unwrap();
+
+        assert_eq!(activity.owner, "AIclassmanager");
+        assert_eq!(activity.repo, "allthecodes");
+        assert_eq!(activity.pr_number, 42);
+        assert_eq!(activity.event_name.as_deref(), Some("check_run"));
+        assert!(activity.action.contains("ci"));
+        assert!(activity.action.contains("success"));
+        assert!(subscription_events_match(
+            &["ci".to_string()],
+            activity.event_name.as_deref(),
+            &activity.action,
+        ));
     }
 }

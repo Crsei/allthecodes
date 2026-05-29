@@ -122,6 +122,7 @@ pub fn allthecodes_tools_base_tools() -> Tools {
     tools.extend(crate::fs::tools());
     tools.push(Arc::new(SleepTool));
     tools.extend(crate::tasks::tools());
+    tools.extend(crate::product_tools::tools());
 
     tools.extend([
         Arc::new(AskUserQuestionTool) as _,

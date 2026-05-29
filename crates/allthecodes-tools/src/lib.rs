@@ -24,6 +24,8 @@ pub mod plan_mode;
 #[cfg(feature = "full")]
 pub mod plan_workflow;
 #[cfg(feature = "full")]
+pub mod product_tools;
+#[cfg(feature = "full")]
 pub mod registry;
 #[cfg(feature = "full")]
 pub mod result;

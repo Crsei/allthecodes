@@ -710,6 +710,14 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         yield QueryYield::Message(sub_msg.clone());
                         state.messages.push(sub_msg.clone());
                     }
+
+                    if exec_result.tool_name == "Snip" {
+                        let removed =
+                            apply_snip_projection(&mut state.messages, &exec_result.result.data);
+                        if removed > 0 {
+                            debug!(removed, "applied Snip projection to future context");
+                        }
+                    }
                 }
 
                 let steer_messages = drain_steer_messages(&deps);
@@ -854,6 +862,24 @@ fn drain_steer_messages(deps: &Arc<dyn QueryDeps>) -> Vec<Message> {
             }
         })
         .collect()
+}
+
+fn apply_snip_projection(messages: &mut Vec<Message>, data: &serde_json::Value) -> usize {
+    let ids = data
+        .get("message_ids")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect::<std::collections::HashSet<_>>();
+    if ids.is_empty() {
+        return 0;
+    }
+
+    let before = messages.len();
+    messages.retain(|message| !ids.contains(&message.uuid().to_string()));
+    before.saturating_sub(messages.len())
 }
 
 #[cfg(test)]
