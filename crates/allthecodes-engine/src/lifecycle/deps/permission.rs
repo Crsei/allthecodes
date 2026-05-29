@@ -174,25 +174,6 @@ pub(crate) fn emit_hook_permission_decision(
     });
 }
 
-#[cfg(test)]
-pub(crate) fn central_permission_result_for_tool(
-    tool_name: &str,
-    input: &mut serde_json::Value,
-    app_state: &AppState,
-    hook_decision: Option<&crate::permissions::decision::HookPermissionDecision>,
-    auto_classifier: Option<&AutoClassifierDecision>,
-) -> crate::types::tool::PermissionResult {
-    let decision = central_permission_decision_for_tool(
-        tool_name,
-        input,
-        app_state,
-        hook_decision,
-        auto_classifier,
-        None,
-    );
-    permission_result_from_decision(tool_name, input, decision)
-}
-
 pub(crate) fn hook_error_is_critical(
     tool_name: &str,
     hook_configs: &[allthecodes_types::hooks::HookEventConfig],

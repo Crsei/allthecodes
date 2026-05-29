@@ -6,7 +6,12 @@ use crate::types::config::{AgentContext, QueryEngineConfig, QuerySource};
 use crate::types::message::{
     AssistantMessage, ContentBlock, Message, MessageContent, Usage, UserMessage,
 };
+use crate::types::tool::{PermissionResult, ToolResult};
+use allthecodes_types::hooks::{
+    HookEventConfig, HookOutput, HookRunner, HooksMap, PostToolHookResult, PreToolHookResult,
+};
 use allthecodes_types::sdk::*;
+use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use super::types::UsageTrackingExt;
@@ -133,6 +138,145 @@ impl crate::types::tool::Tool for TestTool {
     }
 }
 
+struct DeferredTargetTool {
+    name: &'static str,
+    deny: bool,
+}
+
+#[async_trait::async_trait]
+impl crate::types::tool::Tool for DeferredTargetTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    async fn description(&self, _input: &Value) -> String {
+        format!("{} deferred test tool", self.name)
+    }
+
+    fn input_json_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "value": {"type": "integer"}
+            }
+        })
+    }
+
+    async fn check_permissions(
+        &self,
+        input: &Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+    ) -> PermissionResult {
+        if self.deny {
+            PermissionResult::Deny {
+                message: "blocked target".to_string(),
+            }
+        } else {
+            PermissionResult::Allow {
+                updated_input: input.clone(),
+            }
+        }
+    }
+
+    async fn call(
+        &self,
+        input: Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+        _parent_message: &AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
+    ) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult {
+            data: json!({
+                "target": self.name,
+                "input": input,
+            }),
+            display_preview: Some(format!("{} executed", self.name)),
+            ..Default::default()
+        })
+    }
+
+    async fn prompt(&self) -> String {
+        format!("{} deferred prompt", self.name)
+    }
+}
+
+#[derive(Default)]
+struct RecordingToolHookRunner {
+    pre_tool_names: parking_lot::Mutex<Vec<String>>,
+    post_tool_names: parking_lot::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl HookRunner for RecordingToolHookRunner {
+    fn load_hook_configs(&self, _hooks_value: &HooksMap, event_name: &str) -> Vec<HookEventConfig> {
+        if matches!(
+            event_name,
+            "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+        ) {
+            vec![HookEventConfig {
+                matcher: Some("*".to_string()),
+                critical: false,
+                hooks: vec![],
+            }]
+        } else {
+            vec![]
+        }
+    }
+
+    async fn run_pre_tool_hooks(
+        &self,
+        tool_name: &str,
+        _input: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PreToolHookResult> {
+        self.pre_tool_names.lock().push(tool_name.to_string());
+        Ok(PreToolHookResult::Continue {
+            updated_input: None,
+            permission_override: None,
+        })
+    }
+
+    async fn run_post_tool_hooks(
+        &self,
+        tool_name: &str,
+        _input: &Value,
+        _tool_result_data: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PostToolHookResult> {
+        self.post_tool_names.lock().push(tool_name.to_string());
+        Ok(PostToolHookResult::Continue)
+    }
+
+    async fn run_post_tool_failure_hooks(
+        &self,
+        tool_name: &str,
+        _input: &Value,
+        _error: &str,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<()> {
+        self.post_tool_names
+            .lock()
+            .push(format!("{tool_name}:failure"));
+        Ok(())
+    }
+
+    async fn run_event_hooks(
+        &self,
+        _event_name: &str,
+        _payload: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<HookOutput> {
+        Ok(HookOutput::default())
+    }
+
+    async fn run_stop_hooks(
+        &self,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PostToolHookResult> {
+        Ok(PostToolHookResult::Continue)
+    }
+}
+
 fn make_config() -> QueryEngineConfig {
     QueryEngineConfig {
         cwd: "/tmp".to_string(),
@@ -165,6 +309,128 @@ fn test_query_engine_creation() {
     assert!(engine.usage().total_cost_usd == 0.0);
     assert!(!engine.session_id.as_str().is_empty());
     assert_eq!(engine.current_session_id(), engine.session_id);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn execute_extra_tool_reenters_canonical_target_boundary() {
+    allthecodes_tools::deferred_tools::clear_discovered_tools_for_tests();
+    allthecodes_tools::deferred_tools::mark_discovered_tools(
+        "canonical-deferred",
+        ["DeferredTarget".to_string(), "DeniedTarget".to_string()],
+    );
+
+    let tools: crate::types::tool::Tools = vec![
+        Arc::new(allthecodes_tools::deferred_tools::ExecuteExtraToolTool),
+        Arc::new(DeferredTargetTool {
+            name: "DeferredTarget",
+            deny: false,
+        }),
+        Arc::new(DeferredTargetTool {
+            name: "DeniedTarget",
+            deny: true,
+        }),
+    ];
+    let mut config = make_config();
+    config.tools = tools.clone();
+    let engine = QueryEngine::new(config);
+    {
+        let mut state = engine.state.write();
+        state
+            .app_state
+            .tool_permission_context
+            .grant_session_allow("ExecuteExtraTool");
+        state
+            .app_state
+            .tool_permission_context
+            .grant_session_allow("DeferredTarget");
+        state
+            .app_state
+            .tool_permission_context
+            .grant_session_allow("DeniedTarget");
+    }
+    let hook_runner = Arc::new(RecordingToolHookRunner::default());
+    let deps = super::deps::QueryEngineDeps {
+        aborted: engine.aborted.clone(),
+        state: engine.state.clone(),
+        cwd: "/tmp".to_string(),
+        session_id: "canonical-deferred".to_string(),
+        audit_ctx: crate::observability::AuditContext::noop("canonical-deferred"),
+        langfuse_trace: None,
+        api_client: None,
+        agent_context: None,
+        permission_callback: None,
+        bg_agent_tx: None,
+        permission_event_callback: None,
+        tool_progress_callback: None,
+        pending_bg_results: engine.pending_bg_results.clone(),
+        active_steer_state: engine.active_steer_state.clone(),
+        hook_runner: hook_runner.clone(),
+        command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
+        auto_classifier_fn: None,
+    };
+    let Message::Assistant(parent) = assistant_message("tool parent") else {
+        unreachable!("assistant_message returns an assistant message");
+    };
+
+    let result = deps
+        .execute_tool_impl(
+            crate::query::deps::ToolExecRequest {
+                tool_use_id: "wrapper-call".to_string(),
+                tool_name: "ExecuteExtraTool".to_string(),
+                input: json!({
+                    "tool_name": "DeferredTarget",
+                    "params": {"value": 7}
+                }),
+                langfuse_batch_span: None,
+            },
+            &tools,
+            &parent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error,
+        "unexpected wrapper error: {:?}",
+        result.result.data
+    );
+    assert_eq!(result.result.data["tool_name"], "DeferredTarget");
+    assert_eq!(result.result.data["result"]["target"], "DeferredTarget");
+
+    let pre_tool_names = hook_runner.pre_tool_names.lock().clone();
+    assert!(pre_tool_names.contains(&"ExecuteExtraTool".to_string()));
+    assert!(pre_tool_names.contains(&"DeferredTarget".to_string()));
+    let post_tool_names = hook_runner.post_tool_names.lock().clone();
+    assert!(post_tool_names.contains(&"DeferredTarget".to_string()));
+
+    let denied = deps
+        .execute_tool_impl(
+            crate::query::deps::ToolExecRequest {
+                tool_use_id: "wrapper-denied".to_string(),
+                tool_name: "ExecuteExtraTool".to_string(),
+                input: json!({
+                    "tool_name": "DeniedTarget",
+                    "params": {"value": 9}
+                }),
+                langfuse_batch_span: None,
+            },
+            &tools,
+            &parent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(denied.is_error);
+    assert!(denied
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("blocked target")));
+    assert!(hook_runner
+        .pre_tool_names
+        .lock()
+        .contains(&"DeniedTarget".to_string()));
 }
 
 #[test]

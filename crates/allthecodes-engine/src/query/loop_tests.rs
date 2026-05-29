@@ -567,6 +567,43 @@ async fn query_shapes_autocompact_with_final_request_context() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
+async fn deferred_enabled_request_keeps_only_core_tool_schemas_after_discovery() {
+    allthecodes_tools::deferred_tools::clear_discovered_tools_for_tests();
+    allthecodes_tools::deferred_tools::mark_discovered_tools("unknown", ["WebBrowser".to_string()]);
+    let mut tools = allthecodes_tools::deferred_tools::tools();
+    tools.push(Arc::new(allthecodes_tools::sleep::SleepTool));
+    tools.push(Arc::new(LoopTestTool {
+        name: "WebBrowser",
+        concurrency_safe: true,
+    }));
+    let deps = Arc::new(MockDeps::new(vec![make_text_response("done")]).with_tools(tools));
+    let mut params = make_query_params(vec![make_user_message_for_test(
+        "use the discovered browser",
+    )]);
+    params.gates.deferred_tool_loading = true;
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+    assert_eq!(request_start_count(&items), 1);
+
+    let recorded = deps.recorded_params();
+    assert_eq!(recorded.len(), 1);
+    let names = recorded[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(names.contains("SearchExtraTools"));
+    assert!(names.contains("ExecuteExtraTool"));
+    assert!(names.contains("Sleep"));
+    assert!(!names.contains("WebBrowser"));
+    assert!(
+        allthecodes_tools::deferred_tools::discovered_tools_for_session("unknown")
+            .contains("WebBrowser")
+    );
+}
+
+#[tokio::test]
 async fn query_drains_steer_before_next_model_request() {
     let deps = Arc::new(MockDeps::new(vec![
         make_text_response("first answer"),

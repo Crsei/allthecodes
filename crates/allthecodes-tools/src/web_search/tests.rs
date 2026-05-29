@@ -180,6 +180,8 @@ fn make_test_ctx() -> ToolUseContext {
         bg_agent_tx: None,
         hook_runner: Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
         command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
+        available_tools: vec![],
+        execute_deferred_tool: None,
     }
 }
 

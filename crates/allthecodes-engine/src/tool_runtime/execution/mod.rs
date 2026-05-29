@@ -15,8 +15,6 @@ use serde_json::Value;
 
 use crate::types::tool::ToolResult;
 
-#[cfg(test)]
-pub(crate) use security::with_sandbox_availability_override;
 pub(crate) use security::{
     find_tool, is_plan_mode_plan_file_write, sandbox_allowed_command_applies, security_validate,
 };

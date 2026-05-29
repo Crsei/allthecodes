@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -153,6 +155,29 @@ impl FileStateCache {
 pub type AppStateUpdater = Box<dyn FnOnce(ToolAppState) -> ToolAppState>;
 pub type SetAppState = Arc<dyn Fn(AppStateUpdater) + Send + Sync>;
 
+#[derive(Debug, Clone)]
+pub struct DeferredToolExecutionRequest {
+    pub tool_use_id: String,
+    pub tool_name: String,
+    pub input: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeferredToolExecutionResult {
+    pub tool_use_id: String,
+    pub tool_name: String,
+    pub result: ToolResult,
+    pub is_error: bool,
+}
+
+pub type DeferredToolExecutor = Arc<
+    dyn Fn(
+            DeferredToolExecutionRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<DeferredToolExecutionResult>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Context passed to every tool call.
 pub struct ToolUseContext {
     pub options: ToolUseOptions,
@@ -172,6 +197,8 @@ pub struct ToolUseContext {
     pub bg_agent_tx: Option<allthecodes_types::agent_channel::AgentSender>,
     pub hook_runner: Arc<dyn allthecodes_types::hooks::HookRunner>,
     pub command_dispatcher: Arc<dyn allthecodes_types::commands::CommandDispatcher>,
+    pub available_tools: Tools,
+    pub execute_deferred_tool: Option<DeferredToolExecutor>,
 }
 
 #[derive(Debug, Clone)]

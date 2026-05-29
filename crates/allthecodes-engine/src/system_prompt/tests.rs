@@ -106,6 +106,14 @@ fn test_using_tools_without_task_create() {
 }
 
 #[test]
+fn test_deferred_tools_instruction_uses_wrapper_execution() {
+    let tools = using_tools_section(&["SearchExtraTools", "ExecuteExtraTool"]);
+    assert!(tools.contains("Discovery does not make hidden tool schemas directly visible"));
+    assert!(tools.contains("call ExecuteExtraTool"));
+    assert!(!tools.contains("prefer calling the tool directly"));
+}
+
+#[test]
 fn test_tone_and_style() {
     let tone = tone_and_style_section();
     assert!(tone.starts_with("# Tone and style"));

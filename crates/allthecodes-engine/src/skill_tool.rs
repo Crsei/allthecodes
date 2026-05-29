@@ -449,6 +449,8 @@ mod tests {
             command_dispatcher: std::sync::Arc::new(
                 allthecodes_types::commands::NoopCommandDispatcher::new(),
             ),
+            available_tools: vec![],
+            execute_deferred_tool: None,
         };
 
         // Missing skill field entirely
@@ -532,6 +534,8 @@ mod tests {
             command_dispatcher: std::sync::Arc::new(
                 allthecodes_types::commands::NoopCommandDispatcher::new(),
             ),
+            available_tools: vec![],
+            execute_deferred_tool: None,
         };
 
         let result = tool

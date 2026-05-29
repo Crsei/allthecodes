@@ -347,6 +347,19 @@ impl QueryEngine {
                 let backend = s.app_state.main_loop_backend.clone();
                 (tools, model, backend)
             };
+            let query_gates = crate::types::config::QueryGates::from_env(
+                state_ref.read().app_state.fast_mode,
+            );
+            let prompt_tools_snapshot = if query_gates.deferred_tool_loading {
+                let messages = state_ref.read().messages.clone();
+                allthecodes_tools::deferred_tools::filter_tools_for_deferred_request(
+                    tools_snapshot.clone(),
+                    &messages,
+                    session_id.as_str(),
+                )
+            } else {
+                tools_snapshot.clone()
+            };
 
             // ================================================================
             // PHASE C: Pre-Query Setup
@@ -420,7 +433,7 @@ impl QueryEngine {
                 &session_id,
                 &state_ref,
                 &hook_runner,
-                &tools_snapshot,
+                &prompt_tools_snapshot,
                 &model_name,
                 &backend_name,
             )
@@ -443,9 +456,7 @@ impl QueryEngine {
                 max_turns: config.max_turns,
                 skip_cache_write: None,
                 task_budget: config.task_budget.clone(),
-                gates: crate::types::config::QueryGates::from_env(
-                    state_ref.read().app_state.fast_mode,
-                ),
+                gates: query_gates.clone(),
             };
 
             // Create API client for the selected backend.

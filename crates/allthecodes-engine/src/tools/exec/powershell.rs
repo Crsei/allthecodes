@@ -439,6 +439,8 @@ mod tests {
                 command_dispatcher: Arc::new(
                     allthecodes_types::commands::NoopCommandDispatcher::new(),
                 ),
+                available_tools: vec![],
+                execute_deferred_tool: None,
             },
             tx,
         )

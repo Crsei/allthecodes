@@ -22,6 +22,43 @@ impl QueryEngineDeps {
         let tool = find_tool(&request.tool_name, tools)
             .ok_or_else(|| anyhow::anyhow!("tool not found: {}", request.tool_name))?;
 
+        let available_tools = self.state.read().tools.clone();
+        let execute_deferred_tool: crate::types::tool::DeferredToolExecutor = {
+            let deps = self.clone();
+            let tools = available_tools.clone();
+            let parent_message = parent_message.clone();
+            let on_progress = on_progress.clone();
+            Arc::new(
+                move |deferred_request: crate::types::tool::DeferredToolExecutionRequest| {
+                    let deps = deps.clone();
+                    let tools = tools.clone();
+                    let parent_message = parent_message.clone();
+                    let on_progress = on_progress.clone();
+                    Box::pin(async move {
+                        let result = QueryDeps::execute_tool(
+                            &deps,
+                            ToolExecRequest {
+                                tool_use_id: deferred_request.tool_use_id,
+                                tool_name: deferred_request.tool_name,
+                                input: deferred_request.input,
+                                langfuse_batch_span: None,
+                            },
+                            &tools,
+                            &parent_message,
+                            on_progress,
+                        )
+                        .await?;
+                        Ok(crate::types::tool::DeferredToolExecutionResult {
+                            tool_use_id: result.tool_use_id,
+                            tool_name: result.tool_name,
+                            result: result.result,
+                            is_error: result.is_error,
+                        })
+                    })
+                },
+            )
+        };
+
         let ctx = crate::types::tool::ToolUseContext {
             options: crate::types::tool::ToolUseOptions {
                 debug: false,
@@ -75,6 +112,8 @@ impl QueryEngineDeps {
             bg_agent_tx: self.bg_agent_tx.clone(),
             hook_runner: self.hook_runner.clone(),
             command_dispatcher: self.command_dispatcher.clone(),
+            available_tools,
+            execute_deferred_tool: Some(execute_deferred_tool),
         };
 
         // Load hook configs from AppState.

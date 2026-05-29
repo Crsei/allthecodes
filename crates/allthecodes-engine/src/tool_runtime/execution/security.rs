@@ -4,9 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-#[cfg(test)]
-use std::cell::RefCell;
-
 use serde_json::Value;
 
 use crate::permissions::dangerous;
@@ -15,25 +12,6 @@ use crate::types::tool::ToolUseContext;
 use crate::types::tool::{PermissionMode, Tool, Tools};
 
 use super::{make_error_result, ToolExecutionResult};
-
-#[cfg(test)]
-thread_local! {
-    static SANDBOX_AVAILABILITY_OVERRIDE: RefCell<Option<crate::sandbox::Availability>> =
-        const { RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn with_sandbox_availability_override<R>(
-    availability: crate::sandbox::Availability,
-    f: impl FnOnce() -> R,
-) -> R {
-    SANDBOX_AVAILABILITY_OVERRIDE.with(|slot| {
-        let previous = slot.replace(Some(availability));
-        let result = f();
-        slot.replace(previous);
-        result
-    })
-}
 
 /// Centralized security checks run before hooks and permission evaluation.
 ///
@@ -197,14 +175,6 @@ pub(crate) fn sandbox_allowed_command_applies(
         cwd,
         false,
     );
-    #[cfg(test)]
-    let mut policy = policy;
-    #[cfg(test)]
-    SANDBOX_AVAILABILITY_OVERRIDE.with(|slot| {
-        if let Some(availability) = slot.borrow().clone() {
-            policy.availability = availability;
-        }
-    });
     policy.enabled
         && policy.mode == crate::sandbox::SandboxMode::Workspace
         && policy.availability.is_available()

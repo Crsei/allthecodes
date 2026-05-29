@@ -164,7 +164,7 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
 
     if has_deferred_tool_system {
         items.push(
-            "If a non-core tool seems useful but is not directly available, use SearchExtraTools to discover it. After discovery, prefer calling the tool directly on the next turn when its schema is visible; use ExecuteExtraTool only when you need the wrapper execution path.".into()
+            "If a non-core tool seems useful but is not directly available, use SearchExtraTools to discover it. Discovery does not make hidden tool schemas directly visible; after selecting a hidden tool, call ExecuteExtraTool with the exact tool name and params.".into()
         );
     }
 

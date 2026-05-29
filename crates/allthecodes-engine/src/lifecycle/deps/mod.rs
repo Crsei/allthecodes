@@ -46,15 +46,7 @@ mod autocompact;
 mod execute;
 mod model_call;
 mod permission;
-#[cfg(test)]
-pub(crate) use autocompact::{
-    build_auto_compact_exact_count_request, exact_auto_compact_triggered,
-};
-#[cfg(test)]
-pub(crate) use model_call::merge_refreshed_mcp_tools;
 pub(crate) use model_call::{model_for_autocompact, tool_execution_result_to_exec_result};
-#[cfg(test)]
-pub(crate) use permission::central_permission_result_for_tool;
 pub(crate) use permission::{
     auto_classifier_needed, central_permission_decision_for_tool, emit_hook_permission_decision,
     emit_permission_decision_debug, hook_error_is_critical, permission_denied_message,
@@ -64,6 +56,7 @@ pub(crate) use permission::{
 /// Dependency injection bridge: provides the query loop with access to the
 /// engine's shared state (abort flag, app state, tools) and, optionally, a
 /// real `ApiClient` for making Anthropic API calls.
+#[derive(Clone)]
 pub(crate) struct QueryEngineDeps {
     pub(crate) aborted: Arc<AtomicBool>,
     pub(crate) state: Arc<RwLock<QueryEngineState>>,

@@ -32,8 +32,8 @@ pub struct QueryGates {
     pub emit_tool_use_summaries: bool,
     /// 快速模式
     pub fast_mode_enabled: bool,
-    /// Deferred tool loading: send only core tools plus tools discovered through
-    /// SearchExtraTools.
+    /// Deferred tool loading: send only the stable core tool schemas and use
+    /// SearchExtraTools/ExecuteExtraTool for hidden tools.
     pub deferred_tool_loading: bool,
 }
 

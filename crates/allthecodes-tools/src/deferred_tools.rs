@@ -8,11 +8,10 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde_json::{json, Value};
 
-use crate::registry;
 use crate::tool::{
-    PermissionResult, Tool, ToolProgress, ToolResult, ToolUseContext, Tools, ValidationResult,
+    DeferredToolExecutionRequest, Tool, ToolProgress, ToolResult, ToolUseContext, Tools,
+    ValidationResult,
 };
-use allthecodes_types::callbacks::{PermissionRequestPayload, PermissionResponsePayload};
 use allthecodes_types::message::{
     AssistantMessage, Attachment, ContentBlock, Message, MessageContent, SystemSubtype,
     ToolResultContent,
@@ -186,10 +185,7 @@ pub fn filter_tools_for_deferred_request(
 
     tools
         .into_iter()
-        .filter(|tool| {
-            let name = tool.name();
-            CORE_TOOLS.contains(name) || discovered.contains(name)
-        })
+        .filter(|tool| CORE_TOOLS.contains(tool.name()))
         .collect()
 }
 
@@ -289,12 +285,12 @@ fn query_text(input: &Value) -> Result<String> {
         .ok_or_else(|| anyhow!("query is required"))
 }
 
-async fn deferred_candidates(include_schema: bool) -> Vec<DeferredMatch> {
+async fn deferred_candidates(tools: &Tools, include_schema: bool) -> Vec<DeferredMatch> {
     let mut names = BTreeSet::new();
     let mut out = Vec::new();
-    for tool in registry::get_all_tools() {
+    for tool in tools {
         let name = tool.name().to_string();
-        if !is_deferred_tool(&name) || !names.insert(name.clone()) {
+        if !tool.is_enabled() || !is_deferred_tool(&name) || !names.insert(name.clone()) {
             continue;
         }
         let description = tool.description(&json!({})).await;
@@ -432,7 +428,7 @@ impl Tool for SearchExtraToolsTool {
         let raw_query = query_text(&input)?;
         let limit = max_results(&input)?;
         let (query, discover) = discover_query(&raw_query);
-        let mut candidates = deferred_candidates(discover).await;
+        let mut candidates = deferred_candidates(&ctx.available_tools, discover).await;
         let total_deferred_tools = candidates.len();
 
         let matches = if let Some(selected) = selected_names(&raw_query) {
@@ -519,7 +515,7 @@ impl Tool for SearchExtraToolsTool {
     }
 
     async fn prompt(&self) -> String {
-        "Search deferred tools by name or intent. Use select:<tool-name> to load a specific deferred tool, then call it directly on a later turn or through ExecuteExtraTool."
+        "Search deferred tools by name or intent. Use select:<tool-name> to mark a specific deferred tool as discovered, then execute it through ExecuteExtraTool. Use discover:<query> only to inspect descriptions and schemas without changing discovered state."
             .to_string()
     }
 }
@@ -568,8 +564,8 @@ impl Tool for ExecuteExtraToolTool {
         &self,
         input: Value,
         ctx: &ToolUseContext,
-        parent_message: &AssistantMessage,
-        on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
+        _parent_message: &AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
         let tool_name = input
             .get("tool_name")
@@ -577,6 +573,9 @@ impl Tool for ExecuteExtraToolTool {
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .ok_or_else(|| anyhow!("tool_name is required"))?;
+        if matches!(tool_name, "ExecuteExtraTool" | "SearchExtraTools") {
+            bail!("{tool_name} cannot be executed through ExecuteExtraTool");
+        }
         if !is_deferred_tool(tool_name) {
             bail!("{tool_name} is a core tool; call it directly instead of ExecuteExtraTool");
         }
@@ -593,83 +592,61 @@ impl Tool for ExecuteExtraToolTool {
             .cloned()
             .filter(Value::is_object)
             .ok_or_else(|| anyhow!("params must be an object"))?;
-        let tools = registry::get_all_tools();
-        let target = tools
-            .into_iter()
+        let target = ctx
+            .available_tools
+            .iter()
             .find(|tool| tool.name() == tool_name)
             .ok_or_else(|| anyhow!("deferred tool not found: {tool_name}"))?;
         if !target.is_enabled() {
             bail!("deferred tool is disabled: {tool_name}");
         }
 
-        match target.validate_input(&params, ctx).await {
-            ValidationResult::Ok => {}
-            ValidationResult::Error { message, .. } => {
-                bail!("Input validation error for {tool_name}: {message}");
-            }
+        let execute = ctx
+            .execute_deferred_tool
+            .as_ref()
+            .ok_or_else(|| anyhow!("deferred tool execution is unavailable in this context"))?;
+        let result = execute(DeferredToolExecutionRequest {
+            tool_use_id: format!("execute-extra-{tool_name}"),
+            tool_name: tool_name.to_string(),
+            input: params,
+        })
+        .await?;
+        if result.is_error {
+            bail!("{}", tool_result_error_text(&result.result));
         }
 
-        let effective_input = match target.check_permissions(&params, ctx).await {
-            PermissionResult::Allow { updated_input } => updated_input,
-            PermissionResult::Deny { message } => {
-                bail!("Permission denied for {tool_name}: {message}")
-            }
-            PermissionResult::Ask { message } => {
-                let Some(callback) = ctx.permission_callback.as_ref() else {
-                    bail!("Permission required for {tool_name}: {message}");
-                };
-                let response = callback(PermissionRequestPayload {
-                    tool_use_id: format!("execute-extra-{tool_name}"),
-                    tool_name: tool_name.to_string(),
-                    tool_input: params.clone(),
-                    message,
-                    options: vec![
-                        "Allow".to_string(),
-                        "Deny".to_string(),
-                        "Always Allow".to_string(),
-                    ],
-                })
-                .await;
-                if !matches!(
-                    response.normalized_decision().as_str(),
-                    "allow" | "always_allow"
-                ) {
-                    bail!(
-                        "Permission denied for {tool_name}: {}",
-                        denial_message(&response)
-                    );
-                }
-                params
-            }
-        };
-
-        let result = target
-            .call(effective_input, ctx, parent_message, on_progress)
-            .await?;
         Ok(ToolResult {
             data: json!({
-                "tool_name": tool_name,
-                "result": result.data,
+                "tool_use_id": result.tool_use_id,
+                "tool_name": result.tool_name,
+                "result": result.result.data,
             }),
-            model_content: result.model_content,
+            model_content: result.result.model_content,
             display_preview: result
+                .result
                 .display_preview
                 .or_else(|| Some(format!("Executed deferred tool {tool_name}"))),
-            new_messages: result.new_messages,
+            new_messages: result.result.new_messages,
         })
     }
 
     async fn prompt(&self) -> String {
-        "Execute a deferred tool after SearchExtraTools has discovered it. Prefer calling the discovered tool directly if its schema is visible in the next request."
+        "Execute a deferred tool after SearchExtraTools has discovered it. Hidden deferred tools are not added to the visible schema; pass the exact target tool name and params through ExecuteExtraTool."
             .to_string()
     }
 }
 
-fn denial_message(response: &PermissionResponsePayload) -> String {
-    response
-        .feedback
-        .clone()
-        .unwrap_or_else(|| response.normalized_decision())
+fn tool_result_error_text(result: &ToolResult) -> String {
+    result.display_preview.clone().unwrap_or_else(|| {
+        result
+            .data
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| {
+                serde_json::to_string(&result.data)
+                    .unwrap_or_else(|_| "deferred tool failed".into())
+            })
+    })
 }
 
 #[cfg(test)]
@@ -679,6 +656,7 @@ mod tests {
         Attachment, AttachmentMessage, CompactMetadata, ContentBlock, MessageContent,
         SystemMessage, UserMessage,
     };
+    use std::sync::Arc;
 
     struct NamedTool(&'static str);
 
@@ -719,12 +697,187 @@ mod tests {
         }
     }
 
+    fn test_context(session_id: &str, available_tools: Tools) -> ToolUseContext {
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        ToolUseContext {
+            options: crate::tool::ToolUseOptions {
+                debug: false,
+                main_loop_model: "test-model".to_string(),
+                verbose: false,
+                is_non_interactive_session: false,
+                custom_system_prompt: None,
+                append_system_prompt: None,
+                max_budget_usd: None,
+            },
+            abort_signal: rx,
+            read_file_state: crate::tool::FileStateCache::default(),
+            get_app_state: Arc::new(crate::tool::ToolAppState::default),
+            set_app_state: Arc::new(|_| {}),
+            session_id: session_id.to_string(),
+            langfuse_session_id: session_id.to_string(),
+            messages: vec![],
+            agent_id: None,
+            agent_type: None,
+            query_tracking: None,
+            permission_callback: None,
+            ask_user_callback: None,
+            permission_event_callback: None,
+            bg_agent_tx: None,
+            hook_runner: Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
+            command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
+            available_tools,
+            execute_deferred_tool: None,
+        }
+    }
+
+    fn parent_message() -> AssistantMessage {
+        AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1,
+            role: "assistant".to_string(),
+            content: vec![],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        }
+    }
+
     #[test]
     fn core_boundary_marks_product_tools_deferred() {
         assert!(!is_deferred_tool("Read"));
         assert!(!is_deferred_tool("SearchExtraTools"));
+        assert!(!is_deferred_tool("ExecuteExtraTool"));
         assert!(is_deferred_tool("CronCreate"));
         assert!(is_deferred_tool("WebBrowser"));
+        assert!(is_deferred_tool("Workflow"));
+        assert!(is_deferred_tool("LocalMemoryRecall"));
+        assert!(is_deferred_tool("VaultHttpFetch"));
+        assert!(is_deferred_tool("GetGoal"));
+        assert!(is_deferred_tool("ViewImage"));
+        assert!(is_deferred_tool("ListAgents"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn search_uses_runtime_catalog_and_marks_keyword_matches() {
+        clear_discovered_tools_for_tests();
+        let ctx = test_context(
+            "search-keyword",
+            vec![
+                Arc::new(crate::sleep::SleepTool),
+                Arc::new(NamedTool("RuntimeOnly")),
+            ],
+        );
+        let result = SearchExtraToolsTool
+            .call(
+                json!({"query": "runtime", "max_results": 10}),
+                &ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.data["matches"][0]["name"], "RuntimeOnly");
+        assert_eq!(result.data["deferred_tools_delta"], json!(["RuntimeOnly"]));
+        assert!(discovered_tools_for_session("search-keyword").contains("RuntimeOnly"));
+        assert!(!result.data["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "Sleep"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn search_select_marks_and_discover_does_not_mark() {
+        clear_discovered_tools_for_tests();
+        let ctx = test_context(
+            "search-select",
+            vec![
+                Arc::new(NamedTool("WebBrowser")),
+                Arc::new(NamedTool("Workflow")),
+            ],
+        );
+
+        let selected = SearchExtraToolsTool
+            .call(
+                json!({"query": "select:WebBrowser", "max_results": 10}),
+                &ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(selected.data["deferred_tools_delta"], json!(["WebBrowser"]));
+        assert!(discovered_tools_for_session("search-select").contains("WebBrowser"));
+
+        clear_discovered_tools_for_tests();
+        let discover_ctx = test_context("search-discover", vec![Arc::new(NamedTool("Workflow"))]);
+        let discovered = SearchExtraToolsTool
+            .call(
+                json!({"query": "discover:workflow", "max_results": 10}),
+                &discover_ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(discovered.data["deferred_tools_delta"], json!([]));
+        assert!(discovered.data["matches"][0].get("input_schema").is_some());
+        assert!(discovered_tools_for_session("search-discover").is_empty());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn execute_extra_tool_requires_discovery_and_uses_deferred_executor() {
+        clear_discovered_tools_for_tests();
+        let mut ctx = test_context("execute-runtime", vec![Arc::new(NamedTool("RuntimeOnly"))]);
+
+        let missing = ExecuteExtraToolTool
+            .call(
+                json!({"tool_name": "RuntimeOnly", "params": {}}),
+                &ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(missing.to_string().contains("use SearchExtraTools first"));
+
+        mark_discovered_tools("execute-runtime", ["RuntimeOnly".to_string()]);
+        let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let calls_for_executor = calls.clone();
+        ctx.execute_deferred_tool = Some(Arc::new(move |request| {
+            calls_for_executor.lock().push(request.tool_name.clone());
+            Box::pin(async move {
+                Ok(crate::tool::DeferredToolExecutionResult {
+                    tool_use_id: request.tool_use_id,
+                    tool_name: request.tool_name,
+                    result: ToolResult {
+                        data: json!({"ok": true}),
+                        display_preview: Some("runtime ok".to_string()),
+                        ..Default::default()
+                    },
+                    is_error: false,
+                })
+            })
+        }));
+
+        let result = ExecuteExtraToolTool
+            .call(
+                json!({"tool_name": "RuntimeOnly", "params": {}}),
+                &ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(&*calls.lock(), &["RuntimeOnly".to_string()]);
+        assert_eq!(result.data["tool_name"], "RuntimeOnly");
+        assert_eq!(result.data["result"], json!({"ok": true}));
     }
 
     #[test]
@@ -863,7 +1016,8 @@ mod tests {
     }
 
     #[test]
-    fn filter_keeps_core_and_discovered_tools() {
+    #[serial_test::serial]
+    fn filter_keeps_only_core_tools_even_after_discovery() {
         clear_discovered_tools_for_tests();
         let tools: Tools = vec![
             std::sync::Arc::new(crate::sleep::SleepTool),
@@ -886,9 +1040,7 @@ mod tests {
 
         mark_discovered_tools("session-b", ["CronCreate".to_string()]);
         let filtered = names(filter_tools_for_deferred_request(tools, &[], "session-b"));
-        assert_eq!(
-            filtered,
-            BTreeSet::from(["CronCreate".to_string(), "Sleep".to_string()])
-        );
+        assert_eq!(filtered, BTreeSet::from(["Sleep".to_string()]));
+        assert!(discovered_tools_for_session("session-b").contains("CronCreate"));
     }
 }
