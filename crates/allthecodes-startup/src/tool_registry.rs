@@ -132,6 +132,8 @@ mod tests {
 
         for name in [
             "SubscribePR",
+            "Monitor",
+            "SendUserFile",
             "TerminalCapture",
             "ReviewArtifact",
             "Snip",
@@ -141,7 +143,7 @@ mod tests {
         ] {
             assert!(
                 tools.iter().any(|t| t.name() == name),
-                "should find {name} P2 product tool"
+                "should find {name} P1/P2 product tool"
             );
         }
 

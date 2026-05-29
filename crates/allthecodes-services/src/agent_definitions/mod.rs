@@ -646,6 +646,7 @@ pub fn available_tools() -> Vec<AgentToolInfo> {
         "Brief",
         "AskUserQuestion",
         "Monitor",
+        "SendUserFile",
         "SendMessage",
         "TeamSpawn",
     ];

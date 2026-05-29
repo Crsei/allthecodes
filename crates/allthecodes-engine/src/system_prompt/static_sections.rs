@@ -103,6 +103,8 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
     let has_product_context_tools = enabled_tools.contains(&"CtxInspect")
         || enabled_tools.contains(&"Snip")
         || enabled_tools.contains(&"TerminalCapture")
+        || enabled_tools.contains(&"Monitor")
+        || enabled_tools.contains(&"SendUserFile")
         || enabled_tools.contains(&"ReviewArtifact");
     let has_remote_peer_tools =
         enabled_tools.contains(&"ListPeers") && enabled_tools.contains(&"RemoteTrigger");
@@ -148,7 +150,7 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
 
     if has_product_context_tools {
         items.push(
-            "Use CtxInspect to inspect context usage, TerminalCapture to re-read recent shell output, ReviewArtifact to present structured annotations, and Snip only when you need to mark older messages for compaction.".into()
+            "Use CtxInspect to inspect context usage, Monitor for commands that need periodic status updates, TerminalCapture to capture PTY command output or re-read recent shell output, SendUserFile when the user explicitly asks for a file to be sent, ReviewArtifact to present structured annotations, and Snip only when you need to mark older messages for compaction.".into()
         );
     }
 

@@ -721,6 +721,8 @@ fn aliases_for_tool(name: &str, display_name: &str, source: ToolSearchSource) ->
             "CronDelete" => vec!["delete schedule", "remove cron", "cancel recurring task"],
             "CronList" => vec!["list schedules", "cron jobs", "scheduled tasks"],
             "WebBrowser" => vec!["javascript page", "rendered page", "browser", "web app"],
+            "Monitor" => vec!["monitor command", "watch process", "background status"],
+            "SendUserFile" => vec!["send file", "file attachment", "share file contents"],
             "CtxInspect" => vec!["context usage", "token budget", "message count"],
             "TerminalCapture" => vec!["terminal output", "shell output", "capture logs"],
             "ReviewArtifact" => vec!["artifact review", "inline annotations", "review code"],

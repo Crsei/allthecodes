@@ -551,7 +551,7 @@ fn exact_tool_kind(tool_name: &str) -> Option<PermissionRouteKind> {
         "NotebookEdit" | "notebook_edit" => Some(PermissionRouteKind::NotebookEdit),
         "SedEdit" | "sed_edit" => Some(PermissionRouteKind::SedEdit),
         "Filesystem" | "filesystem" | "Read" | "read" | "Glob" | "glob" | "Grep" | "grep"
-        | "LS" | "ls" => Some(PermissionRouteKind::Filesystem),
+        | "LS" | "ls" | "SendUserFile" | "send_user_file" => Some(PermissionRouteKind::Filesystem),
         "Skill" | "skill" | "SkillLoad" | "skill_load" => Some(PermissionRouteKind::Skill),
         "Monitor" | "monitor" => Some(PermissionRouteKind::Monitor),
         "ReviewArtifact" | "review_artifact" => Some(PermissionRouteKind::ReviewArtifact),
