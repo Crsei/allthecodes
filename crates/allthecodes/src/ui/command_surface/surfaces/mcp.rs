@@ -71,12 +71,13 @@ impl McpSurface {
         detail_lines.push(String::new());
         detail_lines.push("Commands".to_string());
         detail_lines.push(match self.action_index {
-            0 => plain_row("Enter:", "server details"),
+            0 => plain_row("Enter:", "/mcp status"),
             1 => plain_row("Enter:", "/mcp edit <server>"),
             2 => plain_row("Enter:", "/mcp reconnect <server>"),
             3 => plain_row("Enter:", "/mcp remove <server> direct-execute"),
             _ => plain_row("Enter:", "select"),
         });
+        detail_lines.push(plain_row("v:", "server details"));
         detail_lines.push(plain_row("a:", "/mcp add "));
         detail_lines.push(plain_row("t:", "tools for selected server"));
         detail_lines.push(plain_row("s:", "MCP settings"));
@@ -314,14 +315,7 @@ impl McpSurface {
                 self.state.move_next();
                 CommandSurfaceOutcome::None
             }
-            KeyCode::Enter => {
-                if self.action_index == 0 {
-                    self.action_index = VIEW_SERVER_DETAIL;
-                    CommandSurfaceOutcome::None
-                } else {
-                    self.selected_mcp_action()
-                }
-            }
+            KeyCode::Enter => self.selected_mcp_action(),
             KeyCode::Char('a') => CommandSurfaceOutcome::FillPrompt("/mcp add ".to_string()),
             KeyCode::Char('e') => selected_server_command(&self.state, "/mcp edit ", " "),
             KeyCode::Char('r') => selected_server_command(&self.state, "/mcp reconnect ", ""),

@@ -16,9 +16,7 @@ use super::headers::{
     build_anthropic_headers, build_anthropic_headers_for_body,
     build_anthropic_headers_for_body_with_beta_policy, extend_header_string_map,
 };
-use super::model::{
-    build_anthropic_count_tokens_body, resolve_request_model_for_provider,
-};
+use super::model::{build_anthropic_count_tokens_body, resolve_request_model_for_provider};
 use super::provider::build_openai_compat_url;
 use super::types::{
     AnthropicAuth, ApiClient, ApiClientConfig, ApiProvider, ExactTokenCount, MessagesRequest,

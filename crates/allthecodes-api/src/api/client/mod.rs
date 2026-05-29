@@ -1,25 +1,25 @@
 //! API client -- creates provider-specific HTTP clients and drives the
 //! Anthropic Messages API (streaming + non-streaming).
 
-mod types;
-mod headers;
 mod body;
+mod builder;
+mod headers;
+mod messages;
 mod model;
 mod provider;
-mod builder;
-mod messages;
 mod stream;
 #[cfg(test)]
 mod tests;
+mod types;
 
-pub use types::*;
-pub(crate) use headers::*;
 pub use body::*;
+pub(crate) use headers::*;
 pub use model::*;
 pub(crate) use provider::*;
 pub(crate) use stream::parse_sse_byte_stream;
 #[cfg(test)]
 use stream::parse_sse_text;
+pub use types::*;
 
 /// Return true if env var `name` is set to a truthy value (`1`, `true`, `yes`,
 /// `on`). Matches claude-code-bun's `isEnvTruthy` semantics.

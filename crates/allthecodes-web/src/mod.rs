@@ -29,6 +29,10 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/command", post(handlers::command_handler))
         .route("/api/debug/state", get(handlers::debug_state_handler))
         .route(
+            "/api/debug/sessions/{id}/trace",
+            get(handlers::debug_session_trace_handler),
+        )
+        .route(
             "/api/debug/actions/{*action}",
             post(handlers::debug_action_handler),
         )
@@ -42,6 +46,8 @@ pub fn build_router(state: WebState) -> Router {
         )
         // Phase 4: xterm.js TUI WebSocket bridge
         .route("/api/tui/ws", any(ws::tui::tui_ws_handler))
+        // Phase 5: IPC WebSocket bridge for FrontendMessage/BackendMessage
+        .route("/api/ipc/ws", any(ws::ipc::ipc_ws_handler))
         // Static files (SPA)
         .fallback(static_files::static_handler)
         // Middleware

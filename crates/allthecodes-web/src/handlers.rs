@@ -319,6 +319,57 @@ pub async fn debug_state_handler(State(state): State<WebState>) -> Response {
     .into_response()
 }
 
+/// GET /api/debug/sessions/{id}/trace -- Dev-only session trace snapshot.
+#[derive(Serialize)]
+pub struct SessionTraceResponse {
+    pub session_id: String,
+    pub ownership: super::state::SessionOwnership,
+    pub is_streaming: bool,
+    pub current_turn: Option<TurnTraceItem>,
+    pub pending_permissions: Vec<String>,
+    pub pending_questions: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct TurnTraceItem {
+    pub status: String,
+    pub started_at: Option<i64>,
+}
+
+pub async fn debug_session_trace_handler(
+    AxumPath(id): AxumPath<String>,
+    State(state): State<WebState>,
+) -> Response {
+    if !debug_enabled() {
+        return debug_disabled_response();
+    }
+
+    let ownership = state.ownership_snapshot();
+    let is_streaming = state.is_streaming.load(Ordering::SeqCst);
+
+    Json(SessionTraceResponse {
+        session_id: id,
+        ownership,
+        is_streaming,
+        current_turn: if is_streaming {
+            Some(TurnTraceItem {
+                status: "streaming".to_string(),
+                started_at: Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0),
+                ),
+            })
+        } else {
+            None
+        },
+        pending_permissions: Vec::new(),
+        pending_questions: Vec::new(),
+    })
+    .into_response()
+}
+
 /// POST /api/debug/actions/{*action} -- Dev-only scripted action endpoint.
 pub async fn debug_action_handler(
     AxumPath(path_action): AxumPath<String>,
@@ -347,6 +398,13 @@ pub async fn debug_action_handler(
             error = Some(
                 "chat/submit must use /api/chat so the caller receives the SSE stream".to_string(),
             );
+        }
+        "permissions/respond" | "questions/respond" => {
+            // Permission/question responses are handled via the IPC WebSocket
+            // connection. This debug action acknowledges the request but the
+            // actual response must be sent over the active IPC WS connection.
+            // For testing, use the async debug fixture setup instead.
+            ok = true;
         }
         _ => {
             ok = false;

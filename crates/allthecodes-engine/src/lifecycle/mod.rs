@@ -351,9 +351,19 @@ impl QueryEngine {
         self.state.write().permission_callback = Some(cb);
     }
 
+    /// Remove the permission callback, restoring default behaviour (deny).
+    pub fn clear_permission_callback(&self) {
+        self.state.write().permission_callback = None;
+    }
+
     /// Set the async AskUserQuestion callback used by headless/TUI mode.
     pub fn set_ask_user_callback(&self, cb: crate::types::tool::AskUserCallback) {
         self.state.write().ask_user_callback = Some(cb);
+    }
+
+    /// Remove the AskUserQuestion callback.
+    pub fn clear_ask_user_callback(&self) {
+        self.state.write().ask_user_callback = None;
     }
 
     pub fn set_permission_event_callback(&self, cb: crate::types::tool::PermissionEventCallback) {

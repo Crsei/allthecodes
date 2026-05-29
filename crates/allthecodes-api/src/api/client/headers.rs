@@ -140,10 +140,7 @@ fn body_contains_cache_attr(value: &Value, attr: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Copy entries from a [`HeaderMap`] into a plain [`HashMap`].
-pub(super) fn extend_header_string_map(
-    map: &mut HashMap<String, String>,
-    headers: &HeaderMap,
-) {
+pub(super) fn extend_header_string_map(map: &mut HashMap<String, String>, headers: &HeaderMap) {
     for (name, value) in headers {
         if let Ok(value) = value.to_str() {
             let name = if name == reqwest::header::AUTHORIZATION {

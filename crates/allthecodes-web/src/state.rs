@@ -63,7 +63,11 @@ impl WebState {
         self.try_claim(SessionOwner::TuiPty, session_id)
     }
 
-    fn try_claim(&self, owner: SessionOwner, session_id: String) -> Result<(), SessionOwnership> {
+    pub fn try_claim(
+        &self,
+        owner: SessionOwner,
+        session_id: String,
+    ) -> Result<(), SessionOwnership> {
         let mut current = self.ownership.write();
         if current.owner != SessionOwner::None {
             return Err(current.clone());

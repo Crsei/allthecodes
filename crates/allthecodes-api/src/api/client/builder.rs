@@ -7,9 +7,9 @@ use super::model::{
     selected_api_provider_from_settings,
 };
 use super::types::{
-    AnthropicAuth, ApiClient, ApiClientConfig, ApiProvider,
-    ANTHROPIC_DEFAULT_MODEL_ALIAS, OPENAI_CODEX_BASE_URL_ENV, OPENAI_CODEX_MODEL_ENV,
-    OPENAI_CODEX_PROVIDER_NAME, OPENAI_PROVIDER_NAME,
+    AnthropicAuth, ApiClient, ApiClientConfig, ApiProvider, ANTHROPIC_DEFAULT_MODEL_ALIAS,
+    OPENAI_CODEX_BASE_URL_ENV, OPENAI_CODEX_MODEL_ENV, OPENAI_CODEX_PROVIDER_NAME,
+    OPENAI_PROVIDER_NAME,
 };
 use crate::api::providers::{AnthropicEndpointKind, ProviderInfo, ProviderProtocol};
 

@@ -726,6 +726,12 @@ fn mcp_surface_action_tabs_apply_to_selected_server() {
         action_index: 0,
     });
 
+    assert!(surface.render().contains("> Status"));
+    assert_eq!(
+        surface.handle_key(key(KeyCode::Enter)),
+        CommandSurfaceOutcome::Submit("/mcp status".to_string())
+    );
+
     surface.handle_key(key(KeyCode::Right));
     assert!(surface.render().contains("> Edit"));
     assert_eq!(
@@ -738,6 +744,16 @@ fn mcp_surface_action_tabs_apply_to_selected_server() {
         surface.handle_key(key(KeyCode::Enter)),
         CommandSurfaceOutcome::Submit("/mcp reconnect db".to_string())
     );
+
+    surface.handle_key(key(KeyCode::Right));
+    assert!(surface.render().contains("> Remove"));
+    assert_eq!(
+        surface.handle_key(key(KeyCode::Enter)),
+        CommandSurfaceOutcome::Submit("/mcp remove db".to_string())
+    );
+
+    surface.handle_key(key(KeyCode::Char('v')));
+    assert!(surface.render().contains("Server details"));
 }
 
 #[test]
