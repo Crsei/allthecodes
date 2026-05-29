@@ -184,18 +184,21 @@ impl Tool for TerminalCaptureTool {
         let lines = input.get("lines").and_then(Value::as_u64).unwrap_or(50) as usize;
         let requested_id = input.get("tool_use_id").and_then(Value::as_str);
         let shell_ids = shell_tool_use_ids(&ctx.messages);
-        let captured =
-            find_tool_result_text(&ctx.messages, requested_id, &shell_ids).ok_or_else(|| {
-                anyhow!("No matching shell tool output found in conversation history")
-            })?;
-        let content = tail_lines(&captured.content, lines);
+        let captured = find_tool_result_text(&ctx.messages, requested_id, &shell_ids);
+        let content = captured
+            .as_ref()
+            .map(|captured| tail_lines(&captured.content, lines))
+            .unwrap_or_default();
         let line_count = content.lines().count();
         Ok(ToolResult {
             data: json!({
                 "content": content,
                 "line_count": line_count,
-                "tool_use_id": captured.tool_use_id,
-                "source": captured.source_tool,
+                "tool_use_id": captured.as_ref().map(|captured| captured.tool_use_id.as_str()),
+                "source": captured
+                    .as_ref()
+                    .map(|captured| captured.source_tool.as_str())
+                    .unwrap_or("terminal-panel-runtime"),
                 "panel_id": input.get("panel_id").and_then(Value::as_str),
             }),
             display_preview: Some(format!("Captured {line_count} terminal line(s)")),
@@ -1002,6 +1005,29 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
     fn tail_lines_returns_requested_suffix() {
@@ -1015,5 +1041,93 @@ mod tests {
             normalize_daemon_url("http://127.0.0.1:19836/").unwrap(),
             "http://127.0.0.1:19836"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn list_peers_reads_local_daemon_state() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let daemon = home.path().join("daemon");
+        fs::create_dir_all(&daemon).unwrap();
+        fs::write(
+            daemon.join("supervisor.json"),
+            json!({
+                "status": "running",
+                "pid": 999_999,
+                "cwd": "/workspace/project",
+                "port": 19836,
+                "health_url": "http://127.0.0.1:19836/health"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            daemon.join("control-token.json"),
+            json!({ "token": "secret-token" }).to_string(),
+        )
+        .unwrap();
+
+        let peers = list_peers(false).unwrap();
+
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].name, "local-daemon");
+        assert_eq!(peers[0].url, "http://127.0.0.1:19836");
+        assert_eq!(peers[0].status.as_deref(), Some("running"));
+        assert!(peers[0].has_token);
+    }
+
+    #[test]
+    #[serial]
+    fn configured_peers_support_array_and_token_env() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let _token = EnvGuard::set("ALLTHECODES_TEST_PEER_TOKEN", "peer-secret");
+        fs::write(
+            home.path().join("peers.json"),
+            json!([
+                {
+                    "name": "build-box",
+                    "url": "http://127.0.0.1:19837",
+                    "token_env": "ALLTHECODES_TEST_PEER_TOKEN",
+                    "cwd": "/workspace/build"
+                }
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        let peers = list_peers(false).unwrap();
+        let target = resolve_remote_target(&json!({ "peer": "build-box" })).unwrap();
+
+        assert_eq!(peers.len(), 1);
+        assert_eq!(
+            peers[0].address,
+            "allthecodes-daemon:http://127.0.0.1:19837"
+        );
+        assert!(peers[0].has_token);
+        assert_eq!(target.name.as_deref(), Some("build-box"));
+        assert_eq!(target.url, "http://127.0.0.1:19837");
+        assert_eq!(target.token.as_deref(), Some("peer-secret"));
+    }
+
+    #[test]
+    #[serial]
+    fn remote_trigger_audit_appends_ndjson_without_token() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+
+        let audit = append_remote_trigger_audit(
+            "http://127.0.0.1:19836",
+            true,
+            202,
+            &json!({ "accepted": true }),
+        )
+        .unwrap();
+        let raw = fs::read_to_string(home.path().join("remote-trigger-audit.ndjson")).unwrap();
+
+        assert!(raw.contains(&audit.audit_id));
+        assert!(raw.contains("\"status\":202"));
+        assert!(!raw.contains("secret"));
     }
 }
