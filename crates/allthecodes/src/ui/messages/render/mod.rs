@@ -496,6 +496,7 @@ mod tests {
                     pre_compact_token_count: 12_000,
                     post_compact_token_count: 4_000,
                     preserved_segment: None,
+                    pre_compact_discovered_tools: None,
                 }),
             },
             content: String::new(),

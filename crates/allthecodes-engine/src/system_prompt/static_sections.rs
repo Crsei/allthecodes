@@ -108,6 +108,8 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
         || enabled_tools.contains(&"ReviewArtifact");
     let has_remote_peer_tools =
         enabled_tools.contains(&"ListPeers") && enabled_tools.contains(&"RemoteTrigger");
+    let has_deferred_tool_system =
+        enabled_tools.contains(&"SearchExtraTools") && enabled_tools.contains(&"ExecuteExtraTool");
 
     let mut items: Vec<String> = vec![
         "Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:".into(),
@@ -157,6 +159,12 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
     if has_remote_peer_tools {
         items.push(
             "Use ListPeers to discover allthecodes daemon peers before RemoteTrigger. RemoteTrigger submits a prompt to another allthecodes instance and requires explicit permission.".into()
+        );
+    }
+
+    if has_deferred_tool_system {
+        items.push(
+            "If a non-core tool seems useful but is not directly available, use SearchExtraTools to discover it. After discovery, prefer calling the tool directly on the next turn when its schema is visible; use ExecuteExtraTool only when you need the wrapper execution path.".into()
         );
     }
 

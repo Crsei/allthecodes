@@ -208,6 +208,7 @@ pub fn create_compact_boundary_with_preserved_segment(
                 pre_compact_token_count: pre_compact_tokens,
                 post_compact_token_count: post_compact_tokens,
                 preserved_segment,
+                pre_compact_discovered_tools: None,
             }),
         },
         content: format!(

@@ -87,7 +87,7 @@ target/release/allthecodes -p "summarize this repository"
 Web UI 模式：
 
 ```bash
-target/release/allthecodes --web --web-port 3001
+target/release/allthecodes --web --web-port 17322
 ```
 
 发布构建使用 GitHub Actions 的 `release` workflow。推送 `vX.Y.Z` tag

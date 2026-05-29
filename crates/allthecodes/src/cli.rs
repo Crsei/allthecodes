@@ -140,8 +140,8 @@ pub struct Cli {
     #[arg(long)]
     pub web: bool,
 
-    /// Port for the web UI server (default: 3001).
-    #[arg(long = "web-port", default_value_t = 3001)]
+    /// Port for the web UI server (default: 17322).
+    #[arg(long = "web-port", default_value_t = 17322)]
     pub web_port: u16,
 
     /// Do not auto-open browser when starting web UI.

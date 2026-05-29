@@ -76,6 +76,7 @@ pub fn snip_compact_if_needed(messages: Vec<Message>, max_turns: usize) -> SnipR
                 pre_compact_token_count: tokens_freed,
                 post_compact_token_count: 0,
                 preserved_segment: None,
+                pre_compact_discovered_tools: None,
             }),
         },
         content: format!(

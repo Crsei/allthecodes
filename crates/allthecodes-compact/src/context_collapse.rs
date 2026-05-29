@@ -74,6 +74,7 @@ pub fn context_collapse_if_needed(messages: Vec<Message>, model: &str) -> Contex
                 pre_compact_token_count: initial_tokens,
                 post_compact_token_count: 0,
                 preserved_segment: None,
+                pre_compact_discovered_tools: None,
             }),
         },
         content: format!("<context_collapse>\n{}\n</context_collapse>", summary),

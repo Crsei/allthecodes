@@ -86,7 +86,19 @@ pub(crate) async fn prepare_model_request(
         }
     }
 
-    let tools_for_request = deps.get_tools();
+    let deferred_session_id = context
+        .gates
+        .deferred_tool_loading
+        .then(|| deps.audit_context().session_id);
+    let tools_for_request = if let Some(session_id) = deferred_session_id.as_deref() {
+        allthecodes_tools::deferred_tools::filter_tools_for_deferred_request(
+            deps.get_tools(),
+            &messages,
+            session_id,
+        )
+    } else {
+        deps.get_tools()
+    };
     let app_state_for_request = deps.get_app_state();
     let request_model = app_state_for_request.main_loop_model.clone();
     let request_thinking_enabled = app_state_for_request.thinking_enabled;
@@ -112,7 +124,7 @@ pub(crate) async fn prepare_model_request(
         advisor_model: request_advisor_model.clone(),
     };
 
-    let (messages, auto_compact_tracking) = match deps
+    let (mut messages, auto_compact_tracking) = match deps
         .autocompact(autocompact_params, state.auto_compact_tracking.clone())
         .await
     {
@@ -138,6 +150,15 @@ pub(crate) async fn prepare_model_request(
             (messages, state.auto_compact_tracking.clone())
         }
     };
+
+    if let Some(session_id) = deferred_session_id.as_deref() {
+        let discovered =
+            allthecodes_tools::deferred_tools::discovered_tools_for_session(session_id);
+        allthecodes_tools::deferred_tools::annotate_compact_boundaries_with_discovered_tools(
+            &mut messages,
+            &discovered,
+        );
+    }
 
     state.messages = messages;
     state.auto_compact_tracking = auto_compact_tracking;

@@ -140,6 +140,7 @@ fn make_compact_boundary_with_segment(
                 pre_compact_token_count: pre,
                 post_compact_token_count: post,
                 preserved_segment,
+                pre_compact_discovered_tools: None,
             }),
         },
         content: format!("[Compacted: {} \u{2192} {} tokens]", pre, post),

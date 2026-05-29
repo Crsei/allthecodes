@@ -720,6 +720,7 @@ mod tests {
                     pre_compact_token_count: 100,
                     post_compact_token_count: 40,
                     preserved_segment: None,
+                    pre_compact_discovered_tools: None,
                 }),
             }),
             "message-1",

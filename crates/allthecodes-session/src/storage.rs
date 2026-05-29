@@ -756,6 +756,9 @@ fn compact_metadata_from_value(
         preserved_segment: value
             .get("preserved_segment")
             .and_then(preserved_segment_from_value),
+        pre_compact_discovered_tools: value
+            .get("pre_compact_discovered_tools")
+            .and_then(string_vec_from_value),
     })
 }
 
@@ -776,6 +779,16 @@ fn preserved_segment_from_value(
             .map(ToString::to_string),
         preserved_message_uuids,
     })
+}
+
+fn string_vec_from_value(value: &serde_json::Value) -> Option<Vec<String>> {
+    Some(
+        value
+            .as_array()?
+            .iter()
+            .filter_map(|v| v.as_str().map(ToString::to_string))
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------

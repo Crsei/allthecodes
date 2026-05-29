@@ -130,6 +130,13 @@ mod tests {
             );
         }
 
+        for name in ["SearchExtraTools", "ExecuteExtraTool"] {
+            assert!(
+                tools.iter().any(|t| t.name() == name),
+                "should find {name} deferred tool system tool"
+            );
+        }
+
         for name in [
             "SubscribePR",
             "Monitor",

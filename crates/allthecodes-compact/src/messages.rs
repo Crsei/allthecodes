@@ -284,6 +284,7 @@ mod tests {
                         pre_compact_token_count: 1000,
                         post_compact_token_count: 200,
                         preserved_segment: None,
+                        pre_compact_discovered_tools: None,
                     }),
                 },
                 content: "compacted".into(),

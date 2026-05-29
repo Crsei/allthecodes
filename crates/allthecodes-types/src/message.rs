@@ -150,6 +150,8 @@ pub struct CompactMetadata {
     pub post_compact_token_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preserved_segment: Option<PreservedSegment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pre_compact_discovered_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

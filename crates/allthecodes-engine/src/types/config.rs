@@ -32,6 +32,9 @@ pub struct QueryGates {
     pub emit_tool_use_summaries: bool,
     /// 快速模式
     pub fast_mode_enabled: bool,
+    /// Deferred tool loading: send only core tools plus tools discovered through
+    /// SearchExtraTools.
+    pub deferred_tool_loading: bool,
 }
 
 impl QueryGates {
@@ -56,6 +59,11 @@ impl QueryGates {
                 "CC_RUST_EMIT_TOOL_USE_SUMMARIES",
             ),
             fast_mode_enabled,
+            deferred_tool_loading: env_flag_enabled(
+                &env,
+                "ALLTHECODES_DEFERRED_TOOL_LOADING",
+                "CC_RUST_DEFERRED_TOOL_LOADING",
+            ),
         }
     }
 }
@@ -163,6 +171,7 @@ mod tests {
         assert!(!gates.streaming_tool_execution);
         assert!(!gates.emit_tool_use_summaries);
         assert!(!gates.fast_mode_enabled);
+        assert!(!gates.deferred_tool_loading);
     }
 
     #[test]
@@ -178,12 +187,17 @@ mod tests {
                     "ALLTHECODES_EMIT_TOOL_USE_SUMMARIES".to_string(),
                     "ON".to_string(),
                 ),
+                (
+                    "ALLTHECODES_DEFERRED_TOOL_LOADING".to_string(),
+                    "true".to_string(),
+                ),
             ],
         );
 
         assert!(gates.streaming_tool_execution);
         assert!(gates.emit_tool_use_summaries);
         assert!(gates.fast_mode_enabled);
+        assert!(gates.deferred_tool_loading);
     }
 
     #[test]
