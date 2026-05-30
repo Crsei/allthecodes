@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::tool::Tools;
 use allthecodes_types::message::{Attachment, AttachmentMessage, Message};
 
+pub mod apply_patch;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
@@ -32,6 +33,8 @@ pub fn tools() -> Tools {
         Arc::new(notebook_edit::NotebookEditTool::new()),
         Arc::new(glob_tool::GlobTool::new()),
         Arc::new(grep::GrepTool),
+        Arc::new(apply_patch::ApplyPatchTool),
+        Arc::new(apply_patch::ApplyPatchFreeformTool),
     ]
 }
 

@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+pub mod specs;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -73,7 +75,7 @@ fn maybe_link_plan_workflow_task(
     entry: &TaskEntry,
 ) -> Result<Option<allthecodes_types::plan_workflow::PlanWorkflowRecord>> {
     let cwd = plan_workflow_cwd();
-    let existing = match crate::plan_workflow::load(&cwd) {
+    let existing = match crate::workflow::plan::load(&cwd) {
         Ok(record) => record,
         Err(err) => {
             tracing::warn!(
@@ -92,7 +94,7 @@ fn maybe_link_plan_workflow_task(
     let slot_for_update = Arc::clone(&slot);
 
     (ctx.set_app_state)(Box::new(move |mut state| {
-        let linked = crate::plan_workflow::maybe_link_implementation_task_state(
+        let linked = crate::workflow::plan::maybe_link_implementation_task_state(
             &mut state,
             &cwd,
             existing,
@@ -107,7 +109,7 @@ fn maybe_link_plan_workflow_task(
 
     let record = slot.lock().clone().unwrap_or(None);
     if let Some(record) = &record {
-        crate::plan_workflow::persist(&persist_cwd, record)?;
+        crate::workflow::plan::persist(&persist_cwd, record)?;
     }
     Ok(record)
 }
@@ -117,7 +119,7 @@ pub struct TodoWriteTool;
 #[async_trait]
 impl Tool for TodoWriteTool {
     fn name(&self) -> &str {
-        crate::task_specs::TODO_WRITE_NAME
+        crate::tasks::specs::TODO_WRITE_NAME
     }
 
     async fn description(&self, _: &Value) -> String {
@@ -125,7 +127,7 @@ impl Tool for TodoWriteTool {
     }
 
     fn input_json_schema(&self) -> Value {
-        crate::task_specs::todo_write_schema()
+        crate::tasks::specs::todo_write_schema()
     }
 
     async fn validate_input(&self, input: &Value, _ctx: &ToolUseContext) -> ValidationResult {
@@ -196,7 +198,7 @@ pub struct TaskCreateTool;
 #[async_trait]
 impl Tool for TaskCreateTool {
     fn name(&self) -> &str {
-        crate::task_specs::TASK_CREATE_NAME
+        crate::tasks::specs::TASK_CREATE_NAME
     }
 
     async fn description(&self, _: &Value) -> String {
@@ -204,7 +206,7 @@ impl Tool for TaskCreateTool {
     }
 
     fn input_json_schema(&self) -> Value {
-        crate::task_specs::task_create_schema()
+        crate::tasks::specs::task_create_schema()
     }
 
     async fn call(
@@ -265,7 +267,7 @@ pub struct TaskGetTool;
 #[async_trait]
 impl Tool for TaskGetTool {
     fn name(&self) -> &str {
-        crate::task_specs::TASK_GET_NAME
+        crate::tasks::specs::TASK_GET_NAME
     }
 
     async fn description(&self, _: &Value) -> String {
@@ -273,7 +275,7 @@ impl Tool for TaskGetTool {
     }
 
     fn input_json_schema(&self) -> Value {
-        crate::task_specs::task_get_schema()
+        crate::tasks::specs::task_get_schema()
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {
@@ -317,7 +319,7 @@ pub struct TaskUpdateTool;
 #[async_trait]
 impl Tool for TaskUpdateTool {
     fn name(&self) -> &str {
-        crate::task_specs::TASK_UPDATE_NAME
+        crate::tasks::specs::TASK_UPDATE_NAME
     }
 
     async fn description(&self, _: &Value) -> String {
@@ -325,7 +327,7 @@ impl Tool for TaskUpdateTool {
     }
 
     fn input_json_schema(&self) -> Value {
-        crate::task_specs::task_update_schema()
+        crate::tasks::specs::task_update_schema()
     }
 
     async fn call(
@@ -472,7 +474,7 @@ pub struct TaskListTool;
 #[async_trait]
 impl Tool for TaskListTool {
     fn name(&self) -> &str {
-        crate::task_specs::TASK_LIST_NAME
+        crate::tasks::specs::TASK_LIST_NAME
     }
 
     async fn description(&self, _: &Value) -> String {
@@ -480,7 +482,7 @@ impl Tool for TaskListTool {
     }
 
     fn input_json_schema(&self) -> Value {
-        crate::task_specs::task_list_schema()
+        crate::tasks::specs::task_list_schema()
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {
@@ -525,7 +527,7 @@ pub struct TaskStopTool;
 #[async_trait]
 impl Tool for TaskStopTool {
     fn name(&self) -> &str {
-        crate::task_specs::TASK_STOP_NAME
+        crate::tasks::specs::TASK_STOP_NAME
     }
 
     async fn description(&self, _: &Value) -> String {
@@ -533,7 +535,7 @@ impl Tool for TaskStopTool {
     }
 
     fn input_json_schema(&self) -> Value {
-        crate::task_specs::task_stop_schema()
+        crate::tasks::specs::task_stop_schema()
     }
 
     async fn call(
@@ -572,7 +574,7 @@ pub struct TaskOutputTool;
 #[async_trait]
 impl Tool for TaskOutputTool {
     fn name(&self) -> &str {
-        crate::task_specs::TASK_OUTPUT_NAME
+        crate::tasks::specs::TASK_OUTPUT_NAME
     }
 
     async fn description(&self, _: &Value) -> String {
@@ -580,7 +582,7 @@ impl Tool for TaskOutputTool {
     }
 
     fn input_json_schema(&self) -> Value {
-        crate::task_specs::task_output_schema()
+        crate::tasks::specs::task_output_schema()
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {

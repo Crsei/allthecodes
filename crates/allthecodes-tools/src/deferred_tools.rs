@@ -917,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn core_boundary_marks_product_tools_deferred() {
+    fn core_boundary_marks_product_domain_tools_deferred() {
         assert!(!is_deferred_tool("Read"));
         assert!(!is_deferred_tool("SearchExtraTools"));
         assert!(!is_deferred_tool("ExecuteExtraTool"));
@@ -938,7 +938,7 @@ mod tests {
         let ctx = test_context(
             "search-keyword",
             vec![
-                Arc::new(crate::sleep::SleepTool),
+                Arc::new(crate::exec::SleepTool),
                 Arc::new(NamedTool("RuntimeOnly")),
             ],
         );
@@ -1213,8 +1213,8 @@ mod tests {
                 json!({
                     "tool_name": target,
                     "params": {
-                        "branch_name": "feature/phase5",
-                        "title": "Phase 5"
+                        "branch_name": "feature/semantic-tools",
+                        "title": "Semantic"
                     }
                 }),
                 &ctx,
@@ -1369,7 +1369,7 @@ mod tests {
     fn filter_keeps_only_core_tools_even_after_discovery() {
         clear_discovered_tools_for_tests();
         let tools: Tools = vec![
-            std::sync::Arc::new(crate::sleep::SleepTool),
+            std::sync::Arc::new(crate::exec::SleepTool),
             std::sync::Arc::new(NamedTool("CronCreate")),
             std::sync::Arc::new(NamedTool("WebBrowser")),
         ];

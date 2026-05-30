@@ -210,7 +210,7 @@ impl AssistantWorkerRuntime {
     pub fn new(cwd: &Path) -> Result<Self> {
         crate::runtime::init_plugins()?;
         let tools = crate::runtime::active_tools()?;
-        allthecodes_tools::tool_search::install_runtime_tool_catalog(&tools);
+        allthecodes_tools::runtime::tool_search::install_runtime_tool_catalog(&tools);
         let command_names = crate::runtime::command_names()?;
         let mut engine = QueryEngine::new(QueryEngineConfig {
             cwd: cwd.to_string_lossy().into_owned(),

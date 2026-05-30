@@ -566,7 +566,7 @@ fn route_apply_patch(
         format!("files: {}", files.join(", "))
     };
 
-    route_phase5_preview(
+    route_semantic_preview(
         request,
         PermissionRouteKind::ApplyPatch,
         "Patch permission",
@@ -593,7 +593,7 @@ fn route_vault_http_fetch(
     let reason = string_field(&request.tool_input, &["reason"])
         .unwrap_or_else(|| "no reason supplied".to_string());
 
-    route_phase5_preview(
+    route_semantic_preview(
         request,
         PermissionRouteKind::VaultHttpFetch,
         "Vault HTTP permission",
@@ -624,7 +624,7 @@ fn route_local_memory_recall(
         "local memory lookup"
     };
 
-    route_phase5_preview(
+    route_semantic_preview(
         request,
         PermissionRouteKind::LocalMemoryRecall,
         "Local memory permission",
@@ -653,7 +653,7 @@ fn route_workflow(
         _ => "workflow inspection",
     };
 
-    route_phase5_preview(
+    route_semantic_preview(
         request,
         PermissionRouteKind::Workflow,
         "Workflow permission",
@@ -698,7 +698,7 @@ fn route_multi_agent_v2(
         _ => "agent runtime inspection",
     };
 
-    route_phase5_preview(
+    route_semantic_preview(
         request,
         PermissionRouteKind::MultiAgentV2,
         "Agent runtime permission",
@@ -709,7 +709,7 @@ fn route_multi_agent_v2(
     )
 }
 
-fn route_phase5_preview(
+fn route_semantic_preview(
     request: &PermissionDialogRequest,
     kind: PermissionRouteKind,
     title: &str,
@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_phase5_permission_previews_without_raw_json() {
+    fn routes_semantic_permission_previews_without_raw_json() {
         let patch = PermissionRequestRouter::route(
             &request(
                 "apply_patch",

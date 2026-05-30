@@ -8,8 +8,10 @@ pub mod bash;
 pub mod powershell;
 pub mod repl;
 pub mod sleep;
+pub mod sleep_tool;
 
 pub use bash::truncate_output;
+pub use sleep_tool::SleepTool;
 
 pub const BASH_NAME: &str = bash::NAME;
 pub const POWERSHELL_NAME: &str = powershell::NAME;

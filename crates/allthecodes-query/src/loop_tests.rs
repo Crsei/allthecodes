@@ -579,7 +579,7 @@ async fn deferred_enabled_request_keeps_only_core_tool_schemas_after_discovery()
         ["WebBrowser".to_string()],
     );
     let mut tools = allthecodes_tools::deferred_tools::tools();
-    tools.push(Arc::new(allthecodes_tools::sleep::SleepTool));
+    tools.push(Arc::new(allthecodes_tools::exec::SleepTool));
     tools.push(Arc::new(LoopTestTool {
         name: "WebBrowser",
         concurrency_safe: true,
@@ -627,7 +627,7 @@ async fn text_only_model_filters_view_image_from_request_tools() {
         },
     );
     let tools: Tools = vec![
-        Arc::new(allthecodes_tools::sleep::SleepTool),
+        Arc::new(allthecodes_tools::exec::SleepTool),
         Arc::new(LoopTestTool {
             name: "ViewImage",
             concurrency_safe: true,
@@ -742,7 +742,7 @@ async fn deferred_enabled_annotates_compact_boundaries_with_discovered_tools() {
         ["WebBrowser".to_string(), "Read".to_string()],
     );
     let mut tools = allthecodes_tools::deferred_tools::tools();
-    tools.push(Arc::new(allthecodes_tools::sleep::SleepTool));
+    tools.push(Arc::new(allthecodes_tools::exec::SleepTool));
     tools.push(Arc::new(LoopTestTool {
         name: "WebBrowser",
         concurrency_safe: true,

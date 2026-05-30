@@ -96,7 +96,7 @@ pub(crate) async fn prepare_model_request(
         .model_reasoning_effort
         .clone();
     let request_advisor_model = app_state_for_request.advisor_model.clone();
-    let capability_filtered_tools = allthecodes_tools::phase5::filter_tools_for_model_capabilities(
+    let capability_filtered_tools = allthecodes_tools::media::filter_tools_for_model_capabilities(
         deps.get_tools(),
         &app_state_for_request.settings,
         &request_model,

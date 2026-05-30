@@ -351,7 +351,7 @@ impl QueryEngine {
                 (tools, model, backend, settings)
             };
             let capability_tools_snapshot =
-                allthecodes_tools::phase5::filter_tools_for_model_capabilities(
+                allthecodes_tools::media::filter_tools_for_model_capabilities(
                     tools_snapshot,
                     &app_settings,
                     &model_name,

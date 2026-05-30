@@ -105,9 +105,9 @@ pub(super) fn account_goal_runtime_message(
     session_id: &str,
     usage: &UsageTracking,
 ) -> Option<SdkMessage> {
-    match allthecodes_tools::phase5::account_goal_runtime_for_session(session_id, usage) {
+    match allthecodes_tools::goals::account_goal_runtime_for_session(session_id, usage) {
         Ok(Some(goal)) => {
-            let event = if goal.status == allthecodes_tools::phase5::GoalStatus::BudgetLimited {
+            let event = if goal.status == allthecodes_tools::goals::GoalStatus::BudgetLimited {
                 "budget_limited"
             } else {
                 "runtime_updated"
@@ -125,7 +125,7 @@ pub(super) fn account_goal_runtime_message(
 pub(super) fn goal_updated_message(
     session_id: &str,
     event: impl Into<String>,
-    goal: allthecodes_tools::phase5::GoalRecord,
+    goal: allthecodes_tools::goals::GoalRecord,
 ) -> SdkMessage {
     SdkMessage::GoalUpdated(SdkGoalUpdated {
         event: event.into(),
@@ -476,14 +476,14 @@ mod tests {
         let engine = QueryEngine::new(make_config());
         let session_id = engine.session_id.clone();
         let now = chrono::Utc::now().to_rfc3339();
-        allthecodes_tools::phase5::save_goal_for_session(
+        allthecodes_tools::goals::save_goal_for_session(
             session_id.as_str(),
-            &allthecodes_tools::phase5::GoalRecord {
+            &allthecodes_tools::goals::GoalRecord {
                 objective: "stay within budget".to_string(),
                 token_budget: Some(10),
                 tokens_used: 0,
                 time_used_seconds: 0,
-                status: allthecodes_tools::phase5::GoalStatus::Active,
+                status: allthecodes_tools::goals::GoalStatus::Active,
                 created_at: now.clone(),
                 updated_at: now,
                 completed_at: None,
@@ -532,13 +532,13 @@ mod tests {
             StreamAction::Yield(SdkMessage::GoalUpdated(update))
                 if update.event == "budget_limited"
         )));
-        let goal = allthecodes_tools::phase5::load_goal_for_session(session_id.as_str())
+        let goal = allthecodes_tools::goals::load_goal_for_session(session_id.as_str())
             .unwrap()
             .unwrap();
         assert_eq!(goal.tokens_used, 12);
         assert_eq!(
             goal.status,
-            allthecodes_tools::phase5::GoalStatus::BudgetLimited
+            allthecodes_tools::goals::GoalStatus::BudgetLimited
         );
     }
 
@@ -626,7 +626,7 @@ pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<SdkResult> {
         let state = ctx.state_ref.read();
         (state.usage.clone(), state.permission_denials.clone())
     };
-    if let Err(error) = allthecodes_tools::phase5::mark_goal_budget_limited_for_session(
+    if let Err(error) = allthecodes_tools::goals::mark_goal_budget_limited_for_session(
         ctx.session_id.as_str(),
         &usage_snap,
         format!("max budget exceeded: cost ${current_cost:.4} >= ${max_budget:.4}"),

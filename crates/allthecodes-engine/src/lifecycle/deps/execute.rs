@@ -16,7 +16,7 @@ impl QueryEngineDeps {
         use allthecodes_types::hooks::{PermissionOverride, PostToolHookResult, PreToolHookResult};
 
         // Hook dispatcher trait object — decouples the engine from the concrete
-        // concrete shell-hook runner (see issue #74, Phase 5b).
+        // concrete shell-hook runner (see issue #74, full-build parity).
         let hooks = self.hook_runner.as_ref();
 
         let tool = find_tool(&request.tool_name, tools)
@@ -24,12 +24,11 @@ impl QueryEngineDeps {
 
         let available_tools = {
             let state = self.state.read();
-            let capability_filtered =
-                allthecodes_tools::phase5::filter_tools_for_model_capabilities(
-                    state.tools.clone(),
-                    &state.app_state.settings,
-                    &state.app_state.main_loop_model,
-                );
+            let capability_filtered = allthecodes_tools::media::filter_tools_for_model_capabilities(
+                state.tools.clone(),
+                &state.app_state.settings,
+                &state.app_state.main_loop_model,
+            );
             allthecodes_tools::registry::filter_tools_for_session_gates(
                 capability_filtered,
                 allthecodes_tools::registry::ToolSessionGates {

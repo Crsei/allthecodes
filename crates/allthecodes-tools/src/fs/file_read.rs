@@ -782,7 +782,7 @@ impl Tool for FileReadTool {
     }
 
     fn backfill_observable_input(&self, input: &mut serde_json::Map<String, Value>) {
-        crate::observable_input::backfill_file_path(input);
+        crate::interaction::observable_input::backfill_file_path(input);
     }
 
     async fn validate_input(&self, input: &Value, _ctx: &ToolUseContext) -> ValidationResult {

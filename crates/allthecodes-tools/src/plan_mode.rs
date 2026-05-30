@@ -86,7 +86,7 @@ impl Tool for EnterPlanModeTool {
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
         let record = mutate_plan_workflow(ctx, plan_cwd(), |state, cwd, existing| {
-            crate::plan_workflow::enter_plan_mode_state(
+            crate::workflow::plan::enter_plan_mode_state(
                 state, cwd, existing, "main", "tool", None, None,
             )
         })?;
@@ -220,7 +220,9 @@ impl Tool for ExitPlanModeTool {
         };
 
         match mutate_plan_workflow(ctx, plan_cwd(), move |state, cwd, existing| {
-            crate::plan_workflow::request_approval_state(state, cwd, existing, "main", "tool", plan)
+            crate::workflow::plan::request_approval_state(
+                state, cwd, existing, "main", "tool", plan,
+            )
         }) {
             Ok(record) => PermissionResult::Ask {
                 message: if derived_rules.is_empty() {
@@ -267,7 +269,7 @@ impl Tool for ExitPlanModeTool {
             let rules_for_state = allowed_prompt_rules.clone();
             let stripped_count = Arc::clone(&auto_mode_stripped_allowed_prompt_rules);
             move |state, cwd, existing| {
-                let record = crate::plan_workflow::approve_and_exit_state(
+                let record = crate::workflow::plan::approve_and_exit_state(
                     state,
                     cwd,
                     existing,
@@ -505,7 +507,7 @@ where
         ) -> allthecodes_types::plan_workflow::PlanWorkflowRecord
         + 'static,
 {
-    let existing = crate::plan_workflow::load(&cwd)?;
+    let existing = crate::workflow::plan::load(&cwd)?;
     let slot: Arc<Mutex<Option<allthecodes_types::plan_workflow::PlanWorkflowRecord>>> =
         Arc::new(Mutex::new(None));
     let slot_for_update = Arc::clone(&slot);
@@ -522,7 +524,7 @@ where
         .expect("plan workflow slot poisoned")
         .clone()
         .expect("plan workflow update should set record");
-    crate::plan_workflow::persist(&persist_cwd, &record)?;
+    crate::workflow::plan::persist(&persist_cwd, &record)?;
     Ok(record)
 }
 

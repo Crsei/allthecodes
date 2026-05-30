@@ -1,18 +1,11 @@
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
-use crate::ask_user::AskUserQuestionTool;
-use crate::brief::BriefTool;
-use crate::config_tool::ConfigTool;
+use crate::exec::SleepTool;
+use crate::interaction::{AskUserQuestionTool, SendUserMessageTool, StructuredOutputTool};
 use crate::plan_mode::{EnterPlanModeTool, ExitPlanModeTool};
-use crate::send_user_message::SendUserMessageTool;
-use crate::sleep::SleepTool;
-use crate::structured_output::StructuredOutputTool;
-use crate::system_status::SystemStatusTool;
+use crate::runtime::{BriefTool, ConfigTool, SystemStatusTool, ToolSearchTool};
 use crate::tool::Tools;
-use crate::tool_search::ToolSearchTool;
-use crate::web_fetch::WebFetchTool;
-use crate::web_search::WebSearchTool;
 use allthecodes_config::features::{self, Feature, FeatureFlags};
 use parking_lot::RwLock;
 
@@ -240,16 +233,20 @@ pub fn allthecodes_tools_base_tools() -> Tools {
     tools.push(Arc::new(SleepTool));
     tools.extend(crate::tasks::tools());
     tools.extend(crate::deferred_tools::tools());
-    tools.extend(crate::product_tools::tools());
-    tools.extend(crate::phase5::tools());
+    tools.extend(crate::product::tools());
+    tools.extend(crate::skills::tools());
+    tools.extend(crate::media::tools());
+    tools.extend(crate::goals::tools());
+    tools.extend(crate::workflow::tools());
+    tools.extend(crate::memory::tools());
+    tools.extend(crate::network::tools());
+    tools.extend(crate::notifications::tools());
 
     tools.extend([
         Arc::new(AskUserQuestionTool) as _,
         Arc::new(ConfigTool) as _,
         Arc::new(StructuredOutputTool) as _,
         Arc::new(SendUserMessageTool) as _,
-        Arc::new(WebFetchTool) as _,
-        Arc::new(WebSearchTool) as _,
         Arc::new(EnterPlanModeTool) as _,
         Arc::new(ExitPlanModeTool) as _,
         Arc::new(BriefTool) as _,
@@ -349,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn phase5_feature_gates_remove_goal_and_workflow_tools() {
+    fn semantic_feature_gates_remove_goal_and_workflow_tools() {
         let mut flags = allthecodes_config::features::FeatureFlags::all_enabled();
         flags.goal_tools = false;
         flags.workflow_scripts = false;

@@ -91,7 +91,7 @@ pub(crate) async fn prepare_model_request(
     let request_thinking_enabled = app_state_for_request.thinking_enabled;
     let request_effort_value = app_state_for_request.effort_value.clone();
     let request_advisor_model = app_state_for_request.advisor_model.clone();
-    let capability_filtered_tools = allthecodes_tools::phase5::filter_tools_for_model_capabilities(
+    let capability_filtered_tools = allthecodes_tools::media::filter_tools_for_model_capabilities(
         deps.get_tools(),
         &app_state_for_request.settings,
         &request_model,

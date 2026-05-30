@@ -36,7 +36,7 @@ pub fn ensure_installed() {
         allthecodes_services::agent_definitions::set_runtime_host(Arc::new(
             RootAgentDefinitionsHost,
         ));
-        allthecodes_tools::system_status::set_runtime_host(Arc::new(RootSystemStatusHost));
+        allthecodes_tools::runtime::system_status::set_runtime_host(Arc::new(RootSystemStatusHost));
         let mut adapters = allthecodes_engine::agent_runtime::agent_runtime_adapters();
         adapters.builtin_agents = Arc::new(RootAgentDefinitionRegistry);
         allthecodes_engine::agent_runtime::set_agent_runtime_adapters(adapters);
@@ -258,7 +258,7 @@ impl SubsystemRuntimeHost for RootSubsystemHost {
 
 struct RootSystemStatusHost;
 
-impl allthecodes_tools::system_status::SystemStatusRuntimeHost for RootSystemStatusHost {
+impl allthecodes_tools::runtime::system_status::SystemStatusRuntimeHost for RootSystemStatusHost {
     fn build_lsp_server_info_list(&self) -> Vec<LspServerInfo> {
         crate::app_subsystem_handlers::build_lsp_server_info_list()
     }

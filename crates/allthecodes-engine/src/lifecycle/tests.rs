@@ -737,9 +737,9 @@ async fn submit_system_init_filters_view_image_for_text_only_model() {
 
     let mut engine = QueryEngine::new(make_config());
     engine.set_tools(vec![
-        Arc::new(allthecodes_tools::sleep::SleepTool),
-        Arc::new(allthecodes_tools::phase5::ViewImageTool),
-        Arc::new(allthecodes_tools::phase5::ViewImageAliasTool),
+        Arc::new(allthecodes_tools::exec::SleepTool),
+        Arc::new(allthecodes_tools::media::ViewImageTool),
+        Arc::new(allthecodes_tools::media::ViewImageAliasTool),
     ]);
     {
         let mut state = engine.state.write();
