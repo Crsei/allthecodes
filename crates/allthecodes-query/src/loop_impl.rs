@@ -779,5 +779,5 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 }
 
 #[cfg(test)]
-#[path = "loop_tests.rs"]
+#[path = "loop_tests/mod.rs"]
 mod loop_tests;

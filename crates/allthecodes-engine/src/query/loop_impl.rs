@@ -883,5 +883,5 @@ fn apply_snip_projection(messages: &mut Vec<Message>, data: &serde_json::Value) 
 }
 
 #[cfg(test)]
-#[path = "loop_tests.rs"]
-mod loop_tests;
+#[path = "tests/mod.rs"]
+mod tests;

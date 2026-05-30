@@ -1,0 +1,184 @@
+use super::*;
+
+#[tokio::test]
+async fn test_stop_hook_continuation_injects_meta_user_message_once() {
+    let deps = Arc::new(MockDeps::new(vec![
+        make_text_response("Need final audit."),
+        make_text_response("Final answer after stop hook."),
+    ]));
+    deps.set_hook_runner(Arc::new(StopContinuationHookRunner::new(
+        "Run one more validation pass.",
+    )));
+
+    let stream = query(
+        make_query_params(vec![make_user_message_for_test("Finish the task")]),
+        deps.clone(),
+    );
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    assert_eq!(
+        request_start_count(&items),
+        2,
+        "stop hook continuation should trigger one more model call"
+    );
+    let params = deps.recorded_params();
+    assert_eq!(params.len(), 2, "expected continuation model call");
+
+    let continuation = params[1].messages.iter().rev().find_map(|message| {
+        if let Message::User(user) = message {
+            if let MessageContent::Text(text) = &user.content {
+                return Some((user.is_meta, text.as_str()));
+            }
+        }
+        None
+    });
+    assert_eq!(
+        continuation,
+        Some((true, "Run one more validation pass.")),
+        "stop hook continuation should be injected as a meta user message"
+    );
+}
+
+#[tokio::test]
+async fn test_token_budget_continuation_injects_nudge_message() {
+    let deps = Arc::new(MockDeps::new(vec![
+        make_text_response_with_stop_and_output_tokens("Still working.", "end_turn", 50),
+        make_text_response_with_stop_and_output_tokens("Budget complete.", "end_turn", 50),
+    ]));
+    let mut params = make_query_params(vec![make_user_message_for_test("Spend the budget")]);
+    params.task_budget = Some(TaskBudget { total: 100 });
+
+    let stream = query(params, deps.clone());
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    assert_eq!(
+        request_start_count(&items),
+        2,
+        "token budget nudge should trigger one continuation"
+    );
+    let params = deps.recorded_params();
+    assert_eq!(params.len(), 2, "expected continuation model call");
+
+    let nudge = params[1].messages.iter().rev().find_map(|message| {
+        if let Message::User(user) = message {
+            if let MessageContent::Text(text) = &user.content {
+                return Some((user.is_meta, text.as_str()));
+            }
+        }
+        None
+    });
+    assert!(
+        matches!(nudge, Some((true, text)) if text.contains("Token budget at 50%")),
+        "token budget continuation should inject a meta nudge message"
+    );
+}
+
+#[tokio::test]
+async fn test_max_turns_limit() {
+    let tool_response = ModelResponse {
+        assistant_message: AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "tu_1".to_string(),
+                name: "Bash".to_string(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+            usage: Some(Usage::default()),
+            stop_reason: Some("tool_use".to_string()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        },
+    };
+
+    let deps = Arc::new(MockDeps::new(vec![tool_response]));
+
+    let params = QueryParams {
+        messages: vec![Message::User(UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "user".to_string(),
+            content: MessageContent::Text("list files".to_string()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        })],
+        system_prompt: vec![],
+        user_context: Default::default(),
+        system_context: Default::default(),
+        fallback_model: None,
+        query_source: QuerySource::ReplMainThread,
+        max_output_tokens_override: None,
+        max_turns: Some(1),
+        skip_cache_write: None,
+        task_budget: None,
+        gates: QueryGates::default(),
+    };
+
+    let stream = query(params, deps);
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    let has_max_turns = items.iter().any(|item| {
+        matches!(
+            item,
+            QueryYield::Message(Message::Attachment(AttachmentMessage {
+                attachment: Attachment::MaxTurnsReached { .. },
+                ..
+            }))
+        )
+    });
+    assert!(has_max_turns, "expected MaxTurnsReached attachment");
+}
+
+#[tokio::test]
+async fn test_hook_stopped_tool_execution_yields_attachment_and_stops() {
+    let tool_response = ModelResponse {
+        assistant_message: AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "tu_1".to_string(),
+                name: "Bash".to_string(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+            usage: Some(Usage::default()),
+            stop_reason: Some("tool_use".to_string()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        },
+    };
+
+    let deps = Arc::new(MockDeps::new(vec![
+        tool_response,
+        make_text_response("must not run"),
+    ]));
+    deps.stop_after_tool_execution();
+
+    let stream = query(
+        make_query_params(vec![make_user_message_for_test("run a tool")]),
+        deps.clone(),
+    );
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    assert_eq!(
+        request_start_count(&items),
+        1,
+        "hook stopped continuation should not start another model request"
+    );
+    assert!(
+        items.iter().any(|item| {
+            matches!(
+                item,
+                QueryYield::Message(Message::Attachment(AttachmentMessage {
+                    attachment: Attachment::HookStoppedContinuation,
+                    ..
+                }))
+            )
+        }),
+        "expected HookStoppedContinuation attachment"
+    );
+}

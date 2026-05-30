@@ -72,6 +72,10 @@ AGENTS.md
 board.md
 architecture/
 tests/
+!crates/allthecodes-api/src/api/client/tests/
+!crates/allthecodes-api/src/api/client/tests/**
+!crates/allthecodes-engine/src/query/tests/
+!crates/allthecodes-engine/src/query/tests/**
 docs/
 web-ui/
 sdk/
