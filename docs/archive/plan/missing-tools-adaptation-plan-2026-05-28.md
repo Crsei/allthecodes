@@ -167,18 +167,40 @@ ListMcpResources / ReadMcpResource / CronCreate / CronDelete / CronList / WebBro
 
 | # | 工具 | bun | codex | 说明 | 实现状态 |
 |---|------|-----|-------|------|---------|
-| 14 | LocalMemoryRecall | ✅ | — | 需要跨会话内存存储层 | ❌ 未实现 |
-| 15 | VaultHttpFetch | ✅ | — | 需要加密凭据存储 | ❌ 未实现 |
-| 16 | PushNotification | ✅ | — | 需要移动端基础设施 | 🟡 CLI `/notify` 命令 stub，未实现为 Tool |
-| 17 | DiscoverSkills | ✅ | — | Skill 发现，优先级低 | ❌ 未实现 |
-| 18 | VerifyPlanExecution | ✅ | — | 计划验证工作流 | ❌ 未实现 |
-| 19 | workflow | ✅ | — | 工作流脚本引擎 | 🟡 `plan_workflow.rs` 内部状态管理，无独立 Workflow Tool |
+| 14 | LocalMemoryRecall | ✅ | — | 需要跨会话内存存储层 | ✅ `phase5::LocalMemoryRecall` JSON/文件索引 v1 |
+| 15 | VaultHttpFetch | ✅ | — | 需要加密凭据存储 | ✅ `phase5::VaultHttpFetch` HTTPS + vault credential_ref |
+| 16 | PushNotification | ✅ | — | 需要移动端基础设施 | ✅ `phase5::PushNotification` local audit + HTTPS webhook provider |
+| 17 | DiscoverSkills | ✅ | — | Skill 发现，优先级低 | ✅ `phase5::DiscoverSkills` |
+| 18 | VerifyPlanExecution | ✅ | — | 计划验证工作流 | ✅ `phase5::VerifyPlanExecution` |
+| 19 | workflow | ✅ | — | 工作流脚本引擎 | ✅ `phase5::Workflow` Rust-native durable workflow spec |
 | 20 | ExecuteExtraTool | ✅ | — | 延迟工具执行 | ✅ `deferred_tools.rs` 完整实现 |
 | 21 | **SearchExtraTools** (含延迟工具系统) | ✅ | — | 工具发现 + 延迟加载 | ✅ `deferred_tools.rs` 完整实现，CORE_TOOLS 边界定义 |
-| 22 | **apply_patch** | — | ✅ | Tree-sitter AST 感知的语义化 patch | ❌ 未实现 |
-| 23 | **Goal 管理** (get_goal / create_goal / update_goal) | — | ✅ | 目标管理系统 | ❌ 未实现 |
-| 24 | **Multi-agent v2** (send_message / followup_task / list_agents / close_agent / wait_agent) | — | ✅ | 增强型多 agent 通信 | 🟡 `SendMessage` 已实现；其余未实现 |
-| 25 | view_image | — | ✅ | 已可通过 computer-use 截图覆盖 | ❌ 未实现 |
+| 22 | **apply_patch** | — | ✅ | Tree-sitter AST 感知的语义化 patch | ✅ `phase5::ApplyPatch` JSON `{patch}` 接口 |
+| 23 | **Goal 管理** (get_goal / create_goal / update_goal) | — | ✅ | 目标管理系统 | ✅ `GetGoal` / `CreateGoal` / `UpdateGoal` |
+| 24 | **Multi-agent v2** (send_message / followup_task / list_agents / close_agent / wait_agent) | — | ✅ | 增强型多 agent 通信 | ✅ `SendMessage` + `FollowupTask` / `ListAgents` / `CloseAgent` / `WaitAgent` |
+| 25 | view_image | — | ✅ | 已可通过 computer-use 截图覆盖 | ✅ `phase5::ViewImage` |
+
+#### P3 剩余未实现项（整理）
+
+| 项目 | 来源 | 缺失能力 | 当前阻塞/备注 |
+|------|------|----------|----------------|
+| — | — | — | 2026-05-29 已完成 Phase 5 剩余工具首版实现；后续只保留增强项跟踪 |
+
+#### P3 部分实现项（整理）
+
+| 项目 | 已有内容 | 缺失内容 | 下一步 |
+|------|----------|----------|--------|
+| `PushNotification` | CLI `/notify` 命令 stub | 真实移动端 provider 未接入 | Tool schema、权限确认、local audit provider、HTTPS webhook provider 已落地 |
+| `Workflow` | `plan_workflow.rs` 内部状态管理 | 自动 agent 调度仍可增强 | 独立 `Workflow` Tool 已支持 start/status/cancel 和 `{data_root}/workflows/` 持久化 |
+| Multi-agent v2 | `SendMessage` 已实现 | 与 in-process runtime 的完成状态可继续深化 | 已新增 `FollowupTask` / `ListAgents` / `CloseAgent` / `WaitAgent`，复用 team config + mailbox |
+
+#### P3 已完成但仍属本阶段的项
+
+| 项目 | 实现状态 |
+|------|----------|
+| `SearchExtraTools` | ✅ 已实现 select/discover/keyword 查询模式 |
+| `ExecuteExtraTool` | ✅ 已实现 discovery guard + 委托执行 |
+| 延迟工具系统 | ✅ 已实现 `CORE_TOOLS` 边界、跨 turn discovered tools 持久化和 API 请求工具过滤 |
 
 ---
 
@@ -709,12 +731,16 @@ Phase 5a (可选，提前):
     - 部署后：API 请求中工具 schema 数量从 ~60 降至 ~40+discovered
 
 Phase 5b (持续):
-  - LocalMemoryRecall → 等跨会话存储基础设施就绪
-  - VaultHttpFetch → 等凭据管理基础设施就绪
-  - PushNotification → 等移动端推送通道
-  - apply_patch → 评估 Tree-sitter AST 集成成本
-  - Goal 管理 → 评估是否需要独立于 Task 系统的目标管理层
-  - Multi-agent v2 → 评估当前 teams/coordinator 是否可扩展
+  - LocalMemoryRecall → ✅ JSON/文件索引 v1
+  - VaultHttpFetch → ✅ HTTPS-only + vault credential_ref
+  - PushNotification → ✅ local audit provider + HTTPS webhook provider
+  - DiscoverSkills → ✅ Skill registry 发现 Tool
+  - VerifyPlanExecution → ✅ plan workflow / task / todo read-only 验证
+  - Workflow → ✅ Rust-native durable workflow Tool
+  - ApplyPatch → ✅ JSON `{patch}` Codex patch grammar Tool
+  - Goal 管理 → ✅ `GetGoal` / `CreateGoal` / `UpdateGoal`
+  - Multi-agent v2 → ✅ 复用 teams/coordinator config + mailbox
+  - ViewImage → ✅ 本地图片 content block Tool
 ```
 
 #### Phase 5 Implementation Snapshot (2026-05-29)
@@ -724,6 +750,10 @@ Phase 5b (持续):
 - `extract_discovered_tool_names()` 支持 SearchExtraTools JSON/text result、`deferred_tools_delta` structured attachment、legacy `tool_reference(s)` 字段，以及 `compact_metadata.pre_compact_discovered_tools`。
 - auto-compact 后会把当前 session 的 discovered tools 写入 compact boundary metadata，便于 session 恢复后继续过滤工具 schema。
 - `discover:<query>` 只返回 schema/描述，不加载工具；`select:<tool>` 或普通关键词匹配会写入 `deferred_tools_delta` 并让下一轮请求包含对应工具 schema。
+- Phase 5 剩余工具已新增到 `allthecodes-tools/src/phase5/`：`DiscoverSkills`、`ViewImage`、`GetGoal`、`CreateGoal`、`UpdateGoal`、`VerifyPlanExecution`、`Workflow`、`ApplyPatch`、`LocalMemoryRecall`、`VaultHttpFetch`、`PushNotification`。
+- Multi-agent v2 工具新增到 `allthecodes-teams/src/multi_agent_v2.rs`：`ListAgents`、`FollowupTask`、`WaitAgent`、`CloseAgent`；复用现有 team config 与 mailbox，不新增第二套 agent registry。
+- 新持久化路径集中在 `allthecodes-config/src/paths.rs`：`goals/`、`workflows/`、`vault/`、`notifications/`。
+- 验证命令：`cargo test -p allthecodes-tools phase5 -- --nocapture`、`cargo test -p allthecodes-startup tool_registry -- --nocapture`、`cargo test -p allthecodes-config paths -- --nocapture`、`cargo test -p allthecodes-teams --lib -- --nocapture`。
 
 ---
 
@@ -804,12 +834,16 @@ Phase 5b (持续):
 - [x] CORE_TOOLS 边界定义
 - [x] extract_discovered_tool_names() 跨 turn 持久化
 - [x] API 请求工具过滤（仅发核心工具 schema）
-- [ ] LocalMemoryRecall — 待跨会话存储基础设施
-- [ ] VaultHttpFetch — 待凭据管理基础设施
-- [ ] PushNotification — 待移动端推送通道
-- [ ] apply_patch — 待评估 Tree-sitter 集成成本
-- [ ] Goal 管理 — 待评估目标管理层需求
-- [ ] Multi-agent v2 拓展（followup_task / list_agents / close_agent / wait_agent）
+- [x] LocalMemoryRecall — allthecodes memory / auto_memory / transcripts 检索 v1
+- [x] VaultHttpFetch — HTTPS-only + credential_ref + redaction
+- [x] PushNotification — local audit provider + HTTPS webhook provider
+- [x] DiscoverSkills — Skill registry 发现 Tool
+- [x] VerifyPlanExecution — plan workflow / task / todo read-only 验证
+- [x] Workflow — Rust-native durable workflow Tool
+- [x] ApplyPatch — JSON `{patch}` Codex patch grammar Tool
+- [x] Goal 管理 — `GetGoal` / `CreateGoal` / `UpdateGoal`
+- [x] Multi-agent v2 拓展（`FollowupTask` / `ListAgents` / `CloseAgent` / `WaitAgent`）
+- [x] ViewImage — 本地图片 content block Tool
 
 ### 通用 ✅
 
