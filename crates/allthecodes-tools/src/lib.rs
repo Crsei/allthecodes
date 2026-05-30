@@ -22,6 +22,8 @@ pub mod hooks;
 #[cfg(feature = "full")]
 pub mod observable_input;
 #[cfg(feature = "full")]
+pub mod phase5;
+#[cfg(feature = "full")]
 pub mod plan_mode;
 #[cfg(feature = "full")]
 pub mod plan_workflow;

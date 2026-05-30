@@ -215,35 +215,83 @@ fn hooks_surface_non_matcher_events_open_hook_list_directly() {
     assert!(!hook_list.contains("Stop - Matchers"));
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceKind {
+    Agents,
+    Config,
+    Diff,
+    Hooks,
+    Login,
+    Mcp,
+    Memory,
+    Model,
+    Permissions,
+    Plugin,
+    Remote,
+    Resume,
+    Sandbox,
+    Skills,
+    Tasks,
+    Team,
+}
+
+fn surface_kind(surface: &CommandSurface) -> SurfaceKind {
+    match surface {
+        CommandSurface::Agents(_) => SurfaceKind::Agents,
+        CommandSurface::Config(_) => SurfaceKind::Config,
+        CommandSurface::Diff(_) => SurfaceKind::Diff,
+        CommandSurface::Hooks(_) => SurfaceKind::Hooks,
+        CommandSurface::Login(_) => SurfaceKind::Login,
+        CommandSurface::Mcp(_) => SurfaceKind::Mcp,
+        CommandSurface::Memory(_) => SurfaceKind::Memory,
+        CommandSurface::Model(_) => SurfaceKind::Model,
+        CommandSurface::Permissions(_) => SurfaceKind::Permissions,
+        CommandSurface::Plugin(_) => SurfaceKind::Plugin,
+        CommandSurface::Remote(_) => SurfaceKind::Remote,
+        CommandSurface::Resume(_) => SurfaceKind::Resume,
+        CommandSurface::Sandbox(_) => SurfaceKind::Sandbox,
+        CommandSurface::Skills(_) => SurfaceKind::Skills,
+        CommandSurface::Tasks(_) => SurfaceKind::Tasks,
+        CommandSurface::Team(_) => SurfaceKind::Team,
+        CommandSurface::LspRecommendation(_) => {
+            panic!("slash-command matrix should not create LSP recommendations")
+        }
+    }
+}
+
 #[test]
-fn slash_command_surfaces_open_only_for_empty_interactive_commands() {
+fn surface_entry_matrix_matches_expected_aliases() {
     let state = AppState::default();
     let cwd = std::env::current_dir().expect("current dir");
 
-    for command in [
-        "agents",
-        "config",
-        "diff",
-        "effort",
-        "hooks",
-        "login",
-        "mcp",
-        "memory",
-        "model",
-        "sandbox",
-        "skills",
-        "permissions",
-        "perms",
-        "plugin",
-        "plugins",
-        "remote",
-        "resume",
-        "tasks",
-        "team",
+    for (command, expected) in [
+        ("agents", SurfaceKind::Agents),
+        ("config", SurfaceKind::Config),
+        ("diff", SurfaceKind::Diff),
+        ("effort", SurfaceKind::Config),
+        ("hooks", SurfaceKind::Hooks),
+        ("login", SurfaceKind::Login),
+        ("mcp", SurfaceKind::Mcp),
+        ("memory", SurfaceKind::Memory),
+        ("model", SurfaceKind::Model),
+        ("permissions", SurfaceKind::Permissions),
+        ("plugin", SurfaceKind::Plugin),
+        ("remote", SurfaceKind::Remote),
+        ("resume", SurfaceKind::Resume),
+        ("sandbox", SurfaceKind::Sandbox),
+        ("skills", SurfaceKind::Skills),
+        ("tasks", SurfaceKind::Tasks),
+        ("team", SurfaceKind::Team),
+        ("perms", SurfaceKind::Permissions),
+        ("plugins", SurfaceKind::Plugin),
+        ("teams", SurfaceKind::Team),
     ] {
-        assert!(
-            CommandSurface::for_slash_command(command, "", &state, &cwd).is_some(),
-            "{command} should open a command surface"
+        let surface = CommandSurface::for_slash_command(command, "", &state, &cwd)
+            .unwrap_or_else(|| panic!("{command} should open a command surface"));
+        assert_eq!(
+            surface_kind(&surface),
+            expected,
+            "{command} should map to the expected command surface"
         );
         assert!(
             CommandSurface::for_slash_command(command, "status", &state, &cwd).is_none(),
@@ -251,10 +299,12 @@ fn slash_command_surfaces_open_only_for_empty_interactive_commands() {
         );
     }
 
-    assert!(
-        CommandSurface::for_slash_command("agent", "", &state, &cwd).is_none(),
-        "/agent is intentionally not an alias; use the canonical /agents surface"
-    );
+    for command in ["agent", "permission", "settings", "sessions"] {
+        assert!(
+            CommandSurface::for_slash_command(command, "", &state, &cwd).is_none(),
+            "/{command} is not a CommandSurface alias"
+        );
+    }
 }
 
 #[test]

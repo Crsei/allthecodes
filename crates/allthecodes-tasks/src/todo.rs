@@ -59,3 +59,7 @@ pub fn replace_todos_for_key(key: &str, todos: Vec<TodoItem>) -> TodoWriteOutcom
         verification_nudge_needed,
     }
 }
+
+pub fn todos_for_key(key: &str) -> Vec<TodoItem> {
+    TODO_STORE.lock().get(key).cloned().unwrap_or_default()
+}

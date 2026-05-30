@@ -184,6 +184,30 @@ pub fn tasks_dir() -> PathBuf {
     data_root().join("tasks")
 }
 
+pub fn goals_dir() -> PathBuf {
+    data_root().join("goals")
+}
+
+pub fn goal_file_path(session_id: &str) -> PathBuf {
+    goals_dir().join(format!("{}.json", sanitize_path_segment(session_id)))
+}
+
+pub fn workflows_dir() -> PathBuf {
+    data_root().join("workflows")
+}
+
+pub fn workflow_file_path(workflow_id: &str) -> PathBuf {
+    workflows_dir().join(format!("{}.json", sanitize_path_segment(workflow_id)))
+}
+
+pub fn vault_dir() -> PathBuf {
+    data_root().join("vault")
+}
+
+pub fn notifications_dir() -> PathBuf {
+    data_root().join("notifications")
+}
+
 pub fn worktrees_dir() -> PathBuf {
     data_root().join("worktrees")
 }
@@ -298,6 +322,24 @@ fn is_global_data_dir(path: &Path) -> bool {
         || dirs::home_dir()
             .map(|home| path == home.join(".allthecodes"))
             .unwrap_or(false)
+}
+
+fn sanitize_path_segment(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.trim_matches('_').is_empty() {
+        "default".to_string()
+    } else {
+        sanitized
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +473,18 @@ mod tests {
         assert_eq!(skills_dir_global(), base.join("skills"));
         assert_eq!(teams_dir(), base.join("teams"));
         assert_eq!(tasks_dir(), base.join("tasks"));
+        assert_eq!(goals_dir(), base.join("goals"));
+        assert_eq!(
+            goal_file_path("session/1"),
+            base.join("goals").join("session_1.json")
+        );
+        assert_eq!(workflows_dir(), base.join("workflows"));
+        assert_eq!(
+            workflow_file_path("workflow:1"),
+            base.join("workflows").join("workflow_1.json")
+        );
+        assert_eq!(vault_dir(), base.join("vault"));
+        assert_eq!(notifications_dir(), base.join("notifications"));
         assert_eq!(worktrees_dir(), base.join("worktrees"));
         assert_eq!(
             pr_activity_subscriptions_path(),

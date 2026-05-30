@@ -51,7 +51,7 @@ pub use output::{
     DEFAULT_TASK_OUTPUT_TIMEOUT_MS, MAX_TASK_OUTPUT_TIMEOUT_MS,
 };
 pub use store::TaskStore;
-pub use todo::{parse_todo_items, replace_todos_for_key, todo_owner_key};
+pub use todo::{parse_todo_items, replace_todos_for_key, todo_owner_key, todos_for_key};
 pub use tool_requests::{
     dependency_ids_from_input, normalize_dependencies, normalize_optional_string,
     parse_task_create, parse_task_id, parse_task_update, string_array_field, task_id_from_input,

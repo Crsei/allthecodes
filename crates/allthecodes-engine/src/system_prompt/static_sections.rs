@@ -110,6 +110,14 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
         enabled_tools.contains(&"ListPeers") && enabled_tools.contains(&"RemoteTrigger");
     let has_deferred_tool_system =
         enabled_tools.contains(&"SearchExtraTools") && enabled_tools.contains(&"ExecuteExtraTool");
+    let has_goal_tools = enabled_tools.contains(&"GetGoal")
+        && enabled_tools.contains(&"CreateGoal")
+        && enabled_tools.contains(&"UpdateGoal");
+    let has_phase5_orchestration = enabled_tools.contains(&"Workflow")
+        || enabled_tools.contains(&"ListAgents")
+        || enabled_tools.contains(&"FollowupTask")
+        || enabled_tools.contains(&"WaitAgent")
+        || enabled_tools.contains(&"CloseAgent");
 
     let mut items: Vec<String> = vec![
         "Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:".into(),
@@ -165,6 +173,30 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
     if has_deferred_tool_system {
         items.push(
             "If a non-core tool seems useful but is not directly available, use SearchExtraTools to discover it. Discovery does not make hidden tool schemas directly visible; after selecting a hidden tool, call ExecuteExtraTool with the exact tool name and params.".into()
+        );
+    }
+
+    if has_goal_tools {
+        items.push(
+            "Use GetGoal/CreateGoal/UpdateGoal for session-level completion criteria. Goals do not replace TodoWrite or Task tools; use todos/tasks for execution breakdowns.".into()
+        );
+    }
+
+    if enabled_tools.contains(&"ViewImage") {
+        items.push(
+            "Use ViewImage when you need to inspect a local image file. Do not use Read for binary image contents.".into()
+        );
+    }
+
+    if enabled_tools.contains(&"VerifyPlanExecution") {
+        items.push(
+            "Use VerifyPlanExecution to check plan workflow status, linked tasks, and unfinished todos before claiming a plan is complete.".into()
+        );
+    }
+
+    if has_phase5_orchestration {
+        items.push(
+            "Use Workflow for durable multi-step workflow specs. Use ListAgents, FollowupTask, WaitAgent, and CloseAgent for cross-agent operations in an active Agent Teams session.".into()
         );
     }
 

@@ -20,6 +20,7 @@ fn root_owned_base_tools() -> Tools {
     tools.extend(allthecodes_engine::browser_tool::tools());
     tools.extend(allthecodes_engine::mcp_resource_tools::tools());
     tools.extend(allthecodes_services::scheduler_tools::tools());
+    tools.extend(allthecodes_teams::multi_agent_v2::tools());
     tools.extend([
         Arc::new(allthecodes_engine::agent::AgentTool) as _,
         Arc::new(allthecodes_engine::agent::TaskAgentTool) as _,
@@ -134,6 +135,29 @@ mod tests {
             assert!(
                 tools.iter().any(|t| t.name() == name),
                 "should find {name} deferred tool system tool"
+            );
+        }
+
+        for name in [
+            "DiscoverSkills",
+            "ViewImage",
+            "GetGoal",
+            "CreateGoal",
+            "UpdateGoal",
+            "VerifyPlanExecution",
+            "Workflow",
+            "ApplyPatch",
+            "LocalMemoryRecall",
+            "VaultHttpFetch",
+            "PushNotification",
+            "ListAgents",
+            "FollowupTask",
+            "WaitAgent",
+            "CloseAgent",
+        ] {
+            assert!(
+                tools.iter().any(|t| t.name() == name),
+                "should find {name} Phase 5 tool"
             );
         }
 

@@ -17,6 +17,7 @@ pub mod in_process;
 pub mod layout_manager;
 pub mod loaded_threads;
 pub mod mailbox;
+pub mod multi_agent_v2;
 pub mod pr_activity;
 pub mod protocol;
 pub mod reconnection;

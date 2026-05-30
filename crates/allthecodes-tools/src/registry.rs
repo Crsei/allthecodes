@@ -73,6 +73,10 @@ pub fn allowed_tool_names(policy: ToolPolicy) -> Option<&'static [&'static str]>
             "Agent",
             "Task",
             "SendMessage",
+            "ListAgents",
+            "FollowupTask",
+            "WaitAgent",
+            "CloseAgent",
             "TaskList",
             "TaskStop",
             "subscribe_pr_activity",
@@ -124,6 +128,7 @@ pub fn allthecodes_tools_base_tools() -> Tools {
     tools.extend(crate::tasks::tools());
     tools.extend(crate::deferred_tools::tools());
     tools.extend(crate::product_tools::tools());
+    tools.extend(crate::phase5::tools());
 
     tools.extend([
         Arc::new(AskUserQuestionTool) as _,
