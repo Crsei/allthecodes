@@ -545,6 +545,12 @@ fn sdk_to_backend_messages(msg: SdkMessage, draft_id: &mut Option<String>) -> Ve
                 level: "info".to_string(),
             }]
         }
+        SdkMessage::GoalUpdated(update) => {
+            vec![BackendMessage::GoalUpdated {
+                event: update.event,
+                goal: update.goal,
+            }]
+        }
         SdkMessage::Tombstone(tombstone) => {
             *draft_id = None;
             vec![BackendMessage::Tombstone {

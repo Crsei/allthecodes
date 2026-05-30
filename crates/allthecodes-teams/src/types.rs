@@ -99,6 +99,10 @@ pub struct TeamMember {
     pub worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_path: Option<String>,
     #[serde(default)]
     pub subscriptions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,6 +111,10 @@ pub struct TeamMember {
     pub is_active: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_requested_at: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -300,10 +308,14 @@ mod tests {
                 cwd: "/home/user/project".into(),
                 worktree_path: None,
                 session_id: None,
+                task_id: None,
+                task_path: None,
                 subscriptions: vec![],
                 backend_type: Some(BackendType::InProcess),
                 is_active: Some(true),
                 mode: None,
+                close_state: None,
+                close_requested_at: None,
             }],
         };
         let json = serde_json::to_string_pretty(&tf).unwrap();

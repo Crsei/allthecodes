@@ -29,6 +29,7 @@ use crate::tool_runtime::execution::{
     ToolExecutionResult,
 };
 use crate::types::app_state::AppState;
+use crate::types::config::QuerySource;
 use crate::types::message::{Message, MessageContent, StreamEvent, UserMessage};
 use crate::types::state::AutoCompactTracking;
 use crate::types::tool::{
@@ -62,6 +63,7 @@ pub(crate) struct QueryEngineDeps {
     pub(crate) state: Arc<RwLock<QueryEngineState>>,
     pub(crate) cwd: String,
     pub(crate) session_id: String,
+    pub(crate) query_source: QuerySource,
     /// Audit context for this submit — carries correlation IDs.
     pub(crate) audit_ctx: crate::observability::AuditContext,
     pub(crate) langfuse_trace: Option<crate::services::langfuse::LangfuseTrace>,

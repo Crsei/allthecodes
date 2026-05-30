@@ -1,6 +1,92 @@
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use crate::api::client::{strip_anthropic_cache_fields, MessagesRequest};
+
+const APPLY_PATCH_LARK_GRAMMAR: &str = r#"start: begin_patch environment_id? hunk+ end_patch
+begin_patch: "*** Begin Patch" LF
+environment_id: "*** Environment ID: " filename LF
+end_patch: "*** End Patch" LF?
+
+hunk: add_hunk | delete_hunk | update_hunk
+add_hunk: "*** Add File: " filename LF add_line+
+delete_hunk: "*** Delete File: " filename LF
+update_hunk: "*** Update File: " filename LF change_move? change?
+
+filename: /(.+)/
+add_line: "+" /(.*)/ LF -> line
+
+change_move: "*** Move to: " filename LF
+change: (change_context | change_line)+ eof_line?
+change_context: ("@@" | "@@ " /(.+)/) LF
+change_line: ("+" | "-" | " ") /(.*)/ LF
+eof_line: "*** End of File" LF
+
+%import common.LF
+"#;
+
+fn is_responses_freeform_tool_name(name: &str) -> bool {
+    name == "apply_patch"
+}
+
+fn responses_freeform_tool_spec(name: &str, description: &str) -> Option<Value> {
+    if !is_responses_freeform_tool_name(name) {
+        return None;
+    }
+    Some(json!({
+        "type": "custom",
+        "name": name,
+        "description": if description.is_empty() {
+            "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
+        } else {
+            description
+        },
+        "format": {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": APPLY_PATCH_LARK_GRAMMAR,
+        },
+    }))
+}
+
+fn freeform_input_text(input: Option<&Value>) -> String {
+    match input {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Object(map)) => map
+            .get("input")
+            .or_else(|| map.get("patch"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| Value::Object(map.clone()).to_string()),
+        Some(value) => value.to_string(),
+        None => String::new(),
+    }
+}
+
+fn collect_freeform_tool_call_ids(messages: &[Value]) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for msg in messages {
+        if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(Value::Array(blocks)) = msg.get("content") else {
+            continue;
+        };
+        for block in blocks {
+            let Some(name) = block.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !is_responses_freeform_tool_name(name) {
+                continue;
+            }
+            if let Some(id) = block.get("id").and_then(|v| v.as_str()) {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+    ids
+}
 
 pub(super) fn reasoning_output_tokens_from_usage(usage: &Value) -> u64 {
     usage
@@ -71,6 +157,7 @@ pub(super) fn build_responses_input(request: &MessagesRequest) -> Vec<Value> {
     let mut messages = Value::Array(request.messages.clone());
     strip_anthropic_cache_fields(&mut messages);
     let messages = messages.as_array().cloned().unwrap_or_default();
+    let freeform_tool_call_ids = collect_freeform_tool_call_ids(&messages);
     let mut input = Vec::new();
 
     for msg in &messages {
@@ -98,17 +185,26 @@ pub(super) fn build_responses_input(request: &MessagesRequest) -> Vec<Value> {
                                 .get("name")
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("unknown");
-                            let arguments = block
-                                .get("input")
-                                .cloned()
-                                .unwrap_or_else(|| json!({}))
-                                .to_string();
-                            input.push(json!({
-                                "type": "function_call",
-                                "name": name,
-                                "arguments": arguments,
-                                "call_id": call_id,
-                            }));
+                            if is_responses_freeform_tool_name(name) {
+                                input.push(json!({
+                                    "type": "custom_tool_call",
+                                    "name": name,
+                                    "input": freeform_input_text(block.get("input")),
+                                    "call_id": call_id,
+                                }));
+                            } else {
+                                let arguments = block
+                                    .get("input")
+                                    .cloned()
+                                    .unwrap_or_else(|| json!({}))
+                                    .to_string();
+                                input.push(json!({
+                                    "type": "function_call",
+                                    "name": name,
+                                    "arguments": arguments,
+                                    "call_id": call_id,
+                                }));
+                            }
                         }
                         _ => {}
                     }
@@ -155,11 +251,19 @@ pub(super) fn build_responses_input(request: &MessagesRequest) -> Vec<Value> {
                                     other => other.to_string(),
                                 })
                                 .unwrap_or_default();
-                            input.push(json!({
-                                "type": "function_call_output",
-                                "call_id": call_id,
-                                "output": output,
-                            }));
+                            if freeform_tool_call_ids.contains(call_id) {
+                                input.push(json!({
+                                    "type": "custom_tool_call_output",
+                                    "call_id": call_id,
+                                    "output": output,
+                                }));
+                            } else {
+                                input.push(json!({
+                                    "type": "function_call_output",
+                                    "call_id": call_id,
+                                    "output": output,
+                                }));
+                            }
                         }
                         Some("text") => {
                             if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
@@ -221,6 +325,9 @@ pub(super) fn build_responses_tools(request: &MessagesRequest) -> Vec<Value> {
                 .get("description")
                 .and_then(|d| d.as_str())
                 .unwrap_or("");
+            if let Some(custom_tool) = responses_freeform_tool_spec(name, description) {
+                return Some(custom_tool);
+            }
             let parameters = sanitize_responses_function_parameters(
                 tool.get("input_schema")
                     .cloned()
@@ -298,5 +405,54 @@ mod tests {
             {"type": "tool_result", "tool_use_id": "id1", "content": "result text"},
         ]);
         assert_eq!(flatten_content(Some(&content)), "result text");
+    }
+
+    #[test]
+    fn test_build_responses_input_round_trips_apply_patch_as_custom() {
+        let request = MessagesRequest {
+            model: "gpt-5.4".to_string(),
+            messages: vec![
+                json!({
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call_patch",
+                        "name": "apply_patch",
+                        "input": {"input": "*** Begin Patch\n*** End Patch"}
+                    }]
+                }),
+                json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "call_patch",
+                        "content": "Applied patch"
+                    }]
+                }),
+            ],
+            system: None,
+            max_tokens: 1024,
+            tools: None,
+            stream: true,
+            metadata: None,
+            service_tier: None,
+            stop_sequences: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            context_management: None,
+            thinking: None,
+            output_config: None,
+            tool_choice: None,
+            reasoning_effort: None,
+            advisor_model: None,
+        };
+
+        let input = build_responses_input(&request);
+        assert_eq!(input[0]["type"], "custom_tool_call");
+        assert_eq!(input[0]["name"], "apply_patch");
+        assert_eq!(input[0]["input"], "*** Begin Patch\n*** End Patch");
+        assert_eq!(input[1]["type"], "custom_tool_call_output");
+        assert_eq!(input[1]["call_id"], "call_patch");
     }
 }

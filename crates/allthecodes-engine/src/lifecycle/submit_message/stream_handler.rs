@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use allthecodes_types::sdk::*;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::session::transcript;
@@ -72,6 +72,7 @@ fn handle_assistant_message(
             state.usage.add_usage(msg_usage, assistant_msg.cost_usd);
         }
     }
+    let usage_snap = ctx.state_ref.read().usage.clone();
 
     let action = StreamAction::Yield(SdkMessage::Assistant(SdkAssistantMessage {
         message: assistant_msg.clone(),
@@ -93,7 +94,45 @@ fn handle_assistant_message(
         );
     }
 
-    vec![action]
+    let mut actions = vec![action];
+    if let Some(goal_update) = account_goal_runtime_message(ctx.session_id.as_str(), &usage_snap) {
+        actions.push(StreamAction::Yield(goal_update));
+    }
+    actions
+}
+
+pub(super) fn account_goal_runtime_message(
+    session_id: &str,
+    usage: &UsageTracking,
+) -> Option<SdkMessage> {
+    match allthecodes_tools::phase5::account_goal_runtime_for_session(session_id, usage) {
+        Ok(Some(goal)) => {
+            let event = if goal.status == allthecodes_tools::phase5::GoalStatus::BudgetLimited {
+                "budget_limited"
+            } else {
+                "runtime_updated"
+            };
+            Some(goal_updated_message(session_id, event, goal))
+        }
+        Ok(None) => None,
+        Err(error) => {
+            warn!(%error, "failed to update goal runtime accounting");
+            None
+        }
+    }
+}
+
+pub(super) fn goal_updated_message(
+    session_id: &str,
+    event: impl Into<String>,
+    goal: allthecodes_tools::phase5::GoalRecord,
+) -> SdkMessage {
+    SdkMessage::GoalUpdated(SdkGoalUpdated {
+        event: event.into(),
+        goal: serde_json::to_value(goal).unwrap_or(serde_json::Value::Null),
+        session_id: session_id.to_string(),
+        uuid: Uuid::new_v4(),
+    })
 }
 
 fn handle_user_message(
@@ -158,12 +197,19 @@ fn handle_system_message(
                 .write()
                 .messages
                 .push(Message::System(system_msg.clone()));
+            let internal_metadata_hidden = compact_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.has_internal_metadata());
+            let public_compact_metadata = compact_metadata
+                .as_ref()
+                .map(|metadata| metadata.public_copy());
 
             vec![StreamAction::Yield(SdkMessage::CompactBoundary(
                 SdkCompactBoundary {
                     session_id: ctx.session_id.to_string(),
                     uuid: system_msg.uuid,
-                    compact_metadata: compact_metadata.clone(),
+                    compact_metadata: public_compact_metadata,
+                    internal_metadata_hidden,
                 },
             ))]
         }
@@ -367,6 +413,197 @@ fn handle_tool_use_summary(
     ))]
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lifecycle::QueryEngine;
+    use crate::types::config::QueryEngineConfig;
+    use crate::types::message::{
+        AssistantMessage, CompactMetadata, ContentBlock, SystemMessage, Usage,
+    };
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn make_config() -> QueryEngineConfig {
+        QueryEngineConfig {
+            cwd: "/tmp".to_string(),
+            tools: vec![],
+            custom_system_prompt: None,
+            append_system_prompt: None,
+            user_specified_model: None,
+            fallback_model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            task_budget: None,
+            verbose: false,
+            initial_messages: None,
+            commands: vec![],
+            thinking_config: None,
+            json_schema: None,
+            replay_user_messages: false,
+            persist_session: false,
+            resolved_model: None,
+            auto_save_session: false,
+            agent_context: None,
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn assistant_usage_updates_active_goal_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tmp.path());
+        let engine = QueryEngine::new(make_config());
+        let session_id = engine.session_id.clone();
+        let now = chrono::Utc::now().to_rfc3339();
+        allthecodes_tools::phase5::save_goal_for_session(
+            session_id.as_str(),
+            &allthecodes_tools::phase5::GoalRecord {
+                objective: "stay within budget".to_string(),
+                token_budget: Some(10),
+                tokens_used: 0,
+                time_used_seconds: 0,
+                status: allthecodes_tools::phase5::GoalStatus::Active,
+                created_at: now.clone(),
+                updated_at: now,
+                completed_at: None,
+                status_reason: None,
+            },
+        )
+        .unwrap();
+
+        let assistant = AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1,
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "done".to_string(),
+            }],
+            usage: Some(Usage {
+                input_tokens: 7,
+                output_tokens: 5,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                reasoning_output_tokens: 0,
+            }),
+            stop_reason: Some("end_turn".to_string()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        };
+        let mut submit_turn = SubmitTurnState::new();
+        let mut submit_langfuse_trace = None;
+        let mut telemetry_submit_span = None;
+        let mut ctx = StreamContext {
+            config: &engine.config,
+            state_ref: &engine.state,
+            session_id: &session_id,
+            submit_turn: &mut submit_turn,
+            replay_user_messages: false,
+            submit_langfuse_trace: &mut submit_langfuse_trace,
+            telemetry_submit_span: &mut telemetry_submit_span,
+            model_name: "test-model",
+            api_started_at: Instant::now(),
+        };
+
+        let actions = handle_assistant_message(assistant, &mut ctx);
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            StreamAction::Yield(SdkMessage::GoalUpdated(update))
+                if update.event == "budget_limited"
+        )));
+        let goal = allthecodes_tools::phase5::load_goal_for_session(session_id.as_str())
+            .unwrap()
+            .unwrap();
+        assert_eq!(goal.tokens_used, 12);
+        assert_eq!(
+            goal.status,
+            allthecodes_tools::phase5::GoalStatus::BudgetLimited
+        );
+    }
+
+    #[test]
+    fn compact_boundary_sdk_event_hides_internal_metadata() {
+        let engine = QueryEngine::new(make_config());
+        let session_id = engine.session_id.clone();
+        let system = SystemMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1,
+            subtype: SystemSubtype::CompactBoundary {
+                compact_metadata: Some(CompactMetadata {
+                    pre_compact_token_count: 100,
+                    post_compact_token_count: 40,
+                    preserved_segment: None,
+                    pre_compact_discovered_tools: Some(vec!["VaultHttpFetch".to_string()]),
+                }),
+            },
+            content: "compacted".to_string(),
+        };
+        let mut submit_turn = SubmitTurnState::new();
+        let mut submit_langfuse_trace = None;
+        let mut telemetry_submit_span = None;
+        let mut ctx = StreamContext {
+            config: &engine.config,
+            state_ref: &engine.state,
+            session_id: &session_id,
+            submit_turn: &mut submit_turn,
+            replay_user_messages: false,
+            submit_langfuse_trace: &mut submit_langfuse_trace,
+            telemetry_submit_span: &mut telemetry_submit_span,
+            model_name: "test-model",
+            api_started_at: Instant::now(),
+        };
+
+        let actions = handle_system_message(system, &mut ctx);
+        let StreamAction::Yield(SdkMessage::CompactBoundary(boundary)) = &actions[0] else {
+            panic!("expected compact boundary SDK message");
+        };
+        assert!(boundary.internal_metadata_hidden);
+        let public = boundary
+            .compact_metadata
+            .as_ref()
+            .expect("public compact metadata");
+        assert_eq!(public.pre_compact_token_count, 100);
+        assert_eq!(public.post_compact_token_count, 40);
+        assert!(public.pre_compact_discovered_tools.is_none());
+
+        let stored = engine.state.read().messages.clone();
+        let Some(Message::System(stored_system)) = stored.first() else {
+            panic!("expected stored system message");
+        };
+        let SystemSubtype::CompactBoundary {
+            compact_metadata: Some(stored_metadata),
+        } = &stored_system.subtype
+        else {
+            panic!("expected stored compact metadata");
+        };
+        assert_eq!(
+            stored_metadata.pre_compact_discovered_tools.as_deref(),
+            Some(&["VaultHttpFetch".to_string()][..])
+        );
+    }
+}
+
 pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<SdkResult> {
     let max_budget = ctx.config.max_budget_usd?;
     let current_cost = ctx.state_ref.read().usage.total_cost_usd;
@@ -389,6 +626,13 @@ pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<SdkResult> {
         let state = ctx.state_ref.read();
         (state.usage.clone(), state.permission_denials.clone())
     };
+    if let Err(error) = allthecodes_tools::phase5::mark_goal_budget_limited_for_session(
+        ctx.session_id.as_str(),
+        &usage_snap,
+        format!("max budget exceeded: cost ${current_cost:.4} >= ${max_budget:.4}"),
+    ) {
+        warn!(%error, "failed to mark goal budget-limited after cost budget stop");
+    }
     let result_text = format!(
         "Stopped: cost ${:.4} exceeded budget ${:.4}",
         current_cost, max_budget

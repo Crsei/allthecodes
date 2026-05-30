@@ -6,6 +6,8 @@
 //! - `kairos_brief`, `kairos_channels`, `kairos_push_notification`,
 //!   `kairos_github_webhooks` all require `kairos`.
 //! - `proactive` can be standalone OR is implied when `kairos` is enabled.
+//! - Full-build Phase 5 tool gates default to enabled and can be explicitly
+//!   disabled with `0`, `false`, or `no`.
 //!
 //! A global singleton [`FLAGS`] is lazily initialised from real env vars.
 //! Use [`enabled`] for quick queries from anywhere in the crate.
@@ -29,6 +31,10 @@ pub enum Feature {
     SubagentDashboard,
     AgentTeams,
     Coordinator,
+    WorkflowScripts,
+    PushNotificationRemoteBridge,
+    GoalTools,
+    MultiAgentV2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +106,30 @@ const FEATURE_DESCRIPTORS: &[FeatureDescriptor] = &[
         label: "coordinator",
         description: "coordinator mode prompt and orchestration gate",
     },
+    FeatureDescriptor {
+        feature: Feature::WorkflowScripts,
+        env_var: "ALLTHECODES_WORKFLOW_SCRIPTS",
+        label: "workflow_scripts",
+        description: "workflow tool scripts and durable workflow state tools",
+    },
+    FeatureDescriptor {
+        feature: Feature::PushNotificationRemoteBridge,
+        env_var: "ALLTHECODES_PUSH_NOTIFICATION_REMOTE_BRIDGE",
+        label: "push_notification_remote_bridge",
+        description: "remote webhook bridge for push notification tooling",
+    },
+    FeatureDescriptor {
+        feature: Feature::GoalTools,
+        env_var: "ALLTHECODES_GOAL_TOOLS",
+        label: "goal_tools",
+        description: "goal lifecycle tools and runtime accounting",
+    },
+    FeatureDescriptor {
+        feature: Feature::MultiAgentV2,
+        env_var: "ALLTHECODES_MULTI_AGENT_V2",
+        label: "multi_agent_v2",
+        description: "multi-agent v2 spawn/send/followup/wait/close tools",
+    },
 ];
 
 pub fn feature_descriptors() -> &'static [FeatureDescriptor] {
@@ -123,6 +153,10 @@ pub struct FeatureFlags {
     pub subagent_dashboard: bool,
     pub agent_teams: bool,
     pub coordinator: bool,
+    pub workflow_scripts: bool,
+    pub push_notification_remote_bridge: bool,
+    pub goal_tools: bool,
+    pub multi_agent_v2: bool,
 }
 
 impl FeatureFlags {
@@ -145,6 +179,11 @@ impl FeatureFlags {
                 .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
                 .unwrap_or(false)
         };
+        let read_default_enabled = |key: &str| -> bool {
+            env.get(key)
+                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
+                .unwrap_or(true)
+        };
 
         let kairos = read("FEATURE_KAIROS");
         let team_memory = read("FEATURE_TEAMMEM");
@@ -152,6 +191,11 @@ impl FeatureFlags {
         let agent_teams =
             read("FEATURE_AGENT_TEAMS") || read("ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS");
         let coordinator = read("ALLTHECODES_COORDINATOR_MODE");
+        let workflow_scripts = read_default_enabled("ALLTHECODES_WORKFLOW_SCRIPTS");
+        let push_notification_remote_bridge =
+            read_default_enabled("ALLTHECODES_PUSH_NOTIFICATION_REMOTE_BRIDGE");
+        let goal_tools = read_default_enabled("ALLTHECODES_GOAL_TOOLS");
+        let multi_agent_v2 = read_default_enabled("ALLTHECODES_MULTI_AGENT_V2");
         let mut kairos_brief = read("FEATURE_KAIROS_BRIEF");
         let mut kairos_channels = read("FEATURE_KAIROS_CHANNELS");
         let mut kairos_push_notification = read("FEATURE_KAIROS_PUSH_NOTIFICATION");
@@ -207,6 +251,10 @@ impl FeatureFlags {
             subagent_dashboard,
             agent_teams,
             coordinator,
+            workflow_scripts,
+            push_notification_remote_bridge,
+            goal_tools,
+            multi_agent_v2,
         }
     }
 
@@ -223,6 +271,10 @@ impl FeatureFlags {
             subagent_dashboard: true,
             agent_teams: true,
             coordinator: true,
+            workflow_scripts: true,
+            push_notification_remote_bridge: true,
+            goal_tools: true,
+            multi_agent_v2: true,
         }
     }
 
@@ -244,6 +296,10 @@ impl FeatureFlags {
             Feature::SubagentDashboard => self.subagent_dashboard,
             Feature::AgentTeams => self.agent_teams,
             Feature::Coordinator => self.coordinator,
+            Feature::WorkflowScripts => self.workflow_scripts,
+            Feature::PushNotificationRemoteBridge => self.push_notification_remote_bridge,
+            Feature::GoalTools => self.goal_tools,
+            Feature::MultiAgentV2 => self.multi_agent_v2,
         }
     }
 }
@@ -300,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_all_false() {
+    fn defaults_match_stable_and_experimental_gate_policy() {
         let f = flags(&[]);
         assert!(!f.kairos);
         assert!(!f.kairos_brief);
@@ -311,6 +367,16 @@ mod tests {
         assert!(!f.subagent_dashboard);
         assert!(!f.agent_teams);
         assert!(!f.coordinator);
+        assert!(
+            f.workflow_scripts,
+            "full-build workflow tools default enabled"
+        );
+        assert!(
+            f.push_notification_remote_bridge,
+            "remote push bridge defaults enabled"
+        );
+        assert!(f.goal_tools, "goal tools default enabled");
+        assert!(f.multi_agent_v2, "multi-agent v2 defaults enabled");
     }
 
     #[test]
@@ -418,7 +484,7 @@ mod tests {
     #[test]
     fn feature_descriptors_are_unique_and_complete() {
         let descriptors = feature_descriptors();
-        assert_eq!(descriptors.len(), 10);
+        assert_eq!(descriptors.len(), 14);
 
         let mut labels: Vec<_> = descriptors
             .iter()
@@ -438,9 +504,16 @@ mod tests {
 
     #[test]
     fn false_values_are_not_enabled() {
-        let f = flags(&[("FEATURE_KAIROS", "0"), ("FEATURE_PROACTIVE", "false")]);
+        let f = flags(&[
+            ("FEATURE_KAIROS", "0"),
+            ("FEATURE_PROACTIVE", "false"),
+            ("ALLTHECODES_GOAL_TOOLS", "no"),
+            ("ALLTHECODES_MULTI_AGENT_V2", "0"),
+        ]);
         assert!(!f.kairos);
         assert!(!f.proactive);
+        assert!(!f.goal_tools);
+        assert!(!f.multi_agent_v2);
     }
 
     #[test]

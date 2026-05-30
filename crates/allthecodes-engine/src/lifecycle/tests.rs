@@ -355,6 +355,7 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
         state: engine.state.clone(),
         cwd: "/tmp".to_string(),
         session_id: "canonical-deferred".to_string(),
+        query_source: crate::types::config::QuerySource::ReplMainThread,
         audit_ctx: crate::observability::AuditContext::noop("canonical-deferred"),
         langfuse_trace: None,
         api_client: None,
@@ -728,6 +729,44 @@ async fn test_submit_local_command() {
     }
     assert_ne!(engine.current_session_id(), original_session);
     assert!(engine.messages().is_empty());
+}
+
+#[tokio::test]
+async fn submit_system_init_filters_view_image_for_text_only_model() {
+    use futures::StreamExt;
+
+    let mut engine = QueryEngine::new(make_config());
+    engine.set_tools(vec![
+        Arc::new(allthecodes_tools::sleep::SleepTool),
+        Arc::new(allthecodes_tools::phase5::ViewImageTool),
+        Arc::new(allthecodes_tools::phase5::ViewImageAliasTool),
+    ]);
+    {
+        let mut state = engine.state.write();
+        state.app_state.main_loop_model = "text-only".into();
+        state.app_state.settings.model_capabilities.insert(
+            "text-only".into(),
+            allthecodes_config::settings::ModelCapabilitySettings {
+                input_modalities: vec!["text".into()],
+                supports_image_detail_original: false,
+                ..Default::default()
+            },
+        );
+    }
+    engine.set_command_dispatcher(Arc::new(TestCommandDispatcher));
+    engine.set_command_executor(Arc::new(TestCommandExecutor));
+    let stream = engine.submit_message("/clear", QuerySource::Sdk);
+    let mut stream = std::pin::pin!(stream);
+
+    let first = stream.next().await.expect("system init");
+    match first {
+        SdkMessage::SystemInit(init) => {
+            assert!(init.tools.contains(&"Sleep".to_string()));
+            assert!(!init.tools.contains(&"ViewImage".to_string()));
+            assert!(!init.tools.contains(&"view_image".to_string()));
+        }
+        other => panic!("expected SystemInit, got {other:?}"),
+    }
 }
 
 #[tokio::test]

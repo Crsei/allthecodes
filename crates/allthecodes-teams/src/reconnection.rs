@@ -233,10 +233,14 @@ mod tests {
             cwd: "/tmp".into(),
             worktree_path: None,
             session_id: None,
+            task_id: None,
+            task_path: None,
             subscriptions: vec![],
             backend_type: Some(BackendType::InProcess),
             is_active: Some(true),
             mode: None,
+            close_state: None,
+            close_requested_at: None,
         };
         helpers::add_member(&tf.name, researcher).unwrap();
 

@@ -478,6 +478,26 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
             ));
         }
 
+        SdkMessage::GoalUpdated(update) => {
+            if update.event == "budget_limited" {
+                let objective = update
+                    .goal
+                    .get("objective")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("session goal");
+                app.add_message(Message::System(SystemMessage {
+                    uuid: uuid::Uuid::new_v4(),
+                    timestamp: now_ts(),
+                    subtype: SystemSubtype::Informational {
+                        level: InfoLevel::Warning,
+                    },
+                    content: format!("Goal budget reached: {objective}"),
+                }));
+            } else {
+                debug!(event = %update.event, "TUI: goal updated");
+            }
+        }
+
         SdkMessage::CompactBoundary(_) => {
             app.add_message(Message::System(SystemMessage {
                 uuid: uuid::Uuid::new_v4(),

@@ -31,7 +31,9 @@ mod stream_handler;
 mod system_prompt_build;
 
 use command_handling::{bash_mode_result_message, handle_parsed_command, skill_args_from_prompt};
-use stream_handler::{check_budget, process_stream_item, StreamAction, StreamContext};
+use stream_handler::{
+    account_goal_runtime_message, check_budget, process_stream_item, StreamAction, StreamContext,
+};
 use system_prompt_build::build_submit_system_prompt;
 
 #[cfg(feature = "telemetry")]
@@ -337,7 +339,7 @@ impl QueryEngine {
                 );
             }
 
-            let (tools_snapshot, model_name, backend_name) = {
+            let (tools_snapshot, model_name, backend_name, app_settings) = {
                 let s = state_ref.read();
                 let tools = s.tools.clone();
                 let model = config
@@ -345,20 +347,35 @@ impl QueryEngine {
                     .clone()
                     .unwrap_or_else(|| s.app_state.main_loop_model.clone());
                 let backend = s.app_state.main_loop_backend.clone();
-                (tools, model, backend)
+                let settings = s.app_state.settings.clone();
+                (tools, model, backend, settings)
             };
+            let capability_tools_snapshot =
+                allthecodes_tools::phase5::filter_tools_for_model_capabilities(
+                    tools_snapshot,
+                    &app_settings,
+                    &model_name,
+                );
+            let session_tools_snapshot =
+                allthecodes_tools::registry::filter_tools_for_session_gates(
+                    capability_tools_snapshot,
+                    allthecodes_tools::registry::ToolSessionGates {
+                        non_interactive: query_source.is_non_interactive(),
+                        subagent: query_source.starts_with_agent(),
+                    },
+                );
             let query_gates = crate::types::config::QueryGates::from_env(
                 state_ref.read().app_state.fast_mode,
             );
             let prompt_tools_snapshot = if query_gates.deferred_tool_loading {
                 let messages = state_ref.read().messages.clone();
                 allthecodes_tools::deferred_tools::filter_tools_for_deferred_request(
-                    tools_snapshot.clone(),
+                    session_tools_snapshot.clone(),
                     &messages,
                     session_id.as_str(),
                 )
             } else {
-                tools_snapshot.clone()
+                session_tools_snapshot.clone()
             };
 
             // ================================================================
@@ -374,7 +391,7 @@ impl QueryEngine {
                 .clone();
 
             yield SdkMessage::SystemInit(SystemInitMessage {
-                tools: tools_snapshot
+                tools: prompt_tools_snapshot
                     .iter()
                     .map(|t| t.name().to_string())
                     .collect(),
@@ -537,6 +554,7 @@ impl QueryEngine {
                 state: state_ref.clone(),
                 cwd: config.cwd.clone(),
                 session_id: session_id.to_string(),
+                query_source: query_source.clone(),
                 audit_ctx: submit_audit_ctx,
                 langfuse_trace: submit_langfuse_trace.clone(),
                 api_client,
@@ -663,6 +681,12 @@ impl QueryEngine {
                 },
             );
             finish_submit_telemetry(&mut telemetry_submit_span, &model_name, &usage_snap);
+
+            if let Some(goal_update) =
+                account_goal_runtime_message(session_id.as_str(), &usage_snap)
+            {
+                yield goal_update;
+            }
 
             yield SdkMessage::Result(SdkResult {
                 subtype,

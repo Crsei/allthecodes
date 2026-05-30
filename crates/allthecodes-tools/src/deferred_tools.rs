@@ -68,6 +68,10 @@ static DISCOVERED_TOOLS: LazyLock<RwLock<HashMap<String, HashSet<String>>>> =
 struct DeferredMatch {
     name: String,
     description: String,
+    prompt: String,
+    mcp_server_name: Option<String>,
+    schema_index: Vec<String>,
+    name_tokens: Vec<String>,
     score: usize,
     schema: Option<Value>,
 }
@@ -294,11 +298,25 @@ async fn deferred_candidates(tools: &Tools, include_schema: bool) -> Vec<Deferre
             continue;
         }
         let description = tool.description(&json!({})).await;
+        let prompt = tool.prompt().await;
+        let schema = tool.input_json_schema();
+        let mut schema_index = Vec::new();
+        collect_schema_index_terms(&schema, &mut schema_index);
+        let mcp_server_name = tool.mcp_server_name().map(ToOwned::to_owned);
+        let name_tokens = identifier_tokens(&name);
+        if let Some(server) = &mcp_server_name {
+            schema_index.extend(identifier_tokens(server));
+            schema_index.push(server.clone());
+        }
         out.push(DeferredMatch {
             name,
             description,
+            prompt,
+            mcp_server_name,
+            schema_index,
+            name_tokens,
             score: 0,
-            schema: include_schema.then(|| tool.input_json_schema()),
+            schema: include_schema.then_some(schema),
         });
     }
     out
@@ -325,8 +343,81 @@ fn discover_query(query: &str) -> (&str, bool) {
         .unwrap_or((query, false))
 }
 
+fn identifier_tokens(input: &str) -> Vec<String> {
+    let mut normalized = String::with_capacity(input.len() * 2);
+    let mut prev_lower_or_digit = false;
+    for ch in input.chars() {
+        if ch.is_ascii_uppercase() && prev_lower_or_digit {
+            normalized.push(' ');
+        }
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        } else if ch == '_' || ch == '-' || ch == '.' || ch == '/' || ch == ':' {
+            normalized.push(' ');
+            prev_lower_or_digit = false;
+        } else {
+            normalized.push(ch);
+            prev_lower_or_digit = false;
+        }
+    }
+    normalized
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn collect_schema_index_terms(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map {
+                if key == "properties" {
+                    if let Some(properties) = value.as_object() {
+                        for property in properties.keys() {
+                            out.push(property.to_ascii_lowercase());
+                            out.extend(identifier_tokens(property));
+                        }
+                    }
+                }
+                if matches!(key.as_str(), "description" | "title" | "searchHint") {
+                    if let Some(text) = value.as_str() {
+                        out.push(text.to_ascii_lowercase());
+                    }
+                }
+                collect_schema_index_terms(value, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_schema_index_terms(item, out);
+            }
+        }
+        Value::String(text) => {
+            out.push(text.to_ascii_lowercase());
+            out.extend(identifier_tokens(text));
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn candidate_index_text(candidate: &DeferredMatch) -> String {
+    let mut fields = vec![
+        candidate.name.clone(),
+        candidate.description.clone(),
+        candidate.prompt.clone(),
+        candidate.name_tokens.join(" "),
+        candidate.schema_index.join(" "),
+    ];
+    if let Some(server) = &candidate.mcp_server_name {
+        fields.push(server.clone());
+    }
+    fields.join("\n").to_ascii_lowercase()
+}
+
 fn score_candidate(candidate: &DeferredMatch, query: &str) -> usize {
-    let query = query.to_ascii_lowercase();
+    let query = query.trim().to_ascii_lowercase();
     let terms = query
         .split_whitespace()
         .map(str::trim)
@@ -335,20 +426,52 @@ fn score_candidate(candidate: &DeferredMatch, query: &str) -> usize {
     if terms.is_empty() {
         return 0;
     }
-    let haystack = format!("{} {}", candidate.name, candidate.description).to_ascii_lowercase();
+    let name_lower = candidate.name.to_ascii_lowercase();
+    let server_lower = candidate
+        .mcp_server_name
+        .as_deref()
+        .map(str::to_ascii_lowercase);
+    let haystack = candidate_index_text(candidate);
+    let schema_terms = candidate
+        .schema_index
+        .iter()
+        .map(|term| term.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let name_tokens = candidate
+        .name_tokens
+        .iter()
+        .map(|term| term.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
     let mut score = 0;
+    if query == name_lower {
+        score += 500;
+    }
+    if server_lower.as_deref() == Some(query.as_str()) {
+        score += 200;
+    }
     for term in terms {
         if let Some(required) = term.strip_prefix('+') {
             if !haystack.contains(required) {
                 return 0;
             }
-            score += 5;
-        } else if candidate.name.eq_ignore_ascii_case(term) {
-            score += 20;
-        } else if candidate.name.to_ascii_lowercase().contains(term) {
-            score += 8;
+            score += 30;
+        } else if name_lower == term {
+            score += 120;
+        } else if server_lower.as_deref() == Some(term) {
+            score += 90;
+        } else if name_tokens.contains(term) {
+            score += 60;
+        } else if schema_terms.contains(term) {
+            score += 45;
+        } else if name_lower.contains(term) {
+            score += 35;
+        } else if server_lower
+            .as_deref()
+            .is_some_and(|server| server.contains(term))
+        {
+            score += 30;
         } else if haystack.contains(term) {
-            score += 3;
+            score += 10;
         }
     }
     score
@@ -363,6 +486,9 @@ fn matches_to_json(matches: &[DeferredMatch]) -> Vec<Value> {
                 "description": item.description,
                 "score": item.score,
             });
+            if let Some(server) = &item.mcp_server_name {
+                value["mcp_server_name"] = json!(server);
+            }
             if let Some(schema) = &item.schema {
                 value["input_schema"] = schema.clone();
             }
@@ -697,6 +823,52 @@ mod tests {
         }
     }
 
+    struct IndexedTool {
+        name: &'static str,
+        description: &'static str,
+        prompt: &'static str,
+        mcp_server_name: Option<&'static str>,
+        schema: Value,
+    }
+
+    #[async_trait]
+    impl Tool for IndexedTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        async fn description(&self, _input: &Value) -> String {
+            self.description.to_string()
+        }
+
+        fn input_json_schema(&self) -> Value {
+            self.schema.clone()
+        }
+
+        fn mcp_server_name(&self) -> Option<&str> {
+            self.mcp_server_name
+        }
+
+        async fn call(
+            &self,
+            _input: Value,
+            _ctx: &ToolUseContext,
+            _parent_message: &AssistantMessage,
+            _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
+        ) -> Result<ToolResult> {
+            Ok(ToolResult {
+                data: json!({ "tool": self.name }),
+                model_content: None,
+                display_preview: None,
+                new_messages: vec![],
+            })
+        }
+
+        async fn prompt(&self) -> String {
+            self.prompt.to_string()
+        }
+    }
+
     fn test_context(session_id: &str, available_tools: Tools) -> ToolUseContext {
         let (_tx, rx) = tokio::sync::watch::channel(false);
         ToolUseContext {
@@ -832,6 +1004,111 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
+    async fn search_ranks_exact_tool_names_ahead_of_partial_matches() {
+        clear_discovered_tools_for_tests();
+        let ctx = test_context(
+            "search-exact-name",
+            vec![
+                Arc::new(IndexedTool {
+                    name: "WebBrowserHelper",
+                    description: "browser helper",
+                    prompt: "open websites",
+                    mcp_server_name: None,
+                    schema: json!({"type": "object", "properties": {}}),
+                }),
+                Arc::new(IndexedTool {
+                    name: "WebBrowser",
+                    description: "open browser pages",
+                    prompt: "navigate the browser",
+                    mcp_server_name: None,
+                    schema: json!({"type": "object", "properties": {}}),
+                }),
+            ],
+        );
+
+        let result = SearchExtraToolsTool
+            .call(
+                json!({"query": "WebBrowser", "max_results": 10}),
+                &ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.data["matches"][0]["name"], "WebBrowser");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn search_matches_mcp_server_names_and_schema_action_keywords() {
+        clear_discovered_tools_for_tests();
+        let ctx = test_context(
+            "search-index-fields",
+            vec![
+                Arc::new(IndexedTool {
+                    name: "AuditTrail",
+                    description: "Inspect local audit trail entries",
+                    prompt: "review local timeline",
+                    mcp_server_name: None,
+                    schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "since": {"type": "string"}
+                        }
+                    }),
+                }),
+                Arc::new(IndexedTool {
+                    name: "mcp__github__create_pull_request",
+                    description: "Create a pull request through an MCP tool",
+                    prompt: "publish code review changes",
+                    mcp_server_name: Some("github"),
+                    schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "branch_name": {
+                                "type": "string",
+                                "description": "Source branch for the pull request"
+                            },
+                            "title": {"type": "string"}
+                        }
+                    }),
+                }),
+            ],
+        );
+
+        let mcp = SearchExtraToolsTool
+            .call(
+                json!({"query": "github", "max_results": 10}),
+                &ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            mcp.data["matches"][0]["name"],
+            "mcp__github__create_pull_request"
+        );
+        assert_eq!(mcp.data["matches"][0]["mcp_server_name"], "github");
+
+        let action = SearchExtraToolsTool
+            .call(
+                json!({"query": "branch", "max_results": 10}),
+                &ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            action.data["matches"][0]["name"],
+            "mcp__github__create_pull_request"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
     async fn execute_extra_tool_requires_discovery_and_uses_deferred_executor() {
         clear_discovered_tools_for_tests();
         let mut ctx = test_context("execute-runtime", vec![Arc::new(NamedTool("RuntimeOnly"))]);
@@ -878,6 +1155,78 @@ mod tests {
         assert_eq!(&*calls.lock(), &["RuntimeOnly".to_string()]);
         assert_eq!(result.data["tool_name"], "RuntimeOnly");
         assert_eq!(result.data["result"], json!({"ok": true}));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn execute_extra_tool_handles_mcp_style_runtime_targets() {
+        clear_discovered_tools_for_tests();
+        let target = "mcp__github__create_pull_request";
+        let mut ctx = test_context(
+            "execute-mcp-runtime",
+            vec![Arc::new(IndexedTool {
+                name: target,
+                description: "Create a pull request through an MCP tool",
+                prompt: "publish code review changes",
+                mcp_server_name: Some("github"),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "branch_name": {"type": "string"},
+                        "title": {"type": "string"}
+                    }
+                }),
+            })],
+        );
+
+        let discovered = SearchExtraToolsTool
+            .call(
+                json!({"query": "select:mcp__github__create_pull_request"}),
+                &ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(discovered.data["deferred_tools_delta"], json!([target]));
+
+        let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let calls_for_executor = calls.clone();
+        ctx.execute_deferred_tool = Some(Arc::new(move |request| {
+            calls_for_executor.lock().push(request.tool_name.clone());
+            Box::pin(async move {
+                Ok(crate::tool::DeferredToolExecutionResult {
+                    tool_use_id: request.tool_use_id,
+                    tool_name: request.tool_name,
+                    result: ToolResult {
+                        data: json!({"mcp": true}),
+                        display_preview: Some("mcp runtime ok".to_string()),
+                        ..Default::default()
+                    },
+                    is_error: false,
+                })
+            })
+        }));
+
+        let result = ExecuteExtraToolTool
+            .call(
+                json!({
+                    "tool_name": target,
+                    "params": {
+                        "branch_name": "feature/phase5",
+                        "title": "Phase 5"
+                    }
+                }),
+                &ctx,
+                &parent_message(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(&*calls.lock(), &[target.to_string()]);
+        assert_eq!(result.data["tool_name"], target);
+        assert_eq!(result.data["result"], json!({"mcp": true}));
     }
 
     #[test]

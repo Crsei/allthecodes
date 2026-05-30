@@ -13,6 +13,7 @@ use crate::tool::Tools;
 use crate::tool_search::ToolSearchTool;
 use crate::web_fetch::WebFetchTool;
 use crate::web_search::WebSearchTool;
+use allthecodes_config::features::{self, Feature, FeatureFlags};
 use parking_lot::RwLock;
 
 /// Tool provider used to inject tools owned by crates that cannot be depended
@@ -65,6 +66,18 @@ pub enum ToolPolicy {
     InProcessTeammate,
 }
 
+/// Per-turn session visibility gates layered on top of feature/model gates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolSessionGates {
+    /// Non-interactive clients such as `-p`, JSON SDK mode, autonomous ticks,
+    /// and subagents cannot safely block on direct user-prompt tools.
+    pub non_interactive: bool,
+    /// Subagents must not recursively spawn new agents through their visible
+    /// schema or deferred hidden-tool catalog unless a narrower agent
+    /// definition explicitly supplies a separate runtime.
+    pub subagent: bool,
+}
+
 /// Return the allow-list for policies that restrict visible tools.
 pub fn allowed_tool_names(policy: ToolPolicy) -> Option<&'static [&'static str]> {
     match policy {
@@ -73,10 +86,15 @@ pub fn allowed_tool_names(policy: ToolPolicy) -> Option<&'static [&'static str]>
             "Agent",
             "Task",
             "SendMessage",
+            "send_message",
             "ListAgents",
+            "list_agents",
             "FollowupTask",
+            "followup_task",
             "WaitAgent",
+            "wait_agent",
             "CloseAgent",
+            "close_agent",
             "TaskList",
             "TaskStop",
             "subscribe_pr_activity",
@@ -93,6 +111,7 @@ pub fn allowed_tool_names(policy: ToolPolicy) -> Option<&'static [&'static str]>
             "TaskList",
             "TaskUpdate",
             "SendMessage",
+            "send_message",
         ]),
         ToolPolicy::InProcessTeammate => Some(&[
             "Glob",
@@ -106,6 +125,7 @@ pub fn allowed_tool_names(policy: ToolPolicy) -> Option<&'static [&'static str]>
             "TaskUpdate",
             "TaskOutput",
             "SendMessage",
+            "send_message",
         ]),
     }
 }
@@ -114,6 +134,99 @@ pub fn tool_allowed(policy: ToolPolicy, name: &str) -> bool {
     allowed_tool_names(policy)
         .map(|allowed| allowed.contains(&name))
         .unwrap_or(true)
+}
+
+const GOAL_TOOL_NAMES: &[&str] = &[
+    "GetGoal",
+    "get_goal",
+    "CreateGoal",
+    "create_goal",
+    "UpdateGoal",
+    "update_goal",
+];
+
+const WORKFLOW_TOOL_NAMES: &[&str] = &["Workflow", "workflow"];
+
+const MULTI_AGENT_V2_TOOL_NAMES: &[&str] = &[
+    "ListAgents",
+    "list_agents",
+    "FollowupTask",
+    "followup_task",
+    "WaitAgent",
+    "wait_agent",
+    "CloseAgent",
+    "close_agent",
+    "TeamSpawn",
+    "spawn_agent",
+    "SendMessage",
+    "send_message",
+];
+
+const NON_INTERACTIVE_HIDDEN_TOOL_NAMES: &[&str] = &["AskUserQuestion"];
+
+const SUBAGENT_RECURSIVE_TOOL_NAMES: &[&str] = &[
+    "Agent",
+    "Task",
+    "TeamSpawn",
+    "spawn_agent",
+    "FollowupTask",
+    "followup_task",
+];
+
+fn tool_enabled_by_feature_gates(name: &str, flags: &FeatureFlags) -> bool {
+    if GOAL_TOOL_NAMES.contains(&name) {
+        return flags.is_enabled(Feature::GoalTools);
+    }
+    if WORKFLOW_TOOL_NAMES.contains(&name) {
+        return flags.is_enabled(Feature::WorkflowScripts);
+    }
+    if MULTI_AGENT_V2_TOOL_NAMES.contains(&name) {
+        return flags.is_enabled(Feature::MultiAgentV2);
+    }
+    true
+}
+
+fn tool_enabled_by_session_gates(name: &str, gates: ToolSessionGates) -> bool {
+    if gates.non_interactive && NON_INTERACTIVE_HIDDEN_TOOL_NAMES.contains(&name) {
+        return false;
+    }
+    if gates.subagent && SUBAGENT_RECURSIVE_TOOL_NAMES.contains(&name) {
+        return false;
+    }
+    true
+}
+
+/// Filter tools controlled by runtime feature gates.
+///
+/// These gates default to enabled in the full-build branch. The filter is
+/// still applied centrally so an explicit runtime/environment disable removes
+/// tools from both API schemas and system prompt visible tool lists.
+pub fn filter_tools_for_feature_gates(tools: Tools) -> Tools {
+    let flags = features::current();
+    filter_tools_for_feature_gates_with_flags(tools, &flags)
+}
+
+/// Filter tools using an explicit flag snapshot.
+///
+/// This is useful for tests and for callers that already have a resolved
+/// session-local feature snapshot.
+pub fn filter_tools_for_feature_gates_with_flags(tools: Tools, flags: &FeatureFlags) -> Tools {
+    tools
+        .into_iter()
+        .filter(|tool| tool_enabled_by_feature_gates(tool.name(), flags))
+        .collect()
+}
+
+/// Filter tools for the current execution session.
+///
+/// This is intentionally separate from [`ToolPolicy`]: policies describe a
+/// configured role's positive allow-list, while session gates remove tools that
+/// are unsafe for the current turn shape regardless of role.
+pub fn filter_tools_for_session_gates(tools: Tools, gates: ToolSessionGates) -> Tools {
+    tools
+        .into_iter()
+        .filter(|tool| tool_enabled_by_session_gates(tool.name(), gates))
+        .collect()
 }
 
 /// Get all tools owned directly by `cc-tools`.
@@ -144,7 +257,7 @@ pub fn allthecodes_tools_base_tools() -> Tools {
         Arc::new(ToolSearchTool) as _,
     ]);
 
-    tools.into_iter().filter(|tool| tool.is_enabled()).collect()
+    filter_tools_for_feature_gates(tools.into_iter().filter(|tool| tool.is_enabled()).collect())
 }
 
 /// Get all built-in tools using the supplied external providers.
@@ -153,7 +266,7 @@ pub fn base_tools_with_providers(providers: &ToolRegistryProviders) -> Tools {
     for provider in &providers.base_tool_providers {
         tools.extend((provider)().into_iter().filter(|tool| tool.is_enabled()));
     }
-    tools
+    filter_tools_for_feature_gates(tools)
 }
 
 /// Get all runtime tools using the supplied external providers.
@@ -172,7 +285,7 @@ pub fn get_all_tools_with_providers(providers: &ToolRegistryProviders) -> Tools 
         }
     }
 
-    tools
+    filter_tools_for_feature_gates(tools)
 }
 
 /// Get all runtime tools currently owned directly by `cc-tools`.
@@ -233,5 +346,67 @@ mod tests {
         assert!(names.contains(&"Read".to_string()));
         assert!(names.contains(&"TodoWrite".to_string()));
         assert!(names.contains(&"WebFetch".to_string()));
+    }
+
+    #[test]
+    fn phase5_feature_gates_remove_goal_and_workflow_tools() {
+        let mut flags = allthecodes_config::features::FeatureFlags::all_enabled();
+        flags.goal_tools = false;
+        flags.workflow_scripts = false;
+
+        let names = filter_tools_for_feature_gates_with_flags(get_all_tools(), &flags)
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+
+        for hidden in [
+            "GetGoal",
+            "get_goal",
+            "CreateGoal",
+            "create_goal",
+            "UpdateGoal",
+            "update_goal",
+            "Workflow",
+            "workflow",
+        ] {
+            assert!(
+                !names.contains(&hidden.to_string()),
+                "{hidden} should be hidden when its feature gate is disabled"
+            );
+        }
+        assert!(names.contains(&"PushNotification".to_string()));
+        assert!(names.contains(&"SearchExtraTools".to_string()));
+    }
+
+    #[test]
+    fn session_gates_remove_prompt_and_recursive_tools() {
+        let names = filter_tools_for_session_gates(
+            get_all_tools(),
+            ToolSessionGates {
+                non_interactive: true,
+                subagent: true,
+            },
+        )
+        .into_iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<Vec<_>>();
+
+        for hidden in [
+            "AskUserQuestion",
+            "Agent",
+            "Task",
+            "TeamSpawn",
+            "spawn_agent",
+            "FollowupTask",
+            "followup_task",
+        ] {
+            assert!(
+                !names.contains(&hidden.to_string()),
+                "{hidden} should be hidden by session gates"
+            );
+        }
+        assert!(names.contains(&"Read".to_string()));
+        assert!(names.contains(&"SearchExtraTools".to_string()));
+        assert!(names.contains(&"ExecuteExtraTool".to_string()));
     }
 }

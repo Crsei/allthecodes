@@ -154,6 +154,21 @@ pub struct CompactMetadata {
     pub pre_compact_discovered_tools: Option<Vec<String>>,
 }
 
+impl CompactMetadata {
+    pub fn has_internal_metadata(&self) -> bool {
+        self.preserved_segment.is_some() || self.pre_compact_discovered_tools.is_some()
+    }
+
+    pub fn public_copy(&self) -> Self {
+        Self {
+            pre_compact_token_count: self.pre_compact_token_count,
+            post_compact_token_count: self.post_compact_token_count,
+            preserved_segment: None,
+            pre_compact_discovered_tools: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MicrocompactMetadata {
     pub trigger: String,

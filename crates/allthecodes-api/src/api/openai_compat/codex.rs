@@ -167,6 +167,11 @@ where
                                         block_index += 1;
                                         text_block_open = false;
                                     }
+                                    if thinking_block_open {
+                                        yield StreamEvent::ContentBlockStop { index: block_index };
+                                        block_index += 1;
+                                        thinking_block_open = false;
+                                    }
                                     let call_id = item
                                         .get("call_id")
                                         .and_then(|i| i.as_str())
@@ -336,5 +341,62 @@ mod tests {
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 5);
         assert_eq!(usage.reasoning_output_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn test_parse_codex_custom_tool_call_stream() {
+        use futures::StreamExt;
+
+        let patch = "*** Begin Patch\n*** End Patch";
+        let chunks = vec![
+            format!(
+                "event: response.created\ndata: {}\n\n",
+                json!({
+                    "type": "response.created",
+                    "response": {"id": "resp_1"}
+                })
+            ),
+            format!(
+                "event: response.output_item.done\ndata: {}\n\n",
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "custom_tool_call",
+                        "call_id": "call_patch",
+                        "name": "apply_patch",
+                        "input": patch,
+                    }
+                })
+            ),
+            format!(
+                "event: response.completed\ndata: {}\n\n",
+                json!({
+                    "type": "response.completed",
+                    "response": {"id": "resp_1"}
+                })
+            ),
+        ];
+        let byte_stream = futures::stream::iter(
+            chunks
+                .into_iter()
+                .map(|chunk| Ok::<bytes::Bytes, reqwest::Error>(bytes::Bytes::from(chunk))),
+        );
+        let mut stream = std::pin::pin!(parse_codex_sse_byte_stream(byte_stream));
+        let mut accumulator = crate::api::streaming::StreamAccumulator::new();
+
+        while let Some(event) = stream.next().await {
+            accumulator.process_event(&event.unwrap());
+        }
+
+        let message = accumulator.build("gpt-5.4");
+        assert_eq!(message.content.len(), 1);
+        match &message.content[0] {
+            ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "call_patch");
+                assert_eq!(name, "apply_patch");
+                assert_eq!(input["input"], patch);
+            }
+            other => panic!("expected tool use block, got {:?}", other),
+        }
     }
 }

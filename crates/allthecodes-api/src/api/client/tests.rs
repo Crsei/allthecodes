@@ -1,5 +1,11 @@
 use super::*;
+use crate::api::providers::AnthropicEndpointKind;
+use crate::api::streaming::StreamAccumulator;
+use allthecodes_types::message::StreamEvent;
+use anyhow::Result;
+use futures::Stream;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -81,22 +87,56 @@ impl Drop for CwdGuard {
 
 fn fixture_json(name: &str) -> serde_json::Value {
     let raw = match name {
-        "auth_header_expected" => {
-            include_str!("../../../tests/fixtures/anthropic_compatible/auth_header_expected.json")
-        }
-        "base_url_expected" => {
-            include_str!("../../../tests/fixtures/anthropic_compatible/base_url_expected.json")
-        }
-        "model_alias_expected" => {
-            include_str!("../../../tests/fixtures/anthropic_compatible/model_alias_expected.json")
-        }
-        "prompt_cache_body_expected" => include_str!(
-            "../../../tests/fixtures/anthropic_compatible/prompt_cache_body_expected.json"
-        ),
+        "auth_header_expected" => AUTH_HEADER_EXPECTED,
+        "base_url_expected" => BASE_URL_EXPECTED,
+        "model_alias_expected" => MODEL_ALIAS_EXPECTED,
+        "prompt_cache_body_expected" => PROMPT_CACHE_BODY_EXPECTED,
         other => panic!("unknown fixture: {other}"),
     };
     serde_json::from_str(raw).expect("fixture must be valid JSON")
 }
+
+const AUTH_HEADER_EXPECTED: &str = r#"{
+  "authorization": "Bearer anthropic-compatible-token",
+  "absent": ["x-api-key"]
+}"#;
+
+const BASE_URL_EXPECTED: &str = r#"{
+  "base_url": "https://compatible.example.com",
+  "messages_url": "https://compatible.example.com/v1/messages"
+}"#;
+
+const MODEL_ALIAS_EXPECTED: &str = r#"{
+  "alias": "MOTA",
+  "wire_model": "claude-sonnet-4-6"
+}"#;
+
+const PROMPT_CACHE_BODY_EXPECTED: &str = r#"{
+  "model": "claude-sonnet-4-5-20250929",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello"
+    }
+  ],
+  "system": [
+    {
+      "type": "text",
+      "text": "You are a coding assistant.",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "max_tokens": 1024,
+  "tools": null,
+  "stream": true
+}"#;
+
+const STREAM_ERROR_EVENT_SSE: &str = r#"event: error
+data: {"type":"error","status":529,"request_id":"req_sse","error":{"type":"overloaded_error","message":"Overloaded"}}
+
+"#;
 
 fn save_and_clear_provider_keys() -> Vec<(&'static str, String)> {
     let saved: Vec<_> = crate::api::providers::PROVIDERS
@@ -1998,12 +2038,10 @@ fn test_sse_line_parsing_empty_text() {
 
 #[test]
 fn regression_anthropic_stream_error_event_currently_ignored() {
-    let sse_text =
-        include_str!("../../../tests/fixtures/anthropic_compatible/stream_error_event.sse");
-
     // Phase 0 risk: event:error is currently discarded, so overload/auth
     // failures can disappear from the stream parser instead of surfacing.
-    let err = parse_sse_text(sse_text).expect_err("error event should not be ignored");
+    let err =
+        parse_sse_text(STREAM_ERROR_EVENT_SSE).expect_err("error event should not be ignored");
     assert!(err.to_string().contains("overloaded_error"));
 }
 

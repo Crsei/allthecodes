@@ -19,6 +19,7 @@ allthecodes-engine = { workspace = true }
 allthecodes-models = { workspace = true }
 allthecodes-observability = { workspace = true }
 allthecodes-services = { workspace = true }
+allthecodes-tools = { workspace = true }
 allthecodes-types = { workspace = true }
 allthecodes-utils = { workspace = true }
 

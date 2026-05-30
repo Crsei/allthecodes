@@ -147,6 +147,12 @@ pub fn handle_sdk_message(
             level: "info".to_string(),
         }),
 
+        // ── GoalUpdated ────────────────────────────────────────
+        SdkMessage::GoalUpdated(update) => sink.send(&BackendMessage::GoalUpdated {
+            event: update.event.clone(),
+            goal: update.goal.clone(),
+        }),
+
         // ── Tombstone ───────────────────────────────────────────
         SdkMessage::Tombstone(_) => sink.send(&BackendMessage::Tombstone {
             message_id: message_id.to_string(),

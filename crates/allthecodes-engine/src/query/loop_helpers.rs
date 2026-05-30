@@ -670,7 +670,12 @@ fn normalize_tool_result_content(exec_result: &ToolExecResult) -> (ToolResultCon
     }
 
     let text = exec_result.result.data.to_string();
-    (ToolResultContent::Text(text.clone()), text)
+    let display_text = exec_result
+        .result
+        .display_preview
+        .clone()
+        .unwrap_or_else(|| text.clone());
+    (ToolResultContent::Text(text), display_text)
 }
 
 #[cfg(test)]
@@ -1130,6 +1135,43 @@ mod tests {
                         other => panic!("expected text tool result, got {:?}", other),
                     }
                 }
+                other => panic!("expected tool result block, got {:?}", other),
+            },
+            other => panic!("expected block user message, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tool_result_user_message_uses_display_preview_without_replacing_model_data() {
+        let deps: Arc<dyn QueryDeps> = Arc::new(RecordingDeps::new());
+        let source_uuid = uuid::Uuid::new_v4();
+        let exec_result = ToolExecResult {
+            tool_use_id: "tu_preview".to_string(),
+            tool_name: "Workflow".to_string(),
+            result: ToolResult {
+                data: serde_json::json!({"workflow_id": "workflow-1", "status": "started"}),
+                display_preview: Some("Workflow workflow-1 is started".to_string()),
+                new_messages: vec![],
+                ..Default::default()
+            },
+            is_error: false,
+            hook_stopped_continuation: false,
+        };
+
+        let user_msg = make_tool_result_user_message(&deps, &exec_result, source_uuid);
+
+        assert_eq!(
+            user_msg.tool_use_result.as_deref(),
+            Some("Workflow workflow-1 is started")
+        );
+        match &user_msg.content {
+            MessageContent::Blocks(blocks) => match &blocks[0] {
+                ContentBlock::ToolResult { content, .. } => match content {
+                    ToolResultContent::Text(text) => {
+                        assert_eq!(text, r#"{"status":"started","workflow_id":"workflow-1"}"#);
+                    }
+                    other => panic!("expected text tool result, got {:?}", other),
+                },
                 other => panic!("expected tool result block, got {:?}", other),
             },
             other => panic!("expected block user message, got {:?}", other),

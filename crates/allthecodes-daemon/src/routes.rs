@@ -19,6 +19,7 @@ use tracing::{info, warn};
 
 use crate::protocol::{DaemonCommandKind, DaemonCommandStatus};
 use allthecodes_commands::{CommandContext, CommandResult};
+use allthecodes_types::message::CompactMetadata;
 use allthecodes_types::plan_workflow::PlanWorkflowRecord;
 use allthecodes_types::sdk::SdkMessage;
 
@@ -47,6 +48,20 @@ fn plan_workflow_event_payload(
         record, event, summary,
     ))
     .unwrap_or(serde_json::Value::Null)
+}
+
+fn public_compact_metadata(
+    metadata: &Option<CompactMetadata>,
+    internal_metadata_hidden: bool,
+) -> Option<Value> {
+    metadata.as_ref().map(|metadata| {
+        json!({
+            "pre_compact_token_count": metadata.pre_compact_token_count,
+            "post_compact_token_count": metadata.post_compact_token_count,
+            "internal_metadata_hidden": internal_metadata_hidden
+                || metadata.has_internal_metadata(),
+        })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +195,10 @@ pub fn sdk_message_to_sse(msg: &SdkMessage, message_id: &str) -> Option<SseEvent
             "compact_boundary".to_string(),
             json!({
                 "message_id": message_id,
-                "compact_metadata": boundary.compact_metadata,
+                "compact_metadata": public_compact_metadata(
+                    &boundary.compact_metadata,
+                    boundary.internal_metadata_hidden,
+                ),
                 "session_id": boundary.session_id,
             }),
         ),
@@ -191,6 +209,15 @@ pub fn sdk_message_to_sse(msg: &SdkMessage, message_id: &str) -> Option<SseEvent
                 "summary": summary.summary,
                 "preceding_tool_use_ids": summary.preceding_tool_use_ids,
                 "session_id": summary.session_id,
+            }),
+        ),
+        SdkMessage::GoalUpdated(update) => (
+            "goal_updated".to_string(),
+            json!({
+                "message_id": message_id,
+                "event": update.event,
+                "goal": update.goal,
+                "session_id": update.session_id,
             }),
         ),
     };
@@ -624,7 +651,9 @@ mod tests {
     use super::*;
     use crate::webhook::webhook_github;
     use allthecodes_types::message::CompactMetadata;
-    use allthecodes_types::sdk::{SdkApiRetry, SdkCompactBoundary, SdkToolUseSummary};
+    use allthecodes_types::sdk::{
+        SdkApiRetry, SdkCompactBoundary, SdkGoalUpdated, SdkToolUseSummary,
+    };
     use axum::body::Bytes;
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -722,6 +751,7 @@ mod tests {
                     preserved_segment: None,
                     pre_compact_discovered_tools: None,
                 }),
+                internal_metadata_hidden: false,
             }),
             "message-1",
         )
@@ -741,6 +771,39 @@ mod tests {
     }
 
     #[test]
+    fn daemon_sse_hides_internal_compact_discovered_tools() {
+        let event = sdk_message_to_sse(
+            &SdkMessage::CompactBoundary(SdkCompactBoundary {
+                session_id: "session-1".to_string(),
+                uuid: Uuid::new_v4(),
+                compact_metadata: Some(CompactMetadata {
+                    pre_compact_token_count: 100,
+                    post_compact_token_count: 40,
+                    preserved_segment: None,
+                    pre_compact_discovered_tools: Some(vec![
+                        "VaultHttpFetch".to_string(),
+                        "LocalMemoryRecall".to_string(),
+                    ]),
+                }),
+                internal_metadata_hidden: true,
+            }),
+            "message-1",
+        )
+        .expect("compact boundary should be broadcast");
+
+        let metadata = event
+            .data
+            .get("compact_metadata")
+            .and_then(Value::as_object)
+            .expect("compact metadata object");
+        assert!(metadata.get("pre_compact_discovered_tools").is_none());
+        assert_eq!(metadata["internal_metadata_hidden"], true);
+        let serialized = serde_json::to_string(&event.data).unwrap();
+        assert!(!serialized.contains("VaultHttpFetch"));
+        assert!(!serialized.contains("LocalMemoryRecall"));
+    }
+
+    #[test]
     fn daemon_sse_broadcasts_tool_use_summaries() {
         let event = sdk_message_to_sse(
             &SdkMessage::ToolUseSummary(SdkToolUseSummary {
@@ -757,6 +820,26 @@ mod tests {
         assert_eq!(event.data["message_id"], "message-1");
         assert_eq!(event.data["summary"], "Read finished");
         assert_eq!(event.data["preceding_tool_use_ids"][0], "toolu_1");
+        assert_eq!(event.data["session_id"], "session-1");
+    }
+
+    #[test]
+    fn daemon_sse_broadcasts_goal_updates() {
+        let event = sdk_message_to_sse(
+            &SdkMessage::GoalUpdated(SdkGoalUpdated {
+                event: "budget_limited".to_string(),
+                goal: json!({"objective": "ship", "tokens_used": 12}),
+                session_id: "session-1".to_string(),
+                uuid: Uuid::new_v4(),
+            }),
+            "message-1",
+        )
+        .expect("goal update should be broadcast");
+
+        assert_eq!(event.event_type, "goal_updated");
+        assert_eq!(event.data["message_id"], "message-1");
+        assert_eq!(event.data["event"], "budget_limited");
+        assert_eq!(event.data["goal"]["objective"], "ship");
         assert_eq!(event.data["session_id"], "session-1");
     }
 

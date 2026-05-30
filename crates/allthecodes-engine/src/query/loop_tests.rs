@@ -55,6 +55,7 @@ struct MockDeps {
     refresh_seen: AtomicBool,
     hook_runner: parking_lot::Mutex<Arc<dyn HookRunner>>,
     steer_drains: parking_lot::Mutex<VecDeque<Vec<String>>>,
+    app_state: parking_lot::Mutex<AppState>,
 }
 
 impl MockDeps {
@@ -92,6 +93,7 @@ impl MockDeps {
                 allthecodes_types::hooks::NoopHookRunner,
             )),
             steer_drains: parking_lot::Mutex::new(VecDeque::new()),
+            app_state: parking_lot::Mutex::new(AppState::default()),
         }
     }
 
@@ -107,6 +109,11 @@ impl MockDeps {
 
     fn with_tool_delay(mut self, delay: Duration) -> Self {
         self.tool_delay = delay;
+        self
+    }
+
+    fn with_app_state(self, app_state: AppState) -> Self {
+        *self.app_state.lock() = app_state;
         self
     }
 
@@ -282,7 +289,7 @@ impl QueryDeps for MockDeps {
     }
 
     fn get_app_state(&self) -> AppState {
-        AppState::default()
+        self.app_state.lock().clone()
     }
 
     fn uuid(&self) -> String {
@@ -601,6 +608,126 @@ async fn deferred_enabled_request_keeps_only_core_tool_schemas_after_discovery()
         allthecodes_tools::deferred_tools::discovered_tools_for_session("unknown")
             .contains("WebBrowser")
     );
+}
+
+#[tokio::test]
+async fn text_only_model_filters_view_image_from_request_tools() {
+    let mut app_state = AppState::default();
+    app_state.main_loop_model = "text-only".into();
+    app_state.settings.model_capabilities.insert(
+        "text-only".into(),
+        allthecodes_config::settings::ModelCapabilitySettings {
+            input_modalities: vec!["text".into()],
+            supports_image_detail_original: false,
+            ..Default::default()
+        },
+    );
+    let tools: Tools = vec![
+        Arc::new(allthecodes_tools::sleep::SleepTool),
+        Arc::new(LoopTestTool {
+            name: "ViewImage",
+            concurrency_safe: true,
+        }),
+        Arc::new(LoopTestTool {
+            name: "view_image",
+            concurrency_safe: true,
+        }),
+    ];
+    let deps = Arc::new(
+        MockDeps::new(vec![make_text_response("done")])
+            .with_tools(tools)
+            .with_app_state(app_state),
+    );
+
+    let items: Vec<QueryYield> = query(
+        make_query_params(vec![make_user_message_for_test("inspect image")]),
+        deps.clone(),
+    )
+    .collect()
+    .await;
+    assert_eq!(request_start_count(&items), 1);
+
+    let recorded = deps.recorded_params();
+    assert_eq!(recorded.len(), 1);
+    let names = recorded[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(names.contains("Sleep"));
+    assert!(!names.contains("ViewImage"));
+    assert!(!names.contains("view_image"));
+
+    let compact = deps.recorded_autocompact_params();
+    assert_eq!(compact.len(), 1);
+    let compact_names = compact[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(!compact_names.contains("ViewImage"));
+    assert!(!compact_names.contains("view_image"));
+}
+
+#[tokio::test]
+async fn agent_session_filters_prompt_and_recursive_tools_from_request_tools() {
+    let tools: Tools = [
+        "AskUserQuestion",
+        "Agent",
+        "Task",
+        "TeamSpawn",
+        "spawn_agent",
+        "FollowupTask",
+        "followup_task",
+        "Read",
+        "SendMessage",
+    ]
+    .into_iter()
+    .map(|name| {
+        Arc::new(LoopTestTool {
+            name,
+            concurrency_safe: true,
+        }) as Arc<dyn Tool>
+    })
+    .collect();
+    let deps = Arc::new(MockDeps::new(vec![make_text_response("done")]).with_tools(tools));
+    let mut params = make_query_params(vec![make_user_message_for_test("continue agent task")]);
+    params.query_source = QuerySource::Agent("child-agent".to_string());
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+    assert_eq!(request_start_count(&items), 1);
+
+    let recorded = deps.recorded_params();
+    assert_eq!(recorded.len(), 1);
+    let names = recorded[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    for hidden in [
+        "AskUserQuestion",
+        "Agent",
+        "Task",
+        "TeamSpawn",
+        "spawn_agent",
+        "FollowupTask",
+        "followup_task",
+    ] {
+        assert!(!names.contains(hidden), "{hidden} should be session-gated");
+    }
+    assert!(names.contains("Read"));
+    assert!(names.contains("SendMessage"));
+
+    let compact = deps.recorded_autocompact_params();
+    assert_eq!(compact.len(), 1);
+    let compact_names = compact[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(!compact_names.contains("AskUserQuestion"));
+    assert!(!compact_names.contains("Agent"));
+    assert!(!compact_names.contains("Task"));
 }
 
 #[tokio::test]

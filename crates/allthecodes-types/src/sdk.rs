@@ -68,6 +68,8 @@ pub enum SdkMessage {
     ApiRetry(SdkApiRetry),
     /// Tool-use summary.
     ToolUseSummary(SdkToolUseSummary),
+    /// Durable session goal state changed.
+    GoalUpdated(SdkGoalUpdated),
     /// Tombstone for an assistant message abandoned by fallback retry.
     Tombstone(SdkTombstone),
     /// Final result. Every submit call ends with exactly one result.
@@ -84,6 +86,7 @@ impl SdkMessage {
             SdkMessage::CompactBoundary(_) => "compact_boundary",
             SdkMessage::ApiRetry(_) => "api_retry",
             SdkMessage::ToolUseSummary(_) => "tool_use_summary",
+            SdkMessage::GoalUpdated(_) => "goal_updated",
             SdkMessage::Tombstone(_) => "tombstone",
             SdkMessage::Result(_) => "result",
         }
@@ -142,6 +145,12 @@ pub struct SdkCompactBoundary {
     pub session_id: String,
     pub uuid: Uuid,
     pub compact_metadata: Option<CompactMetadata>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub internal_metadata_hidden: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// API retry notification for SDK output.
@@ -161,6 +170,15 @@ pub struct SdkApiRetry {
 pub struct SdkToolUseSummary {
     pub summary: String,
     pub preceding_tool_use_ids: Vec<String>,
+    pub session_id: String,
+    pub uuid: Uuid,
+}
+
+/// Durable goal update for SDK/headless/TUI consumers.
+#[derive(Debug, Clone, Serialize)]
+pub struct SdkGoalUpdated {
+    pub event: String,
+    pub goal: serde_json::Value,
     pub session_id: String,
     pub uuid: Uuid,
 }
@@ -230,6 +248,7 @@ mod tests {
             &Usage {
                 input_tokens: 10,
                 output_tokens: 4,
+                reasoning_output_tokens: 0,
                 cache_read_input_tokens: 2,
                 cache_creation_input_tokens: 1,
             },

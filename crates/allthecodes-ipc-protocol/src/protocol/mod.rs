@@ -291,6 +291,11 @@ pub enum BackendMessage {
         summary: String,
         record: PlanWorkflowRecord,
     },
+    /// Durable session goal state changed.
+    GoalUpdated {
+        event: String,
+        goal: Value,
+    },
     /// A system-level informational message.
     SystemInfo {
         text: String,

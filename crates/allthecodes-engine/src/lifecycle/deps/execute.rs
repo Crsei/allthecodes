@@ -22,7 +22,22 @@ impl QueryEngineDeps {
         let tool = find_tool(&request.tool_name, tools)
             .ok_or_else(|| anyhow::anyhow!("tool not found: {}", request.tool_name))?;
 
-        let available_tools = self.state.read().tools.clone();
+        let available_tools = {
+            let state = self.state.read();
+            let capability_filtered =
+                allthecodes_tools::phase5::filter_tools_for_model_capabilities(
+                    state.tools.clone(),
+                    &state.app_state.settings,
+                    &state.app_state.main_loop_model,
+                );
+            allthecodes_tools::registry::filter_tools_for_session_gates(
+                capability_filtered,
+                allthecodes_tools::registry::ToolSessionGates {
+                    non_interactive: self.query_source.is_non_interactive(),
+                    subagent: self.query_source.starts_with_agent(),
+                },
+            )
+        };
         let execute_deferred_tool: crate::types::tool::DeferredToolExecutor = {
             let deps = self.clone();
             let tools = available_tools.clone();
@@ -64,7 +79,7 @@ impl QueryEngineDeps {
                 debug: false,
                 main_loop_model: self.state.read().app_state.main_loop_model.clone(),
                 verbose: self.state.read().app_state.verbose,
-                is_non_interactive_session: false,
+                is_non_interactive_session: self.query_source.is_non_interactive(),
                 custom_system_prompt: None,
                 append_system_prompt: None,
                 max_budget_usd: None,

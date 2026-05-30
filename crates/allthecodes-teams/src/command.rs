@@ -301,10 +301,14 @@ async fn spawn(ctx: &mut allthecodes_commands::CommandContext, rest: &str) -> St
         cwd: cwd.clone(),
         worktree_path: None,
         session_id: None,
+        task_id: None,
+        task_path: None,
         subscriptions: vec![],
         backend_type: Some(BackendType::InProcess),
         is_active: Some(true),
         mode: None,
+        close_state: None,
+        close_requested_at: None,
     });
     if let Err(e) = helpers::write_team_file(&team_name, &team_file) {
         return format!("Failed to update team file: {}", e);
@@ -343,6 +347,13 @@ async fn spawn(ctx: &mut allthecodes_commands::CommandContext, rest: &str) -> St
         }
     };
     let task_id = spawn_result.task_id.unwrap_or_default();
+    let task_path = if task_id.is_empty() {
+        None
+    } else {
+        helpers::set_member_task(&team_name, &agent_id, &task_id)
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned())
+    };
 
     // Update session team_context.
     if let Some(tc) = ctx.app_state.team_context.as_mut() {
@@ -362,8 +373,13 @@ async fn spawn(ctx: &mut allthecodes_commands::CommandContext, rest: &str) -> St
     }
 
     format!(
-        "Spawned '{}' in team '{}' (agent_id={}, task_id={}, backend=in-process, color={}).",
-        name, team_name, agent_id, task_id, color
+        "Spawned '{}' in team '{}' (agent_id={}, task_id={}, task_path={}, backend=in-process, color={}).",
+        name,
+        team_name,
+        agent_id,
+        task_id,
+        task_path.as_deref().unwrap_or("-"),
+        color
     )
 }
 

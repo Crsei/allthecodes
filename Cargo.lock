@@ -621,6 +621,7 @@ dependencies = [
  "allthecodes-models",
  "allthecodes-observability",
  "allthecodes-services",
+ "allthecodes-tools",
  "allthecodes-types",
  "allthecodes-utils",
  "anyhow",

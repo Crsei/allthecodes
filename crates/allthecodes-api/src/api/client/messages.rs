@@ -383,7 +383,7 @@ impl ApiClient {
             .await
     }
 
-    async fn messages_stream_with_backoff<SleepFn, SleepFuture>(
+    pub(super) async fn messages_stream_with_backoff<SleepFn, SleepFuture>(
         &self,
         request: MessagesRequest,
         retry_config: RetryConfig,

@@ -17,8 +17,8 @@ use crate::deps::{
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_engine::types::config::{QueryGates, QuerySource, TaskBudget};
 use allthecodes_engine::types::message::{
-    AssistantMessage, ContentBlock, ImageSource, MessageContent, StreamEvent, ToolResultContent,
-    Usage, UserMessage,
+    AssistantMessage, CompactMetadata, ContentBlock, ImageSource, MessageContent, StreamEvent,
+    SystemMessage, SystemSubtype, ToolResultContent, Usage, UserMessage,
 };
 use allthecodes_engine::types::state::AutoCompactTracking;
 use allthecodes_engine::types::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, Tools};
@@ -35,6 +35,7 @@ struct MockDeps {
     stream_steps: parking_lot::Mutex<Vec<MockStreamStep>>,
     call_params: parking_lot::Mutex<Vec<ModelCallParams>>,
     autocompact_params: parking_lot::Mutex<Vec<ModelCallParams>>,
+    autocompact_result: parking_lot::Mutex<Option<CompactionResult>>,
     collapse_drain_result: parking_lot::Mutex<Option<CompactionResult>>,
     collapse_drain_calls: AtomicUsize,
     reactive_compact_result: parking_lot::Mutex<Option<CompactionResult>>,
@@ -52,6 +53,8 @@ struct MockDeps {
     refreshed_tools: parking_lot::Mutex<Option<Tools>>,
     refresh_seen: AtomicBool,
     hook_runner: parking_lot::Mutex<Arc<dyn HookRunner>>,
+    audit_session_id: parking_lot::Mutex<String>,
+    app_state: parking_lot::Mutex<AppState>,
 }
 
 impl MockDeps {
@@ -69,6 +72,7 @@ impl MockDeps {
             stream_steps: parking_lot::Mutex::new(stream_steps),
             call_params: parking_lot::Mutex::new(Vec::new()),
             autocompact_params: parking_lot::Mutex::new(Vec::new()),
+            autocompact_result: parking_lot::Mutex::new(None),
             collapse_drain_result: parking_lot::Mutex::new(None),
             collapse_drain_calls: AtomicUsize::new(0),
             reactive_compact_result: parking_lot::Mutex::new(None),
@@ -88,6 +92,8 @@ impl MockDeps {
             hook_runner: parking_lot::Mutex::new(Arc::new(
                 allthecodes_types::hooks::NoopHookRunner,
             )),
+            audit_session_id: parking_lot::Mutex::new("mock-session".to_string()),
+            app_state: parking_lot::Mutex::new(AppState::default()),
         }
     }
 
@@ -98,6 +104,21 @@ impl MockDeps {
 
     fn with_refreshed_tools(self, tools: Tools) -> Self {
         *self.refreshed_tools.lock() = Some(tools);
+        self
+    }
+
+    fn with_autocompact_result(self, result: CompactionResult) -> Self {
+        *self.autocompact_result.lock() = Some(result);
+        self
+    }
+
+    fn with_audit_session_id(self, session_id: &str) -> Self {
+        *self.audit_session_id.lock() = session_id.to_string();
+        self
+    }
+
+    fn with_app_state(self, app_state: AppState) -> Self {
+        *self.app_state.lock() = app_state;
         self
     }
 
@@ -223,7 +244,7 @@ impl QueryDeps for MockDeps {
         _tracking: Option<AutoCompactTracking>,
     ) -> Result<Option<CompactionResult>> {
         self.autocompact_params.lock().push(params);
-        Ok(None)
+        Ok(self.autocompact_result.lock().take())
     }
 
     async fn reactive_compact(&self, _messages: Vec<Message>) -> Result<Option<CompactionResult>> {
@@ -274,7 +295,7 @@ impl QueryDeps for MockDeps {
     }
 
     fn get_app_state(&self) -> AppState {
-        AppState::default()
+        self.app_state.lock().clone()
     }
 
     fn uuid(&self) -> String {
@@ -305,6 +326,10 @@ impl QueryDeps for MockDeps {
 
     fn hook_runner(&self) -> Arc<dyn HookRunner> {
         self.hook_runner.lock().clone()
+    }
+
+    fn audit_context(&self) -> allthecodes_observability::AuditContext {
+        allthecodes_observability::AuditContext::noop(self.audit_session_id.lock().clone())
     }
 }
 
@@ -462,6 +487,7 @@ fn make_text_response_with_stop_and_output_tokens(
                 output_tokens,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
+                reasoning_output_tokens: 0,
             }),
             stop_reason: Some(stop_reason.to_string()),
             is_api_error_message: false,
@@ -543,6 +569,226 @@ async fn query_shapes_autocompact_with_final_request_context() {
     assert_eq!(recorded[0].tools[0].name(), "mcp__late__fresh");
     assert_eq!(recorded[0].max_output_tokens, Some(1234));
     assert_eq!(recorded[0].skip_cache_write, Some(true));
+}
+
+#[tokio::test]
+async fn deferred_enabled_request_keeps_only_core_tool_schemas_after_discovery() {
+    let session_id = format!("query-deferred-{}", uuid::Uuid::new_v4());
+    allthecodes_tools::deferred_tools::mark_discovered_tools(
+        &session_id,
+        ["WebBrowser".to_string()],
+    );
+    let mut tools = allthecodes_tools::deferred_tools::tools();
+    tools.push(Arc::new(allthecodes_tools::sleep::SleepTool));
+    tools.push(Arc::new(LoopTestTool {
+        name: "WebBrowser",
+        concurrency_safe: true,
+    }));
+    let deps = Arc::new(
+        MockDeps::new(vec![make_text_response("done")])
+            .with_tools(tools)
+            .with_audit_session_id(&session_id),
+    );
+    let mut params = make_query_params(vec![make_user_message_for_test(
+        "use the discovered browser",
+    )]);
+    params.gates.deferred_tool_loading = true;
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+    assert_eq!(request_start_count(&items), 1);
+
+    let recorded = deps.recorded_params();
+    assert_eq!(recorded.len(), 1);
+    let names = recorded[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(names.contains("SearchExtraTools"));
+    assert!(names.contains("ExecuteExtraTool"));
+    assert!(names.contains("Sleep"));
+    assert!(!names.contains("WebBrowser"));
+    assert!(
+        allthecodes_tools::deferred_tools::discovered_tools_for_session(&session_id)
+            .contains("WebBrowser")
+    );
+}
+
+#[tokio::test]
+async fn text_only_model_filters_view_image_from_request_tools() {
+    let mut app_state = AppState::default();
+    app_state.main_loop_model = "text-only".into();
+    app_state.settings.model_capabilities.insert(
+        "text-only".into(),
+        allthecodes_engine::config::settings::ModelCapabilitySettings {
+            input_modalities: vec!["text".into()],
+            supports_image_detail_original: false,
+            ..Default::default()
+        },
+    );
+    let tools: Tools = vec![
+        Arc::new(allthecodes_tools::sleep::SleepTool),
+        Arc::new(LoopTestTool {
+            name: "ViewImage",
+            concurrency_safe: true,
+        }),
+        Arc::new(LoopTestTool {
+            name: "view_image",
+            concurrency_safe: true,
+        }),
+    ];
+    let deps = Arc::new(
+        MockDeps::new(vec![make_text_response("done")])
+            .with_tools(tools)
+            .with_app_state(app_state),
+    );
+
+    let items: Vec<QueryYield> = query(
+        make_query_params(vec![make_user_message_for_test("inspect image")]),
+        deps.clone(),
+    )
+    .collect()
+    .await;
+    assert_eq!(request_start_count(&items), 1);
+
+    let recorded = deps.recorded_params();
+    assert_eq!(recorded.len(), 1);
+    let names = recorded[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(names.contains("Sleep"));
+    assert!(!names.contains("ViewImage"));
+    assert!(!names.contains("view_image"));
+
+    let compact = deps.recorded_autocompact_params();
+    assert_eq!(compact.len(), 1);
+    let compact_names = compact[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(!compact_names.contains("ViewImage"));
+    assert!(!compact_names.contains("view_image"));
+}
+
+#[tokio::test]
+async fn agent_session_filters_prompt_and_recursive_tools_from_request_tools() {
+    let tools: Tools = [
+        "AskUserQuestion",
+        "Agent",
+        "Task",
+        "TeamSpawn",
+        "spawn_agent",
+        "FollowupTask",
+        "followup_task",
+        "Read",
+        "SendMessage",
+    ]
+    .into_iter()
+    .map(|name| {
+        Arc::new(LoopTestTool {
+            name,
+            concurrency_safe: true,
+        }) as Arc<dyn Tool>
+    })
+    .collect();
+    let deps = Arc::new(MockDeps::new(vec![make_text_response("done")]).with_tools(tools));
+    let mut params = make_query_params(vec![make_user_message_for_test("continue agent task")]);
+    params.query_source = QuerySource::Agent("child-agent".to_string());
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+    assert_eq!(request_start_count(&items), 1);
+
+    let recorded = deps.recorded_params();
+    assert_eq!(recorded.len(), 1);
+    let names = recorded[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    for hidden in [
+        "AskUserQuestion",
+        "Agent",
+        "Task",
+        "TeamSpawn",
+        "spawn_agent",
+        "FollowupTask",
+        "followup_task",
+    ] {
+        assert!(!names.contains(hidden), "{hidden} should be session-gated");
+    }
+    assert!(names.contains("Read"));
+    assert!(names.contains("SendMessage"));
+
+    let compact = deps.recorded_autocompact_params();
+    assert_eq!(compact.len(), 1);
+    let compact_names = compact[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(!compact_names.contains("AskUserQuestion"));
+    assert!(!compact_names.contains("Agent"));
+    assert!(!compact_names.contains("Task"));
+}
+
+#[tokio::test]
+async fn deferred_enabled_annotates_compact_boundaries_with_discovered_tools() {
+    let session_id = format!("query-deferred-compact-{}", uuid::Uuid::new_v4());
+    allthecodes_tools::deferred_tools::mark_discovered_tools(
+        &session_id,
+        ["WebBrowser".to_string(), "Read".to_string()],
+    );
+    let mut tools = allthecodes_tools::deferred_tools::tools();
+    tools.push(Arc::new(allthecodes_tools::sleep::SleepTool));
+    tools.push(Arc::new(LoopTestTool {
+        name: "WebBrowser",
+        concurrency_safe: true,
+    }));
+    let compacted_messages = vec![Message::System(SystemMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 1,
+        subtype: SystemSubtype::CompactBoundary {
+            compact_metadata: Some(CompactMetadata {
+                pre_compact_token_count: 100,
+                post_compact_token_count: 50,
+                preserved_segment: None,
+                pre_compact_discovered_tools: None,
+            }),
+        },
+        content: "compacted".to_string(),
+    })];
+    let deps = Arc::new(
+        MockDeps::new(vec![make_text_response("done")])
+            .with_tools(tools)
+            .with_audit_session_id(&session_id)
+            .with_autocompact_result(CompactionResult {
+                messages: compacted_messages,
+                tracking: make_auto_compact_tracking(),
+            }),
+    );
+    let mut params = make_query_params(vec![make_user_message_for_test("continue")]);
+    params.gates.deferred_tool_loading = true;
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+    assert_eq!(request_start_count(&items), 1);
+
+    let recorded = deps.recorded_params();
+    let Some(Message::System(system)) = recorded[0].messages.first() else {
+        panic!("expected compact boundary system message");
+    };
+    let SystemSubtype::CompactBoundary {
+        compact_metadata: Some(metadata),
+    } = &system.subtype
+    else {
+        panic!("expected compact metadata");
+    };
+    assert_eq!(
+        metadata.pre_compact_discovered_tools.as_ref().unwrap(),
+        &vec!["WebBrowser".to_string()]
+    );
 }
 
 struct StopContinuationHookRunner {

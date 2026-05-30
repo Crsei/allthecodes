@@ -87,18 +87,23 @@ pub enum PermissionRouteKind {
     EnterPlanMode,
     ExitPlanMode,
     Fallback,
+    ApplyPatch,
     FileEdit,
     FileWrite,
     Filesystem,
+    LocalMemoryRecall,
     Monitor,
+    MultiAgentV2,
     NotebookEdit,
     PowerShell,
     ReviewArtifact,
     Sandbox,
     SedEdit,
     Skill,
+    VaultHttpFetch,
     WebBrowser,
     WebFetch,
+    Workflow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +138,15 @@ fn render_exact_kind(
     match kind {
         PermissionRouteKind::Bash => route_shell(request, kind, selected_index),
         PermissionRouteKind::PowerShell => route_shell(request, kind, selected_index),
+        PermissionRouteKind::ApplyPatch => Some(route_apply_patch(request, selected_index)),
+        PermissionRouteKind::VaultHttpFetch => {
+            Some(route_vault_http_fetch(request, selected_index))
+        }
+        PermissionRouteKind::LocalMemoryRecall => {
+            Some(route_local_memory_recall(request, selected_index))
+        }
+        PermissionRouteKind::Workflow => Some(route_workflow(request, selected_index)),
+        PermissionRouteKind::MultiAgentV2 => Some(route_multi_agent_v2(request, selected_index)),
         PermissionRouteKind::WebBrowser => route_web_browser(request, selected_index),
         PermissionRouteKind::WebFetch => route_web_fetch(request, selected_index),
         PermissionRouteKind::FileWrite => route_file_write(request, selected_index),
@@ -507,6 +521,216 @@ fn route_sandbox(
     }
 }
 
+fn route_apply_patch(
+    request: &PermissionDialogRequest,
+    selected_index: usize,
+) -> RoutedPermissionRequest {
+    let patch = string_or_legacy_field(&request.tool_input, &["patch", "input", "diff"])
+        .unwrap_or_else(|| fallback_message(request));
+    let mut files = Vec::new();
+    let mut add_count = 0usize;
+    let mut update_count = 0usize;
+    let mut delete_count = 0usize;
+    let mut move_count = 0usize;
+
+    for line in patch.lines() {
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            add_count += 1;
+            files.push(path.trim().to_string());
+        } else if let Some(path) = line.strip_prefix("*** Update File: ") {
+            update_count += 1;
+            files.push(path.trim().to_string());
+        } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            delete_count += 1;
+            files.push(path.trim().to_string());
+        } else if let Some(path) = line.strip_prefix("*** Move to: ") {
+            move_count += 1;
+            files.push(path.trim().to_string());
+        }
+    }
+
+    files.sort();
+    files.dedup();
+
+    let summary = if files.is_empty() {
+        "apply patch".to_string()
+    } else {
+        format!("apply patch touching {} file(s)", files.len())
+    };
+    let operations = format!(
+        "operations: add={add_count} update={update_count} delete={delete_count} move={move_count}"
+    );
+    let file_preview = if files.is_empty() {
+        "files: not declared in patch preview".to_string()
+    } else {
+        format!("files: {}", files.join(", "))
+    };
+
+    route_phase5_preview(
+        request,
+        PermissionRouteKind::ApplyPatch,
+        "Patch permission",
+        summary,
+        [operations, file_preview],
+        "filesystem patch",
+        selected_index,
+    )
+}
+
+fn route_vault_http_fetch(
+    request: &PermissionDialogRequest,
+    selected_index: usize,
+) -> RoutedPermissionRequest {
+    let url = string_field(&request.tool_input, &["url", "uri", "href"])
+        .unwrap_or_else(|| fallback_message(request));
+    let key = string_field(
+        &request.tool_input,
+        &["vault_auth_key", "credential_ref", "key"],
+    )
+    .unwrap_or_else(|| "<missing key>".to_string());
+    let auth_scheme =
+        string_field(&request.tool_input, &["auth_scheme"]).unwrap_or_else(|| "Bearer".to_string());
+    let reason = string_field(&request.tool_input, &["reason"])
+        .unwrap_or_else(|| "no reason supplied".to_string());
+
+    route_phase5_preview(
+        request,
+        PermissionRouteKind::VaultHttpFetch,
+        "Vault HTTP permission",
+        format!("fetch {url} with vault key {key}"),
+        [
+            format!("auth scheme: {auth_scheme}"),
+            format!("reason: {reason}"),
+        ],
+        "authenticated network request",
+        selected_index,
+    )
+}
+
+fn route_local_memory_recall(
+    request: &PermissionDialogRequest,
+    selected_index: usize,
+) -> RoutedPermissionRequest {
+    let action =
+        string_field(&request.tool_input, &["action"]).unwrap_or_else(|| "fetch".to_string());
+    let store =
+        string_field(&request.tool_input, &["store"]).unwrap_or_else(|| "<store>".to_string());
+    let key = string_field(&request.tool_input, &["key"]).unwrap_or_else(|| "<key>".to_string());
+    let preview_only =
+        bool_field(&request.tool_input, &["preview_only"]).unwrap_or(action != "fetch");
+    let risk = if action == "fetch" && !preview_only {
+        "full local memory read"
+    } else {
+        "local memory lookup"
+    };
+
+    route_phase5_preview(
+        request,
+        PermissionRouteKind::LocalMemoryRecall,
+        "Local memory permission",
+        format!("{action} {store}/{key}"),
+        [format!("preview only: {preview_only}")],
+        risk,
+        selected_index,
+    )
+}
+
+fn route_workflow(
+    request: &PermissionDialogRequest,
+    selected_index: usize,
+) -> RoutedPermissionRequest {
+    let action =
+        string_field(&request.tool_input, &["action"]).unwrap_or_else(|| "status".to_string());
+    let workflow = string_field(
+        &request.tool_input,
+        &["workflow", "workflow_id", "id", "name"],
+    )
+    .unwrap_or_else(|| "<workflow>".to_string());
+    let run = string_field(&request.tool_input, &["run_id", "run"])
+        .unwrap_or_else(|| "<new or current run>".to_string());
+    let risk = match action.as_str() {
+        "start" | "advance" | "cancel" => "workflow state mutation",
+        _ => "workflow inspection",
+    };
+
+    route_phase5_preview(
+        request,
+        PermissionRouteKind::Workflow,
+        "Workflow permission",
+        format!("{action} workflow {workflow}"),
+        [format!("run: {run}")],
+        risk,
+        selected_index,
+    )
+}
+
+fn route_multi_agent_v2(
+    request: &PermissionDialogRequest,
+    selected_index: usize,
+) -> RoutedPermissionRequest {
+    let action = match request.tool_name.as_str() {
+        "TeamSpawn" | "spawn_agent" => "spawn",
+        "SendMessage" | "send_message" => "send message",
+        "FollowupTask" | "followup_task" => "follow up",
+        "WaitAgent" | "wait_agent" => "wait",
+        "CloseAgent" | "close_agent" => "close",
+        "ListAgents" | "list_agents" => "list",
+        _ => "agent action",
+    };
+    let target = string_field(
+        &request.tool_input,
+        &[
+            "agent_id",
+            "agent",
+            "target",
+            "to",
+            "task_path",
+            "task_id",
+            "name",
+        ],
+    )
+    .unwrap_or_else(|| "<agent>".to_string());
+    let message = string_field(&request.tool_input, &["message", "prompt", "task"])
+        .unwrap_or_else(|| "<no message preview>".to_string());
+    let risk = match action {
+        "spawn" | "follow up" | "close" => "agent lifecycle mutation",
+        "send message" => "agent mailbox mutation",
+        _ => "agent runtime inspection",
+    };
+
+    route_phase5_preview(
+        request,
+        PermissionRouteKind::MultiAgentV2,
+        "Agent runtime permission",
+        format!("{action} {target}"),
+        [format!("message: {message}")],
+        risk,
+        selected_index,
+    )
+}
+
+fn route_phase5_preview(
+    request: &PermissionDialogRequest,
+    kind: PermissionRouteKind,
+    title: &str,
+    summary: String,
+    details: impl IntoIterator<Item = String>,
+    risk: &str,
+    selected_index: usize,
+) -> RoutedPermissionRequest {
+    let rendered = render_permission_request(
+        &PermissionRequestView::new(title, &request.tool_name, summary)
+            .with_details(details)
+            .with_risk(risk)
+            .with_options(default_permission_options(), selected_index),
+    );
+    RoutedPermissionRequest {
+        kind,
+        rendered,
+        options: merge_options(request, option_labels(default_permission_options())),
+    }
+}
+
 fn fallback(request: &PermissionDialogRequest, _selected_index: usize) -> RoutedPermissionRequest {
     let summary = request.input_summary();
     let details = fallback_details(request, &summary);
@@ -548,6 +772,13 @@ fn exact_tool_kind(tool_name: &str) -> Option<PermissionRouteKind> {
         "WebFetch" | "web_fetch" | "Web_Fetch" => Some(PermissionRouteKind::WebFetch),
         "Write" | "write" => Some(PermissionRouteKind::FileWrite),
         "Edit" | "edit" | "MultiEdit" | "multiedit" => Some(PermissionRouteKind::FileEdit),
+        "ApplyPatch" | "apply_patch" => Some(PermissionRouteKind::ApplyPatch),
+        "VaultHttpFetch" | "vault_http_fetch" => Some(PermissionRouteKind::VaultHttpFetch),
+        "LocalMemoryRecall" | "local_memory_recall" => Some(PermissionRouteKind::LocalMemoryRecall),
+        "Workflow" | "workflow" => Some(PermissionRouteKind::Workflow),
+        "TeamSpawn" | "spawn_agent" | "SendMessage" | "send_message" | "FollowupTask"
+        | "followup_task" | "WaitAgent" | "wait_agent" | "CloseAgent" | "close_agent"
+        | "ListAgents" | "list_agents" => Some(PermissionRouteKind::MultiAgentV2),
         "NotebookEdit" | "notebook_edit" => Some(PermissionRouteKind::NotebookEdit),
         "SedEdit" | "sed_edit" => Some(PermissionRouteKind::SedEdit),
         "Filesystem" | "filesystem" | "Read" | "read" | "Glob" | "glob" | "Grep" | "grep"
@@ -896,6 +1127,31 @@ mod tests {
                 PermissionRouteKind::FileEdit,
             ),
             (
+                "ApplyPatch",
+                json!({"patch":"*** Begin Patch\n*** Add File: src/new.rs\n+hi\n*** End Patch"}),
+                PermissionRouteKind::ApplyPatch,
+            ),
+            (
+                "VaultHttpFetch",
+                json!({"url":"https://api.example.com/v1","vault_auth_key":"prod-api","reason":"check deployment"}),
+                PermissionRouteKind::VaultHttpFetch,
+            ),
+            (
+                "LocalMemoryRecall",
+                json!({"action":"fetch","store":"project","key":"notes","preview_only":false}),
+                PermissionRouteKind::LocalMemoryRecall,
+            ),
+            (
+                "workflow",
+                json!({"action":"advance","workflow":"release","run_id":"run-1"}),
+                PermissionRouteKind::Workflow,
+            ),
+            (
+                "close_agent",
+                json!({"agent_id":"worker@team","task_path":".allthecodes/team/tasks/task-1.json"}),
+                PermissionRouteKind::MultiAgentV2,
+            ),
+            (
                 "NotebookEdit",
                 json!({"notebook_path":"nb.ipynb","cell_index":2,"language":"python"}),
                 PermissionRouteKind::NotebookEdit,
@@ -952,6 +1208,68 @@ mod tests {
             assert_eq!(routed.kind, kind, "{tool} should route exactly");
             assert!(!routed.rendered.trim().is_empty());
         }
+    }
+
+    #[test]
+    fn routes_phase5_permission_previews_without_raw_json() {
+        let patch = PermissionRequestRouter::route(
+            &request(
+                "apply_patch",
+                json!({"patch":"*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n*** End Patch"}),
+            ),
+            0,
+        );
+        assert_eq!(patch.kind, PermissionRouteKind::ApplyPatch);
+        assert!(patch.rendered.contains("Patch permission"));
+        assert!(patch.rendered.contains("filesystem patch"));
+        assert!(patch.rendered.contains("src/lib.rs"));
+
+        let vault = PermissionRequestRouter::route(
+            &request(
+                "VaultHttpFetch",
+                json!({
+                    "url":"https://api.example.com/data",
+                    "vault_auth_key":"billing-token",
+                    "auth_scheme":"Bearer",
+                    "reason":"sync status"
+                }),
+            ),
+            0,
+        );
+        assert_eq!(vault.kind, PermissionRouteKind::VaultHttpFetch);
+        assert!(vault.rendered.contains("Vault HTTP permission"));
+        assert!(vault.rendered.contains("billing-token"));
+        assert!(vault.rendered.contains("authenticated network request"));
+
+        let memory = PermissionRequestRouter::route(
+            &request(
+                "LocalMemoryRecall",
+                json!({"action":"fetch","store":"project","key":"handoff","preview_only":false}),
+            ),
+            0,
+        );
+        assert_eq!(memory.kind, PermissionRouteKind::LocalMemoryRecall);
+        assert!(memory.rendered.contains("full local memory read"));
+
+        let workflow = PermissionRequestRouter::route(
+            &request(
+                "Workflow",
+                json!({"action":"cancel","workflow_id":"deploy","run":"r1"}),
+            ),
+            0,
+        );
+        assert_eq!(workflow.kind, PermissionRouteKind::Workflow);
+        assert!(workflow.rendered.contains("workflow state mutation"));
+
+        let close = PermissionRequestRouter::route(
+            &request(
+                "CloseAgent",
+                json!({"task_path":".allthecodes/team/tasks/t1.json"}),
+            ),
+            0,
+        );
+        assert_eq!(close.kind, PermissionRouteKind::MultiAgentV2);
+        assert!(close.rendered.contains("agent lifecycle mutation"));
     }
 
     #[test]

@@ -152,6 +152,20 @@ impl QuerySource {
                 | QuerySource::ChannelNotification
         )
     }
+
+    pub fn is_non_interactive(&self) -> bool {
+        matches!(
+            self,
+            QuerySource::Sdk
+                | QuerySource::Compact
+                | QuerySource::SessionMemory
+                | QuerySource::Agent(_)
+                | QuerySource::ProactiveTick
+                | QuerySource::ScheduledTask
+                | QuerySource::WebhookEvent
+                | QuerySource::ChannelNotification
+        )
+    }
 }
 
 /// 任务预算

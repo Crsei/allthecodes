@@ -141,6 +141,10 @@ pub enum FlowControlEvent {
         output_tokens: u64,
         cost_usd: f64,
     },
+    GoalUpdated {
+        event: String,
+        goal: Value,
+    },
     StatusLineUpdate {
         payload: serde_json::Value,
         #[serde(default)]
@@ -216,6 +220,7 @@ pub fn legacy_backend_type(message: &BackendMessage) -> &'static str {
         BackendMessage::FileSearchResult { .. } => "file_search_result",
         BackendMessage::ConversationReplaced { .. } => "conversation_replaced",
         BackendMessage::PlanWorkflowEvent { .. } => "plan_workflow_event",
+        BackendMessage::GoalUpdated { .. } => "goal_updated",
         BackendMessage::UsageUpdate { .. } => "usage_update",
         BackendMessage::StatusLineUpdate { .. } => "status_line_update",
         BackendMessage::Suggestions { .. } => "suggestions",
@@ -379,6 +384,12 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
             output_tokens: *output_tokens,
             cost_usd: *cost_usd,
         }),
+        BackendMessage::GoalUpdated { event, goal } => {
+            LegacyBackendPayload::FlowControl(FlowControlEvent::GoalUpdated {
+                event: event.clone(),
+                goal: goal.clone(),
+            })
+        }
         BackendMessage::StatusLineUpdate {
             payload,
             lines,

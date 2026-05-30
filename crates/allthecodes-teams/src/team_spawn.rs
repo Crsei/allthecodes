@@ -25,6 +25,17 @@ use allthecodes_types::message::AssistantMessage;
 
 /// TeamSpawn tool.
 pub struct TeamSpawnTool;
+pub struct SpawnAgentAliasTool;
+
+fn preview_tool_result(data: Value, preview: impl Into<String>) -> ToolResult {
+    let preview = preview.into();
+    ToolResult {
+        data,
+        model_content: None,
+        display_preview: Some(preview),
+        new_messages: vec![],
+    }
+}
 
 #[derive(Deserialize)]
 struct TeamSpawnInput {
@@ -142,13 +153,15 @@ impl Tool for TeamSpawnTool {
 
         // Reject duplicate member names.
         if team_file.members.iter().any(|m| m.name == params.name) {
-            return Ok(ToolResult {
-                data: json!({
+            return Ok(preview_tool_result(
+                json!({
                     "error": format!("teammate '{}' already exists in team '{}'", params.name, team_name),
                 }),
-                new_messages: vec![],
-                ..Default::default()
-            });
+                format!(
+                    "TeamSpawn failed: teammate '{}' already exists in team '{}'",
+                    params.name, team_name
+                ),
+            ));
         }
 
         let agent_id = identity::format_agent_id(&params.name, &team_name);
@@ -179,10 +192,14 @@ impl Tool for TeamSpawnTool {
             cwd: cwd.clone(),
             worktree_path: None,
             session_id: None,
+            task_id: None,
+            task_path: None,
             subscriptions: vec![],
             backend_type: Some(BackendType::InProcess),
             is_active: Some(true),
             mode: params.mode.clone(),
+            close_state: None,
+            close_requested_at: None,
         };
         team_file.members.push(new_member.clone());
         helpers::write_team_file(&team_name, &team_file)?;
@@ -208,18 +225,29 @@ impl Tool for TeamSpawnTool {
             .await?;
         if !spawn_result.success {
             let _ = helpers::set_member_active(&team_name, &agent_id, false);
-            return Ok(ToolResult {
-                data: json!({
+            return Ok(preview_tool_result(
+                json!({
                     "spawned": false,
                     "error": spawn_result.error.unwrap_or_else(|| "failed to spawn teammate".into()),
                     "team": team_name,
                     "name": params.name,
                 }),
-                new_messages: vec![],
-                ..Default::default()
-            });
+                format!(
+                    "TeamSpawn failed to spawn agent {} in team {}",
+                    params.name, team_name
+                ),
+            ));
         }
         let task_id = spawn_result.task_id.unwrap_or_default();
+        let task_path = if task_id.is_empty() {
+            None
+        } else {
+            Some(
+                helpers::set_member_task(&team_name, &agent_id, &task_id)?
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        };
 
         // Update app_state.team_context so the session has a live view.
         let tc_team_name = team_name.clone();
@@ -282,12 +310,13 @@ impl Tool for TeamSpawnTool {
             "teammate spawned via TeamSpawn"
         );
 
-        Ok(ToolResult {
-            data: json!({
+        Ok(preview_tool_result(
+            json!({
                 "spawned": true,
                 "team": team_name,
                 "agent_id": agent_id,
                 "task_id": task_id,
+                "task_path": task_path,
                 "name": params.name,
                 "color": color,
                 "backend": backend_type.to_string(),
@@ -295,9 +324,17 @@ impl Tool for TeamSpawnTool {
                 "agent_type": agent_type,
                 "implicitly_created_team": freshly_created,
             }),
-            new_messages: vec![],
-            ..Default::default()
-        })
+            format!(
+                "Spawned agent {} in team {}; task_id={}",
+                params.name,
+                team_name,
+                if task_id.is_empty() {
+                    "<none>"
+                } else {
+                    task_id.as_str()
+                }
+            ),
+        ))
     }
 
     async fn prompt(&self) -> String {
@@ -306,6 +343,47 @@ impl Tool for TeamSpawnTool {
 
     fn user_facing_name(&self, input: Option<&Value>) -> String {
         team_tool_specs::team_spawn_user_facing_name(input)
+    }
+}
+
+#[async_trait]
+impl Tool for SpawnAgentAliasTool {
+    fn name(&self) -> &str {
+        "spawn_agent"
+    }
+
+    async fn description(&self, input: &Value) -> String {
+        TeamSpawnTool.description(input).await
+    }
+
+    fn input_json_schema(&self) -> Value {
+        TeamSpawnTool.input_json_schema()
+    }
+
+    fn is_enabled(&self) -> bool {
+        TeamSpawnTool.is_enabled()
+    }
+
+    async fn validate_input(&self, input: &Value, ctx: &ToolUseContext) -> ValidationResult {
+        TeamSpawnTool.validate_input(input, ctx).await
+    }
+
+    async fn call(
+        &self,
+        input: Value,
+        ctx: &ToolUseContext,
+        parent: &AssistantMessage,
+        on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
+    ) -> Result<ToolResult> {
+        TeamSpawnTool.call(input, ctx, parent, on_progress).await
+    }
+
+    async fn prompt(&self) -> String {
+        TeamSpawnTool.prompt().await
+    }
+
+    fn user_facing_name(&self, input: Option<&Value>) -> String {
+        TeamSpawnTool.user_facing_name(input)
     }
 }
 
@@ -335,6 +413,28 @@ mod tests {
     impl Drop for FeatureOverrideGuard {
         fn drop(&mut self) {
             features::clear_runtime_override();
+        }
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
         }
     }
 
@@ -419,6 +519,76 @@ mod tests {
             }
             other => panic!("expected unsupported backend error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn duplicate_teammate_returns_display_preview() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", tmp.path().to_str().unwrap());
+        let team = helpers::create_team("team-spawn-preview", None, Some("session".into()), ".")
+            .expect("create team");
+        let agent_id = identity::format_agent_id("worker", &team.name);
+        helpers::add_member(
+            &team.name,
+            TeamMember {
+                agent_id,
+                name: "worker".to_string(),
+                agent_type: Some("teammate".to_string()),
+                model: None,
+                prompt: Some("existing worker".to_string()),
+                color: Some("blue".to_string()),
+                plan_mode_required: None,
+                joined_at: chrono::Utc::now().timestamp(),
+                tmux_pane_id: String::new(),
+                cwd: ".".to_string(),
+                worktree_path: None,
+                session_id: None,
+                task_id: None,
+                task_path: None,
+                subscriptions: vec![],
+                backend_type: Some(BackendType::InProcess),
+                is_active: Some(true),
+                mode: None,
+                close_state: None,
+                close_requested_at: None,
+            },
+        )
+        .expect("add member");
+
+        let result = TeamSpawnTool
+            .call(
+                json!({
+                    "team": team.name,
+                    "name": "worker",
+                    "prompt": "duplicate worker"
+                }),
+                &create_test_context(),
+                &AssistantMessage {
+                    uuid: uuid::Uuid::new_v4(),
+                    timestamp: 0,
+                    role: "assistant".to_string(),
+                    content: vec![],
+                    usage: None,
+                    stop_reason: None,
+                    is_api_error_message: false,
+                    api_error: None,
+                    cost_usd: 0.0,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.data["error"]
+            .as_str()
+            .unwrap()
+            .contains("already exists"));
+        assert!(result
+            .display_preview
+            .as_deref()
+            .unwrap_or("")
+            .contains("TeamSpawn failed"));
     }
 
     fn create_test_context() -> ToolUseContext {

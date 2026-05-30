@@ -7,8 +7,8 @@ use allthecodes_lsp_service::tool::LspTool;
 use allthecodes_teams::pr_activity::{
     SubscribePrActivityTool, SubscribePrTool, UnsubscribePrActivityTool,
 };
-use allthecodes_teams::send_message::SendMessageTool;
-use allthecodes_teams::team_spawn::TeamSpawnTool;
+use allthecodes_teams::send_message::{SendMessageAliasTool, SendMessageTool};
+use allthecodes_teams::team_spawn::{SpawnAgentAliasTool, TeamSpawnTool};
 pub use allthecodes_tools::registry::ToolPolicy;
 use allthecodes_tools::registry::ToolRegistryProviders;
 use allthecodes_worktree::tool::{EnterWorktreeTool, ExitWorktreeTool};
@@ -29,10 +29,12 @@ fn root_owned_base_tools() -> Tools {
         Arc::new(ExitWorktreeTool) as _,
         Arc::new(LspTool) as _,
         Arc::new(SendMessageTool) as _,
+        Arc::new(SendMessageAliasTool) as _,
         Arc::new(SubscribePrTool) as _,
         Arc::new(SubscribePrActivityTool) as _,
         Arc::new(UnsubscribePrActivityTool) as _,
         Arc::new(TeamSpawnTool) as _,
+        Arc::new(SpawnAgentAliasTool) as _,
     ]);
 
     tools.into_iter().filter(|t| t.is_enabled()).collect()
@@ -81,6 +83,7 @@ pub fn filter_tools_for_policy(tools: Tools, policy: ToolPolicy) -> Tools {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allthecodes_config::features::FeatureFlags;
 
     fn tool_names(tools: Tools) -> Vec<String> {
         tools
@@ -141,19 +144,33 @@ mod tests {
         for name in [
             "DiscoverSkills",
             "ViewImage",
+            "view_image",
             "GetGoal",
+            "get_goal",
             "CreateGoal",
+            "create_goal",
             "UpdateGoal",
+            "update_goal",
             "VerifyPlanExecution",
             "Workflow",
+            "workflow",
             "ApplyPatch",
+            "apply_patch",
             "LocalMemoryRecall",
             "VaultHttpFetch",
             "PushNotification",
             "ListAgents",
+            "list_agents",
             "FollowupTask",
+            "followup_task",
             "WaitAgent",
+            "wait_agent",
             "CloseAgent",
+            "close_agent",
+            "SendMessage",
+            "send_message",
+            "TeamSpawn",
+            "spawn_agent",
         ] {
             assert!(
                 tools.iter().any(|t| t.name() == name),
@@ -183,6 +200,40 @@ mod tests {
 
         let nonexistent = tools.iter().find(|t| t.name() == "NonExistentTool");
         assert!(nonexistent.is_none(), "should not find nonexistent tool");
+    }
+
+    #[test]
+    fn feature_gate_removes_multi_agent_v2_tools_from_root_registry() {
+        let mut flags = FeatureFlags::all_enabled();
+        flags.multi_agent_v2 = false;
+
+        let names = tool_names(
+            allthecodes_tools::registry::filter_tools_for_feature_gates_with_flags(
+                get_all_tools(),
+                &flags,
+            ),
+        );
+        for hidden in [
+            "ListAgents",
+            "list_agents",
+            "FollowupTask",
+            "followup_task",
+            "WaitAgent",
+            "wait_agent",
+            "CloseAgent",
+            "close_agent",
+            "TeamSpawn",
+            "spawn_agent",
+            "SendMessage",
+            "send_message",
+        ] {
+            assert!(
+                !names.contains(&hidden.to_string()),
+                "{hidden} should be hidden when multi-agent v2 is disabled"
+            );
+        }
+        assert!(names.contains(&"Agent".to_string()));
+        assert!(names.contains(&"Task".to_string()));
     }
 
     #[test]
@@ -220,6 +271,8 @@ mod tests {
         assert!(names.contains(&"Agent".to_string()));
         assert!(names.contains(&"Task".to_string()));
         assert!(names.contains(&"SendMessage".to_string()));
+        assert!(names.contains(&"send_message".to_string()));
+        assert!(names.contains(&"list_agents".to_string()));
         assert!(names.contains(&"TaskList".to_string()));
         assert!(names.contains(&"TaskStop".to_string()));
         assert!(!names.contains(&"Bash".to_string()));
@@ -235,6 +288,7 @@ mod tests {
         assert!(names.contains(&"Bash".to_string()));
         assert!(names.contains(&"Write".to_string()));
         assert!(names.contains(&"SendMessage".to_string()));
+        assert!(names.contains(&"send_message".to_string()));
         assert!(names.contains(&"TaskUpdate".to_string()));
         assert!(!names.contains(&"Agent".to_string()));
         assert!(!names.contains(&"Task".to_string()));
@@ -247,6 +301,7 @@ mod tests {
         let names = tool_names(get_tools_for_policy(ToolPolicy::InProcessTeammate));
 
         assert!(names.contains(&"SendMessage".to_string()));
+        assert!(names.contains(&"send_message".to_string()));
         assert!(names.contains(&"TaskList".to_string()));
         assert!(names.contains(&"TaskUpdate".to_string()));
         assert!(names.contains(&"TaskOutput".to_string()));

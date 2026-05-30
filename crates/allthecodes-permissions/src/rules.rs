@@ -228,11 +228,52 @@ fn rule_tool_matches_invocation(rule_tool: &str, tool_name: &str) -> bool {
     if tool_name_matches(tool_name, rule_tool) {
         return true;
     }
+    if tool_aliases(tool_name)
+        .iter()
+        .any(|alias| tool_name_matches(alias, rule_tool))
+        || tool_aliases(rule_tool)
+            .iter()
+            .any(|alias| tool_name_matches(tool_name, alias))
+    {
+        return true;
+    }
 
     match rule_tool {
         "Read" => is_read_like_tool(tool_name),
         "Edit" => is_edit_tool(tool_name),
         _ => false,
+    }
+}
+
+fn tool_aliases(tool_name: &str) -> &'static [&'static str] {
+    match tool_name {
+        "ViewImage" => &["view_image"],
+        "view_image" => &["ViewImage"],
+        "GetGoal" => &["get_goal"],
+        "get_goal" => &["GetGoal"],
+        "CreateGoal" => &["create_goal"],
+        "create_goal" => &["CreateGoal"],
+        "UpdateGoal" => &["update_goal"],
+        "update_goal" => &["UpdateGoal"],
+        "Workflow" => &["workflow"],
+        "workflow" => &["Workflow"],
+        "ApplyPatch" => &["apply_patch"],
+        "apply_patch" => &["ApplyPatch"],
+        "PushNotification" => &["push_notification"],
+        "push_notification" => &["PushNotification"],
+        "ListAgents" => &["list_agents"],
+        "list_agents" => &["ListAgents"],
+        "FollowupTask" => &["followup_task"],
+        "followup_task" => &["FollowupTask"],
+        "WaitAgent" => &["wait_agent"],
+        "wait_agent" => &["WaitAgent"],
+        "CloseAgent" => &["close_agent"],
+        "close_agent" => &["CloseAgent"],
+        "SendMessage" => &["send_message"],
+        "send_message" => &["SendMessage"],
+        "TeamSpawn" => &["spawn_agent"],
+        "spawn_agent" => &["TeamSpawn"],
+        _ => &[],
     }
 }
 
@@ -577,6 +618,14 @@ mod tests {
     fn test_exact_match() {
         assert!(rule_matches("Bash", &Value::Null, "Bash"));
         assert!(!rule_matches("BashTool", &Value::Null, "Bash"));
+    }
+
+    #[test]
+    fn test_compatibility_alias_match() {
+        assert!(rule_matches("view_image", &Value::Null, "ViewImage"));
+        assert!(rule_matches("ViewImage", &Value::Null, "view_image"));
+        assert!(rule_matches("apply_patch", &Value::Null, "ApplyPatch"));
+        assert!(rule_matches("close_agent", &Value::Null, "CloseAgent"));
     }
 
     #[test]

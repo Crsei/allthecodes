@@ -126,6 +126,58 @@ fn test_build_codex_responses_skips_invalid_function_schema_roots() {
 }
 
 #[test]
+fn test_build_codex_responses_uses_custom_apply_patch_tool() {
+    let mut req = base_request("gpt-5.4", vec![json!({"role": "user", "content": "Hello"})]);
+    req.tools = Some(vec![json!({
+        "name": "apply_patch",
+        "description": "",
+        "input_schema": {
+            "type": "object",
+            "properties": {"input": {"type": "string"}},
+            "required": ["input"]
+        }
+    })]);
+
+    let body = build_openai_request(&req, OPENAI_CODEX_PROVIDER_NAME);
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["type"], "custom");
+    assert_eq!(tools[0]["name"], "apply_patch");
+    assert_eq!(tools[0]["format"]["type"], "grammar");
+    assert_eq!(tools[0]["format"]["syntax"], "lark");
+    assert!(tools[0]["format"]["definition"]
+        .as_str()
+        .unwrap()
+        .contains("environment_id?"));
+}
+
+#[test]
+fn test_build_openai_request_downgrades_apply_patch_to_json_function() {
+    let mut req = base_request("gpt-4o", vec![json!({"role": "user", "content": "Hello"})]);
+    req.tools = Some(vec![json!({
+        "name": "apply_patch",
+        "description": "Apply a patch",
+        "input_schema": {
+            "type": "object",
+            "properties": {"input": {"type": "string"}},
+            "required": ["input"]
+        }
+    })]);
+
+    let body = build_openai_request(&req, "openai");
+    let tools = body["tools"].as_array().unwrap();
+
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["type"], "function");
+    assert_eq!(tools[0]["function"]["name"], "apply_patch");
+    assert_eq!(
+        tools[0]["function"]["parameters"]["properties"]["input"]["type"],
+        "string"
+    );
+    assert!(tools[0].get("format").is_none());
+}
+
+#[test]
 fn test_build_openai_request_no_system() {
     let mut req = base_request(
         "deepseek-chat",

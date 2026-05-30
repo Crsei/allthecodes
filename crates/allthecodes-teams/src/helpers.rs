@@ -9,7 +9,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use serde_json::json;
 use tracing::{debug, info, warn};
 
 use super::constants::*;
@@ -53,6 +54,11 @@ pub fn team_config_path(team_name: &str) -> PathBuf {
 /// Get the tasks directory for a team.
 pub fn team_tasks_dir(team_name: &str) -> PathBuf {
     crate::storage_paths::tasks_dir().join(sanitize_team_name(team_name))
+}
+
+/// Get the persisted metadata path for a teammate runtime task.
+pub fn team_task_path(team_name: &str, task_id: &str) -> PathBuf {
+    team_tasks_dir(team_name).join(format!("{}.json", sanitize_team_name(task_id)))
 }
 
 // ---------------------------------------------------------------------------
@@ -105,10 +111,14 @@ pub fn create_team(
             cwd: cwd.to_string(),
             worktree_path: None,
             session_id: None,
+            task_id: None,
+            task_path: None,
             subscriptions: vec![],
             backend_type: Some(BackendType::InProcess),
             is_active: Some(true),
             mode: None,
+            close_state: None,
+            close_requested_at: None,
         }],
     };
 
@@ -138,6 +148,57 @@ pub fn set_member_active(team_name: &str, agent_id: &str, active: bool) -> Resul
     let mut tf = read_team_file(team_name)?;
     if let Some(member) = tf.members.iter_mut().find(|m| m.agent_id == agent_id) {
         member.is_active = Some(active);
+        if active {
+            member.close_state = None;
+            member.close_requested_at = None;
+        }
+    }
+    write_team_file(team_name, &tf)
+}
+
+/// Persist the runtime task identity for a team member.
+pub fn set_member_task(team_name: &str, agent_id: &str, task_id: &str) -> Result<PathBuf> {
+    let mut tf = read_team_file(team_name)?;
+    let task_path = team_task_path(team_name, task_id);
+    let task_path_string = task_path.to_string_lossy().into_owned();
+
+    let metadata = {
+        let Some(member) = tf.members.iter_mut().find(|m| m.agent_id == agent_id) else {
+            bail!(
+                "cannot record runtime task for unknown agent '{agent_id}' in team '{team_name}'"
+            );
+        };
+        member.task_id = Some(task_id.to_string());
+        member.task_path = Some(task_path_string.clone());
+        member.close_state = None;
+        member.close_requested_at = None;
+        json!({
+            "team": team_name,
+            "agent_id": member.agent_id.clone(),
+            "name": member.name.clone(),
+            "task_id": task_id,
+            "task_path": task_path_string,
+            "status": "running",
+            "backend": member.backend_type,
+            "prompt": member.prompt.clone(),
+            "created_at": chrono::Utc::now().timestamp(),
+        })
+    };
+
+    write_team_file(team_name, &tf)?;
+    if let Some(parent) = task_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&task_path, serde_json::to_string_pretty(&metadata)?)?;
+    Ok(task_path)
+}
+
+/// Mark a member as awaiting a graceful close acknowledgement.
+pub fn mark_member_close_pending(team_name: &str, agent_id: &str) -> Result<()> {
+    let mut tf = read_team_file(team_name)?;
+    if let Some(member) = tf.members.iter_mut().find(|m| m.agent_id == agent_id) {
+        member.close_state = Some("pending".to_string());
+        member.close_requested_at = Some(chrono::Utc::now().timestamp());
     }
     write_team_file(team_name, &tf)
 }
@@ -434,10 +495,14 @@ mod tests {
             cwd: "/tmp".into(),
             worktree_path: None,
             session_id: None,
+            task_id: None,
+            task_path: None,
             subscriptions: vec![],
             backend_type: Some(BackendType::InProcess),
             is_active: Some(true),
             mode: None,
+            close_state: None,
+            close_requested_at: None,
         };
         add_member(&tf.name, member).unwrap();
 
@@ -511,10 +576,14 @@ mod tests {
                     cwd: ".".into(),
                     worktree_path: None,
                     session_id: None,
+                    task_id: None,
+                    task_path: None,
                     subscriptions: vec![],
                     backend_type: None,
                     is_active: Some(true),
                     mode: None,
+                    close_state: None,
+                    close_requested_at: None,
                 },
                 TeamMember {
                     agent_id: "r@t".into(),
@@ -529,10 +598,14 @@ mod tests {
                     cwd: ".".into(),
                     worktree_path: None,
                     session_id: None,
+                    task_id: None,
+                    task_path: None,
                     subscriptions: vec![],
                     backend_type: None,
                     is_active: Some(true),
                     mode: None,
+                    close_state: None,
+                    close_requested_at: None,
                 },
                 TeamMember {
                     agent_id: "w@t".into(),
@@ -547,10 +620,14 @@ mod tests {
                     cwd: ".".into(),
                     worktree_path: None,
                     session_id: None,
+                    task_id: None,
+                    task_path: None,
                     subscriptions: vec![],
                     backend_type: None,
                     is_active: Some(false),
                     mode: None,
+                    close_state: None,
+                    close_requested_at: None,
                 },
             ],
         };
@@ -583,10 +660,14 @@ mod tests {
                 cwd: ".".into(),
                 worktree_path: None,
                 session_id: None,
+                task_id: None,
+                task_path: None,
                 subscriptions: vec![],
                 backend_type: None,
                 is_active: None,
                 mode: None,
+                close_state: None,
+                close_requested_at: None,
             }],
         };
         let color = assign_color(&tf);

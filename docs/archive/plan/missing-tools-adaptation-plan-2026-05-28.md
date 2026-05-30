@@ -167,17 +167,17 @@ ListMcpResources / ReadMcpResource / CronCreate / CronDelete / CronList / WebBro
 
 | # | 工具 | bun | codex | 说明 | 实现状态 |
 |---|------|-----|-------|------|---------|
-| 14 | LocalMemoryRecall | ✅ | — | 需要跨会话内存存储层 | ✅ `phase5::LocalMemoryRecall` JSON/文件索引 v1 |
-| 15 | VaultHttpFetch | ✅ | — | 需要加密凭据存储 | ✅ `phase5::VaultHttpFetch` HTTPS + vault credential_ref |
+| 14 | LocalMemoryRecall | ✅ | — | 需要跨会话内存存储层 | ✅ `phase5::LocalMemoryRecall` store/key 本地记忆，preview/full fetch 安全边界 |
+| 15 | VaultHttpFetch | ✅ | — | 需要加密凭据存储 | ✅ `phase5::VaultHttpFetch` vault_auth_key schema、HTTPS-only、no redirect follow、30s timeout、1MB body cap、secret scrub；凭据存储仍为 transitional `credentials.json` |
 | 16 | PushNotification | ✅ | — | 需要移动端基础设施 | ✅ `phase5::PushNotification` local audit + HTTPS webhook provider |
 | 17 | DiscoverSkills | ✅ | — | Skill 发现，优先级低 | ✅ `phase5::DiscoverSkills` |
 | 18 | VerifyPlanExecution | ✅ | — | 计划验证工作流 | ✅ `phase5::VerifyPlanExecution` |
-| 19 | workflow | ✅ | — | 工作流脚本引擎 | ✅ `phase5::Workflow` Rust-native durable workflow spec |
+| 19 | workflow | ✅ | — | 工作流脚本引擎 | ✅ `phase5::workflow` 兼容 alias + `Workflow` Rust-native durable workflow spec |
 | 20 | ExecuteExtraTool | ✅ | — | 延迟工具执行 | ✅ `deferred_tools.rs` 完整实现 |
 | 21 | **SearchExtraTools** (含延迟工具系统) | ✅ | — | 工具发现 + 延迟加载 | ✅ `deferred_tools.rs` 完整实现，CORE_TOOLS 边界定义 |
-| 22 | **apply_patch** | — | ✅ | Tree-sitter AST 感知的语义化 patch | ✅ `phase5::ApplyPatch` JSON `{patch}` 接口 |
+| 22 | **apply_patch** | — | ✅ | Tree-sitter AST 感知的语义化 patch | ✅ `phase5::apply_patch` Codex-compatible entry；OpenAI Codex Responses 使用 custom/freeform grammar，`ApplyPatch` JSON `{patch}` 保留为 legacy alias |
 | 23 | **Goal 管理** (get_goal / create_goal / update_goal) | — | ✅ | 目标管理系统 | ✅ `GetGoal` / `CreateGoal` / `UpdateGoal` |
-| 24 | **Multi-agent v2** (send_message / followup_task / list_agents / close_agent / wait_agent) | — | ✅ | 增强型多 agent 通信 | ✅ `SendMessage` + `FollowupTask` / `ListAgents` / `CloseAgent` / `WaitAgent` |
+| 24 | **Multi-agent v2** (send_message / followup_task / list_agents / close_agent / wait_agent) | — | ✅ | 增强型多 agent 通信 | ✅ CamelCase + lower_case compatibility aliases：`SendMessage`/`send_message`、`TeamSpawn`/`spawn_agent`、`FollowupTask`/`followup_task`、`ListAgents`/`list_agents`、`CloseAgent`/`close_agent`、`WaitAgent`/`wait_agent` |
 | 25 | view_image | — | ✅ | 已可通过 computer-use 截图覆盖 | ✅ `phase5::ViewImage` |
 
 #### P3 剩余未实现项（整理）
@@ -714,9 +714,9 @@ Week 8-9:
     - SubscribePR 补齐 bun 版功能
 ```
 
-### Phase 5 — 延迟工具系统与评估 (P3, 持续) 🟡 **部分完成**
+### Phase 5 — 延迟工具系统与评估 (P3, 持续) ✅ **Full Build 优化完成**
 
-Phase 5 引入 SearchExtraTools/ExecuteExtraTool 延迟工具加载系统，并对其他 P3 工具做持续评估。
+Phase 5 引入 SearchExtraTools/ExecuteExtraTool 延迟工具加载系统，并对其他 P3 工具做持续评估。2026-05-30 的优化批次已按 Full Build 规则补齐运行时 catalog、中央执行边界、Phase 5 工具安全语义、兼容 schema、UI/headless 渲染与 exposure gates。仍保留的 allthecodes 自有设计在下方明确标为 Intentional divergence。
 
 **已完成**: SearchExtraTools + ExecuteExtraTool 已在 `allthecodes-tools/src/deferred_tools.rs` 中完整实现，含 CORE_TOOLS 边界定义、select/discover/keyword 查询模式、discovery guard 委托执行、跨 turn 发现状态恢复和 API 请求工具过滤。
 
@@ -731,29 +731,45 @@ Phase 5a (可选，提前):
     - 部署后：API 请求中工具 schema 数量从 ~60 降至 ~40+discovered
 
 Phase 5b (持续):
-  - LocalMemoryRecall → ✅ JSON/文件索引 v1
-  - VaultHttpFetch → ✅ HTTPS-only + vault credential_ref
+  - LocalMemoryRecall → ✅ store/key 本地记忆，默认 preview，full fetch 需权限
+  - VaultHttpFetch → ✅ `vault_auth_key` schema + key@host permission prompt + no redirect follow + timeout/body cap/secret scrub；encrypted vault storage 未完成
   - PushNotification → ✅ local audit provider + HTTPS webhook provider
   - DiscoverSkills → ✅ Skill registry 发现 Tool
   - VerifyPlanExecution → ✅ plan workflow / task / todo read-only 验证
   - Workflow → ✅ Rust-native durable workflow Tool
-  - ApplyPatch → ✅ JSON `{patch}` Codex patch grammar Tool
+  - apply_patch → ✅ OpenAI Codex Responses custom/freeform grammar Tool；ApplyPatch → ✅ legacy JSON `{patch}` alias
   - Goal 管理 → ✅ `GetGoal` / `CreateGoal` / `UpdateGoal`
   - Multi-agent v2 → ✅ 复用 teams/coordinator config + mailbox
   - ViewImage → ✅ 本地图片 content block Tool
 ```
 
-#### Phase 5 Implementation Snapshot (2026-05-29)
+#### Phase 5 Implementation Snapshot (2026-05-30)
 
 - `SearchExtraTools` / `ExecuteExtraTool` 注册于 `allthecodes-tools/src/deferred_tools.rs`，并通过 `allthecodes-tools/src/registry.rs` 进入核心工具集合。
-- `ALLTHECODES_DEFERRED_TOOL_LOADING` / `CC_RUST_DEFERRED_TOOL_LOADING` 控制 API 请求过滤；开启后 `prepare_model_request()` 只发送 `CORE_TOOLS ∪ discovered_tools`。
+- `ALLTHECODES_DEFERRED_TOOL_LOADING` / `CC_RUST_DEFERRED_TOOL_LOADING` 控制 API 请求过滤；开启后 `prepare_model_request()` 只发送稳定 `CORE_TOOLS`，discovered tools 仅用于 `ExecuteExtraTool` guard 与 compact/resume 恢复。
+- `SearchExtraTools` 现在使用当前 session 的 `available_tools` catalog，覆盖内置工具、root-owned providers、刷新后的 MCP 命名工具和 plugin runtime tools，不再只查全局静态 registry。
+- `ExecuteExtraTool` 只做 discovery guard 和参数转发；实际执行通过 canonical dispatch 重新进入目标工具的权限、hook、audit、auto-classifier 路径，deny rule 与 hook 看到的都是目标工具名。
+- system prompt、API schema、deferred hidden catalog 共享同一套 feature/session/model-capability 过滤结果，避免提示词暴露 API 不可调用工具。
 - `extract_discovered_tool_names()` 支持 SearchExtraTools JSON/text result、`deferred_tools_delta` structured attachment、legacy `tool_reference(s)` 字段，以及 `compact_metadata.pre_compact_discovered_tools`。
-- auto-compact 后会把当前 session 的 discovered tools 写入 compact boundary metadata，便于 session 恢复后继续过滤工具 schema。
-- `discover:<query>` 只返回 schema/描述，不加载工具；`select:<tool>` 或普通关键词匹配会写入 `deferred_tools_delta` 并让下一轮请求包含对应工具 schema。
-- Phase 5 剩余工具已新增到 `allthecodes-tools/src/phase5/`：`DiscoverSkills`、`ViewImage`、`GetGoal`、`CreateGoal`、`UpdateGoal`、`VerifyPlanExecution`、`Workflow`、`ApplyPatch`、`LocalMemoryRecall`、`VaultHttpFetch`、`PushNotification`。
-- Multi-agent v2 工具新增到 `allthecodes-teams/src/multi_agent_v2.rs`：`ListAgents`、`FollowupTask`、`WaitAgent`、`CloseAgent`；复用现有 team config 与 mailbox，不新增第二套 agent registry。
-- 新持久化路径集中在 `allthecodes-config/src/paths.rs`：`goals/`、`workflows/`、`vault/`、`notifications/`。
-- 验证命令：`cargo test -p allthecodes-tools phase5 -- --nocapture`、`cargo test -p allthecodes-startup tool_registry -- --nocapture`、`cargo test -p allthecodes-config paths -- --nocapture`、`cargo test -p allthecodes-teams --lib -- --nocapture`。
+- auto-compact 后会把当前 session 的 discovered tools 写入 engine 内部 compact boundary metadata，便于 session 恢复后继续过滤工具 schema；SDK/headless/web SSE 输出只保留 public metadata，并用 `internal_metadata_hidden` 标记内部字段已隐藏。
+- `discover:<query>` 只返回 schema/描述，不加载工具；`select:<tool>` 或普通关键词匹配会写入 `deferred_tools_delta`，下一轮仍不直接暴露 deferred tool schema，模型经 `ExecuteExtraTool` 调用。
+- Phase 5 剩余工具已新增到 `allthecodes-tools/src/phase5/`：`DiscoverSkills`、`ViewImage`、`GetGoal`、`CreateGoal`、`UpdateGoal`、`VerifyPlanExecution`、`Workflow`、`apply_patch`、`ApplyPatch`、`LocalMemoryRecall`、`VaultHttpFetch`、`PushNotification`。
+- `VaultHttpFetch` 已迁移到 `vault_auth_key` / `auth_scheme` / `auth_header_name` / `reason` schema；`credential_ref` 仅保留为 transitional alias，当前凭据来源仍是 `{data_root}/credentials.json` 的 `vault` 对象，不宣称 encrypted vault parity。
+- P1 schema/name 兼容层已补首批：`DiscoverSkills` 接受 `description` / `limit` alias，`PushNotification` 接受 `title` / `body` / `priority: normal|high`，`VerifyPlanExecution` 接受 `plan_summary` / `verification_notes` / `all_steps_completed`；Codex-style `view_image` / `get_goal` / `create_goal` / `update_goal` / `workflow` / multi-agent v2 lower-case aliases 共享同一执行实现。
+- 权限规则匹配层将 CamelCase 与 lower_case alias 视为同一工具，避免 always allow/deny/ask 规则被兼容名称绕过。
+- Multi-agent v2 工具新增到 `allthecodes-teams/src/multi_agent_v2.rs`：`ListAgents`、`FollowupTask`、`WaitAgent`、`CloseAgent`；`TeamSpawn`/`spawn_agent` 持久化 canonical task path，`followup_task`/`wait_agent`/`close_agent` 支持 agent id、nickname、task path target，并区分 timeout/final/pending-close。
+- feature gates 默认开启但可集中关闭：workflow scripts、push notification remote bridge、goal tools、multi-agent v2。model capability gates 控制 `view_image` 和 Codex custom/freeform `apply_patch`；非 Codex provider 降级为 JSON function。
+- session gates 会在 SDK/headless/subagent/后台来源中隐藏直接用户提问工具，并在 subagent catalog 中隐藏递归 agent-spawn/followup 工具。内置 Explore/Plan/code-reviewer 通过 agent definition 只暴露 Glob/Grep/Read。
+- UI/headless 使用 `ToolResult.display_preview` 展示 Phase 5 工具结果，不替换 model-visible JSON；Vault preview 只显示 status/header/body 摘要且永不输出 secret；TUI permission router 已覆盖 ApplyPatch、VaultHttpFetch、LocalMemoryRecall full fetch、workflow mutating action、CloseAgent 等 multi-agent lifecycle 操作。
+- 新持久化路径集中在 allthecodes 隔离目录：`goals/`、`workflows/`、`vault/`、`notifications/`、`local-memory/`。
+- 验证命令：`cargo test -p allthecodes-tools deferred_tools -- --nocapture`、`cargo test -p allthecodes-tools phase5 -- --nocapture`、`cargo test -p allthecodes-teams multi_agent_v2 -- --nocapture`、`cargo test -p allthecodes-startup tool_registry -- --nocapture`、`cargo test -p allthecodes-engine deferred -- --nocapture`、`cargo test -p allthecodes-query deferred -- --nocapture`、`cargo test -p allthecodes-api apply_patch -- --nocapture`、`cargo test -p allthecodes permission_request_router -- --nocapture`、`cargo build --workspace --release`。
+
+#### Phase 5 Intentional Divergence / Transitional Notes (2026-05-30)
+
+- `ApplyPatch` CamelCase JSON `{patch}` 工具保留为 legacy alias；Codex Responses provider 使用 lower-case `apply_patch` custom/freeform grammar，其他 provider 降级为 JSON function。这是兼容旧 transcript 和非 Codex provider 的 intentional divergence。
+- `Workflow` Rust-native durable workflow spec 保留，lower-case `workflow` 作为上游兼容入口共享实现。这是 allthecodes 的 durable workflow extension。
+- `VaultHttpFetch` 当前使用隔离的 allthecodes credentials file 中 `vault` 对象作为 transitional vault store；安全边界已补齐 HTTPS-only、no redirect follow、private host reject、body cap、timeout、secret scrub、key@host permission，但 encrypted vault storage 仍不是 parity，不能宣称完整 encrypted vault。
+- 内置 `worker` 与 `statusline-setup` subagent 仍可拥有 Bash/Edit/Write，这是 agent definition 明确授权的工作型 subagent 能力。默认 session gate 禁止递归 agent spawning；Explore/Plan/code-reviewer 保持 read-only。
 
 ---
 
@@ -827,23 +843,29 @@ Phase 5b (持续):
 - [x] ListPeers 发现本地 + 远程对等点
 - [x] SubscribePR 完整 PR 订阅（含 webhook 路由）
 
-### Phase 5 验收 🟡
+### Phase 5 验收 ✅
 
 - [x] SearchExtraTools 实现 select/discover/keyword 查询模式
 - [x] ExecuteExtraTool 实现 discovery guard + 委托执行
 - [x] CORE_TOOLS 边界定义
 - [x] extract_discovered_tool_names() 跨 turn 持久化
 - [x] API 请求工具过滤（仅发核心工具 schema）
-- [x] LocalMemoryRecall — allthecodes memory / auto_memory / transcripts 检索 v1
-- [x] VaultHttpFetch — HTTPS-only + credential_ref + redaction
+- [x] LocalMemoryRecall — `{data_root}/local-memory/{store}/{key}` store/key 模型，preview/full fetch、UTF-8 safe truncation、untrusted wrapper、full fetch permission
+- [x] VaultHttpFetch — `vault_auth_key` schema、HTTPS-only、localhost/private/link-local 拒绝、redirect 不跟随、30s timeout、1MB body cap、secret/body/header scrub、key@host permission prompt；encrypted vault storage 仍按 transitional gap 跟踪
 - [x] PushNotification — local audit provider + HTTPS webhook provider
 - [x] DiscoverSkills — Skill registry 发现 Tool
 - [x] VerifyPlanExecution — plan workflow / task / todo read-only 验证
-- [x] Workflow — Rust-native durable workflow Tool
-- [x] ApplyPatch — JSON `{patch}` Codex patch grammar Tool
+- [x] Workflow / workflow — Rust-native durable workflow Tool + lower-case compatibility alias
+- [x] P1-A 首批兼容 schema/name — DiscoverSkills `description`/`limit`、PushNotification `body`/`high`、VerifyPlanExecution completion-claim fields、Codex-style goal/view_image aliases、permission alias matching
+- [x] apply_patch — OpenAI Codex Responses custom/freeform grammar Tool；`ApplyPatch` JSON `{patch}` legacy alias
 - [x] Goal 管理 — `GetGoal` / `CreateGoal` / `UpdateGoal`
-- [x] Multi-agent v2 拓展（`FollowupTask` / `ListAgents` / `CloseAgent` / `WaitAgent`）
+- [x] P1-B Goal runtime accounting — goal record 持久化 `tokens_used` / `time_used_seconds` / `updated_at`，支持 `complete` / `blocked` / `budget_limited` 状态；query stream 按真实 usage 刷新并向 SDK/headless 输出 `goal_updated` 事件；`UpdateGoal(status=complete)` 返回 `completion_budget_report`
+- [x] Multi-agent v2 拓展（`FollowupTask` / `ListAgents` / `CloseAgent` / `WaitAgent` + lower_case aliases；`SendMessage`/`TeamSpawn` 也提供 `send_message`/`spawn_agent` aliases）
 - [x] ViewImage — 本地图片 content block Tool
+- [x] P1-D 首批搜索质量 — `SearchExtraTools` runtime catalog index 纳入 exact tool name、MCP server name、schema/action keywords、prompt/description/CamelCase tokens，并补 ranking fixture；`DiscoverSkills` 搜索纳入 source label、prompt body、frontmatter arguments/paths/assets/dependencies，并补 exact/source/prompt ranking fixture
+- [x] P2-A UI/headless 渲染 — internal compact metadata 默认隐藏；Vault/LocalMemory/Workflow/PushNotification/multi-agent v2/ViewImage 提供用户可见 preview；TUI permission router 覆盖 ApplyPatch、Vault、LocalMemory full fetch、workflow mutation、CloseAgent
+- [x] P2-B exposure gates — feature gates、model capability gates、Codex apply_patch provider gate、non-interactive/subagent session gates 均作用于 API schema、system prompt 和 deferred catalog
+- [x] Dynamic plugin deferred tool 可通过 `SearchExtraTools` discovery wrapper 搜索并经 `ExecuteExtraTool` runtime executor 执行
 
 ### 通用 ✅
 

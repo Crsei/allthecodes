@@ -86,19 +86,6 @@ pub(crate) async fn prepare_model_request(
         }
     }
 
-    let deferred_session_id = context
-        .gates
-        .deferred_tool_loading
-        .then(|| deps.audit_context().session_id);
-    let tools_for_request = if let Some(session_id) = deferred_session_id.as_deref() {
-        allthecodes_tools::deferred_tools::filter_tools_for_deferred_request(
-            deps.get_tools(),
-            &messages,
-            session_id,
-        )
-    } else {
-        deps.get_tools()
-    };
     let app_state_for_request = deps.get_app_state();
     let request_model = app_state_for_request.main_loop_model.clone();
     let request_thinking_enabled = app_state_for_request.thinking_enabled;
@@ -109,6 +96,31 @@ pub(crate) async fn prepare_model_request(
         .model_reasoning_effort
         .clone();
     let request_advisor_model = app_state_for_request.advisor_model.clone();
+    let capability_filtered_tools = allthecodes_tools::phase5::filter_tools_for_model_capabilities(
+        deps.get_tools(),
+        &app_state_for_request.settings,
+        &request_model,
+    );
+    let session_filtered_tools = allthecodes_tools::registry::filter_tools_for_session_gates(
+        capability_filtered_tools,
+        allthecodes_tools::registry::ToolSessionGates {
+            non_interactive: context.query_source.is_non_interactive(),
+            subagent: context.query_source.starts_with_agent(),
+        },
+    );
+    let deferred_session_id = context
+        .gates
+        .deferred_tool_loading
+        .then(|| deps.audit_context().session_id);
+    let tools_for_request = if let Some(session_id) = deferred_session_id.as_deref() {
+        allthecodes_tools::deferred_tools::filter_tools_for_deferred_request(
+            session_filtered_tools,
+            &messages,
+            session_id,
+        )
+    } else {
+        session_filtered_tools
+    };
 
     let autocompact_params = ModelCallParams {
         messages: messages.clone(),

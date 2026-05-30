@@ -487,6 +487,74 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
+    async fn plugin_tool_executes_through_deferred_discovery_wrapper() {
+        allthecodes_tools::deferred_tools::clear_discovered_tools_for_tests();
+        let plugin_tool = Arc::new(PluginToolWrapper::new(
+            "demo-plugin@local".to_string(),
+            std::env::temp_dir(),
+            ToolContribution {
+                name: "PluginEcho".to_string(),
+                description: "Echo JSON input from a plugin runtime".to_string(),
+                input_schema: Some(json!({"type": "object"})),
+                read_only: true,
+                concurrency_safe: true,
+                runtime: Some(ToolRuntime::Stdio(echo_runtime())),
+            },
+        )) as Arc<dyn Tool>;
+        let mut ctx = dummy_ctx();
+        ctx.session_id = "plugin-deferred".to_string();
+        ctx.available_tools = vec![plugin_tool.clone()];
+
+        let search = allthecodes_tools::deferred_tools::SearchExtraToolsTool
+            .call(
+                json!({"query": "select:PluginEcho", "max_results": 10}),
+                &ctx,
+                &dummy_parent(),
+                None,
+            )
+            .await
+            .expect("plugin tool should be discoverable");
+        assert_eq!(search.data["deferred_tools_delta"], json!(["PluginEcho"]));
+
+        let plugin_tool_for_executor = plugin_tool.clone();
+        ctx.execute_deferred_tool = Some(Arc::new(move |request| {
+            let plugin_tool = plugin_tool_for_executor.clone();
+            Box::pin(async move {
+                let call_ctx = dummy_ctx();
+                let parent = dummy_parent();
+                let result = plugin_tool
+                    .call(request.input, &call_ctx, &parent, None)
+                    .await?;
+                Ok(allthecodes_tools::tool::DeferredToolExecutionResult {
+                    tool_use_id: request.tool_use_id,
+                    tool_name: request.tool_name,
+                    result,
+                    is_error: false,
+                })
+            })
+        }));
+
+        let input = json!({"hello": "plugin", "answer": 42});
+        let result = allthecodes_tools::deferred_tools::ExecuteExtraToolTool
+            .call(
+                json!({"tool_name": "PluginEcho", "params": input.clone()}),
+                &ctx,
+                &dummy_parent(),
+                None,
+            )
+            .await
+            .expect("plugin tool should execute through deferred wrapper");
+
+        assert_eq!(result.data["tool_name"], "PluginEcho");
+        assert_eq!(result.data["result"], input);
+        assert_eq!(
+            result.display_preview.as_deref(),
+            Some("Executed deferred tool PluginEcho")
+        );
+    }
+
+    #[tokio::test]
     async fn read_only_plugin_tool_is_allowed_without_prompt() {
         let tool = PluginToolWrapper::new(
             "demo-plugin@local".to_string(),

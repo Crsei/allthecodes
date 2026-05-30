@@ -23,6 +23,21 @@ use allthecodes_types::message::AssistantMessage;
 
 /// SendMessage tool.
 pub struct SendMessageTool;
+pub struct SendMessageAliasTool;
+
+fn preview_tool_result(
+    data: Value,
+    preview: impl Into<String>,
+    new_messages: Vec<allthecodes_types::message::Message>,
+) -> ToolResult {
+    let preview = preview.into();
+    ToolResult {
+        data,
+        model_content: None,
+        display_preview: Some(preview),
+        new_messages,
+    }
+}
 
 #[async_trait]
 impl Tool for SendMessageTool {
@@ -73,11 +88,11 @@ impl Tool for SendMessageTool {
         let team_ctx = match app_state.team_context {
             Some(ref tc) if !tc.team_name.is_empty() => tc.clone(),
             _ => {
-                return Ok(ToolResult {
-                    data: json!({"error": "No active team. Create a team first."}),
-                    new_messages: vec![],
-                    ..Default::default()
-                });
+                return Ok(preview_tool_result(
+                    json!({"error": "No active team. Create a team first."}),
+                    "SendMessage failed: no active team",
+                    vec![],
+                ));
             }
         };
 
@@ -128,6 +143,51 @@ impl Tool for SendMessageTool {
     }
 }
 
+#[async_trait]
+impl Tool for SendMessageAliasTool {
+    fn name(&self) -> &str {
+        "send_message"
+    }
+
+    async fn description(&self, input: &Value) -> String {
+        SendMessageTool.description(input).await
+    }
+
+    fn input_json_schema(&self) -> Value {
+        SendMessageTool.input_json_schema()
+    }
+
+    fn is_enabled(&self) -> bool {
+        SendMessageTool.is_enabled()
+    }
+
+    async fn validate_input(&self, input: &Value, ctx: &ToolUseContext) -> ValidationResult {
+        SendMessageTool.validate_input(input, ctx).await
+    }
+
+    fn backfill_observable_input(&self, input: &mut serde_json::Map<String, Value>) {
+        SendMessageTool.backfill_observable_input(input)
+    }
+
+    async fn call(
+        &self,
+        input: Value,
+        ctx: &ToolUseContext,
+        parent: &AssistantMessage,
+        on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
+    ) -> Result<ToolResult> {
+        SendMessageTool.call(input, ctx, parent, on_progress).await
+    }
+
+    async fn prompt(&self) -> String {
+        SendMessageTool.prompt().await
+    }
+
+    fn user_facing_name(&self, input: Option<&Value>) -> String {
+        SendMessageTool.user_facing_name(input)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Message routing implementations
 // ---------------------------------------------------------------------------
@@ -170,15 +230,15 @@ fn handle_single_message(
 
     debug!(from = sender, to = recipient, "message sent");
 
-    Ok(ToolResult {
-        data: json!({
+    Ok(preview_tool_result(
+        json!({
             "sent": true,
             "to": recipient,
             "from": sender,
         }),
-        new_messages: vec![],
-        ..Default::default()
-    })
+        format!("Sent message from {sender} to {recipient}"),
+        vec![],
+    ))
 }
 
 /// Broadcast a message to all non-self team members.
@@ -215,16 +275,17 @@ fn handle_broadcast(
         "broadcast sent"
     );
 
-    Ok(ToolResult {
-        data: json!({
+    let recipient_count = recipients.len();
+    Ok(preview_tool_result(
+        json!({
             "sent": true,
             "to": "*",
             "recipients": recipients,
             "from": sender,
         }),
-        new_messages: vec![],
-        ..Default::default()
-    })
+        format!("Broadcast message from {sender} to {recipient_count} teammate(s)"),
+        vec![],
+    ))
 }
 
 /// Handle a structured protocol message in the `message` field.
@@ -253,11 +314,11 @@ fn handle_protocol_message(
                 summary: Some("Shutdown request".into()),
             };
             mailbox::write_to_mailbox(to, message, team_name)?;
-            Ok(ToolResult {
-                data: json!({"sent": true, "type": "shutdown_request", "to": to}),
-                new_messages: vec![],
-                ..Default::default()
-            })
+            Ok(preview_tool_result(
+                json!({"sent": true, "type": "shutdown_request", "to": to}),
+                format!("Sent shutdown request to {to}"),
+                vec![],
+            ))
         }
 
         protocol::ProtocolMessage::ShutdownApproved { .. } => {
@@ -267,26 +328,26 @@ fn handle_protocol_message(
             // Update team file to mark inactive
             let _ = helpers::set_member_active(team_name, &agent_id, false);
 
-            Ok(ToolResult {
-                data: json!({
+            Ok(preview_tool_result(
+                json!({
                     "sent": true,
                     "type": "shutdown_approved",
                     "to": to,
                 }),
-                new_messages: vec![],
-                ..Default::default()
-            })
+                format!("Sent shutdown approval to {to}"),
+                vec![],
+            ))
         }
 
-        protocol::ProtocolMessage::ShutdownRejected { ref reason, .. } => Ok(ToolResult {
-            data: json!({
+        protocol::ProtocolMessage::ShutdownRejected { ref reason, .. } => Ok(preview_tool_result(
+            json!({
                 "type": "shutdown_rejected",
                 "to": to,
                 "reason": reason,
             }),
-            new_messages: vec![],
-            ..Default::default()
-        }),
+            format!("Sent shutdown rejection to {to}"),
+            vec![],
+        )),
 
         protocol::ProtocolMessage::PlanApprovalRequest {
             ref from,
@@ -310,8 +371,8 @@ fn handle_protocol_message(
                 summary: Some("Plan approval request".into()),
             };
             mailbox::write_to_mailbox(to, message, team_name)?;
-            Ok(ToolResult {
-                data: json!({
+            Ok(preview_tool_result(
+                json!({
                     "sent": true,
                     "type": "plan_approval_request",
                     "to": to,
@@ -319,9 +380,9 @@ fn handle_protocol_message(
                     "request_id": request_id,
                     "awaiting_plan_approval": marked,
                 }),
-                new_messages: vec![],
-                ..Default::default()
-            })
+                format!("Forwarded plan approval request from {requester} to {to}"),
+                vec![],
+            ))
         }
 
         protocol::ProtocolMessage::PlanApprovalResponse {
@@ -347,8 +408,8 @@ fn handle_protocol_message(
                 summary: Some("Plan approval response".into()),
             };
             mailbox::write_to_mailbox(to, message, team_name)?;
-            Ok(ToolResult {
-                data: json!({
+            Ok(preview_tool_result(
+                json!({
                     "sent": true,
                     "type": "plan_approval_response",
                     "to": to,
@@ -358,9 +419,9 @@ fn handle_protocol_message(
                     "pending_cleared": pending_cleared,
                     "permission_mode": permission_mode.as_ref().map(PermissionMode::as_str),
                 }),
-                new_messages: vec![],
-                ..Default::default()
-            })
+                format!("Forwarded plan approval response to {to}"),
+                vec![],
+            ))
         }
 
         _ => {
@@ -375,11 +436,11 @@ fn handle_protocol_message(
                 summary: None,
             };
             mailbox::write_to_mailbox(to, message, team_name)?;
-            Ok(ToolResult {
-                data: json!({"sent": true, "to": to}),
-                new_messages: vec![],
-                ..Default::default()
-            })
+            Ok(preview_tool_result(
+                json!({"sent": true, "to": to}),
+                format!("Sent protocol message to {to}"),
+                vec![],
+            ))
         }
     }
 }
@@ -495,6 +556,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.data["error"], "No active team. Create a team first.");
+        assert_eq!(
+            result.display_preview.as_deref(),
+            Some("SendMessage failed: no active team")
+        );
     }
 
     #[test]
@@ -515,6 +580,10 @@ mod tests {
 
         assert_eq!(result.data["sent"], true);
         assert_eq!(result.data["to"], "worker");
+        assert_eq!(
+            result.display_preview.as_deref(),
+            Some("Sent message from team-lead to worker")
+        );
 
         let inbox = mailbox::read_mailbox("worker", &team_name).unwrap();
         assert_eq!(inbox.len(), 1);
@@ -544,6 +613,11 @@ mod tests {
 
         let recipients = result.data["recipients"].as_array().unwrap();
         assert_eq!(recipients.len(), 2);
+        assert!(result
+            .display_preview
+            .as_deref()
+            .unwrap_or("")
+            .contains("Broadcast message"));
         assert!(recipients.iter().any(|name| name == "worker"));
         assert!(recipients.iter().any(|name| name == "reviewer"));
         assert!(!recipients.iter().any(|name| name == "inactive"));
@@ -595,6 +669,11 @@ mod tests {
         .unwrap();
         assert_eq!(result.data["type"], "plan_approval_request");
         assert_eq!(result.data["awaiting_plan_approval"], true);
+        assert!(result
+            .display_preview
+            .as_deref()
+            .unwrap_or("")
+            .contains("plan approval request"));
 
         let snapshot = InProcessBackend::task_snapshots().remove(0);
         assert!(snapshot.awaiting_plan_approval);
@@ -632,6 +711,11 @@ mod tests {
         .unwrap();
         assert_eq!(result.data["type"], "plan_approval_response");
         assert_eq!(result.data["awaiting_plan_approval"], false);
+        assert!(result
+            .display_preview
+            .as_deref()
+            .unwrap_or("")
+            .contains("plan approval response"));
         assert_eq!(result.data["pending_cleared"], true);
         assert_eq!(result.data["permission_mode"], "acceptEdits");
 
@@ -728,10 +812,14 @@ mod tests {
             cwd: ".".into(),
             worktree_path: None,
             session_id: None,
+            task_id: None,
+            task_path: None,
             subscriptions: vec![],
             backend_type: Some(BackendType::InProcess),
             is_active: Some(active),
             mode: None,
+            close_state: None,
+            close_requested_at: None,
         }
     }
 
