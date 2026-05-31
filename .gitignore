@@ -76,6 +76,8 @@ tests/
 !crates/allthecodes-api/src/api/client/tests/**
 !crates/allthecodes-engine/src/query/tests/
 !crates/allthecodes-engine/src/query/tests/**
+!crates/allthecodes-services/src/langfuse/tests/
+!crates/allthecodes-services/src/langfuse/tests/**
 docs/
 web-ui/
 sdk/

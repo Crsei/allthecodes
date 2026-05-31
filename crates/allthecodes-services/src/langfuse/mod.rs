@@ -10,6 +10,9 @@
 pub mod convert;
 pub mod sanitize;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(feature = "telemetry")]
 pub mod client;
 #[cfg(feature = "telemetry")]

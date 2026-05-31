@@ -1,6 +1,8 @@
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
+use allthecodes_types::message::Usage;
+
 const MAX_TEXT_LEN: usize = 40_000;
 const MAX_TOOL_OUTPUT_LEN: usize = 500;
 const REDACTED_FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit"];
@@ -105,6 +107,52 @@ pub fn metadata_json(entries: Vec<(&str, Value)>) -> String {
     json!(map).to_string()
 }
 
+pub fn generation_observation_metadata(
+    usage: Option<&Usage>,
+    ttft_ms: Option<u64>,
+    error: Option<&str>,
+) -> Map<String, Value> {
+    let mut metadata = Map::new();
+
+    if let Some(ttft_ms) = ttft_ms {
+        metadata.insert("ttftMs".to_string(), json!(ttft_ms));
+    }
+
+    if let Some(usage) = usage {
+        metadata.insert(
+            "cacheReadInputTokens".to_string(),
+            json!(usage.cache_read_input_tokens),
+        );
+        metadata.insert(
+            "cacheCreationInputTokens".to_string(),
+            json!(usage.cache_creation_input_tokens),
+        );
+    }
+
+    if let Some(error) = error {
+        metadata.insert(
+            "error".to_string(),
+            Value::String(sanitize_global_string(error)),
+        );
+    }
+
+    metadata
+}
+
+pub fn generation_observation_metadata_json(
+    usage: Option<&Usage>,
+    ttft_ms: Option<u64>,
+    error: Option<&str>,
+) -> Option<String> {
+    let metadata = generation_observation_metadata(usage, ttft_ms, error);
+
+    if metadata.is_empty() {
+        None
+    } else {
+        Some(json!(metadata).to_string())
+    }
+}
+
 fn sanitize_file_tool_input(input: &Value) -> Value {
     match input {
         Value::Object(map) => {
@@ -117,6 +165,8 @@ fn sanitize_file_tool_input(input: &Value) -> Value {
                     } else {
                         result.insert(key.clone(), sanitize_global_value(value));
                     }
+                } else if is_sensitive_key(&key_lower) {
+                    result.insert(key.clone(), Value::String("[REDACTED]".to_string()));
                 } else {
                     result.insert(key.clone(), sanitize_global_value(value));
                 }
@@ -131,16 +181,19 @@ fn sanitize_object(map: &Map<String, Value>) -> Map<String, Value> {
     map.iter()
         .map(|(key, value)| {
             let key_lower = key.to_ascii_lowercase();
-            if SENSITIVE_KEYWORDS
-                .iter()
-                .any(|candidate| key_lower.contains(candidate))
-            {
+            if is_sensitive_key(&key_lower) {
                 (key.clone(), Value::String("[REDACTED]".to_string()))
             } else {
                 (key.clone(), sanitize_global_value(value))
             }
         })
         .collect()
+}
+
+fn is_sensitive_key(key_lower: &str) -> bool {
+    SENSITIVE_KEYWORDS
+        .iter()
+        .any(|candidate| key_lower.contains(candidate))
 }
 
 fn replace_home_dir(value: &str) -> String {
@@ -278,6 +331,37 @@ mod tests {
     #[test]
     fn unicode_char_count() {
         let output = sanitize_tool_output("Read", "你好世界");
-        assert!(output.contains("4 chars"));
+        let expected_chars = "你好世界".chars().count();
+        assert_eq!(
+            output,
+            format!("[file content redacted, {} chars]", expected_chars)
+        );
+    }
+
+    #[test]
+    fn generation_metadata_merges_usage_ttft_and_error() {
+        let usage = Usage {
+            cache_read_input_tokens: 11,
+            cache_creation_input_tokens: 7,
+            ..Usage::default()
+        };
+
+        let metadata = generation_observation_metadata_json(
+            Some(&usage),
+            Some(123),
+            Some("failed with token abc"),
+        )
+        .expect("metadata should be present");
+        let metadata: Value = serde_json::from_str(&metadata).expect("valid metadata json");
+
+        assert_eq!(metadata["ttftMs"], 123);
+        assert_eq!(metadata["cacheReadInputTokens"], 11);
+        assert_eq!(metadata["cacheCreationInputTokens"], 7);
+        assert_eq!(metadata["error"], "failed with token abc");
+    }
+
+    #[test]
+    fn generation_metadata_absent_when_empty() {
+        assert!(generation_observation_metadata_json(None, None, None).is_none());
     }
 }

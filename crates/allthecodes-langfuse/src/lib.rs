@@ -3,3 +3,4 @@
 
 pub mod convert;
 pub mod sanitize;
+pub mod stub;

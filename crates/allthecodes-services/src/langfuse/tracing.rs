@@ -1,5 +1,6 @@
 use opentelemetry::trace::Status;
-use serde_json::{json, Value};
+use opentelemetry::KeyValue;
+use serde_json::{json, Map, Value};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use allthecodes_types::message::Usage;
@@ -7,8 +8,8 @@ use allthecodes_types::message::Usage;
 use crate::telemetry::TelemetryHandle;
 
 use super::sanitize::{
-    metadata_json, sanitize_global, sanitize_global_string, sanitize_tool_input,
-    sanitize_tool_output, serialize_sanitized_value,
+    generation_observation_metadata, metadata_json, sanitize_global, sanitize_global_string,
+    sanitize_tool_input, sanitize_tool_output, serialize_sanitized_value,
 };
 
 const TRACE_SESSION_ID_ATTR: &str = "langfuse.session.id";
@@ -35,6 +36,7 @@ pub struct LangfuseTrace {
 #[derive(Clone, Debug)]
 pub struct LangfuseSpan {
     pub(crate) span: tracing::Span,
+    metadata: Map<String, Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,19 +138,17 @@ pub fn create_generation_span(
     apply_trace_identity(&span, &root.session_id, root.user_id.as_deref());
     span.set_attribute(OBSERVATION_TYPE_ATTR, "generation");
     span.set_attribute(LLM_MODEL_ATTR, model.to_string());
-    span.set_attribute(
-        OBSERVATION_METADATA_ATTR,
-        metadata_json(vec![
-            ("provider", Value::String(provider.to_string())),
-            ("model", Value::String(model.to_string())),
-        ]),
-    );
+    let metadata = metadata_map(vec![
+        ("provider", Value::String(provider.to_string())),
+        ("model", Value::String(model.to_string())),
+    ]);
+    set_observation_metadata(&span, &metadata);
     span.set_attribute(
         INPUT_VALUE_ATTR,
         serialize_sanitized_value(&sanitize_global(&input)),
     );
 
-    Some(LangfuseSpan { span })
+    Some(LangfuseSpan { span, metadata })
 }
 
 pub fn finish_generation_span(
@@ -158,7 +158,7 @@ pub fn finish_generation_span(
     ttft_ms: Option<u64>,
     error: Option<&str>,
 ) {
-    let Some(span) = span else {
+    let Some(mut span) = span else {
         return;
     };
 
@@ -184,41 +184,17 @@ pub fn finish_generation_span(
         span.span
             .set_attribute(LLM_COMPLETION_TOKENS_ATTR, usage.output_tokens as i64);
         span.span.set_attribute(LLM_TOTAL_TOKENS_ATTR, total as i64);
-        span.span.set_attribute(
-            OBSERVATION_METADATA_ATTR,
-            metadata_json(vec![
-                (
-                    "ttftMs",
-                    ttft_ms.map(|value| json!(value)).unwrap_or(Value::Null),
-                ),
-                ("cacheReadInputTokens", json!(usage.cache_read_input_tokens)),
-                (
-                    "cacheCreationInputTokens",
-                    json!(usage.cache_creation_input_tokens),
-                ),
-            ]),
-        );
-    } else if let Some(ttft_ms) = ttft_ms {
-        span.span.set_attribute(
-            OBSERVATION_METADATA_ATTR,
-            metadata_json(vec![("ttftMs", json!(ttft_ms))]),
-        );
     }
 
     if let Some(error) = error {
         span.span
             .set_status(Status::error(sanitize_global_string(error)));
-        span.span.set_attribute(
-            OBSERVATION_METADATA_ATTR,
-            metadata_json(vec![
-                ("error", Value::String(sanitize_global_string(error))),
-                (
-                    "ttftMs",
-                    ttft_ms.map(|value| json!(value)).unwrap_or(Value::Null),
-                ),
-            ]),
-        );
     }
+
+    for (key, value) in generation_observation_metadata(usage, ttft_ms, error) {
+        span.metadata.insert(key, value);
+    }
+    set_observation_metadata(&span.span, &span.metadata);
 }
 
 pub fn create_tool_span(
@@ -234,29 +210,26 @@ pub fn create_tool_span(
     let span = tracing::info_span!(parent: parent, "langfuse.tool", otel.name = tool_name);
     apply_trace_identity(&span, &root.session_id, root.user_id.as_deref());
     span.set_attribute(OBSERVATION_TYPE_ATTR, "tool");
-    span.set_attribute(
-        OBSERVATION_METADATA_ATTR,
-        metadata_json(vec![("toolUseId", Value::String(tool_use_id.to_string()))]),
-    );
+    let metadata = metadata_map(vec![("toolUseId", Value::String(tool_use_id.to_string()))]);
+    set_observation_metadata(&span, &metadata);
     span.set_attribute(
         INPUT_VALUE_ATTR,
         serialize_sanitized_value(&sanitize_tool_input(tool_name, input)),
     );
 
-    Some(LangfuseSpan { span })
+    Some(LangfuseSpan { span, metadata })
 }
 
 pub fn finish_tool_span(span: Option<LangfuseSpan>, tool_name: &str, output: &str, is_error: bool) {
-    let Some(span) = span else {
+    let Some(mut span) = span else {
         return;
     };
 
     span.span
         .set_attribute(OUTPUT_VALUE_ATTR, sanitize_tool_output(tool_name, output));
-    span.span.set_attribute(
-        OBSERVATION_METADATA_ATTR,
-        metadata_json(vec![("isError", Value::Bool(is_error))]),
-    );
+    span.metadata
+        .insert("isError".to_string(), Value::Bool(is_error));
+    set_observation_metadata(&span.span, &span.metadata);
     if is_error {
         span.span
             .set_status(Status::error(sanitize_tool_output(tool_name, output)));
@@ -271,16 +244,14 @@ pub fn create_tool_batch_span(
     let span = tracing::info_span!(parent: &root.span, "langfuse.tool_batch", otel.name = "tools");
     apply_trace_identity(&span, &root.session_id, root.user_id.as_deref());
     span.set_attribute(OBSERVATION_TYPE_ATTR, "span");
-    span.set_attribute(
-        OBSERVATION_METADATA_ATTR,
-        metadata_json(vec![
-            ("toolNames", json!(tool_names)),
-            ("toolCount", json!(tool_names.len())),
-            ("batchIndex", json!(batch_index)),
-        ]),
-    );
+    let metadata = metadata_map(vec![
+        ("toolNames", json!(tool_names)),
+        ("toolCount", json!(tool_names.len())),
+        ("batchIndex", json!(batch_index)),
+    ]);
+    set_observation_metadata(&span, &metadata);
 
-    Some(LangfuseSpan { span })
+    Some(LangfuseSpan { span, metadata })
 }
 
 pub fn end_span(span: Option<LangfuseSpan>) {
@@ -362,11 +333,25 @@ fn generation_name(provider: &str) -> &str {
     }
 }
 
+fn metadata_map(entries: Vec<(&str, Value)>) -> Map<String, Value> {
+    entries
+        .into_iter()
+        .filter(|(_, value)| !value.is_null())
+        .map(|(key, value)| (key.to_string(), value))
+        .collect()
+}
+
+fn set_observation_metadata(span: &tracing::Span, metadata: &Map<String, Value>) {
+    if !metadata.is_empty() {
+        span.set_attribute(OBSERVATION_METADATA_ATTR, json!(metadata).to_string());
+    }
+}
+
 fn record_completion_start_event(span: &tracing::Span, ttft_ms: u64) {
-    let ttft_ms = ttft_ms as i64;
-    span.in_scope(|| {
-        tracing::info!(ttft_ms, "completion_start");
-    });
+    span.add_event(
+        "completion_start",
+        vec![KeyValue::new("ttft_ms", ttft_ms as i64)],
+    );
 }
 
 #[cfg(test)]
