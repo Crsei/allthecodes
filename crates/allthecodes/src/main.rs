@@ -151,6 +151,16 @@ fn main() -> ExitCode {
         });
     }
 
+    let tracing_cwd = resolve_cwd(&cli);
+    if let Err(error) =
+        startup::apply_settings_env_before_tracing(std::path::Path::new(&tracing_cwd))
+    {
+        eprintln!(
+            "warning: failed to apply settings.env before tracing: {:#}",
+            error
+        );
+    }
+
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let _tracing_guard = {
         let _enter = rt.enter();

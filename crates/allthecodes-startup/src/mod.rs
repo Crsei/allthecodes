@@ -72,9 +72,50 @@ pub fn load_env_files_collect_diagnostics() -> Vec<EnvLoadDiagnostic> {
     diagnostics
 }
 
+/// Apply `settings.env` before tracing is initialized.
+///
+/// Langfuse is initialized as part of tracing setup, so environment values
+/// that should affect Langfuse must be seeded before `init_tracing()`.
+pub fn apply_settings_env_before_tracing(
+    cwd: &Path,
+) -> anyhow::Result<settings::RuntimeEnvApplyReport> {
+    let loaded = settings::load_effective(cwd)?;
+    settings::apply_runtime_env(&loaded.effective.env)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::load_existing_env;
+    use serial_test::serial;
+
+    use super::{apply_settings_env_before_tracing, load_existing_env};
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set_value(key: &'static str, value: impl AsRef<str>) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value.as_ref());
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
     fn startup_existing_invalid_env_returns_diagnostic() {
@@ -91,5 +132,97 @@ mod tests {
     fn startup_absent_env_is_not_diagnostic() {
         let tmp = tempfile::TempDir::new().unwrap();
         assert!(load_existing_env(&tmp.path().join(".env")).is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn settings_env_before_tracing_applies_missing_langfuse_env() {
+        const KEY: &str = "LANGFUSE_PUBLIC_KEY";
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = EnvGuard::set_value("ALLTHECODES_HOME", tmp.path().to_string_lossy());
+        let _managed = EnvGuard::set_value(
+            "ALLTHECODES_MANAGED_SETTINGS",
+            tmp.path().join("missing-managed.json").to_string_lossy(),
+        );
+        let _key = EnvGuard::unset(KEY);
+        std::fs::write(
+            tmp.path().join("settings.json"),
+            r#"{"env":{"LANGFUSE_PUBLIC_KEY":"pk-from-settings"}}"#,
+        )
+        .unwrap();
+
+        let report = apply_settings_env_before_tracing(tmp.path()).unwrap();
+
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("pk-from-settings"));
+    }
+
+    #[test]
+    #[serial]
+    fn settings_env_before_tracing_does_not_overwrite_process_env() {
+        const KEY: &str = "LANGFUSE_SECRET_KEY";
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = EnvGuard::set_value("ALLTHECODES_HOME", tmp.path().to_string_lossy());
+        let _managed = EnvGuard::set_value(
+            "ALLTHECODES_MANAGED_SETTINGS",
+            tmp.path().join("missing-managed.json").to_string_lossy(),
+        );
+        let _key = EnvGuard::set_value(KEY, "sk-from-process");
+        std::fs::write(
+            tmp.path().join("settings.json"),
+            r#"{"env":{"LANGFUSE_SECRET_KEY":"sk-from-settings"}}"#,
+        )
+        .unwrap();
+
+        let report = apply_settings_env_before_tracing(tmp.path()).unwrap();
+
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("sk-from-process"));
+    }
+
+    #[test]
+    #[serial]
+    fn settings_env_before_tracing_loads_project_settings_for_cwd() {
+        const KEY: &str = "LANGFUSE_BASE_URL";
+        let home = tempfile::TempDir::new().unwrap();
+        let project = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(project.path().join(".allthecodes")).unwrap();
+        let _home = EnvGuard::set_value("ALLTHECODES_HOME", home.path().to_string_lossy());
+        let _managed = EnvGuard::set_value(
+            "ALLTHECODES_MANAGED_SETTINGS",
+            home.path().join("missing-managed.json").to_string_lossy(),
+        );
+        let _key = EnvGuard::unset(KEY);
+        std::fs::write(
+            project.path().join(".allthecodes").join("settings.json"),
+            r#"{"env":{"LANGFUSE_BASE_URL":"https://langfuse.example.com"}}"#,
+        )
+        .unwrap();
+
+        let report = apply_settings_env_before_tracing(project.path()).unwrap();
+
+        assert_eq!(report.applied, 1);
+        assert_eq!(
+            std::env::var(KEY).as_deref(),
+            Ok("https://langfuse.example.com")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn settings_env_before_tracing_reports_invalid_settings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = EnvGuard::set_value("ALLTHECODES_HOME", tmp.path().to_string_lossy());
+        let _managed = EnvGuard::set_value(
+            "ALLTHECODES_MANAGED_SETTINGS",
+            tmp.path().join("missing-managed.json").to_string_lossy(),
+        );
+        std::fs::write(tmp.path().join("settings.json"), "{").unwrap();
+
+        let error = apply_settings_env_before_tracing(tmp.path()).unwrap_err();
+
+        assert!(error.to_string().contains("Failed to parse"));
     }
 }
