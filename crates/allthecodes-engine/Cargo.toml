@@ -55,6 +55,7 @@ allthecodes-models = { workspace = true }
 allthecodes-compact = { workspace = true }
 allthecodes-keybindings = { workspace = true }
 allthecodes-utils = { workspace = true }
+allthecodes-langfuse = { workspace = true }
 allthecodes-session = { workspace = true }
 allthecodes-sandbox = { workspace = true }
 allthecodes-api = { workspace = true }

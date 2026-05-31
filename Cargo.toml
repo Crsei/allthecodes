@@ -131,6 +131,7 @@ allthecodes-api = { path = "crates/allthecodes-api" }
 allthecodes-skills = { path = "crates/allthecodes-skills" }
 allthecodes-config = { path = "crates/allthecodes-config" }
 allthecodes-utils = { path = "crates/allthecodes-utils" }
+allthecodes-langfuse = { path = "crates/allthecodes-langfuse" }
 allthecodes-shell-command = { path = "crates/allthecodes-shell-command" }
 allthecodes-mcp = { path = "crates/allthecodes-mcp" }
 allthecodes-services = { path = "crates/allthecodes-services" }

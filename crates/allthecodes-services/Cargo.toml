@@ -39,6 +39,7 @@ allthecodes-api = { workspace = true }
 allthecodes-config = { workspace = true }
 allthecodes-engine = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
+allthecodes-langfuse = { workspace = true }
 allthecodes-observability = { workspace = true, optional = true }
 allthecodes-session = { workspace = true }
 allthecodes-types = { workspace = true }

@@ -367,6 +367,7 @@ dependencies = [
  "allthecodes-config",
  "allthecodes-ipc-protocol",
  "allthecodes-keybindings",
+ "allthecodes-langfuse",
  "allthecodes-lsp-service",
  "allthecodes-mcp",
  "allthecodes-models",
@@ -496,6 +497,17 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "allthecodes-langfuse"
+version = "0.1.0"
+dependencies = [
+ "allthecodes-types",
+ "dirs",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -684,6 +696,7 @@ dependencies = [
  "allthecodes-config",
  "allthecodes-engine",
  "allthecodes-ipc-protocol",
+ "allthecodes-langfuse",
  "allthecodes-observability",
  "allthecodes-session",
  "allthecodes-types",

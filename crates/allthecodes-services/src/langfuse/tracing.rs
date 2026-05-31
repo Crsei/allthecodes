@@ -169,6 +169,10 @@ pub fn finish_generation_span(
         );
     }
 
+    if let Some(ttft_ms) = ttft_ms {
+        record_completion_start_event(&span.span, ttft_ms);
+    }
+
     if let Some(usage) = usage {
         let total = usage
             .input_tokens
@@ -351,11 +355,18 @@ fn generation_name(provider: &str) -> &str {
         "anthropic" => "ChatAnthropic",
         "bedrock" => "ChatBedrockAnthropic",
         "vertex" => "ChatVertexAnthropic",
-        "azure" => "ChatAzureOpenAI",
+        "azure" | "azure-foundry" | "microsoft-foundry" | "foundry" => "ChatAzureOpenAI",
         "google" | "gemini" => "ChatGoogleGenerativeAI",
         "openai" | "openai-codex" => "ChatOpenAI",
         _ => "ChatModel",
     }
+}
+
+fn record_completion_start_event(span: &tracing::Span, ttft_ms: u64) {
+    let ttft_ms = ttft_ms as i64;
+    span.in_scope(|| {
+        tracing::info!(ttft_ms, "completion_start");
+    });
 }
 
 #[cfg(test)]
@@ -367,5 +378,6 @@ mod tests {
         assert_eq!(generation_name("anthropic"), "ChatAnthropic");
         assert_eq!(generation_name("bedrock"), "ChatBedrockAnthropic");
         assert_eq!(generation_name("openai"), "ChatOpenAI");
+        assert_eq!(generation_name("azure-foundry"), "ChatAzureOpenAI");
     }
 }
