@@ -66,6 +66,10 @@ pub(super) fn command_meta(name: &str, cwd: &Path) -> CommandMeta {
         "fast" => simple_meta("/fast [on|off|status]", &["/fast on"]),
         "files" => simple_meta("/files", &["/files"]),
         "gbranch" => simple_meta("/gbranch [branch-name]", &["/gbranch feature/ui-fix"]),
+        "goal" => simple_meta(
+            "/goal [--tokens N] <objective>",
+            &["/goal --tokens 20000 ship the release", "/goal status"],
+        ),
         "help" => simple_meta("/help [command]", &["/help", "/help keybindings"]),
         "hooks" => CommandMeta {
             usage: "/hooks <list|path|open> [event|layer]".to_string(),

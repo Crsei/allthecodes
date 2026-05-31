@@ -56,6 +56,7 @@ pub struct MockDeps {
     pub hook_runner: parking_lot::Mutex<Arc<dyn HookRunner>>,
     pub steer_drains: parking_lot::Mutex<VecDeque<Vec<String>>>,
     pub app_state: parking_lot::Mutex<AppState>,
+    pub audit_session_id: parking_lot::Mutex<String>,
 }
 
 impl MockDeps {
@@ -94,6 +95,7 @@ impl MockDeps {
             )),
             steer_drains: parking_lot::Mutex::new(VecDeque::new()),
             app_state: parking_lot::Mutex::new(AppState::default()),
+            audit_session_id: parking_lot::Mutex::new("query-test".to_string()),
         }
     }
 
@@ -114,6 +116,11 @@ impl MockDeps {
 
     pub fn with_app_state(self, app_state: AppState) -> Self {
         *self.app_state.lock() = app_state;
+        self
+    }
+
+    pub fn with_audit_session(self, session_id: &str) -> Self {
+        *self.audit_session_id.lock() = session_id.to_string();
         self
     }
 
@@ -324,6 +331,10 @@ impl QueryDeps for MockDeps {
 
     fn drain_steer_messages(&self) -> Vec<String> {
         self.steer_drains.lock().pop_front().unwrap_or_default()
+    }
+
+    fn audit_context(&self) -> allthecodes_observability::AuditContext {
+        allthecodes_observability::AuditContext::noop(self.audit_session_id.lock().clone())
     }
 }
 

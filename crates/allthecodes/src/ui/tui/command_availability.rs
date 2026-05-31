@@ -18,7 +18,9 @@ pub(super) fn slash_command_availability_during_task(input: &str) -> TaskCommand
         return TaskCommandAvailability::UnknownCommand;
     };
 
-    if is_available_during_task(&command.name) {
+    if command.name == "goal" && is_goal_status_command(input) {
+        TaskCommandAvailability::Allowed
+    } else if is_available_during_task(&command.name) {
         TaskCommandAvailability::Allowed
     } else {
         TaskCommandAvailability::Disabled {
@@ -34,6 +36,19 @@ fn leading_slash_command_name(input: &str) -> Option<&str> {
         .split_whitespace()
         .next()
         .filter(|name| !name.is_empty())
+}
+
+fn is_goal_status_command(input: &str) -> bool {
+    let Some(command_name) = leading_slash_command_name(input) else {
+        return false;
+    };
+    let trimmed = input.trim_start();
+    let without_slash = trimmed.trim_start_matches('/');
+    let args = without_slash
+        .strip_prefix(command_name)
+        .unwrap_or_default()
+        .trim();
+    matches!(args, "" | "status" | "show" | "help" | "-h" | "--help")
 }
 
 fn resolve_command<'a>(
@@ -117,6 +132,20 @@ mod tests {
         assert_eq!(disabled("/review these changes"), "review");
         assert_eq!(disabled("/clear"), "clear");
         assert_eq!(disabled("/model opus"), "model");
+        assert_eq!(disabled("/goal ship the release"), "goal");
+        assert_eq!(disabled("/goal complete shipped"), "goal");
+    }
+
+    #[test]
+    fn allows_goal_status_while_task_is_running() {
+        assert_eq!(
+            slash_command_availability_during_task("/goal"),
+            TaskCommandAvailability::Allowed
+        );
+        assert_eq!(
+            slash_command_availability_during_task("/goal status"),
+            TaskCommandAvailability::Allowed
+        );
     }
 
     #[test]

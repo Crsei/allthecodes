@@ -479,6 +479,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
         }
 
         SdkMessage::GoalUpdated(update) => {
+            app.update_goal_status(&update.event, &update.goal);
             if update.event == "budget_limited" {
                 let objective = update
                     .goal

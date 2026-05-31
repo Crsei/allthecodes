@@ -33,6 +33,7 @@ pub mod extra_usage;
 pub mod fast;
 pub mod files;
 pub mod gbranch;
+pub mod goal;
 pub mod help;
 pub mod hooks_cmd;
 pub mod ide_cmd;
@@ -775,6 +776,12 @@ pub fn get_all_commands() -> Vec<Command> {
             &["gitbranch"],
             "Show or switch git branches",
             gbranch::GitBranchHandler,
+        ),
+        command(
+            "goal",
+            &[],
+            "Set or inspect the active session goal",
+            goal::GoalHandler,
         ),
         command(
             "effort",

@@ -469,6 +469,15 @@ impl App {
         if self.queued_count() > 0 {
             parts.push(format!("{} queued", self.queued_count()));
         }
+        if let Some(goal) = &self.active_goal {
+            parts.push(format!(
+                "goal={} {} {} {}t",
+                goal.status,
+                truncate_status_text(&goal.objective, 28),
+                format_status_duration(goal.time_used_seconds),
+                goal.tokens_used
+            ));
+        }
         if !self.model_name.is_empty() {
             parts.push(self.model_name.clone());
         }
@@ -668,6 +677,36 @@ impl App {
         };
         let line = Line::from(vec![Span::styled(text, self.theme.dim)]);
         buf.set_line(area.x, area.y, &line, area.width);
+    }
+}
+
+fn truncate_status_text(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let count = trimmed.chars().count();
+    if count <= max_chars {
+        return trimmed.to_string();
+    }
+    if max_chars <= 3 {
+        return trimmed.chars().take(max_chars).collect();
+    }
+    let mut out = trimmed
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn format_status_duration(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m{secs}s")
+    } else {
+        format!("{secs}s")
     }
 }
 

@@ -49,6 +49,15 @@ use super::vim::VimState;
 use super::virtual_scroll::VirtualScroll;
 use app_event::AppEvent;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalStatusSnapshot {
+    pub event: String,
+    pub objective: String,
+    pub status: String,
+    pub tokens_used: u64,
+    pub time_used_seconds: u64,
+}
+
 /// Actions produced by the app in response to user input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
@@ -187,6 +196,7 @@ pub struct App {
     sandbox_label: String,
     effort_label: Option<String>,
     remote_indicator_label: Option<String>,
+    active_goal: Option<GoalStatusSnapshot>,
     session_cost_usd: f64,
     /// Whether the welcome screen is currently shown.
     show_welcome: bool,
@@ -303,6 +313,7 @@ impl App {
             sandbox_label: String::new(),
             effort_label: None,
             remote_indicator_label: None,
+            active_goal: None,
             session_cost_usd: 0.0,
             show_welcome: true,
             workspace_trust_pending: false,
@@ -586,6 +597,7 @@ impl App {
         self.session_id = id;
         if !previous_session_id.is_empty() && previous_session_id != self.session_id {
             self.agent_nav.remove(&previous_session_id);
+            self.active_goal = None;
         }
         self.sync_primary_agent_thread();
         self.dirty = true;

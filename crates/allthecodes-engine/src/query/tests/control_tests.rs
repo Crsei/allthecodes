@@ -13,6 +13,32 @@ use crate::types::message::{
     AssistantMessage, Attachment, AttachmentMessage, ContentBlock, Message, MessageContent,
     QueryYield, Usage, UserMessage,
 };
+use allthecodes_tools::goals::{self, GoalRecord, GoalStatus};
+use serial_test::serial;
+use std::path::Path;
+
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set_path(key: &'static str, value: &Path) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            std::env::set_var(self.key, previous);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
 
 #[tokio::test]
 async fn test_stop_hook_continuation_injects_meta_user_message_once() {
@@ -88,6 +114,70 @@ async fn test_token_budget_continuation_injects_nudge_message() {
 }
 
 #[tokio::test]
+#[serial]
+async fn test_active_goal_continuation_injects_meta_user_message() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+    save_goal("goal-active", GoalStatus::Active);
+
+    let deps = Arc::new(
+        MockDeps::new(vec![
+            make_text_response("Still working."),
+            make_text_response("Paused by max turns."),
+        ])
+        .with_audit_session("goal-active"),
+    );
+    let mut params = make_query_params(vec![make_user_message_for_test("start")]);
+    params.max_turns = Some(2);
+
+    let stream = query(params, deps.clone());
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    assert_eq!(
+        request_start_count(&items),
+        2,
+        "active goal should trigger a continuation turn"
+    );
+    let params = deps.recorded_params();
+    let continuation = params[1].messages.iter().rev().find_map(|message| {
+        if let Message::User(user) = message {
+            if let MessageContent::Text(text) = &user.content {
+                return Some((user.is_meta, text.as_str()));
+            }
+        }
+        None
+    });
+    assert!(
+        matches!(continuation, Some((true, text)) if text.contains("Continue working toward the active session goal")),
+        "active goal continuation should inject a meta user message"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_completed_goal_does_not_continue() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+    save_goal("goal-complete-query", GoalStatus::Complete);
+
+    let deps = Arc::new(
+        MockDeps::new(vec![make_text_response("Done.")]).with_audit_session("goal-complete-query"),
+    );
+
+    let stream = query(
+        make_query_params(vec![make_user_message_for_test("start")]),
+        deps.clone(),
+    );
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    assert_eq!(
+        request_start_count(&items),
+        1,
+        "completed goal should not trigger continuation"
+    );
+}
+
+#[tokio::test]
 async fn test_max_turns_limit() {
     let tool_response = ModelResponse {
         assistant_message: AssistantMessage {
@@ -146,6 +236,25 @@ async fn test_max_turns_limit() {
         )
     });
     assert!(has_max_turns, "expected MaxTurnsReached attachment");
+}
+
+fn save_goal(session_id: &str, status: GoalStatus) {
+    let now = chrono::Utc::now().to_rfc3339();
+    goals::save_goal_for_session(
+        session_id,
+        &GoalRecord {
+            objective: "ship the feature".to_string(),
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            status,
+            created_at: now.clone(),
+            updated_at: now,
+            completed_at: None,
+            status_reason: None,
+        },
+    )
+    .unwrap();
 }
 
 #[tokio::test]

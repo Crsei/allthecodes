@@ -653,10 +653,39 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                                 turns = event.continuation_count,
                                 "token budget: stopping"
                             );
+                            break;
                         }
-                        break;
+                        if turn_context.task_budget_total.is_some() {
+                            break;
+                        }
                     }
                 }
+
+                if let Some(continuation_message) = active_goal_continuation_message(&deps) {
+                    if let Some(max) = turn_context.max_turns {
+                        if state.turn_count >= max {
+                            info!(turns = state.turn_count, max = max, "max turns reached");
+                            let attachment_msg = AttachmentMessage {
+                                uuid: Uuid::parse_str(&deps.uuid()).unwrap_or_else(|_| Uuid::new_v4()),
+                                timestamp: chrono::Utc::now().timestamp_millis(),
+                                attachment: Attachment::MaxTurnsReached {
+                                    max_turns: max,
+                                    turn_count: state.turn_count,
+                                },
+                            };
+                            yield QueryYield::Message(Message::Attachment(attachment_msg));
+                            break;
+                        }
+                    }
+                    debug!("active goal still open; continuing query loop");
+                    let user_msg = make_user_message(&deps, &continuation_message, true);
+                    state.messages.push(Message::User(user_msg));
+                    state.transition = Some(Continue::NextTurn);
+                    state.turn_count += 1;
+                    continue;
+                }
+
+                break;
             } else {
                 // 鈹€鈹€ STEP 6: TOOL EXECUTION 鈹€鈹€
 
@@ -824,6 +853,29 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
         info!(turns = state.turn_count, "query loop finished");
     }
+}
+
+fn active_goal_continuation_message(deps: &Arc<dyn QueryDeps>) -> Option<String> {
+    let session_id = deps.audit_context().session_id;
+    let goal = match allthecodes_tools::goals::load_goal_for_session(&session_id) {
+        Ok(Some(goal)) => goal,
+        Ok(None) => return None,
+        Err(error) => {
+            warn!(%error, "failed to load active goal for continuation");
+            return None;
+        }
+    };
+
+    if goal.status != allthecodes_tools::goals::GoalStatus::Active {
+        return None;
+    }
+
+    Some(format!(
+        "Continue working toward the active session goal:\n\n{}\n\n\
+         If the goal is complete, call UpdateGoal with status=complete. \
+         If progress is blocked by missing external input, call UpdateGoal with status=blocked.",
+        goal.objective
+    ))
 }
 
 fn should_accept_partial_response_after_chunk_read_error(

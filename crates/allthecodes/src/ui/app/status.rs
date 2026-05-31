@@ -5,6 +5,7 @@ use crate::ui::status_line::{
 use allthecodes_config::settings::StatusLineSettings;
 
 use super::App;
+use super::GoalStatusSnapshot;
 /// Subset of engine usage-tracking relevant to the status-line payload.
 /// Populated by [`App::update_session_usage`].
 #[derive(Debug, Clone, Default)]
@@ -35,6 +36,39 @@ impl App {
             api_calls,
         };
         // No dirty flip; `update_session_cost` already ran and marked it.
+    }
+
+    pub fn update_goal_status(&mut self, event: &str, goal: &serde_json::Value) {
+        let objective = goal
+            .get("objective")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("session goal")
+            .trim()
+            .to_string();
+        let status = goal
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(event)
+            .to_string();
+        let tokens_used = goal
+            .get("tokens_used")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let time_used_seconds = goal
+            .get("time_used_seconds")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let next = Some(GoalStatusSnapshot {
+            event: event.to_string(),
+            objective,
+            status,
+            tokens_used,
+            time_used_seconds,
+        });
+        if self.active_goal != next {
+            self.active_goal = next;
+            self.dirty = true;
+        }
     }
 
     /// Replace the resolved status-line settings (e.g. after `/statusline`

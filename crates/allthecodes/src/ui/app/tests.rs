@@ -498,6 +498,32 @@ fn status_bar_renders_only_model_and_workspace() {
 }
 
 #[test]
+#[serial]
+fn status_bar_renders_goal_summary() {
+    let home = tempfile::tempdir().expect("allthecodes home");
+    let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+    let mut app = App::new();
+    app.set_model_name("deepseek-v4-pro".to_string());
+    app.set_cwd("/repo/workspace".to_string());
+    app.accept_workspace_trust();
+    app.update_goal_status(
+        "updated",
+        &serde_json::json!({
+            "objective": "ship the release",
+            "status": "active",
+            "tokens_used": 42,
+            "time_used_seconds": 9
+        }),
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("terminal");
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let content = buffer_to_lines(terminal.backend().buffer(), 120, 24).join("\n");
+    assert!(content.contains("goal=active ship the release 9s 42t"));
+}
+
+#[test]
 fn slash_opens_command_palette_and_selection_keeps_argument_entry() {
     let mut app = App::new();
 
