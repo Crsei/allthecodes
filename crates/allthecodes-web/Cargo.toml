@@ -14,8 +14,11 @@ path = "src/mod.rs"
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
+chrono = { workspace = true }
+allthecodes-auth = { workspace = true }
 allthecodes-bootstrap = { workspace = true }
 allthecodes-commands = { workspace = true }
+allthecodes-config = { workspace = true }
 allthecodes-daemon = { workspace = true }
 allthecodes-engine = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }

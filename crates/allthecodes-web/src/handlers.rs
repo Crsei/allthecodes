@@ -1,5 +1,6 @@
 //! Axum route handlers for the web chat API.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -24,6 +25,10 @@ use allthecodes_engine::types::tool::PermissionMode;
 use allthecodes_session::{resume as session_resume, storage};
 use allthecodes_types::message::{ContentBlock, Message, MessageContent};
 use allthecodes_types::sdk::SdkMessage;
+
+use allthecodes_config::settings::{load_global_config, write_user_settings, RawSettings, ProviderProfileSettings};
+use allthecodes_auth::{resolve_auth, AuthMethod};
+use chrono::Utc;
 
 use super::state::{SessionOwner, WebState};
 
@@ -657,6 +662,570 @@ pub async fn command_handler(
             session_id: None,
         }),
     }
+}
+
+/// GET /api/capabilities -- Return capability discovery map.
+#[derive(Serialize)]
+pub struct CapabilityDiscoveryResponse {
+    pub capabilities: std::collections::HashMap<String, bool>,
+}
+
+pub async fn capabilities_handler() -> impl IntoResponse {
+    let mut caps = std::collections::HashMap::new();
+    // Ready capabilities
+    caps.insert("chat".into(), true);
+    caps.insert("sessions".into(), true);
+    caps.insert("settings".into(), true);
+    caps.insert("debug".into(), true);
+    caps.insert("state".into(), true);
+    // Not yet implemented
+    caps.insert("auth".into(), true);
+    caps.insert("profiles".into(), true);
+    caps.insert("gateways".into(), false);
+    caps.insert("models".into(), false);
+    caps.insert("usage".into(), false);
+    caps.insert("skills".into(), false);
+    caps.insert("memory".into(), false);
+    caps.insert("kanban".into(), false);
+    caps.insert("jobs".into(), false);
+    caps.insert("group_chat".into(), false);
+    caps.insert("files".into(), false);
+    caps.insert("logs".into(), false);
+    caps.insert("backend_services".into(), false);
+    Json(CapabilityDiscoveryResponse { capabilities: caps })
+}
+
+/// Catch-all handler for unregistered /api/* paths.
+/// Returns 501 JSON instead of falling through to static file serving.
+pub async fn api_fallback_handler(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
+    let status = if path.starts_with("api/") {
+        StatusCode::NOT_IMPLEMENTED
+    } else {
+        StatusCode::NOT_FOUND
+    };
+    (
+        status,
+        Json(ApiError {
+            error: "API endpoint not implemented".into(),
+            code: "capability_not_implemented".into(),
+        }),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Auth endpoints
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct AuthStatusResponse {
+    pub authenticated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct LoginResponse {
+    pub authenticated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bearer_token: Option<String>,
+}
+
+/// GET /api/auth/status — Return current authentication status.
+pub async fn auth_status_handler() -> impl IntoResponse {
+    // Use allthecodes-auth to resolve current auth state
+    let auth = resolve_auth();
+    let authenticated = auth.is_authenticated();
+    let subject = auth.api_key().map(|k| {
+        if k.len() > 8 {
+            format!("{}...{}", &k[..4], &k[k.len()-4..])
+        } else {
+            "unknown".to_string()
+        }
+    });
+    let expires_at = None;
+
+    Json(AuthStatusResponse {
+        authenticated,
+        auth_required: Some(false), // local/anonymous mode
+        subject,
+        expires_at,
+        profile_id: None,
+        session_id: None,
+    })
+}
+
+/// POST /api/auth/login — Authenticate with an API key or token.
+pub async fn auth_login_handler(
+    Json(req): Json<LoginRequest>,
+) -> Response {
+    // Accept API key from token field
+    if let Some(token) = &req.token {
+        if allthecodes_auth::api_key::validate_api_key(token) {
+            match allthecodes_auth::api_key::store_api_key(token) {
+                Ok(_) => {
+                    return Json(LoginResponse {
+                        authenticated: true,
+                        session_id: None,
+                        expires_at: None,
+                        subject: Some(format!("{}...{}", &token[..4], &token[token.len()-4..])),
+                        profile_id: None,
+                        access_token: None,
+                        bearer_token: Some(token.clone()),
+                    }).into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError {
+                            error: format!("Failed to store API key: {}", e),
+                            code: "internal_error".into(),
+                        }),
+                    ).into_response();
+                }
+            }
+        }
+        // Also try OpenAI key validation
+        if allthecodes_auth::api_key::validate_openai_api_key(token) {
+            match allthecodes_auth::api_key::store_openai_api_key(token) {
+                Ok(_) => {
+                    return Json(LoginResponse {
+                        authenticated: true,
+                        session_id: None,
+                        expires_at: None,
+                        subject: Some(format!("openai:{}...{}", &token[..4], &token[token.len()-4..])),
+                        profile_id: None,
+                        access_token: None,
+                        bearer_token: Some(token.clone()),
+                    }).into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError {
+                            error: format!("Failed to store API key: {}", e),
+                            code: "internal_error".into(),
+                        }),
+                    ).into_response();
+                }
+            }
+        }
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ApiError {
+            error: "Invalid API key format".into(),
+            code: "validation_error".into(),
+        }),
+    ).into_response()
+}
+
+/// POST /api/auth/logout — Clear authentication.
+pub async fn auth_logout_handler() -> impl IntoResponse {
+    let _ = allthecodes_auth::oauth_logout();
+    let _ = allthecodes_auth::api_key::remove_api_key();
+    let _ = allthecodes_auth::api_key::remove_openai_api_key();
+    StatusCode::OK
+}
+
+/// POST /api/auth/refresh — Refresh the session state.
+pub async fn auth_refresh_handler() -> impl IntoResponse {
+    auth_status_handler().await
+}
+
+// ---------------------------------------------------------------------------
+// Profile endpoints
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone)]
+pub struct ProfileSummary {
+    pub id: String,
+    pub name: String,
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct ProfileListResponse {
+    pub active_profile_id: Option<String>,
+    pub profiles: Vec<ProfileSummary>,
+}
+
+#[derive(Deserialize)]
+pub struct ProfileCreateRequest {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+pub struct ProfileUpdateRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ProfileImportRequest {
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+}
+
+/// Load profiles from user settings, returning the active profile id and
+/// a sorted list of profiles.
+fn load_profile_list() -> (Option<String>, Vec<ProfileSummary>) {
+    let settings = load_global_config().unwrap_or_default();
+    let active_id = settings.active_auth_profile.clone();
+    let mut profiles: Vec<ProfileSummary> = Vec::new();
+
+    if let Some(auth_profiles) = settings.auth_profiles {
+        for (id, _profile) in auth_profiles {
+            let active = Some(&id) == active_id.as_ref();
+            profiles.push(ProfileSummary {
+                id: id.clone(),
+                name: id.clone(),
+                active,
+                created_at: Some(chrono::Utc::now().timestamp()),
+                updated_at: Some(chrono::Utc::now().timestamp()),
+            });
+        }
+    }
+
+    profiles.sort_by(|a, b| a.name.cmp(&b.name));
+    (active_id, profiles)
+}
+
+fn save_profile_list(active_id: &Option<String>, profiles: &[ProfileSummary]) -> Result<(), String> {
+    let mut settings = load_global_config().unwrap_or_default();
+    settings.active_auth_profile = active_id.clone();
+
+    let mut auth_profiles = std::collections::HashMap::new();
+    for p in profiles {
+        auth_profiles.insert(
+            p.id.clone(),
+            ProviderProfileSettings {
+                backend: None,
+                api_provider: None,
+                model: None,
+                available_models: None,
+                model_capabilities: None,
+                model_reasoning_effort: None,
+                base_url: None,
+                api_key: None,
+                env: None,
+                auth_source: None,
+                extra: HashMap::new(),
+            },
+        );
+    }
+    settings.auth_profiles = Some(auth_profiles);
+
+    write_user_settings(&settings).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// GET /api/profiles — List all profiles.
+pub async fn profiles_list_handler() -> impl IntoResponse {
+    let (active_id, profiles) = load_profile_list();
+    Json(ProfileListResponse {
+        active_profile_id: active_id,
+        profiles,
+    })
+}
+
+/// POST /api/profiles — Create a new profile.
+pub async fn profiles_create_handler(
+    Json(req): Json<ProfileCreateRequest>,
+) -> impl IntoResponse {
+    if req.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "Profile name cannot be empty".into(),
+                code: "validation_error".into(),
+            }),
+        ).into_response();
+    }
+
+    let (active_id, mut profiles) = load_profile_list();
+
+    // Check for duplicate
+    if profiles.iter().any(|p| p.id == req.name.trim()) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: format!("Profile '{}' already exists", req.name),
+                code: "conflict".into(),
+            }),
+        ).into_response();
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    profiles.push(ProfileSummary {
+        id: req.name.trim().to_string(),
+        name: req.name.trim().to_string(),
+        active: false,
+        created_at: Some(now),
+        updated_at: Some(now),
+    });
+
+    match save_profile_list(&active_id, &profiles) {
+        Ok(()) => Json(ProfileListResponse {
+            active_profile_id: active_id,
+            profiles,
+        }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: e,
+                code: "internal_error".into(),
+            }),
+        ).into_response(),
+    }
+}
+
+/// GET /api/profiles/{id} — Get a single profile detail.
+pub async fn profiles_detail_handler(
+    AxumPath(id): AxumPath<String>,
+) -> impl IntoResponse {
+    let (_, profiles) = load_profile_list();
+    if let Some(profile) = profiles.into_iter().find(|p| p.id == id) {
+        Json(profile).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("Profile '{}' not found", id),
+                code: "not_found".into(),
+            }),
+        ).into_response()
+    }
+}
+
+/// PATCH /api/profiles/{id} — Update a profile.
+pub async fn profiles_update_handler(
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<ProfileUpdateRequest>,
+) -> impl IntoResponse {
+    let (active_id, mut profiles) = load_profile_list();
+
+    let profile = match profiles.iter_mut().find(|p| p.id == id) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("Profile '{}' not found", id),
+                    code: "not_found".into(),
+                }),
+            ).into_response();
+        }
+    };
+
+    if let Some(new_name) = &req.name {
+        let trimmed = new_name.trim().to_string();
+        if trimmed.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "Profile name cannot be empty".into(),
+                    code: "validation_error".into(),
+                }),
+            ).into_response();
+        }
+        profile.id = trimmed.clone();
+        profile.name = trimmed;
+        profile.updated_at = Some(chrono::Utc::now().timestamp());
+    }
+
+    match save_profile_list(&active_id, &profiles) {
+        Ok(()) => Json(ProfileListResponse {
+            active_profile_id: active_id,
+            profiles,
+        }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: e,
+                code: "internal_error".into(),
+            }),
+        ).into_response(),
+    }
+}
+
+/// DELETE /api/profiles/{id} — Delete a profile.
+pub async fn profiles_delete_handler(
+    AxumPath(id): AxumPath<String>,
+) -> impl IntoResponse {
+    let (active_id, mut profiles) = load_profile_list();
+
+    let pos = match profiles.iter().position(|p| p.id == id) {
+        Some(pos) => pos,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("Profile '{}' not found", id),
+                    code: "not_found".into(),
+                }),
+            ).into_response();
+        }
+    };
+
+    profiles.remove(pos);
+
+    let active_id = if active_id.as_deref() == Some(&id) {
+        None
+    } else {
+        active_id
+    };
+
+    match save_profile_list(&active_id, &profiles) {
+        Ok(()) => Json(ProfileListResponse {
+            active_profile_id: active_id,
+            profiles,
+        }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: e,
+                code: "internal_error".into(),
+            }),
+        ).into_response(),
+    }
+}
+
+/// POST /api/profiles/{id}/switch — Switch the active profile.
+pub async fn profiles_switch_handler(
+    AxumPath(id): AxumPath<String>,
+) -> impl IntoResponse {
+    let (_, mut profiles) = load_profile_list();
+
+    if !profiles.iter().any(|p| p.id == id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("Profile '{}' not found", id),
+                code: "not_found".into(),
+            }),
+        ).into_response();
+    }
+
+    // Update active flags
+    for p in &mut profiles {
+        p.active = p.id == id;
+    }
+
+    let new_active_id = Some(id.clone());
+    match save_profile_list(&new_active_id, &profiles) {
+        Ok(()) => Json(ProfileListResponse {
+            active_profile_id: new_active_id,
+            profiles,
+        }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: e,
+                code: "internal_error".into(),
+            }),
+        ).into_response(),
+    }
+}
+
+/// POST /api/profiles/import — Import a profile from a JSON payload.
+pub async fn profiles_import_handler(
+    Json(req): Json<ProfileImportRequest>,
+) -> impl IntoResponse {
+    let payload = match req.payload {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "Missing 'payload' field".into(),
+                    code: "validation_error".into(),
+                }),
+            ).into_response();
+        }
+    };
+
+    // Extract profile name from payload
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("imported");
+    let (active_id, mut profiles) = load_profile_list();
+
+    let now = chrono::Utc::now().timestamp();
+    profiles.push(ProfileSummary {
+        id: name.to_string(),
+        name: name.to_string(),
+        active: false,
+        created_at: Some(now),
+        updated_at: Some(now),
+    });
+
+    match save_profile_list(&active_id, &profiles) {
+        Ok(()) => Json(ProfileListResponse {
+            active_profile_id: active_id,
+            profiles,
+        }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: e,
+                code: "internal_error".into(),
+            }),
+        ).into_response(),
+    }
+}
+
+/// GET /api/profiles/{id}/export — Export a profile as JSON.
+pub async fn profiles_export_handler(
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let (_, profiles) = load_profile_list();
+    let profile = match profiles.into_iter().find(|p| p.id == id) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("Profile '{}' not found", id),
+                    code: "not_found".into(),
+                }),
+            ).into_response();
+        }
+    };
+
+    Json(profile).into_response()
 }
 
 // ---------------------------------------------------------------------------

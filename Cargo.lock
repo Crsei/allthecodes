@@ -941,8 +941,10 @@ dependencies = [
 name = "allthecodes-web"
 version = "0.1.0"
 dependencies = [
+ "allthecodes-auth",
  "allthecodes-bootstrap",
  "allthecodes-commands",
+ "allthecodes-config",
  "allthecodes-daemon",
  "allthecodes-engine",
  "allthecodes-ipc-protocol",
@@ -951,6 +953,7 @@ dependencies = [
  "allthecodes-types",
  "anyhow",
  "axum",
+ "chrono",
  "futures",
  "parking_lot",
  "portable-pty",
