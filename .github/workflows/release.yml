@@ -254,21 +254,25 @@ jobs:
             esac
             cpu="${platform#*-}"
 
-            cat > "${staging_dir}/package.json" << JSONEOF
-        {
-          "name": "allthecodes",
-          "version": "${version}-${platform}",
-          "license": "Apache-2.0",
-          "os": ["${os}"],
-          "cpu": ["${cpu}"],
-          "files": ["vendor"],
-          "repository": {
-            "type": "git",
-            "url": "git+https://github.com/Crsei/allthecodes.git",
-            "directory": "allthecodes"
-          }
-        }
-        JSONEOF
+            export PKG_OS="$os" PKG_CPU="$cpu" PLATFORM="$platform" STAGING="$staging_dir"
+            python3 -c "
+            import json, os
+            pkg = {
+                'name': 'allthecodes',
+                'version': os.environ['VERSION'] + '-' + os.environ['PLATFORM'],
+                'license': 'Apache-2.0',
+                'os': [os.environ['PKG_OS']],
+                'cpu': [os.environ['PKG_CPU']],
+                'files': ['vendor'],
+                'repository': {
+                    'type': 'git',
+                    'url': 'git+https://github.com/Crsei/allthecodes.git',
+                    'directory': 'allthecodes'
+                }
+            }
+            with open(os.environ['STAGING'] + '/package.json', 'w') as f:
+                json.dump(pkg, f, indent=2)
+            "
 
             cp README.md "${staging_dir}/README.md" 2>/dev/null || true
 
@@ -291,33 +295,36 @@ jobs:
           cp README.md "${root_staging}/README.md" 2>/dev/null || true
 
           # Generate root package.json
-          cat > "${root_staging}/package.json" << JSONEOF
-        {
-          "name": "allthecodes",
-          "version": "${version}",
-          "description": "allthecodes CLI - AI-powered coding assistant",
-          "license": "Apache-2.0",
-          "bin": {
-            "allthecodes": "bin/allthecodes.js"
-          },
-          "type": "module",
-          "engines": { "node": ">=18" },
-          "files": ["bin"],
-          "repository": {
-            "type": "git",
-            "url": "git+https://github.com/Crsei/allthecodes.git",
-            "directory": "allthecodes"
-          },
-          "optionalDependencies": {
-            "allthecodes-linux-x64": "npm:allthecodes@${version}-linux-x64",
-            "allthecodes-linux-arm64": "npm:allthecodes@${version}-linux-arm64",
-            "allthecodes-darwin-x64": "npm:allthecodes@${version}-darwin-x64",
-            "allthecodes-darwin-arm64": "npm:allthecodes@${version}-darwin-arm64",
-            "allthecodes-win32-x64": "npm:allthecodes@${version}-win32-x64",
-            "allthecodes-win32-arm64": "npm:allthecodes@${version}-win32-arm64"
+          export ROOT_STAGING="$root_staging"
+          python3 -c "
+          import json, os
+          ver = os.environ['VERSION']
+          pkg = {
+              'name': 'allthecodes',
+              'version': ver,
+              'description': 'allthecodes CLI - AI-powered coding assistant',
+              'license': 'Apache-2.0',
+              'bin': { 'allthecodes': 'bin/allthecodes.js' },
+              'type': 'module',
+              'engines': { 'node': '>=18' },
+              'files': ['bin'],
+              'repository': {
+                  'type': 'git',
+                  'url': 'git+https://github.com/Crsei/allthecodes.git',
+                  'directory': 'allthecodes'
+              },
+              'optionalDependencies': {
+                  'allthecodes-linux-x64': 'npm:allthecodes@' + ver + '-linux-x64',
+                  'allthecodes-linux-arm64': 'npm:allthecodes@' + ver + '-linux-arm64',
+                  'allthecodes-darwin-x64': 'npm:allthecodes@' + ver + '-darwin-x64',
+                  'allthecodes-darwin-arm64': 'npm:allthecodes@' + ver + '-darwin-arm64',
+                  'allthecodes-win32-x64': 'npm:allthecodes@' + ver + '-win32-x64',
+                  'allthecodes-win32-arm64': 'npm:allthecodes@' + ver + '-win32-arm64',
+              }
           }
-        }
-        JSONEOF
+          with open(os.environ['ROOT_STAGING'] + '/package.json', 'w') as f:
+              json.dump(pkg, f, indent=2)
+          "
 
           npm pack --json --pack-destination "$(dirname "${root_pack_output}")" "${root_staging}" > /dev/null
           mv "allthecodes-${version//./_}".tgz "${root_pack_output}" 2>/dev/null || \
