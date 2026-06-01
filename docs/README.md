@@ -5,9 +5,8 @@ This directory separates current project documentation from historical records.
 ## Active entry points
 
 - [WORK_STATUS.md](WORK_STATUS.md): current project status and active work areas.
-- [reference/](reference/): architecture and technical reference (crate migration, IPC protocol, daemon ops, API reference, etc.).
+- [development/](../development/): technical and historical documentation, including architecture, reference material, and archived plans.
 - [schemas/](schemas/): JSON schema definitions.
-- [archive/](archive/): historical plans, reference docs, debug logs, and completed records.
 
 ## `.cc-rust` 文件位置
 
@@ -43,6 +42,6 @@ cc-rust 的数据和配置文件分布在两个层级：
 
 ## Archive policy
 
-- Historical plans, closed phase records, debug logs, user-facing configuration docs, and other non-structural documents live under [archive/](archive/).
+- Historical plans, closed phase records, debug logs, user-facing configuration docs, and other non-structural documents live under [../development/archive/](../development/archive/).
 - When a TODO is implemented, move its detailed completion note to archive and leave only a short current-state reference in active docs.
 - Do not keep completed phase logs at the top of [WORK_STATUS.md](WORK_STATUS.md).
