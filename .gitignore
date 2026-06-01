@@ -80,6 +80,7 @@ tests/
 !crates/allthecodes-services/src/langfuse/tests/**
 web-ui/
 sdk/
+development/
 .tmp/
 crates/allthecodes/logs/
 

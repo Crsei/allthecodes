@@ -78,7 +78,7 @@ pub(super) async fn handle_list(ctx: &CommandContext) -> Result<CommandResult> {
     if browser_count > 0 {
         lines.push(
             "Browser-tagged servers expose browser-automation tools (navigate, \
-             read_page, click, -. See docs/reference/browser-mcp-config.md."
+             read_page, click, -. See development/reference/browser-mcp-config.md."
                 .to_string(),
         );
     }

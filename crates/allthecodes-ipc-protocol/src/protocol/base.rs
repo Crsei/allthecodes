@@ -9,7 +9,7 @@ use allthecodes_types::message::ContentBlock;
 ///
 /// For images we now forward the base64 data in addition to metadata so that
 /// the frontend can render screenshots inline (needed for the browser MCP
-/// viewing loop — see `docs/reference/browser-mcp-config.md`). The data field
+/// viewing loop — see `development/reference/browser-mcp-config.md`). The data field
 /// is skipped when the image originated from a source where the frontend
 /// shouldn't re-render it (rare — kept optional for that future path).
 #[derive(Serialize, Deserialize, Debug, Clone)]

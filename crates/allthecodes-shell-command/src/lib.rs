@@ -10,7 +10,7 @@
 //!
 //! # Ownership
 //!
-//! Per `docs/reference/CRATE_DEPENDENCY_TARGETS.md`, this crate is the natural
+//! Per `development/reference/CRATE_DEPENDENCY_TARGETS.md`, this crate is the natural
 //! owner for shell parsing, display, risk summary, and escalation adapters.
 //! It must not depend on `cc-engine`, `cc-ui`, or `allthecodes`.
 //!

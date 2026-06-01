@@ -22,7 +22,7 @@
 //! and ping/pong + mcp_connected/disconnected signaling are fully wired.
 //! The JSON-level protocol details for the tool_request / tool_response
 //! messages mirror the bun reference but aren't verified against the real
-//! extension in this session — see `docs/reference/chrome-native-host.md`.
+//! extension in this session — see `development/reference/chrome-native-host.md`.
 
 use std::collections::HashMap;
 use std::io;
