@@ -895,6 +895,164 @@ mod tests {
     }
 
     #[test]
+    fn common_shell_and_edit_tool_uses_are_grouped() {
+        let bash_first_id = "toolu_bash_1".to_string();
+        let bash_second_id = "toolu_bash_2".to_string();
+        let messages = vec![
+            Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 1,
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: bash_first_id.clone(),
+                        name: "Bash".to_string(),
+                        input: json!({ "command": "cargo test" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: bash_second_id.clone(),
+                        name: "Bash".to_string(),
+                        input: json!({ "command": "cargo build" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "toolu_pwsh_1".to_string(),
+                        name: "PowerShell".to_string(),
+                        input: json!({ "command": "Get-ChildItem" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "toolu_pwsh_2".to_string(),
+                        name: "PowerShell".to_string(),
+                        input: json!({ "command": "Get-Location" }),
+                    },
+                ],
+                usage: None,
+                stop_reason: None,
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.0,
+            }),
+            Message::User(UserMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 2,
+                role: "user".to_string(),
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: bash_first_id,
+                    content: ToolResultContent::Text("first bash output".to_string()),
+                    is_error: false,
+                }]),
+                is_meta: true,
+                tool_use_result: Some("first bash output".to_string()),
+                source_tool_assistant_uuid: None,
+            }),
+            Message::User(UserMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 3,
+                role: "user".to_string(),
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: bash_second_id,
+                    content: ToolResultContent::Text("second bash output".to_string()),
+                    is_error: false,
+                }]),
+                is_meta: true,
+                tool_use_result: Some("second bash output".to_string()),
+                source_tool_assistant_uuid: None,
+            }),
+        ];
+
+        let rendered = render_pipeline_text(&messages, super::MessageRenderOptions::default());
+
+        assert!(rendered.contains("2 Bash calls · completed"));
+        assert!(rendered.contains("2 PowerShell calls"));
+        assert!(!rendered.contains("first bash output"));
+        assert!(!rendered.contains("second bash output"));
+    }
+
+    #[test]
+    fn common_edit_tool_uses_are_grouped() {
+        for tool_name in [
+            "Edit",
+            "Write",
+            "FileEdit",
+            "FileWrite",
+            "MultiEdit",
+            "NotebookEdit",
+        ] {
+            let path_field = if tool_name == "NotebookEdit" {
+                "notebook_path"
+            } else {
+                "file_path"
+            };
+            let messages = vec![Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 1,
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: format!("toolu_{tool_name}_1"),
+                        name: tool_name.to_string(),
+                        input: json!({ path_field: "src/lib.rs" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: format!("toolu_{tool_name}_2"),
+                        name: tool_name.to_string(),
+                        input: json!({ path_field: "src/main.rs" }),
+                    },
+                ],
+                usage: None,
+                stop_reason: None,
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.0,
+            })];
+
+            let rendered = render_pipeline_text(&messages, super::MessageRenderOptions::default());
+
+            assert!(
+                rendered.contains("2 Edit calls"),
+                "{tool_name} should render as a grouped edit call, got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn verbose_mode_keeps_common_tool_uses_ungrouped() {
+        let messages = vec![Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1,
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "toolu_bash_1".to_string(),
+                    name: "Bash".to_string(),
+                    input: json!({ "command": "cargo test" }),
+                },
+                ContentBlock::ToolUse {
+                    id: "toolu_bash_2".to_string(),
+                    name: "Bash".to_string(),
+                    input: json!({ "command": "cargo build" }),
+                },
+            ],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        })];
+
+        let rendered = render_pipeline_text(
+            &messages,
+            super::MessageRenderOptions {
+                verbose: true,
+                ..super::MessageRenderOptions::default()
+            },
+        );
+
+        assert!(!rendered.contains("2 Bash calls"));
+        assert!(rendered.contains("Bash(cargo test)"));
+        assert!(rendered.contains("Bash(cargo build)"));
+    }
+
+    #[test]
     fn todo_write_tool_uses_are_not_grouped_away() {
         let messages = vec![Message::Assistant(AssistantMessage {
             uuid: uuid::Uuid::new_v4(),
@@ -972,6 +1130,31 @@ mod tests {
 
         assert!(summary.starts_with("path=src/main.rs "));
         assert!(summary.ends_with("..."));
+    }
+
+    fn render_pipeline_text(messages: &[Message], options: super::MessageRenderOptions) -> String {
+        let context =
+            super::build_message_render_context_with_options(messages, None, false, options);
+        context
+            .renderable_messages()
+            .iter()
+            .flat_map(|message| {
+                super::render_renderable_message_with_context(
+                    message,
+                    0,
+                    &Theme::default(),
+                    80,
+                    &context,
+                )
+            })
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn lines_to_text(lines: Vec<ratatui::text::Line<'_>>) -> String {

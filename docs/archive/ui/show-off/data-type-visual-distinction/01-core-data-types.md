@@ -148,6 +148,9 @@ TUI 里有两类派生显示，不是 `message.rs` 中的持久数据类型，�
 | `Read` | 是 | `Read` | 也可继续进入读/搜折叠。 |
 | `Grep` | 是 | `Search` | 也可继续进入读/搜折叠。 |
 | `Glob` | 是 | `Glob` | 也可继续进入读/搜折叠。 |
+| `Bash` | 是 | `Bash` | 多个 shell 调用会聚合为 `N Bash calls`。 |
+| `PowerShell` | 是 | `PowerShell` | 多个 PowerShell 调用会聚合为 `N PowerShell calls`。 |
+| `Edit`、`Write`、`FileEdit`、`FileWrite`、`MultiEdit`、`NotebookEdit` | 是 | `Edit` | 多个同名编辑/写入调用会聚合为 `N Edit calls`。 |
 | `ServerToolUse` 中同名工具 | 是 | 取决于名称映射 | `grouping_tool_use_key` 同时匹配 `ToolUse` 和 `ServerToolUse`，见 `grouping.rs:281`。 |
 
 聚合行的内容由 `GroupedToolUseView` 决定：`tool_name`、`count`、`resolved_count`、`error_count`，见 `crates/allthecodes/src/ui/messages/grouped_tool_use_content.rs:8`。渲染规则是 `N <DisplayName> calls`，失败时追加 `· N failed`，全部完成追加 `· completed`，部分完成追加 `· R/N completed`。
@@ -156,8 +159,6 @@ TUI 里有两类派生显示，不是 `message.rs` 中的持久数据类型，�
 
 | 工具名/类别 | 聚合状态 | 原因/替代展示 |
 |---|---|---|
-| `Bash`、`PowerShell` | 不支持 | 不在 `is_groupable_tool` 白名单；单条工具调用有 shell 专用两行显示，工具结果走 shell output renderer。 |
-| `Edit`、`Write`、`FileEdit`、`FileWrite`、`MultiEdit`、`NotebookEdit` | 不支持 | 不在白名单；单条调用使用编辑专用渲染，结果可走 file edit diff 预览。 |
 | `TodoWrite`、`todo_write` | 不支持 | 不在白名单；自身有 checklist 专用显示。 |
 | `WebFetch` | 不支持 | 不在白名单；默认工具摘要或工具结果展示。 |
 | `WebSearch` | 不支持同类聚合 | 不在 `is_groupable_tool`；但支持 `CollapsedReadSearch` 搜索折叠。 |

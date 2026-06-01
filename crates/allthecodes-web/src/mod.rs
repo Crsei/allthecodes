@@ -8,7 +8,7 @@ pub mod ws;
 use std::net::SocketAddr;
 
 use axum::{
-    routing::{any, delete, get, patch, post},
+    routing::{any, get, patch, post},
     Router,
 };
 use tower_http::cors::CorsLayer;
