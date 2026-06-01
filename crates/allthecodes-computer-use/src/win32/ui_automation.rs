@@ -55,7 +55,7 @@ impl ControlType {
             50003 => ControlType::ComboBox,
             50004 => ControlType::Edit,
             50005 => ControlType::Hyperlink,
-            50008 => ControlType::Image,
+            50006 => ControlType::Image,
             50008 => ControlType::List,
             50009 => ControlType::ListItem,
             50010 => ControlType::Menu,
@@ -307,15 +307,15 @@ fn parse_elements_output(output: &str) -> Vec<UiElement> {
 
         let is_enabled = parts
             .get(8)
-            .map(|s| s == "True" || s == "true")
+            .map(|s| *s == "True" || *s == "true")
             .unwrap_or(true);
         let is_offscreen = parts
             .get(9)
-            .map(|s| s == "True" || s == "true")
+            .map(|s| *s == "True" || *s == "true")
             .unwrap_or(false);
         let has_keyboard_focus = parts
             .get(10)
-            .map(|s| s == "True" || s == "true")
+            .map(|s| *s == "True" || *s == "true")
             .unwrap_or(false);
         let value = parts
             .get(11)

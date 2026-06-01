@@ -121,7 +121,7 @@ Write-Output $sb.ToString()
 "#,
         hwnd = hwnd.0
     );
-    run_powershell(&script)
+    run_powershell(&script).await
 }
 
 /// Get the window class name for a given window handle.
@@ -138,7 +138,7 @@ Write-Output $sb.ToString()
 "#,
         hwnd = hwnd.0
     );
-    run_powershell(&script)
+    run_powershell(&script).await
 }
 
 /// Enumerate all top-level windows.
@@ -183,7 +183,7 @@ pub async fn get_window_rect(hwnd: Hwnd) -> anyhow::Result<(i32, i32, i32, i32)>
         r#"
 $sig = @'
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+public struct RECT {{ public int Left; public int Top; public int Right; public int Bottom; }}
 '@
 $type = Add-Type -MemberDefinition $sig -Name "Win32GetRect" -Namespace "Win32" -PassThru
 $rect = New-Object Win32.RECT
