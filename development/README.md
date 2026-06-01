@@ -1,10 +1,10 @@
 # cc-rust development docs map
 
-This directory groups non-user-facing technical documentation.
+This directory groups implementation references and historical records.
 
 ## Entry points
 
-- [architecture/](architecture/): product and subsystem architecture notes.
+- [../docs/architecture/](../docs/architecture/): current architecture and source-structure notes.
 - [reference/](reference/): implementation references, guard matrices, and technical snapshots.
 - [archive/](archive/): historical plans, debug logs, completion records, and closed analyses.
 

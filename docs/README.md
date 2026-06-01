@@ -1,11 +1,12 @@
 # cc-rust docs map
 
-This directory separates current project documentation from historical records.
+This directory contains the active documentation surface for the project.
 
 ## Active entry points
 
 - [WORK_STATUS.md](WORK_STATUS.md): current project status and active work areas.
-- [development/](../development/): technical and historical documentation, including architecture, reference material, and archived plans.
+- [architecture/](architecture/): current architecture and source-structure notes.
+- [../development/](../development/): implementation references and archived plans.
 - [schemas/](schemas/): JSON schema definitions.
 
 ## `.cc-rust` 文件位置

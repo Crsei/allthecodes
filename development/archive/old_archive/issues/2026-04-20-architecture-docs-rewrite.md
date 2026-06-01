@@ -1,11 +1,11 @@
-# Issue: 重写 `development/architecture`，使其与当前 `cc-rust` 代码架构一致
+# Issue: 重写 `docs/architecture`，使其与当前 `cc-rust` 代码架构一致
 
 Labels: `documentation`, `architecture`, `cleanup`
 Priority: `P1`
 
 ## 背景
 
-当前 `development/architecture/` 下大量文档仍在介绍上游 Claude Code / CCB 的 TypeScript 架构，
+当前 `docs/architecture/` 下大量文档仍在介绍上游 Claude Code / CCB 的 TypeScript 架构，
 例如直接引用：
 
 - `src/main.tsx`
@@ -23,7 +23,7 @@ Priority: `P1`
 - 前端与通信：`src/ipc/*`、`src/ui/*`、`src/web/*`、`ui/src/*`、`ink-ui/src/*`
 - 扩展与高级能力：`src/skills/*`、`src/plugins/*`、`src/mcp/*`、`src/lsp_service/*`、`src/teams/*`、`src/daemon/*`、`src/browser/*`、`src/computer_use/*`、`src/voice/*`
 
-结果是：当前 `development/architecture/` 既不能作为本项目的源码导览，也不能准确反映 `rust-lite`
+结果是：当前 `docs/architecture/` 既不能作为本项目的源码导览，也不能准确反映 `rust-lite`
 分支的能力边界与未完成项。
 
 ## 问题
@@ -32,12 +32,12 @@ Priority: `P1`
 
 典型例子：
 
-- `development/architecture/introduction/architecture-overview.mdx` 仍在描述五层 TS 架构与 React/Ink REPL
-- `development/architecture/features/all-features-guide.md` 仍在介绍 Buddy、Remote Control、Schedule、Voice、Chrome 等一整套并非 `rust-lite` 当前主线的能力
+- `docs/architecture/introduction/architecture-overview.mdx` 仍在描述五层 TS 架构与 React/Ink REPL
+- `docs/architecture/features/all-features-guide.md` 仍在介绍 Buddy、Remote Control、Schedule、Voice、Chrome 等一整套并非 `rust-lite` 当前主线的能力
 
 ### 2. “当前架构”、“历史设计”、“实验方案”、“任务拆解”混在同一目录层级
 
-`development/architecture/` 下同时存在：
+`docs/architecture/` 下同时存在：
 
 - canonical 架构介绍
 - feature 设计文档
@@ -53,7 +53,7 @@ Priority: `P1`
 
 ### 3. 未完成状态标注方式不统一
 
-当前仓库已有状态来源，但 `development/architecture/` 没有统一消费：
+当前仓库已有状态来源，但 `docs/architecture/` 没有统一消费：
 
 - 能力完成度基线：[`docs/WORK_STATUS.md`](F:\AIclassmanager\cc\rust\docs\WORK_STATUS.md)
 - 缩减实现 / 设计限制：[`development/archive/IMPLEMENTATION_GAPS.md`](F:\AIclassmanager\cc\rust\docs\IMPLEMENTATION_GAPS.md)
@@ -63,7 +63,7 @@ Priority: `P1`
 
 ## 目标
 
-把 `development/architecture/` 改造成“以当前仓库代码为准”的架构文档集：
+把 `docs/architecture/` 改造成“以当前仓库代码为准”的架构文档集：
 
 - 主要介绍当前 `cc-rust` 的代码结构、运行链路和模块边界
 - 明确区分“已实现 / 部分实现 / 未完成 / rust-lite 不做”
@@ -76,13 +76,13 @@ Priority: `P1`
 
 以下目录应以“当前仓库代码”为依据重写，而不是继续沿用上游产品叙述：
 
-- `development/architecture/introduction/`
-- `development/architecture/conversation/`
-- `development/architecture/context/`
-- `development/architecture/tools/`
-- `development/architecture/safety/`
-- `development/architecture/agent/`
-- `development/architecture/extensibility/`
+- `docs/architecture/introduction/`
+- `docs/architecture/conversation/`
+- `docs/architecture/context/`
+- `docs/architecture/tools/`
+- `docs/architecture/safety/`
+- `docs/architecture/agent/`
+- `docs/architecture/extensibility/`
 
 建议以真实源码模块组织内容：
 
@@ -138,7 +138,7 @@ Priority: `P1`
 
 需要逐项处理为以下三类之一：
 
-- 保留在 `development/architecture/`，但明确标为“专题设计 / 实验能力 / 历史方案”
+- 保留在 `docs/architecture/`，但明确标为“专题设计 / 实验能力 / 历史方案”
 - 移到 `development/archive/` 或其他更合适的位置
 - 删除明显已经过时、且没有继续保留价值的文档
 
@@ -149,7 +149,7 @@ Priority: `P1`
 
 ### C. 更新图示与图片资源
 
-`development/architecture/images/`、`development/architecture/diagrams/` 中的图不应继续表达上游 TS 结构。
+`docs/architecture/images/`、`docs/architecture/diagrams/` 中的图不应继续表达上游 TS 结构。
 
 至少需要替换为当前项目的真实链路：
 
@@ -189,7 +189,7 @@ Priority: `P1`
 
 ## 建议执行步骤
 
-1. 先做一次 `development/architecture/` 全量审计，给每篇文档打上：
+1. 先做一次 `docs/architecture/` 全量审计，给每篇文档打上：
    - `rewrite`
    - `archive`
    - `delete`
@@ -205,12 +205,12 @@ Priority: `P1`
 
 ## 验收标准
 
-- `development/architecture/` 的 canonical 页面不再把上游 Claude Code / CCB 的 TS 架构当成当前实现来介绍
+- `docs/architecture/` 的 canonical 页面不再把上游 Claude Code / CCB 的 TS 架构当成当前实现来介绍
 - 每篇 canonical 架构页都能直接映射到本仓库的真实源码路径
 - 所有未完成内容都使用统一状态标签
 - 实验/历史/任务型文档与正式架构说明完成分层
 - 目录内主要图示已经替换为 `cc-rust` 当前架构
-- 新人仅阅读 `development/architecture/` + `WORK_STATUS.md` + `IMPLEMENTATION_GAPS.md`，即可正确理解当前项目的代码结构和边界
+- 新人仅阅读 `docs/architecture/` + `WORK_STATUS.md` + `IMPLEMENTATION_GAPS.md`，即可正确理解当前项目的代码结构和边界
 
 ## 参考依据
 
@@ -220,5 +220,5 @@ Priority: `P1`
 - [`docs/WORK_STATUS.md`](F:\AIclassmanager\cc\rust\docs\WORK_STATUS.md)
 - [`development/archive/IMPLEMENTATION_GAPS.md`](F:\AIclassmanager\cc\rust\docs\IMPLEMENTATION_GAPS.md)
 - [`development/archive/KNOWN_ISSUES.md`](F:\AIclassmanager\cc\rust\docs\KNOWN_ISSUES.md)
-- [`development/architecture/introduction/architecture-overview.mdx`](F:\AIclassmanager\cc\rust\docs\architecture\introduction\architecture-overview.mdx)
-- [`development/architecture/features/all-features-guide.md`](F:\AIclassmanager\cc\rust\docs\architecture\features\all-features-guide.md)
+- [`docs/architecture/introduction/architecture-overview.mdx`](F:\AIclassmanager\cc\rust\docs\architecture\introduction\architecture-overview.mdx)
+- [`docs/architecture/features/all-features-guide.md`](F:\AIclassmanager\cc\rust\docs\architecture\features\all-features-guide.md)
