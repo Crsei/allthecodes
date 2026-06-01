@@ -20,6 +20,7 @@ allthecodes-gateway = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 mime_guess = { workspace = true }
+notify-rust = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

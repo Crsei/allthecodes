@@ -341,6 +341,7 @@ dependencies = [
  "hmac",
  "libc",
  "mime_guess",
+ "notify-rust",
  "parking_lot",
  "reqwest",
  "serde",
