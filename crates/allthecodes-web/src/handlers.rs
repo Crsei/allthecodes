@@ -26,8 +26,10 @@ use allthecodes_session::{resume as session_resume, storage};
 use allthecodes_types::message::{ContentBlock, Message, MessageContent};
 use allthecodes_types::sdk::SdkMessage;
 
-use allthecodes_config::settings::{load_global_config, write_user_settings, RawSettings, ProviderProfileSettings};
 use allthecodes_auth::{resolve_auth, AuthMethod};
+use allthecodes_config::settings::{
+    load_global_config, write_user_settings, ProviderProfileSettings, RawSettings,
+};
 use chrono::Utc;
 
 use super::state::{SessionOwner, WebState};
@@ -769,7 +771,7 @@ pub async fn auth_status_handler() -> impl IntoResponse {
     let authenticated = auth.is_authenticated();
     let subject = auth.api_key().map(|k| {
         if k.len() > 8 {
-            format!("{}...{}", &k[..4], &k[k.len()-4..])
+            format!("{}...{}", &k[..4], &k[k.len() - 4..])
         } else {
             "unknown".to_string()
         }
@@ -787,9 +789,7 @@ pub async fn auth_status_handler() -> impl IntoResponse {
 }
 
 /// POST /api/auth/login — Authenticate with an API key or token.
-pub async fn auth_login_handler(
-    Json(req): Json<LoginRequest>,
-) -> Response {
+pub async fn auth_login_handler(Json(req): Json<LoginRequest>) -> Response {
     // Accept API key from token field
     if let Some(token) = &req.token {
         if allthecodes_auth::api_key::validate_api_key(token) {
@@ -799,11 +799,12 @@ pub async fn auth_login_handler(
                         authenticated: true,
                         session_id: None,
                         expires_at: None,
-                        subject: Some(format!("{}...{}", &token[..4], &token[token.len()-4..])),
+                        subject: Some(format!("{}...{}", &token[..4], &token[token.len() - 4..])),
                         profile_id: None,
                         access_token: None,
                         bearer_token: Some(token.clone()),
-                    }).into_response();
+                    })
+                    .into_response();
                 }
                 Err(e) => {
                     return (
@@ -812,7 +813,8 @@ pub async fn auth_login_handler(
                             error: format!("Failed to store API key: {}", e),
                             code: "internal_error".into(),
                         }),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             }
         }
@@ -824,11 +826,16 @@ pub async fn auth_login_handler(
                         authenticated: true,
                         session_id: None,
                         expires_at: None,
-                        subject: Some(format!("openai:{}...{}", &token[..4], &token[token.len()-4..])),
+                        subject: Some(format!(
+                            "openai:{}...{}",
+                            &token[..4],
+                            &token[token.len() - 4..]
+                        )),
                         profile_id: None,
                         access_token: None,
                         bearer_token: Some(token.clone()),
-                    }).into_response();
+                    })
+                    .into_response();
                 }
                 Err(e) => {
                     return (
@@ -837,7 +844,8 @@ pub async fn auth_login_handler(
                             error: format!("Failed to store API key: {}", e),
                             code: "internal_error".into(),
                         }),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             }
         }
@@ -849,7 +857,8 @@ pub async fn auth_login_handler(
             error: "Invalid API key format".into(),
             code: "validation_error".into(),
         }),
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// POST /api/auth/logout — Clear authentication.
@@ -927,7 +936,10 @@ fn load_profile_list() -> (Option<String>, Vec<ProfileSummary>) {
     (active_id, profiles)
 }
 
-fn save_profile_list(active_id: &Option<String>, profiles: &[ProfileSummary]) -> Result<(), String> {
+fn save_profile_list(
+    active_id: &Option<String>,
+    profiles: &[ProfileSummary],
+) -> Result<(), String> {
     let mut settings = load_global_config().unwrap_or_default();
     settings.active_auth_profile = active_id.clone();
 
@@ -966,9 +978,7 @@ pub async fn profiles_list_handler() -> impl IntoResponse {
 }
 
 /// POST /api/profiles — Create a new profile.
-pub async fn profiles_create_handler(
-    Json(req): Json<ProfileCreateRequest>,
-) -> impl IntoResponse {
+pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> impl IntoResponse {
     if req.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -976,7 +986,8 @@ pub async fn profiles_create_handler(
                 error: "Profile name cannot be empty".into(),
                 code: "validation_error".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let (active_id, mut profiles) = load_profile_list();
@@ -989,7 +1000,8 @@ pub async fn profiles_create_handler(
                 error: format!("Profile '{}' already exists", req.name),
                 code: "conflict".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let now = chrono::Utc::now().timestamp();
@@ -1005,21 +1017,21 @@ pub async fn profiles_create_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// GET /api/profiles/{id} — Get a single profile detail.
-pub async fn profiles_detail_handler(
-    AxumPath(id): AxumPath<String>,
-) -> impl IntoResponse {
+pub async fn profiles_detail_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
     let (_, profiles) = load_profile_list();
     if let Some(profile) = profiles.into_iter().find(|p| p.id == id) {
         Json(profile).into_response()
@@ -1030,7 +1042,8 @@ pub async fn profiles_detail_handler(
                 error: format!("Profile '{}' not found", id),
                 code: "not_found".into(),
             }),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 
@@ -1050,7 +1063,8 @@ pub async fn profiles_update_handler(
                     error: format!("Profile '{}' not found", id),
                     code: "not_found".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -1063,7 +1077,8 @@ pub async fn profiles_update_handler(
                     error: "Profile name cannot be empty".into(),
                     code: "validation_error".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
         profile.id = trimmed.clone();
         profile.name = trimmed;
@@ -1074,21 +1089,21 @@ pub async fn profiles_update_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// DELETE /api/profiles/{id} — Delete a profile.
-pub async fn profiles_delete_handler(
-    AxumPath(id): AxumPath<String>,
-) -> impl IntoResponse {
+pub async fn profiles_delete_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
     let (active_id, mut profiles) = load_profile_list();
 
     let pos = match profiles.iter().position(|p| p.id == id) {
@@ -1100,7 +1115,8 @@ pub async fn profiles_delete_handler(
                     error: format!("Profile '{}' not found", id),
                     code: "not_found".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -1116,21 +1132,21 @@ pub async fn profiles_delete_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// POST /api/profiles/{id}/switch — Switch the active profile.
-pub async fn profiles_switch_handler(
-    AxumPath(id): AxumPath<String>,
-) -> impl IntoResponse {
+pub async fn profiles_switch_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
     let (_, mut profiles) = load_profile_list();
 
     if !profiles.iter().any(|p| p.id == id) {
@@ -1140,7 +1156,8 @@ pub async fn profiles_switch_handler(
                 error: format!("Profile '{}' not found", id),
                 code: "not_found".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Update active flags
@@ -1153,21 +1170,21 @@ pub async fn profiles_switch_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: new_active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// POST /api/profiles/import — Import a profile from a JSON payload.
-pub async fn profiles_import_handler(
-    Json(req): Json<ProfileImportRequest>,
-) -> impl IntoResponse {
+pub async fn profiles_import_handler(Json(req): Json<ProfileImportRequest>) -> impl IntoResponse {
     let payload = match req.payload {
         Some(p) => p,
         None => {
@@ -1177,12 +1194,16 @@ pub async fn profiles_import_handler(
                     error: "Missing 'payload' field".into(),
                     code: "validation_error".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
     // Extract profile name from payload
-    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("imported");
+    let name = payload
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("imported");
     let (active_id, mut profiles) = load_profile_list();
 
     let now = chrono::Utc::now().timestamp();
@@ -1198,21 +1219,21 @@ pub async fn profiles_import_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// GET /api/profiles/{id}/export — Export a profile as JSON.
-pub async fn profiles_export_handler(
-    AxumPath(id): AxumPath<String>,
-) -> Response {
+pub async fn profiles_export_handler(AxumPath(id): AxumPath<String>) -> Response {
     let (_, profiles) = load_profile_list();
     let profile = match profiles.into_iter().find(|p| p.id == id) {
         Some(p) => p,
@@ -1223,7 +1244,8 @@ pub async fn profiles_export_handler(
                     error: format!("Profile '{}' not found", id),
                     code: "not_found".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -1296,7 +1318,10 @@ fn provider_summaries_from_settings() -> Vec<ProviderSummary> {
 
     if let Some(profiles) = settings.auth_profiles {
         for (id, profile) in profiles {
-            let kind = profile.api_provider.clone().unwrap_or_else(|| "anthropic".to_string());
+            let kind = profile
+                .api_provider
+                .clone()
+                .unwrap_or_else(|| "anthropic".to_string());
             providers.push(ProviderSummary {
                 id: id.clone(),
                 name: id.clone(),
@@ -1319,9 +1344,7 @@ fn provider_summaries_from_settings() -> Vec<ProviderSummary> {
 }
 
 /// GET /api/providers — List all providers.
-pub async fn providers_list_handler(
-    State(state): State<WebState>,
-) -> impl IntoResponse {
+pub async fn providers_list_handler(State(state): State<WebState>) -> impl IntoResponse {
     let providers = provider_summaries_from_settings();
 
     // Also add the engine's current provider if it's not already listed
@@ -1335,9 +1358,7 @@ pub async fn providers_list_handler(
 }
 
 /// POST /api/providers — Create a new provider.
-pub async fn providers_create_handler(
-    Json(req): Json<ProviderCreateRequest>,
-) -> Response {
+pub async fn providers_create_handler(Json(req): Json<ProviderCreateRequest>) -> Response {
     let mut settings = load_global_config().unwrap_or_default();
     let mut profiles = settings.auth_profiles.clone().unwrap_or_default();
 
@@ -1348,7 +1369,8 @@ pub async fn providers_create_handler(
                 error: format!("Provider '{}' already exists", req.name),
                 code: "conflict".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let profile = ProviderProfileSettings {
@@ -1373,7 +1395,8 @@ pub async fn providers_create_handler(
             Json(ProviderListResponse {
                 profile_id: None,
                 providers,
-            }).into_response()
+            })
+            .into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1381,7 +1404,8 @@ pub async fn providers_create_handler(
                 error: e.to_string(),
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -1402,7 +1426,8 @@ pub async fn providers_update_handler(
                     error: format!("Provider '{}' already exists", name),
                     code: "conflict".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
@@ -1415,7 +1440,8 @@ pub async fn providers_update_handler(
                     error: format!("Provider '{}' not found", id),
                     code: "not_found".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -1431,7 +1457,8 @@ pub async fn providers_update_handler(
             Json(ProviderListResponse {
                 profile_id: None,
                 providers,
-            }).into_response()
+            })
+            .into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1439,14 +1466,13 @@ pub async fn providers_update_handler(
                 error: e.to_string(),
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// DELETE /api/providers/{id} — Delete a provider.
-pub async fn providers_delete_handler(
-    AxumPath(id): AxumPath<String>,
-) -> Response {
+pub async fn providers_delete_handler(AxumPath(id): AxumPath<String>) -> Response {
     let mut settings = load_global_config().unwrap_or_default();
     let mut profiles = settings.auth_profiles.clone().unwrap_or_default();
 
@@ -1457,7 +1483,8 @@ pub async fn providers_delete_handler(
                 error: format!("Provider '{}' not found", id),
                 code: "not_found".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     settings.auth_profiles = Some(profiles);
@@ -1468,7 +1495,8 @@ pub async fn providers_delete_handler(
             Json(ProviderListResponse {
                 profile_id: None,
                 providers,
-            }).into_response()
+            })
+            .into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1476,7 +1504,8 @@ pub async fn providers_delete_handler(
                 error: e.to_string(),
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -1511,7 +1540,8 @@ pub async fn providers_refresh_models_handler(
         provider_id: id,
         refreshed_at: Some(Utc::now().timestamp()),
         models,
-    }).into_response()
+    })
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1576,9 +1606,7 @@ pub struct ModelDiscoveryResponse {
 }
 
 /// GET /api/models — List the model registry.
-pub async fn models_list_handler(
-    State(state): State<WebState>,
-) -> impl IntoResponse {
+pub async fn models_list_handler(State(state): State<WebState>) -> impl IntoResponse {
     let engine = state.engine();
     let app_state = engine.app_state();
     let available = &app_state.settings.available_models;
@@ -1620,7 +1648,8 @@ pub async fn models_update_handler(
         profile_id: None,
         default_model_id: None,
         models: Vec::new(),
-    }).into_response()
+    })
+    .into_response()
 }
 
 /// POST /api/models/default — Set the default model.
@@ -1636,7 +1665,8 @@ pub async fn models_set_default_handler(
     Json(SettingsResponse {
         ok: true,
         message: format!("Default model set to {}", req.model_id),
-    }).into_response()
+    })
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1711,7 +1741,7 @@ pub async fn credentials_handler() -> impl IntoResponse {
     if auth.is_authenticated() {
         let subject = auth.api_key().map(|k| {
             if k.len() > 8 {
-                format!("{}...{}", &k[..4], &k[k.len()-4..])
+                format!("{}...{}", &k[..4], &k[k.len() - 4..])
             } else {
                 "configured".to_string()
             }
@@ -1748,21 +1778,24 @@ pub async fn oauth_start_handler(
         user_code: None,
         expires_at: None,
         interval_ms: None,
-        message: Some("OAuth flow is not available in the web UI yet. Use the CLI `/login` command instead.".to_string()),
-    }).into_response()
+        message: Some(
+            "OAuth flow is not available in the web UI yet. Use the CLI `/login` command instead."
+                .to_string(),
+        ),
+    })
+    .into_response()
 }
 
 /// POST /api/oauth/{provider}/poll — Poll OAuth flow status.
-pub async fn oauth_poll_handler(
-    AxumPath(provider): AxumPath<String>,
-) -> Response {
+pub async fn oauth_poll_handler(AxumPath(provider): AxumPath<String>) -> Response {
     Json(OAuthPollResponse {
         flow_id: String::new(),
         provider,
         status: "failed".to_string(),
         credential: None,
         message: Some("OAuth flow is not available in the web UI yet.".to_string()),
-    }).into_response()
+    })
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------

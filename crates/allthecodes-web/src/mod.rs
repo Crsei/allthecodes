@@ -51,29 +51,67 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/auth/logout", post(handlers::auth_logout_handler))
         .route("/api/auth/refresh", post(handlers::auth_refresh_handler))
         // Profile endpoints
-        .route("/api/profiles", get(handlers::profiles_list_handler).post(handlers::profiles_create_handler))
-        .route("/api/profiles/import", post(handlers::profiles_import_handler))
-        .route("/api/profiles/{id}", get(handlers::profiles_detail_handler).patch(handlers::profiles_update_handler).delete(handlers::profiles_delete_handler))
-        .route("/api/profiles/{id}/switch", post(handlers::profiles_switch_handler))
-        .route("/api/profiles/{id}/export", get(handlers::profiles_export_handler))
+        .route(
+            "/api/profiles",
+            get(handlers::profiles_list_handler).post(handlers::profiles_create_handler),
+        )
+        .route(
+            "/api/profiles/import",
+            post(handlers::profiles_import_handler),
+        )
+        .route(
+            "/api/profiles/{id}",
+            get(handlers::profiles_detail_handler)
+                .patch(handlers::profiles_update_handler)
+                .delete(handlers::profiles_delete_handler),
+        )
+        .route(
+            "/api/profiles/{id}/switch",
+            post(handlers::profiles_switch_handler),
+        )
+        .route(
+            "/api/profiles/{id}/export",
+            get(handlers::profiles_export_handler),
+        )
         // Provider endpoints
-        .route("/api/providers", get(handlers::providers_list_handler).post(handlers::providers_create_handler))
-        .route("/api/providers/{id}", patch(handlers::providers_update_handler).delete(handlers::providers_delete_handler))
-        .route("/api/providers/{id}/models/refresh", post(handlers::providers_refresh_models_handler))
+        .route(
+            "/api/providers",
+            get(handlers::providers_list_handler).post(handlers::providers_create_handler),
+        )
+        .route(
+            "/api/providers/{id}",
+            patch(handlers::providers_update_handler).delete(handlers::providers_delete_handler),
+        )
+        .route(
+            "/api/providers/{id}/models/refresh",
+            post(handlers::providers_refresh_models_handler),
+        )
         // Model endpoints
         .route("/api/models", get(handlers::models_list_handler))
         .route("/api/models/{id}", patch(handlers::models_update_handler))
-        .route("/api/models/default", post(handlers::models_set_default_handler))
+        .route(
+            "/api/models/default",
+            post(handlers::models_set_default_handler),
+        )
         // Credential & OAuth endpoints
         .route("/api/credentials", get(handlers::credentials_handler))
-        .route("/api/oauth/{provider}/start", post(handlers::oauth_start_handler))
-        .route("/api/oauth/{provider}/poll", post(handlers::oauth_poll_handler))
+        .route(
+            "/api/oauth/{provider}/start",
+            post(handlers::oauth_start_handler),
+        )
+        .route(
+            "/api/oauth/{provider}/poll",
+            post(handlers::oauth_poll_handler),
+        )
         // Phase 4: xterm.js TUI WebSocket bridge
         .route("/api/tui/ws", any(ws::tui::tui_ws_handler))
         // Phase 5: IPC WebSocket bridge for FrontendMessage/BackendMessage
         .route("/api/ipc/ws", any(ws::ipc::ipc_ws_handler))
         // API catch-all: unregistered /api/* paths return JSON 501
-        .route("/api/{*path}", get(handlers::api_fallback_handler).post(handlers::api_fallback_handler))
+        .route(
+            "/api/{*path}",
+            get(handlers::api_fallback_handler).post(handlers::api_fallback_handler),
+        )
         // Static files (SPA)
         .fallback(static_files::static_handler)
         // Middleware
