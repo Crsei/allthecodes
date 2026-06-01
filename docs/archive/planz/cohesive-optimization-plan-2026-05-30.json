@@ -1,0 +1,227 @@
+{
+  "plan_title": "allthecodes Optimization Plan — Phase5 Tools, Command Surface, Deferred Loading",
+  "generated_at": "2026-05-30",
+  "sources": [
+    "Phase5 Tools Analysis: docs/archive/planz/phase5-missing-tools-optimization-plan-2026-05-30.md",
+    "Command Surface Analysis: docs/archive/plan/generic-selectable-command-surface-plan-2026-05-08.md, crates/allthecodes/src/ui/command_surface/tests.rs",
+    "Deferred Tool Loading Analysis: crates/allthecodes-tools/src/deferred_tools.rs, crates/allthecodes-engine/src/system_prompt/static_sections.rs"
+  ],
+  "items": [
+    {
+      "id": "P0-001",
+      "category": "Deferred Loading",
+      "priority": "P0",
+      "description": "Missing `product_tools` module causes build failure",
+      "current_behavior": "`crates/allthecodes-tools/src/registry.rs` line 130 calls `crate::product_tools::tools()` but no `crates/allthecodes-tools/src/product_tools.rs` or `crates/allthecodes-tools/src/product_tools/mod.rs` exists. This blocks all builds including integration tests as documented in the PTY command surface debug report.",
+      "expected_behavior": "Build succeeds. `product_tools` module exists and exports `tools()` containing the expected P1/P2 product tools (SubscribePR, Monitor, SendUserFile, TerminalCapture, ReviewArtifact, Snip, CtxInspect, RemoteTrigger, ListPeers) as verified in the startup register tests.",
+      "suggested_approach": "Create `crates/allthecodes-tools/src/product_tools.rs` exporting `pub fn tools() -> Tools` that returns Arc-wrapped tool instances for all nine product tools. The tool implementations already exist in the workspace — wire them into the new module and update the registry import chain."
+    },
+    {
+      "id": "P0-002",
+      "category": "Deferred Loading",
+      "priority": "P0",
+      "description": "CORE_TOOLS includes phase5 tools that should be deferred",
+      "current_behavior": "The `CORE_TOOLS` static set in `deferred_tools.rs` includes GetGoal, CreateGoal, UpdateGoal, ViewImage, VerifyPlanExecution, ListAgents, FollowupTask, WaitAgent, and CloseAgent. These remain in the API schema on every turn even when deferred loading is enabled, contradicting the upstream design where only truly core tools (file, shell, search, task) are always visible.",
+      "expected_behavior": "Low-frequency orchestration tools (Goal, ViewImage, VerifyPlanExecution, multi-agent v2 tools) are excluded from CORE_TOOLS. They are discoverable only via SearchExtraTools and callable only via ExecuteExtraTool when deferred loading is active. The initial API schema is smaller and stable.",
+      "suggested_approach": "Remove Goal/ViewImage/VerifyPlanExecution/ListAgents/FollowupTask/WaitAgent/CloseAgent from `CORE_TOOLS` in `deferred_tools.rs`. Audit each removal against existing direct callers to ensure no runtime breakage. Update `filter_tools_for_deferred_request` to apply the new boundary."
+    },
+    {
+      "id": "P0-003",
+      "category": "Deferred Loading",
+      "priority": "P0",
+      "description": "Deferred tool filter returns core U discovered instead of core-only when enabled",
+      "current_behavior": "`filter_tools_for_deferred_request` returns `CORE_TOOLS ∪ discovered_tools`, meaning after a single SearchExtraTools invocation the discovered tool's schema is included in future API requests. This differs from upstream claude-code-bun where deferred tools are always hidden behind ExecuteExtraTool.",
+      "expected_behavior": "When deferred loading is enabled, the API schema is always `CORE_TOOLS + SearchExtraTools + ExecuteExtraTool`. Discovered tools are tracked for compact/resume recovery and ExecuteExtraTool guard checks, but their schemas are never injected into subsequent API requests.",
+      "suggested_approach": "Modify `filter_tools_for_deferred_request` to return only CORE_TOOLS plus SearchExtraTools/ExecuteExtraTool, filtering out all discovered tools. Keep discovered-tool tracking for `ExecuteExtraTool` guard validation and compact boundary annotation."
+    },
+    {
+      "id": "P0-004",
+      "category": "Deferred Loading",
+      "priority": "P0",
+      "description": "ExecuteExtraTool bypasses central execution boundary (permission, hook, audit)",
+      "current_behavior": "`ExecuteExtraToolTool::call()` in `deferred_tools.rs` directly calls `target.call(effective_input, ctx, parent_message, on_progress)` after inlining its own permission check. The target tool's `check_permissions` is already invoked (lines 621-653), but PreToolUse/PostToolUse hooks and audit logging see the wrapper tool name (`ExecuteExtraTool`) instead of the target tool name. Permission rules configured for the specific target tool are not reachable through permission callbacks using the wrapper's tool_use_id format.",
+      "expected_behavior": "PreToolUse/PostToolUse hooks receive the real target tool name. Permission deny rules on the target tool are honored even when called through ExecuteExtraTool. Audit records show the actual tool executed. The wrapper acts solely as a discovery guard and parameter forwarder.",
+      "suggested_approach": "Refactor `ExecuteExtraToolTool::call()` to route through the same canonical dispatch as direct tool calls. Ensure the permission callback passes the target tool's identity, not the wrapper. Inject the session's tools catalog into `ToolUseContext` so the wrapper can resolve the target without hitting a stale global registry."
+    },
+    {
+      "id": "P0-005",
+      "category": "Deferred Loading",
+      "priority": "P0",
+      "description": "System prompt enabled tools not aligned with API request visible tools under deferred loading",
+      "current_behavior": "`crates/allthecodes-engine/src/system_prompt/static_sections.rs` generates the prompt section listing available tools. When deferred loading is enabled, this section may reference tools that are not in the filtered API schema, creating a mismatch between what the model is told it can use and what it can actually call.",
+      "expected_behavior": "The system prompt's enabled tool list always derives from the same filtered visible set that is sent in the API request. When deferred loading is active, hidden deferred tools are not mentioned.",
+      "suggested_approach": "Thread the filtered tool set (used to build the API request) into the system prompt constructor. Replace the hardcoded tool enumeration in `static_sections.rs` with a function that takes the visible tool names and renders only those."
+    },
+    {
+      "id": "P0-006",
+      "category": "Phase5 Tool",
+      "priority": "P0",
+      "description": "LocalMemoryRecall uses full-text recursive search instead of store/key model",
+      "current_behavior": "`LocalMemoryRecallTool` in `phase5/mod.rs` walks all files under `memory_dir_global()`, `auto_memory_dir()`, and `transcripts_dir()` performing substring matching. It has no store/key abstraction, no preview-vs-fetch distinction, no per-turn byte budget, and no untrusted data wrapper. It can read `.claude`, `.Codex`, `.codex` paths filtered only by path string contains check.",
+      "expected_behavior": "Schema uses `action: list_stores | list_entries | fetch`, `store`, `key`, `preview_only`. Storage uses allthecodes-isolated path `{data_root}/local-memory/`. Preview is 2KB default; full fetch is 50KB max with per-turn budget tracking (100KB). Full fetch requires store/key granular permission. Content is wrapped as untrusted data.",
+      "suggested_approach": "Rewrite `LocalMemoryRecallTool` to use the store/key action schema. Add per-turn budget tracking via session state. Gate full fetch behind explicit permission. Wrap returned content in an untrusted-data wrapper. Migrate existing memory files under the new path convention."
+    },
+    {
+      "id": "P0-007",
+      "category": "Phase5 Tool",
+      "priority": "P0",
+      "description": "VaultHttpFetch missing redirect check, body cap, timeout, and has UTF-8 truncation risk",
+      "current_behavior": "`VaultHttpFetchTool::call()` uses reqwest default client with no timeout, no body cap, and no redirect policy. The body preview at line 1606 does `&text[..4096]`, which will panic on multi-byte UTF-8 boundaries. HTTPS-enforcement and host-blocking are in `validate_input` but redirects are not re-checked. The `credential_ref` system reads from a plain file (`credentials.json`) with no encryption.",
+      "expected_behavior": "Timeout default 30s. Body cap 1MB. Redirects are rejected or re-checked for host policy. UTF-8 safe truncation is used everywhere. Credential system is encrypted or transitional and explicitly marked as not production-ready.",
+      "suggested_approach": "Configure reqwest `Client` with `timeout(Duration::from_secs(30))`, redirect policy `RedirectPolicy::none()`, and enforce a response body cap. Replace `&text[..4096]` with a UTF-8 safe truncation helper. Document `credentials.json` as transitional with path to encrypted vault."
+    },
+    {
+      "id": "P0-008",
+      "category": "Phase5 Tool",
+      "priority": "P0",
+      "description": "ApplyPatch lacks Codex-compatible freeform/custom grammar support",
+      "current_behavior": "`ApplyPatchTool` in `phase5/mod.rs` accepts a JSON `{\"patch\": \"...\"}` and parses with a custom grammar (`*** Begin Patch` / `*** End Patch`). It implements add, delete, update with context hunks. However it is not a FREEFORM/custom grammar tool as in Codex — it does not support full Codex patch semantics including EOF markers, move operations with full context, or stale-guard read-before-write for move destinations.",
+      "expected_behavior": "Supports FREEFORM/custom grammar as an alternative input path. Add operations emit summaries before application. Update/delete enforce stale-guard (read-before-write). Move destinations are validated separately. Patch begin/update/end lifecycle events.",
+      "suggested_approach": "Add a `parse_codex_freeform()` function alongside the existing `parse_patch()` that supports Codex FREEFORM grammar. Gate it behind a provider capability check. Add stale-guard for all update/delete operations using `ensure_fresh()`. Route both parsers through a common execution path with safety checks."
+    },
+    {
+      "id": "P0-009",
+      "category": "Phase5 Tool",
+      "priority": "P0",
+      "description": "UTF-8 byte-level truncation used in VaultHttpFetch and across other tools",
+      "current_behavior": "VaultHttpFetch uses `&text[..4096]` at line 1606, which panics on multi-byte UTF-8 character boundaries. This pattern may be replicated across the codebase.",
+      "expected_behavior": "All string truncation uses UTF-8 safe helpers. No panics from byte-level slicing of non-ASCII strings.",
+      "suggested_approach": "Create a `utf8_safe_truncate(s: &str, max_bytes: usize) -> &str` utility in `allthecodes-tools` or `allthecodes-types`. Audit all `[..N]` byte slicing patterns on strings and replace with the helper. Fix the VaultHttpFetch body preview."
+    },
+    {
+      "id": "P1-001",
+      "category": "Phase5 Tool / Deferred Loading",
+      "priority": "P1",
+      "description": "SearchExtraTools uses global registry instead of session tools catalog",
+      "current_behavior": "`SearchExtraToolsTool::call()` in `deferred_tools.rs` calls `registry::get_all_tools()` (the process-wide global registry) for deferred candidates. This misses MCP/plugin tools that are registered through runtime providers and only available in the current session's catalog.",
+      "expected_behavior": "SearchExtraTools discovers tools from the current session's full tools catalog, including MCP-contributed and plugin-contributed tools. MCP tools with prefix `mcp__server__tool` are tokenized and searchable.",
+      "suggested_approach": "Inject the session's tools catalog into `ToolUseContext` as a `ToolCatalog` provider or pass it explicitly. Replace `registry::get_all_tools()` in `deferred_candidates()` with a lookup against the session catalog. Add tokenization for MCP prefix names."
+    },
+    {
+      "id": "P1-002",
+      "category": "Phase5 Tool",
+      "priority": "P1",
+      "description": "Phase5 tool schemas use allthecodes CamelCase names, not upstream name convention",
+      "current_behavior": "Phase5 tools use CamelCase (`DiscoverSkills`, `GetGoal`, `Workflow`, `ApplyPatch`, `ViewImage`, `PushNotification`) while upstream claude-code-bun/Codex uses lowercase (`workflow`, `apply_patch`, `get_goal`, `view_image`). This creates transcript incompatibility.",
+      "expected_behavior": "Upstream tool call JSON maps directly to allthecodes. Lowercase aliases or a compatibility layer exists. Duplicate registration and permission-rule bypass are prevented.",
+      "suggested_approach": "For each phase5 tool, register a lowercase alias tool that delegates to the existing CamelCase implementation. Document the mapping in system prompt. Add dedup protection in the registry to prevent duplicate names."
+    },
+    {
+      "id": "P1-003",
+      "category": "Phase5 Tool",
+      "priority": "P1",
+      "description": "Goal tools lack runtime accounting (token/time usage, budget tracking)",
+      "current_behavior": "`CreateGoalTool` in `phase5/mod.rs` stores objective and optional token_budget to `goal_file_path()`. `UpdateGoalTool` only marks complete. No token tracking, time tracking, or budget-limit enforcement occurs during the query loop.",
+      "expected_behavior": "Goals record `tokens_used`, `time_used_seconds`, and enforce `token_budget`. Turn started/finished events update accounting. Budget exhaustion triggers status change and prompt. Completion returns a final usage report.",
+      "suggested_approach": "Add `tokens_used: u64` and `time_used_seconds: u64` fields to `GoalRecord`. Register turn lifecycle hooks in the query loop that increment these fields. The `UpdateGoal(status=complete)` handler computes the final report."
+    },
+    {
+      "id": "P1-004",
+      "category": "Phase5 Tool",
+      "priority": "P1",
+      "description": "Multi-agent v2 lacks spawn_agent and send_message semantics, runtime lifecycle is basic",
+      "current_behavior": "`multi_agent_v2.rs` implements ListAgents, FollowupTask, WaitAgent, CloseAgent — all operate on team-file mailbox state. There is no `spawn_agent` tool (agents must be created through the existing TeamSpawn/primitives). `FollowupTask` writes to mailbox but does not trigger the target's next turn. `CloseAgent` marks inactive without awaiting runtime acknowledgement.",
+      "expected_behavior": "Full v2 lifecycle: spawn_agent (with canonical task path, concurrency limit, fork semantics), send_message (enqueue only), followup_task (enqueue + trigger turn), wait_agent (block until completion or timeout), close_agent (sends shutdown request, awaits ack), list_agents. Root/team lead cannot be closed. Stopped agents can be resumed.",
+      "suggested_approach": "Implement `spawn_agent` tool that creates a background agent with a unique task path. Refactor `FollowupTask` to trigger a turn on the target agent. Add runtime acknowledgement to `CloseAgent`. Merge with existing Agent/Task infrastructure to avoid a second registry. Add proper lifecycle event emission."
+    },
+    {
+      "id": "P1-005",
+      "category": "Command Surface",
+      "priority": "P1",
+      "description": "Multiple duplicated list selection UI state implementations",
+      "current_behavior": "Skills, MCP, Agents, and plugin each maintain their own `selected_index`, `filter`, navigation logic, and row rendering. There is no shared `SelectableListState` component. This leads to behavioral drift (the MCP Status vs Enter inconsistency documented in the debug report).",
+      "expected_behavior": "A shared `SelectableListState` component handles filter, selected index, visible window, navigation, and page scroll. Each surface retains business-specific row rendering and actions but delegates list interaction to the shared component.",
+      "suggested_approach": "Implement `SelectableListState` with `ListItemView` adapter in `crates/allthecodes/src/ui/components/selectable_list.rs`. First consumer is the plugin surface. Migrate skills surface (Phase 3), then MCP (Phase 4), then evaluate agents (Phase 5). No batch refactoring — migrate one surface at a time."
+    },
+    {
+      "id": "P1-006",
+      "category": "Command Surface",
+      "priority": "P1",
+      "description": "Command surface test coverage incomplete for all surfaces",
+      "current_behavior": "`crates/allthecodes/src/ui/command_surface/tests.rs` covers agents, skills, tasks, permissions, login, memory-file-selector, diff, and MCP action tabs. However snapshot tests for empty states, filter-no-match, pagination, and edge cases are missing for most surfaces. The PTY e2e tests cover MCP actions but are gated on the P0 build fix.",
+      "expected_behavior": "Each command surface has unit tests for: empty list, filter with results, filter with no results, navigation wrap/clamp, selected item rendering, and Enter action. E2E PTY tests cover all action types for MCP, skills, agent, and plugin surfaces.",
+      "suggested_approach": "After the P0 build fix is landed, add unit tests for each surface's edge cases. Add snapshot fixtures for empty/filtered/paginated states. Unblock the PTY e2e tests in `tests/pty_tui_e2e/tests/commands_surface.rs`."
+    },
+    {
+      "id": "P1-007",
+      "category": "Deferred Loading",
+      "priority": "P1",
+      "description": "Deferred loading gated behind env var, not default-on or configured",
+      "current_behavior": "Deferred tool filtering activates only when `ALLTHECODES_DEFERRED_TOOL_LOADING` or `CC_RUST_DEFERRED_TOOL_LOADING` is set. Otherwise the full tool set is always sent. There is no configuration path to enable it.",
+      "expected_behavior": "Deferred loading is enabled by default or configurable through settings (not just env vars). The env var can still override for testing.",
+      "suggested_approach": "Add a `deferred_tool_loading` boolean to the settings struct. Default to false initially, true after validation. The env var overrides the setting. Thread the enabled flag through engine startup into `filter_tools_for_deferred_request`."
+    },
+    {
+      "id": "P1-008",
+      "category": "Phase5 Tool",
+      "priority": "P1",
+      "description": "DiscoverSkills search quality is basic substring match",
+      "current_behavior": "`DiscoverSkillsTool` in `phase5/mod.rs` uses `text_score()` which is a substring contain-count. There is no TF-IDF, no searchHint, no CJK token support, no exact-name fast path. `SearchExtraTools` also uses the same basic `score_candidate()` with substring matching.",
+      "expected_behavior": "Tools have an indexed search with: tokenized names, searchHint metadata, exact-name fast path (score 20), required `+term` support (score 5), substring name match (score 8), description match (score 3), and CJK-aware tokenization.",
+      "suggested_approach": "Build a `ToolIndex` that pre-computes token frequencies and search hints. Import or implement a lightweight TF-IDF scorer. Add CJK word segmentation (via jieba or unicode segmentation). Cache across searches within a session."
+    },
+    {
+      "id": "P2-001",
+      "category": "Phase5 Tool",
+      "priority": "P2",
+      "description": "Phase5 tool test coverage is minimal",
+      "current_behavior": "`phase5/mod.rs` has only 3 test functions: `phase5_goal_lifecycle`, `phase5_parse_patch_add_update_delete`, `phase5_vault_rejects_private_targets`. LocalMemoryRecall, VaultHttpFetch, Workflow, DiscoverSkills, PushNotification, ViewImage have zero tests. `multi_agent_v2.rs` only tests tool names.",
+      "expected_behavior": "Each phase5 tool has unit tests for: nominal call, invalid input, permission behavior, error paths, and UTF-8 safety. Integration tests cover deferred search/execute of phase5 tools.",
+      "suggested_approach": "Add unit test modules for each phase5 tool following the patterns in `phase5/mod.rs tests`. Add deferred loading integration tests in `deferred_tools.rs`. Test permission bypass prevention through ExecuteExtraTool."
+    },
+    {
+      "id": "P2-002",
+      "category": "Phase5 Tool",
+      "priority": "P2",
+      "description": "Tool exposure gating (feature, model capability, session context) missing",
+      "current_behavior": "All registered tools appear in the schema regardless of whether the model supports image input, or the session is non-interactive. `ViewImage` is exposed to text-only models. `PushNotification` webhook is always attempted even in headless CI.",
+      "expected_behavior": "Tools are gated by: feature flags (deferred loading, workflow scripts, push notification remote bridge, goal tools, multi-agent v2), model capabilities (image input for ViewImage, custom grammar for apply_patch), and session context (non-interactive agents cannot prompt).",
+      "suggested_approach": "Add a `ToolFilter` that checks model capabilities before including ViewImage and apply_patch-freeform. Add session-mode check for permission-bubbling tools. Wire feature flags to tool registration. Test that disabled gates remove tools from the API schema."
+    },
+    {
+      "id": "P2-003",
+      "category": "Command Surface",
+      "priority": "P2",
+      "description": "Missing snapshot tests for command surface rendering states",
+      "current_behavior": "Command surface tests use string-contains assertions on render output. There are no snapshot or insta tests capturing the full rendered output for different UI states (empty, filtered, selected, scrolled).",
+      "expected_behavior": "Each surface has snapshot tests for: default state, empty state, filtered state, selected item, long-list pagination, and scroll indicators.",
+      "suggested_approach": "Add insta/review snapshot tests for key rendering states. Start with the MCP and skills surfaces after SelectableListState migration. Keep snapshots in the crate's snapshot directory."
+    },
+    {
+      "id": "P2-004",
+      "category": "Phase5 Tool / Deferred Loading",
+      "priority": "P2",
+      "description": "UI/headless rendering hides internal attachments and tool lifecycle events",
+      "current_behavior": "Internal attachments like `deferred_tools_delta`, compact discovered metadata, and verify reminders appear as raw JSON in user-visible UI. Multi-agent lifecycle (spawn/send/wait/close) has no dedicated rendering. LocalMemory results and Vault results display raw content.",
+      "expected_behavior": "Internal attachments are hidden from user-visible UI. Each phase5 tool has dedicated rendering (permission preview, lifecycle status, result summary). Secret data is never rendered.",
+      "suggested_approach": "Mark internal attachments with a `hidden_from_ui` flag. Add dedicated renderers for: ApplyPatch diff summary, Workflow start/status/cancel, PushNotification delivered/undelivered, multi-agent lifecycle events, Vault status/header without secrets."
+    },
+    {
+      "id": "P2-005",
+      "category": "Phase5 Tool",
+      "priority": "P2",
+      "description": "Workflow tool does not support upstream `workflow` schema (advance, list) or project workflow files",
+      "current_behavior": "`WorkflowTool` is CamelCase, reads from allthecodes durable spec workflow files, supports start/status/cancel. Upstream `workflow` reads project `.claude/workflows` and supports start/status/advance/cancel/list.",
+      "expected_behavior": "Lowercase `workflow` tool reads from `.allthecodes/workflows` and writes run state to `.allthecodes/workflow-runs`. Supports advance (step execution progression) and list (list available workflows). Existing camelcase `Workflow` is marked as Intentional divergence.",
+      "suggested_approach": "Add lowercase `workflow` tool that reads project `.allthecodes/workflows` YAML/JSON files. Register as a separate tool, mark camelcase `Workflow` as divergence. Add `advance` mode to progress workflow step state."
+    },
+    {
+      "id": "P2-006",
+      "category": "Deferred Loading",
+      "priority": "P2",
+      "description": "No MCP deferred tool search/execute integration tests",
+      "current_behavior": "`deferred_tools.rs` tests cover core/discovered filtering and compact boundary annotation, but have no tests for MCP/plugin deferred tool scenarios including `mcp__server__tool` naming, dynamic refresh, or multi-server discovery.",
+      "expected_behavior": "Tests exist for: MCP tool prefix tokenization, deferred search discovering MCP tools, ExecuteExtraTool calling MCP tools through the session catalog, MCP tool refresh propagating into deferred search results.",
+      "suggested_approach": "Add integration tests that mock MCP tool registration and verify SearchExtraTools discovers them, ExecuteExtraTool executes them, and permission rules applied to MCP tools are enforced through the wrapper."
+    },
+    {
+      "id": "P2-007",
+      "category": "Command Surface",
+      "priority": "P2",
+      "description": "MCP Remove action lacks confirmation surface",
+      "current_behavior": "MCP Remove action in the command surface directly submits `/mcp remove <server>` without any confirmation dialog. PTY e2e tests work around this by creating isolated temp workspaces, but real users get no confirmation before destructive action.",
+      "expected_behavior": "MCP Remove either prompts for confirmation before submitting, or fills `/mcp remove <server> ` in the prompt input for user review before execution.",
+      "suggested_approach": "Add a confirmation step to the MCP Remove action handler in the command surface. The action should either show a yes/no confirmation or fill the prompt for review. Add test coverage for the confirmation flow."
+    }
+  ]
+}

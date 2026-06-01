@@ -1,0 +1,62 @@
+# Workspace crate extraction execution task list.
+# Run with:
+# .\scripts\run-workspace-crate-extraction-omx.ps1
+
+[checkpoint] workspace-00 - Read the parent plan and six execution subplans, snapshot dirty worktree paths, record crate DAG, record file-size hot spots, and run only baseline checks needed to decide whether api/models can start. Return PASS/WARNING/BLOCKER with exact evidence.
+
+[checkpoint] api-models-00 - Inventory current api/model imports, DTO ownership, dependency graph, and baseline tests for api::, commands::login, and engine::lifecycle. Do not move code in this task.
+[build] api-models-01 - Move model metadata into cc-models, rewire metadata-only callers, keep behavior unchanged, and run cc-models tests plus dependency checks.
+[review] api-models-02 - Verify cc-models has no transport deps, model errors remain explicit, file-size guards pass, and effects/defects/follow-ups are recorded.
+[build] api-models-03 - Move provider transport, stream, retry, token-counting, and auth-bearing request code into cc-api with temporary shim only if required.
+[review] api-models-04 - Verify provider behavior, explicit diagnostics, no duplicated DTO ownership, and no root api shim dependency beyond approved transition.
+[final] api-models-05 - Remove api/model shims, run lane gates, update tracker, and commit only if all api/models checks are green.
+
+[checkpoint] engine-query-00 - Inventory engine/query call sites, loop ownership, baseline tests, dependency graph, and file-size hot spots. Do not move code in this task.
+[build] engine-query-01 - Move query loop implementation and helpers into cc-query with temporary shim and preserve cancellation/order semantics.
+[review] engine-query-02 - Verify loop parity, cancellation behavior, cc-query dependency boundary, and explicit query errors.
+[build] engine-query-03 - Move lifecycle, submit_message, deps, and helpers into cc-engine and rewire calls to cc-query.
+[review] engine-query-04 - Verify lifecycle tests, submit path behavior, no new engine monolith drift, and file-size guard output.
+[build] engine-query-05 - Move engine-owned agent runtime support and rewire callers without moving generic tool handlers.
+[final] engine-query-06 - Remove engine/query shims, run lane gates, update tracker, and commit only if all engine/query checks are green.
+
+[checkpoint] tools-tasks-00 - Inventory tool/task call sites, task persistence shapes, baseline tests, dependency graph, and file-size hot spots. Do not move code in this task.
+[build] tools-tasks-01 - Scaffold cc-tasks boundary and add task-domain exports without behavior changes.
+[review] tools-tasks-02 - Verify boundary ownership, no cc-tools runtime-monolith drift, and no duplicate defensive validation.
+[build] tools-tasks-03 - Move task state, store, output, and result types into cc-tasks and migrate deterministic tests.
+[build] tools-tasks-04 - Move task parsing, validation, dispatch, and handlers into cc-tasks with explicit structured errors.
+[review] tools-tasks-05 - Verify task parity, explicit diagnostics, persistence shape stability, and file-size guard output.
+[build] tools-tasks-06 - Slim cc-tools to specs, registry helpers, and thin adapters; rewire task callers.
+[final] tools-tasks-07 - Delete task/tool shims, run lane gates, update tracker, and commit only if all tools/tasks checks are green.
+
+[checkpoint] ipc-00 - Record IPC wire inventory, line-size baseline, metadata graph, current roundtrip tests, and baseline ipc/tool tests. Do not move code in this task.
+[build] ipc-01 - Move protocol DTOs and serde roundtrip tests into cc-ipc-protocol with compatibility import updates.
+[review] ipc-02 - Verify no wire drift, no runtime dependencies in cc-ipc-protocol, and protocol test coverage.
+[build] ipc-03 - Move client transport, sink, ingress, callbacks, and query-runner client path into cc-ipc-client with event class tests.
+[review] ipc-04 - Verify lossless/best-effort queue behavior, explicit pressure diagnostics, and no silent drops.
+[build] ipc-05 - Move runtime IPC orchestration handlers into cc-ipc and rewire engine/commands/tools call sites.
+[review] ipc-06 - Verify dependency graph, behavior parity, no duplicated safety layers, and file-size guard output.
+[build] ipc-07 - Hand off send_message, team_spawn, and system_status IPC-facing tools to owning runtime crates where dependency direction is clean.
+[final] ipc-08 - Remove IPC shims, run final IPC gates, update tracker, and commit only if all IPC checks are green.
+
+[checkpoint] commands-00 - Inventory command modules, dispatcher call sites, source-layout tests, baseline command/e2e tests, and file-size hot spots. Do not move code in this task.
+[build] commands-01 - Move parser, registry, dispatcher, and low-coupling commands into cc-commands with root shim.
+[review] commands-02 - Verify dispatcher parity, parser tests, stable command output, and no hidden fallback errors.
+[build] commands-03 - Move config, model, session, and memory command clusters and update tests.
+[review] commands-04 - Verify explicit command errors, settings/session behavior, dependency graph, and file-size guard output.
+[build] commands-05 - Move tool, service, and MCP command clusters as dependency crates allow.
+[review] commands-06 - Verify no UI/web/runtime imports in cc-commands and no command behavior drift.
+[build] commands-07 - Move team, task, and agent command clusters and rewire call sites.
+[final] commands-08 - Remove command shims, run e2e command gates, update tracker, and commit only if all commands checks are green.
+
+[checkpoint] ui-00 - Verify IPC/client prerequisites, capture UI snapshot/PTY baseline, record UI import map, and confirm current UI boundary instruction status. Do not move code if prerequisites are not green.
+[build] ui-01 - Scaffold cc-ui and root facade without behavior changes.
+[build] ui-02 - Move app, tui, messages entry files and immediate tests into cc-ui.
+[review] ui-03 - Verify facade stability, entry tests, no behavior drift, and file-size guard output.
+[build] ui-04 - Move command surfaces, palette, selection/input widgets, tests, and snapshots.
+[review] ui-05 - Verify snapshot intent, no redundant fallback wrappers, and component file-size guard output.
+[build] ui-06 - Move runtime, rendering, input, platform, status, and persistent history modules.
+[review] ui-07 - Run PTY/snapshot subset and validate explicit runtime diagnostics.
+[build] ui-08 - Move feature-domain UI modules in ownership groups.
+[final] ui-09 - Remove UI shims, run final gates, update status/report docs, and commit only if all UI checks are green.
+
+[final] workspace-99 - Run final workspace verification requested by the parent plan, summarize implemented effects, defects, follow-up tracking, dependency graph state, file-size findings, and remaining risks in the tracker.

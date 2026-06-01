@@ -1,0 +1,25 @@
+# One task per line for scripts/codex-task-sequence.ps1. Saved as UTF-8. Archived runner: scripts/achieve/run-remote-control-gateway-omx-sessions.ps1.
+执行 Session 00 - Baseline And Partition。读取 docs/plan/remote-control-gateway-omx-execution-plan-2026-05-08.md 和 docs/plan/remote-control-gateway-execution-plan-2026-05-08.md；固定模型 gpt-5.5、reasoning medium；减少显式思考过程，只输出行动、证据、风险。只读检查 omx --version、git status、remote/gateway/TUI 入口；可用 omx sparkshell 或 rg；不要改文件，不提交。
+执行 Session 01 - Phase 0 Boundary Docs。读取两个 remote-control 计划；按计划只修改 owned docs；明确 gateway/daemon/ipc/remote/TUI/Telegram/Lark 边界；运行 rg 和 git diff --check；只 stage 本 session 文档文件，按 Lore 协议提交。
+执行 Session 02 - Phase 1A Gateway Crate Foundation。读取执行计划 Session 02；实现 crates/gateway foundation、RemoteSource、session key、cc-config gateway paths；禁止修改 daemon routes/ui/ipc；按需用最多 2 个 gpt-5.5 medium default subagent 做只读定位；运行 cargo test/check 和单文件行数检测；通过后只提交 owned files。
+执行 Session 03 - Phase 1B Run Store And Policy。读取执行计划 Session 03；实现 run/events/store/policy/idempotency；错误要有 stable code/message/action；不依赖 daemon/ui；运行 cargo test/check 和单文件行数检测；通过后只提交 owned files。
+执行 Review A - Schema Store Review。只读 review Sessions 02-03 的 diff、last-message 和测试结果；检查状态机、redaction、idempotency、路径隔离、文件过大；发现 blocker 时做最小修复并单独提交，否则不提交。
+执行 Session 04 - Phase 2A Adapter Registry And Telegram。读取执行计划 Session 04；实现 adapter trait/registry/Telegram connect health test-message；不做 inbound conversation，不触发模型，不泄漏 token；运行 cargo test/check 和单文件行数检测；通过后提交。
+执行 Session 05 - Phase 2B Lark And Adapter Status API Model。读取执行计划 Session 05；实现 Lark outbound/webhook/app credentials 连接诊断和 provider-neutral status；缺凭据返回 blocked reason；运行 cargo test/check 和单文件行数检测；通过后提交。
+执行 Session 06 - Phase 3A Runner And Daemon Protocol Bridge。读取执行计划 Session 06；实现 gateway runner 与 daemon bridge skeleton，保持 gateway 不依赖 claude-code-rs；protocol 扩展向后兼容；运行 cargo test/check 和单文件行数检测；通过后提交。
+执行 Session 07 - Phase 3B Worker Ownership Migration。高风险 session，一次只做本任务；读取执行计划 Session 07；解决 /api/submit supervisor 直执行与 worker deferred 生命周期漂移；不把 remote 主逻辑塞进 routes.rs；若无法一次完成，写明确 blocker，不伪装完成；运行 daemon tests/check/行数检测；通过后提交。
+执行 Review B - Execution Ownership Review。只读 review Phase 3；检查 POST /runs 到 command/event/run store 链路、旧 /api 兼容、abort/permission/ask-user run-scoped、routes.rs 行数；发现 blocker 最小修复并单独提交，否则不提交。
+执行 Session 08 - Phase 4A HTTP API Capabilities And Runs。读取执行计划 Session 08；实现 gateway api capabilities/create run/get run 与 daemon 薄接线；route handler 不承载策略；保持旧 /api 兼容；运行 cargo test/check/行数检测；通过后提交。
+执行 Session 09 - Phase 4B Events Stop Approval AskUser Adapters API。读取执行计划 Session 09；实现 event replay、stop、approval、ask-user、adapters endpoints；错误码稳定；运行 cargo test/check/行数检测；通过后提交。
+执行 Review C - API Contract Review。只读 review Phase 4 API；检查 endpoint shape、stable error codes、旧 /api 兼容、durable event replay；发现 blocker 最小修复并单独提交，否则不提交。
+执行 Session 10 - Phase 4.5A Local Gateway Client And /remote。读取执行计划 Session 10；实现 daemon/gateway_client.rs 和 /remote command；mutating 操作走 gateway API/local client；不直接写 worker 文件；输出 redacted；remote_cmd.rs 超 450 行需拆；运行 tests/check/行数检测；通过后提交。
+执行 Session 11 - Phase 4.5B TUI Remote Surface。读取执行计划 Session 11；实现 command palette metadata、RemoteSurface、status_widget indicator；render path 不做阻塞 IO；/remote 空参数打开 surface，/remote status 走 text handler；运行 UI tests/check/行数检测；通过后提交。
+执行 Review D - Local UX And Redaction Review。只读 review /remote 与 TUI；检查不泄密、不绕过 gateway、不阻塞 UI、snapshot 合理；发现 blocker 最小修复并单独提交，否则不提交。
+执行 Session 12 - Phase 5 Security Hardening。强制 release gate；读取执行计划 Session 12；统一 GatewayDiagnostic/GatewayError，避免冗余安全层；实现 auth/origin/payload/rate/HMAC/idempotency/redaction；运行 gateway 与 remote/TUI redaction tests、git diff --check、行数检测；通过后提交。
+执行 Review E - Security Gate。只读 review Phase 5；检查 bad token/origin/payload/HMAC/idempotency/queue 错误码、非 loopback fail closed、无 token 泄漏；发现 blocker 最小修复并单独提交，否则不提交。
+执行 Session 13 - Phase 6 Declarative Webhooks。读取执行计划 Session 13；实现声明式 webhook route/HMAC/filter/prompt rendering，并保持现有 GitHub PR activity/team mailbox 兼容；运行 webhook/pr_activity/check/行数检测；通过后提交。
+执行 Session 14 - Phase 7 Delivery Router。读取执行计划 Session 14；实现 delivery target/local/callback/channel/failure events；callback SSRF 防护要有明显诊断；运行 cargo test/check/行数检测；通过后提交。
+执行 Session 15 - Phase 8 Recovery Queue E2E。高风险 session；读取执行计划 Session 15；实现 restart recovery、queue、stale lock、e2e_gateway；运行 gateway/daemon/e2e/check/行数检测；通过后提交。
+执行 Review F - Recovery Gate。只读 review recovery；检查 daemon restart、queued run、pending approval、stale lock、duplicate idempotency；发现 blocker 最小修复并单独提交，否则不提交。
+执行 Session 16 - Phase 9 Docs Release Gate。读取执行计划 Session 16；保存实现效果、缺陷、验证、未测项、后续跟踪到 docs/plan/remote-control-gateway-implementation-report-2026-05-08.md，并更新 reference/CLI/release/KNOWN_ISSUES；运行 rg 和 git diff --check；通过后提交。
+执行 Session 17 - Final Verification。验证-only；读取执行计划 Session 17；不主动改代码；运行 git diff --check、cargo test -p gateway、remote/TUI/daemon targeted tests、cargo check；失败只报告第一可行动错误和后续修复建议；若必须修复 blocker，单独提交。
