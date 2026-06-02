@@ -1,5 +1,6 @@
 //! Chat, abort, and state handlers — core chat API.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use axum::extract::State;
@@ -7,6 +8,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tracing::info;
 
 use allthecodes_daemon::web::sdk_stream_to_sse;
@@ -58,6 +60,9 @@ pub struct StateResponse {
     // Phase 3 additions
     pub usage: UsageResponse,
     pub commands: Vec<CommandInfo>,
+    pub settings_map: HashMap<String, Value>,
+    pub version: String,
+    pub capabilities: HashMap<String, bool>,
 }
 
 /// POST /api/chat -- Start a streaming chat response via SSE.
@@ -196,5 +201,8 @@ pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
             api_call_count: usage.api_call_count,
         },
         commands,
+        settings_map: app_state.settings.settings_map(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        capabilities: crate::handlers::capabilities_map(),
     })
 }

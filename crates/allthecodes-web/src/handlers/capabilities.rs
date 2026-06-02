@@ -17,6 +17,12 @@ pub struct CapabilityDiscoveryResponse {
 
 /// GET /api/capabilities -- Return capability discovery map.
 pub async fn capabilities_handler() -> impl IntoResponse {
+    Json(CapabilityDiscoveryResponse {
+        capabilities: capabilities_map(),
+    })
+}
+
+pub fn capabilities_map() -> HashMap<String, bool> {
     let mut caps = HashMap::new();
     // Ready capabilities
     caps.insert("chat".into(), true);
@@ -31,16 +37,22 @@ pub async fn capabilities_handler() -> impl IntoResponse {
     caps.insert("models".into(), true);
     caps.insert("providers".into(), true);
     caps.insert("credentials".into(), true);
-    caps.insert("usage".into(), false);
+    caps.insert("usage".into(), true);
     caps.insert("skills".into(), false);
-    caps.insert("memory".into(), false);
+    caps.insert("memory".into(), true);
+    caps.insert("speech".into(), true);
+    caps.insert("tts".into(), true);
+    caps.insert("web_search".into(), true);
+    caps.insert("network".into(), true);
+    caps.insert("data".into(), true);
+    caps.insert("token_savings".into(), true);
     caps.insert("kanban".into(), false);
     caps.insert("jobs".into(), false);
     caps.insert("group_chat".into(), false);
     caps.insert("files".into(), false);
     caps.insert("logs".into(), false);
     caps.insert("backend_services".into(), false);
-    Json(CapabilityDiscoveryResponse { capabilities: caps })
+    caps
 }
 
 /// Catch-all handler for unregistered /api/* paths.

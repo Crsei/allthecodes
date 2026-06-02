@@ -20,6 +20,7 @@ pub mod models;
 pub mod profiles;
 pub mod providers;
 pub mod sessions;
+pub mod settings_phase1;
 
 // Re-export all public items from each submodule so the router builder
 // and external callers can still use `handlers::*` paths.
@@ -32,6 +33,7 @@ pub use models::*;
 pub use profiles::*;
 pub use providers::*;
 pub use sessions::*;
+pub use settings_phase1::*;
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -74,6 +76,10 @@ pub(crate) fn get_all_commands() -> Vec<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::WebState;
+    use allthecodes_engine::lifecycle::QueryEngine;
+    use allthecodes_engine::types::config::QueryEngineConfig;
+    use allthecodes_engine::types::tool::PermissionMode;
     use axum::body::to_bytes;
     use axum::extract::State;
     use axum::http::StatusCode;
@@ -82,10 +88,6 @@ mod tests {
     use serde_json::{json, Value};
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
-    use allthecodes_engine::lifecycle::QueryEngine;
-    use allthecodes_engine::types::config::QueryEngineConfig;
-    use allthecodes_engine::types::tool::PermissionMode;
-    use crate::state::WebState;
 
     fn make_web_state() -> WebState {
         let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
@@ -205,5 +207,24 @@ mod tests {
             state.engine().app_state().tool_permission_context.mode,
             PermissionMode::Default
         );
+    }
+
+    #[tokio::test]
+    async fn state_response_includes_settings_map_version_and_capabilities() {
+        let state = make_web_state();
+        state.engine().update_app_state(|s| {
+            s.settings.language = Some("zh-CN".to_string());
+            s.settings.proxy_enabled = Some(true);
+        });
+
+        let response = state_handler(State(state)).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["settings_map"]["language"], json!("zh-CN"));
+        assert_eq!(body["settings_map"]["proxy_enabled"], json!(true));
+        assert!(body["version"].as_str().is_some());
+        assert_eq!(body["capabilities"]["settings"], json!(true));
+        assert_eq!(body["capabilities"]["memory"], json!(true));
     }
 }

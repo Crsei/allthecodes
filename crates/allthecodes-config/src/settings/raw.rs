@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::effective::EffectiveSettings;
 use super::providers::{merge_provider_profile, ProviderProfileSettings};
@@ -54,6 +55,16 @@ pub struct RawSettings {
     pub view_mode: Option<String>,
     pub spinner_tips: Option<SpinnerTipsSettings>,
     pub terminal_progress_bar_enabled: Option<bool>,
+    pub app_icon: Option<String>,
+    pub auto_start: Option<bool>,
+    pub start_minimized: Option<bool>,
+    pub minimize_to_tray: Option<bool>,
+    pub close_to_tray: Option<bool>,
+    pub quick_chat_hide_on_blur: Option<bool>,
+    pub quick_chat_inject_screen: Option<bool>,
+    pub quick_chat_ambient: Option<bool>,
+    pub auto_approve_tools: Option<bool>,
+    pub analytics_enabled: Option<bool>,
 
     // -- Model / effort -------------------------------------------------
     /// Anthropic thinking toggle. Accepts request-shaped values such as
@@ -89,6 +100,25 @@ pub struct RawSettings {
     /// Persisted under `advisorModel`. Only honored by providers that
     /// advertise advisor support; others log a warning and ignore it.
     pub advisor_model: Option<String>,
+    pub context_window: Option<u64>,
+    pub max_messages: Option<u64>,
+    pub auto_title: Option<bool>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub streaming: Option<bool>,
+    pub show_token_usage: Option<bool>,
+    pub markdown_rendering: Option<bool>,
+    pub single_dollar_math: Option<bool>,
+    pub infographic: Option<bool>,
+    pub auto_collapse_reasoning: Option<bool>,
+    pub quick_reply_suggestions: Option<bool>,
+    pub default_tool_selection: Option<String>,
+    pub default_skill_selection: Option<String>,
+    pub sound_effects: Option<bool>,
+    pub auto_compact: Option<bool>,
+    pub compact_threshold: Option<u8>,
+    pub keep_recent_messages: Option<u8>,
+    pub hashline_mode: Option<bool>,
 
     // -- Modes / integrations ------------------------------------------
     pub teammate_mode: Option<bool>,
@@ -101,6 +131,39 @@ pub struct RawSettings {
     /// `build_memory_context_with`. Default is `None` (off). The capture
     /// hook itself is not yet wired up — only the state is persisted.
     pub auto_memory_enabled: Option<bool>,
+    pub memory_auto_retrieve: Option<bool>,
+    pub memory_query_rewriting: Option<bool>,
+    pub memory_max_retrieved: Option<u8>,
+    pub memory_similarity_threshold: Option<u8>,
+    pub memory_auto_summarize: Option<bool>,
+    pub memory_nightly: Option<bool>,
+    pub memory_sleep_time: Option<String>,
+    pub memory_temp_ttl: Option<u32>,
+    pub memory_archive_retention: Option<u32>,
+    pub memory_tool_model: Option<String>,
+    pub memory_embedding_model: Option<String>,
+
+    // -- Network / search / speech -------------------------------------
+    pub proxy_enabled: Option<bool>,
+    pub proxy_url: Option<String>,
+    pub prefer_ipv4: Option<bool>,
+    pub request_timeout: Option<u64>,
+    pub retry_attempts: Option<u8>,
+    pub custom_user_agent: Option<String>,
+    pub speech_enabled: Option<bool>,
+    pub speech_active_model: Option<String>,
+    pub speech_language: Option<String>,
+    pub tts_provider: Option<String>,
+    pub tts_api_key: Option<String>,
+    pub tts_voice: Option<String>,
+    pub tts_voice_custom_id: Option<String>,
+    pub tts_model: Option<String>,
+    pub search_engine: Option<String>,
+
+    // -- Data / savings -------------------------------------------------
+    pub cloud_sync_enabled: Option<bool>,
+    pub cloud_sync_path: Option<String>,
+    pub token_savings_tracking: Option<bool>,
 
     // -- Prompts --------------------------------------------------------
     pub system_prompt: Option<String>,
@@ -123,6 +186,16 @@ pub struct RawSettings {
 }
 
 impl RawSettings {
+    /// Store an arbitrary extension value under `extra` using a dotted path.
+    ///
+    /// Known settings should prefer typed fields. This helper preserves
+    /// forward compatibility for web UI settings that are not yet modeled.
+    pub fn set_extra_path(&mut self, path: &str, value: Value) -> Result<()> {
+        let parts = parse_extra_path(path)?;
+        insert_extra_path(&mut self.extra, &parts, value);
+        Ok(())
+    }
+
     /// Merge `other` **on top of** `self`. Mutates `self` in place and
     /// records, in `sources`, every key that `other` provided.
     pub(crate) fn merge_from(
@@ -203,6 +276,16 @@ impl RawSettings {
         merge_opt!(view_mode, "viewMode");
         merge_opt!(spinner_tips, "spinnerTips");
         merge_opt!(terminal_progress_bar_enabled, "terminalProgressBarEnabled");
+        merge_opt!(app_icon, "appIcon");
+        merge_opt!(auto_start, "autoStart");
+        merge_opt!(start_minimized, "startMinimized");
+        merge_opt!(minimize_to_tray, "minimizeToTray");
+        merge_opt!(close_to_tray, "closeToTray");
+        merge_opt!(quick_chat_hide_on_blur, "quickChatHideOnBlur");
+        merge_opt!(quick_chat_inject_screen, "quickChatInjectScreen");
+        merge_opt!(quick_chat_ambient, "quickChatAmbient");
+        merge_opt!(auto_approve_tools, "autoApproveTools");
+        merge_opt!(analytics_enabled, "analyticsEnabled");
         merge_opt!(thinking, "thinking");
         merge_opt!(output_config, "output_config");
         merge_opt!(default_model, "defaultModel");
@@ -216,12 +299,60 @@ impl RawSettings {
         merge_opt!(model_reasoning_effort, "model_reasoning_effort");
         merge_opt!(fast_mode, "fastMode");
         merge_opt!(fast_mode_per_session_opt_in, "fastModePerSessionOptIn");
+        merge_opt!(context_window, "contextWindow");
+        merge_opt!(max_messages, "maxMessages");
+        merge_opt!(auto_title, "autoTitle");
+        merge_opt!(temperature, "temperature");
+        merge_opt!(max_tokens, "maxTokens");
+        merge_opt!(streaming, "streaming");
+        merge_opt!(show_token_usage, "showTokenUsage");
+        merge_opt!(markdown_rendering, "markdownRendering");
+        merge_opt!(single_dollar_math, "singleDollarMath");
+        merge_opt!(infographic, "infographic");
+        merge_opt!(auto_collapse_reasoning, "autoCollapseReasoning");
+        merge_opt!(quick_reply_suggestions, "quickReplySuggestions");
+        merge_opt!(default_tool_selection, "defaultToolSelection");
+        merge_opt!(default_skill_selection, "defaultSkillSelection");
+        merge_opt!(sound_effects, "soundEffects");
+        merge_opt!(auto_compact, "autoCompact");
+        merge_opt!(compact_threshold, "compactThreshold");
+        merge_opt!(keep_recent_messages, "keepRecentMessages");
+        merge_opt!(hashline_mode, "hashlineMode");
         merge_opt!(teammate_mode, "teammateMode");
         merge_opt!(
             claude_in_chrome_default_enabled,
             "claudeInChromeDefaultEnabled"
         );
         merge_opt!(auto_memory_enabled, "autoMemoryEnabled");
+        merge_opt!(memory_auto_retrieve, "memoryAutoRetrieve");
+        merge_opt!(memory_query_rewriting, "memoryQueryRewriting");
+        merge_opt!(memory_max_retrieved, "memoryMaxRetrieved");
+        merge_opt!(memory_similarity_threshold, "memorySimilarityThreshold");
+        merge_opt!(memory_auto_summarize, "memoryAutoSummarize");
+        merge_opt!(memory_nightly, "memoryNightly");
+        merge_opt!(memory_sleep_time, "memorySleepTime");
+        merge_opt!(memory_temp_ttl, "memoryTempTtl");
+        merge_opt!(memory_archive_retention, "memoryArchiveRetention");
+        merge_opt!(memory_tool_model, "memoryToolModel");
+        merge_opt!(memory_embedding_model, "memoryEmbeddingModel");
+        merge_opt!(proxy_enabled, "proxyEnabled");
+        merge_opt!(proxy_url, "proxyUrl");
+        merge_opt!(prefer_ipv4, "preferIpv4");
+        merge_opt!(request_timeout, "requestTimeout");
+        merge_opt!(retry_attempts, "retryAttempts");
+        merge_opt!(custom_user_agent, "customUserAgent");
+        merge_opt!(speech_enabled, "speechEnabled");
+        merge_opt!(speech_active_model, "speechActiveModel");
+        merge_opt!(speech_language, "speechLanguage");
+        merge_opt!(tts_provider, "ttsProvider");
+        merge_opt!(tts_api_key, "ttsApiKey");
+        merge_opt!(tts_voice, "ttsVoice");
+        merge_opt!(tts_voice_custom_id, "ttsVoiceCustomId");
+        merge_opt!(tts_model, "ttsModel");
+        merge_opt!(search_engine, "searchEngine");
+        merge_opt!(cloud_sync_enabled, "cloudSyncEnabled");
+        merge_opt!(cloud_sync_path, "cloudSyncPath");
+        merge_opt!(token_savings_tracking, "tokenSavingsTracking");
         merge_opt!(advisor_model, "advisorModel");
         merge_opt!(system_prompt, "systemPrompt");
         merge_opt!(api_key, "apiKey");
@@ -239,6 +370,59 @@ impl RawSettings {
             self.extra.insert(k.clone(), v);
             sources.insert(k, source);
         }
+    }
+}
+
+fn parse_extra_path(path: &str) -> Result<Vec<&str>> {
+    let parts: Vec<&str> = path.split('.').collect();
+    if parts.is_empty() {
+        bail!("settings path cannot be empty");
+    }
+    for part in &parts {
+        if part.is_empty() {
+            bail!("settings path cannot contain empty segments");
+        }
+        if !part
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        {
+            bail!("settings path contains unsupported characters");
+        }
+    }
+    Ok(parts)
+}
+
+fn insert_extra_path(extra: &mut HashMap<String, Value>, parts: &[&str], value: Value) {
+    if parts.len() == 1 {
+        extra.insert(parts[0].to_string(), value);
+        return;
+    }
+
+    let entry = extra
+        .entry(parts[0].to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    insert_json_path(entry, &parts[1..], value);
+}
+
+fn insert_json_path(current: &mut Value, parts: &[&str], value: Value) {
+    if parts.len() == 1 {
+        if !current.is_object() {
+            *current = Value::Object(Map::new());
+        }
+        if let Some(map) = current.as_object_mut() {
+            map.insert(parts[0].to_string(), value);
+        }
+        return;
+    }
+
+    if !current.is_object() {
+        *current = Value::Object(Map::new());
+    }
+    if let Some(map) = current.as_object_mut() {
+        let entry = map
+            .entry(parts[0].to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        insert_json_path(entry, &parts[1..], value);
     }
 }
 

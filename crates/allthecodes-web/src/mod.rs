@@ -28,6 +28,34 @@ pub fn build_router(state: WebState) -> Router {
         // Phase 3: Settings and command endpoints
         .route("/api/settings", post(handlers::settings_handler))
         .route("/api/command", post(handlers::command_handler))
+        .route(
+            "/api/memory/config",
+            get(handlers::memory_config_get_handler).patch(handlers::memory_config_patch_handler),
+        )
+        .route("/api/speech/models", get(handlers::speech_models_handler))
+        .route(
+            "/api/speech/models/download",
+            post(handlers::speech_model_download_handler),
+        )
+        .route(
+            "/api/speech/models/{id}",
+            axum::routing::delete(handlers::speech_model_delete_handler),
+        )
+        .route(
+            "/api/search/cookies/export",
+            post(handlers::search_cookies_export_handler),
+        )
+        .route(
+            "/api/search/cookies/import",
+            post(handlers::search_cookies_import_handler),
+        )
+        .route(
+            "/api/search/cookies/clear",
+            post(handlers::search_cookies_clear_handler),
+        )
+        .route("/api/data/export", post(handlers::data_export_handler))
+        .route("/api/data/import", post(handlers::data_import_handler))
+        .route("/api/token-savings", get(handlers::token_savings_handler))
         .route("/api/debug/state", get(handlers::debug_state_handler))
         .route(
             "/api/debug/sessions/{id}/trace",
