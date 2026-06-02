@@ -961,6 +961,8 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "serial_test",
+ "tempfile",
  "tokio",
  "tower-http",
  "tracing",

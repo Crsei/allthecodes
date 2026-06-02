@@ -125,17 +125,22 @@ pub async fn settings_handler(
                     }),
                 );
             }
-            state.engine().update_app_state(|s| {
-                s.main_loop_model = resolved.clone();
-                s.settings.model = Some(resolved.clone());
-            });
-            (
-                StatusCode::OK,
-                Json(SettingsResponse {
-                    ok: true,
-                    message: format!("Model set to {}", resolved),
-                }),
-            )
+            match persist_setting(&state, "model", serde_json::json!(resolved.clone())) {
+                Ok(message) => (
+                    StatusCode::OK,
+                    Json(SettingsResponse {
+                        ok: true,
+                        message: format!("Model set to {resolved}; {message}"),
+                    }),
+                ),
+                Err(err) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(SettingsResponse {
+                        ok: false,
+                        message: err.to_string(),
+                    }),
+                ),
+            }
         }
         "set_permission_mode" => {
             let mode_str = req.value.as_str().unwrap_or("default");
@@ -145,18 +150,13 @@ pub async fn settings_handler(
                 "plan" => PermissionMode::Plan,
                 _ => PermissionMode::Default,
             };
-            let mut blocked_by_policy = false;
-            let mut effective_mode = mode.clone();
-            state.engine().update_app_state(|s| {
-                let transition =
-                    allthecodes_permissions::dangerous::set_permission_mode_with_auto_mode_safety(
-                        &mut s.tool_permission_context,
-                        mode.clone(),
-                    );
-                blocked_by_policy = transition.auto_mode_blocked_by_policy;
-                effective_mode = s.tool_permission_context.mode.clone();
-            });
-            if blocked_by_policy {
+            let mut permission_context = state.engine().app_state().tool_permission_context;
+            let transition =
+                allthecodes_permissions::dangerous::set_permission_mode_with_auto_mode_safety(
+                    &mut permission_context,
+                    mode,
+                );
+            if transition.auto_mode_blocked_by_policy {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(SettingsResponse {
@@ -167,31 +167,49 @@ pub async fn settings_handler(
                     }),
                 );
             }
-            (
-                StatusCode::OK,
-                Json(SettingsResponse {
-                    ok: true,
-                    message: format!("Permission mode set to {}", effective_mode.as_str()),
-                }),
-            )
+            let effective_mode = permission_context.mode;
+            match persist_setting(
+                &state,
+                "permission_mode",
+                serde_json::json!(effective_mode.as_str()),
+            ) {
+                Ok(message) => (
+                    StatusCode::OK,
+                    Json(SettingsResponse {
+                        ok: true,
+                        message: format!(
+                            "Permission mode set to {}; {message}",
+                            effective_mode.as_str()
+                        ),
+                    }),
+                ),
+                Err(err) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(SettingsResponse {
+                        ok: false,
+                        message: err.to_string(),
+                    }),
+                ),
+            }
         }
         "set_thinking" => {
-            let enabled = req.value.as_bool();
-            state.engine().update_app_state(|s| {
-                s.thinking_enabled = enabled;
-                s.settings.thinking = enabled.map(|value| {
-                    serde_json::json!({
-                        "type": if value { "enabled" } else { "disabled" }
-                    })
-                });
-            });
-            (
-                StatusCode::OK,
-                Json(SettingsResponse {
-                    ok: true,
-                    message: format!("Thinking set to {:?}", enabled),
-                }),
-            )
+            let enabled = thinking_enabled_from_value(&req.value);
+            match persist_setting(&state, "thinking", thinking_setting_value(enabled)) {
+                Ok(message) => (
+                    StatusCode::OK,
+                    Json(SettingsResponse {
+                        ok: true,
+                        message: format!("Thinking set to {enabled:?}; {message}"),
+                    }),
+                ),
+                Err(err) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(SettingsResponse {
+                        ok: false,
+                        message: err.to_string(),
+                    }),
+                ),
+            }
         }
         "set_fast_mode" => match persist_setting(&state, "fast_mode", req.value.clone()) {
             Ok(message) => (StatusCode::OK, Json(SettingsResponse { ok: true, message })),
@@ -518,6 +536,7 @@ fn validate_setting_value(key: &str, value: &Value) -> Result<()> {
         SettingKind::SensitiveString => {
             string_value(key, value)?;
         }
+        SettingKind::Json => {}
         SettingKind::U64 => {
             u64_value(key, value)?;
         }
@@ -542,6 +561,7 @@ enum SettingKind {
     Bool,
     String,
     SensitiveString,
+    Json,
     U64,
     U8,
     Temperature,
@@ -549,6 +569,7 @@ enum SettingKind {
 
 fn setting_kind(key: &str) -> SettingKind {
     match key {
+        "thinking" => SettingKind::Json,
         "auto_start"
         | "start_minimized"
         | "minimize_to_tray"
@@ -599,7 +620,10 @@ fn setting_kind(key: &str) -> SettingKind {
 
 fn apply_value_to_raw(raw: &mut RawSettings, key: &str, value: Value) -> Result<()> {
     match key {
+        "model" => raw.model = Some(string_value(key, &value)?),
         "backend" => raw.backend = Some(normalize_backend_value(&string_value(key, &value)?)),
+        "permission_mode" => raw.permission_mode = Some(string_value(key, &value)?),
+        "thinking" => raw.thinking = value_to_optional(value),
         "language" => raw.language = Some(string_value(key, &value)?),
         "app_icon" => raw.app_icon = Some(string_value(key, &value)?),
         "auto_start" => raw.auto_start = Some(bool_value(key, &value)?),
@@ -675,12 +699,33 @@ fn apply_value_to_raw(raw: &mut RawSettings, key: &str, value: Value) -> Result<
 fn apply_value_to_app_state(app_state: &mut AppState, key: &str, value: Value) {
     let settings = &mut app_state.settings;
     match key {
+        "model" => {
+            if let Some(value) = value.as_str() {
+                app_state.main_loop_model = value.to_string();
+                settings.model = Some(value.to_string());
+            }
+        }
         "backend" => {
             if let Ok(value) = string_value(key, &value) {
                 let normalized = normalize_backend_value(&value);
                 app_state.main_loop_backend = normalized.clone();
                 settings.backend = Some(normalized);
             }
+        }
+        "permission_mode" => {
+            let requested = value
+                .as_str()
+                .map(parse_permission_mode)
+                .unwrap_or(PermissionMode::Default);
+            allthecodes_permissions::dangerous::set_permission_mode_with_auto_mode_safety(
+                &mut app_state.tool_permission_context,
+                requested,
+            );
+            settings.permission_mode = Some(app_state.tool_permission_context.mode.as_str().into());
+        }
+        "thinking" => {
+            app_state.thinking_enabled = thinking_enabled_from_value(&value);
+            settings.thinking = value_to_optional(value);
         }
         "language" => settings.language = value.as_str().map(str::to_string),
         "app_icon" => settings.app_icon = value.as_str().map(str::to_string),
@@ -812,6 +857,47 @@ fn f64_value(key: &str, value: &Value) -> Result<f64> {
     value
         .as_f64()
         .with_context(|| format!("{key} must be a number"))
+}
+
+fn value_to_optional(value: Value) -> Option<Value> {
+    if value.is_null() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn thinking_setting_value(enabled: Option<bool>) -> Value {
+    enabled
+        .map(|value| {
+            serde_json::json!({
+                "type": if value { "enabled" } else { "disabled" }
+            })
+        })
+        .unwrap_or(Value::Null)
+}
+
+fn thinking_enabled_from_value(value: &Value) -> Option<bool> {
+    if let Some(value) = value.as_bool() {
+        return Some(value);
+    }
+    let label = value
+        .as_str()
+        .or_else(|| value.get("type").and_then(Value::as_str))?;
+    match label {
+        "enabled" | "adaptive" => Some(true),
+        "disabled" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_permission_mode(value: &str) -> PermissionMode {
+    match value {
+        "auto" => PermissionMode::Auto,
+        "bypass" => PermissionMode::Bypass,
+        "plan" => PermissionMode::Plan,
+        _ => PermissionMode::Default,
+    }
 }
 
 fn normalize_backend_value(value: &str) -> String {
