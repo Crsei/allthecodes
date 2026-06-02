@@ -23,6 +23,7 @@ allthecodes-daemon = { workspace = true }
 allthecodes-engine = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
 allthecodes-permissions = { workspace = true }
+allthecodes-services = { workspace = true }
 allthecodes-session = { workspace = true }
 allthecodes-types = { workspace = true }
 futures = { workspace = true }

@@ -28,6 +28,10 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps.insert("chat".into(), true);
     caps.insert("sessions".into(), true);
     caps.insert("settings".into(), true);
+    caps.insert("agents".into(), true);
+    caps.insert("people".into(), true);
+    caps.insert("hooks".into(), true);
+    caps.insert("prompts".into(), true);
     caps.insert("debug".into(), true);
     caps.insert("state".into(), true);
     // Not yet implemented

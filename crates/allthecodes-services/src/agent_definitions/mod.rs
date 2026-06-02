@@ -491,7 +491,7 @@ fn yaml_escape(s: &str) -> String {
 // Persistence: upsert + delete
 // ---------------------------------------------------------------------------
 
-fn upsert_agent(
+pub fn upsert_agent(
     cwd: &Path,
     mut entry: AgentDefinitionEntry,
 ) -> Result<AgentDefinitionEntry, (String, String)> {
@@ -559,7 +559,7 @@ fn validate_security_fields(entry: &AgentDefinitionEntry) -> Result<(), String> 
     Ok(())
 }
 
-fn delete_agent(cwd: &Path, name: &str, source: &AgentDefinitionSource) -> Result<(), String> {
+pub fn delete_agent(cwd: &Path, name: &str, source: &AgentDefinitionSource) -> Result<(), String> {
     if !source.is_editable() {
         return Err(format!(
             "source `{}` is read-only — cannot delete agent",
@@ -576,6 +576,20 @@ fn delete_agent(cwd: &Path, name: &str, source: &AgentDefinitionSource) -> Resul
     }
     fs::remove_file(&path).map_err(|e| format!("failed to remove {}: {}", path.display(), e))?;
     Ok(())
+}
+
+pub fn restore_agent_overrides(cwd: &Path, name: &str) -> Result<usize, String> {
+    validate_name(name)?;
+    let mut removed = 0;
+    for source in [AgentDefinitionSource::User, AgentDefinitionSource::Project] {
+        let path = agents_dir_for_source(cwd, &source).join(format!("{}.md", name));
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| format!("failed to remove {}: {}", path.display(), e))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 fn agents_dir_for_source(cwd: &Path, source: &AgentDefinitionSource) -> PathBuf {
@@ -786,6 +800,7 @@ fn path_prefixed_by(path: &Path, prefix: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::tempdir;
 
     fn make_entry(name: &str, source: AgentDefinitionSource) -> AgentDefinitionEntry {
@@ -852,6 +867,35 @@ mod tests {
         assert_eq!(back.max_turns, Some(10));
         assert_eq!(back.effort.as_deref(), Some("medium"));
         assert!(back.system_prompt.contains("You are a helpful agent."));
+    }
+
+    #[test]
+    #[serial]
+    fn public_upsert_uses_supplied_cwd_not_process_cwd() {
+        struct CurrentDirGuard(PathBuf);
+        impl Drop for CurrentDirGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+
+        let target = tempdir().unwrap();
+        let process_cwd = tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(process_cwd.path()).unwrap();
+        let _guard = CurrentDirGuard(original);
+
+        let entry = make_entry("cwd-aware", AgentDefinitionSource::Project);
+        upsert_agent(target.path(), entry).unwrap();
+
+        assert!(target
+            .path()
+            .join(".allthecodes/agents/cwd-aware.md")
+            .exists());
+        assert!(!process_cwd
+            .path()
+            .join(".allthecodes/agents/cwd-aware.md")
+            .exists());
     }
 
     #[test]

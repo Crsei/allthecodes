@@ -950,6 +950,7 @@ dependencies = [
  "allthecodes-engine",
  "allthecodes-ipc-protocol",
  "allthecodes-permissions",
+ "allthecodes-services",
  "allthecodes-session",
  "allthecodes-types",
  "anyhow",

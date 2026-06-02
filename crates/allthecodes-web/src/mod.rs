@@ -8,7 +8,7 @@ pub mod ws;
 use std::net::SocketAddr;
 
 use axum::{
-    routing::{any, get, patch, post},
+    routing::{any, delete, get, patch, post},
     Router,
 };
 use tower_http::cors::CorsLayer;
@@ -25,6 +25,51 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/abort", post(handlers::abort_handler))
         .route("/api/state", get(handlers::state_handler))
         .route("/api/capabilities", get(handlers::capabilities_handler))
+        .route(
+            "/api/agents",
+            get(handlers::agents_list_handler).post(handlers::agents_create_handler),
+        )
+        .route(
+            "/api/agents/{name}",
+            get(handlers::agents_detail_handler)
+                .patch(handlers::agents_update_handler)
+                .delete(handlers::agents_delete_handler),
+        )
+        .route(
+            "/api/agents/{name}/restore",
+            post(handlers::agents_restore_handler),
+        )
+        .route(
+            "/api/people",
+            get(handlers::people_list_handler).post(handlers::people_create_handler),
+        )
+        .route(
+            "/api/people/{id}",
+            get(handlers::people_detail_handler)
+                .patch(handlers::people_update_handler)
+                .delete(handlers::people_delete_handler),
+        )
+        .route(
+            "/api/hooks",
+            get(handlers::hooks_list_handler).post(handlers::hooks_create_handler),
+        )
+        .route("/api/hooks/test", post(handlers::hooks_test_handler))
+        .route(
+            "/api/hooks/{event}",
+            get(handlers::hooks_detail_handler)
+                .patch(handlers::hooks_update_handler)
+                .delete(handlers::hooks_delete_handler),
+        )
+        .route(
+            "/api/prompts",
+            get(handlers::prompts_list_handler).post(handlers::prompts_create_handler),
+        )
+        .route(
+            "/api/prompts/{id}",
+            get(handlers::prompts_detail_handler)
+                .patch(handlers::prompts_update_handler)
+                .delete(handlers::prompts_delete_handler),
+        )
         // Phase 3: Settings and command endpoints
         .route("/api/settings", post(handlers::settings_handler))
         .route("/api/command", post(handlers::command_handler))
@@ -39,7 +84,7 @@ pub fn build_router(state: WebState) -> Router {
         )
         .route(
             "/api/speech/models/{id}",
-            axum::routing::delete(handlers::speech_model_delete_handler),
+            delete(handlers::speech_model_delete_handler),
         )
         .route(
             "/api/search/cookies/export",

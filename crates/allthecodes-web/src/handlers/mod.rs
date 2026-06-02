@@ -12,12 +12,16 @@ use serde::Serialize;
 use allthecodes_commands::Command;
 
 pub mod admin;
+pub mod agents;
 pub mod auth;
 pub mod capabilities;
 pub mod chat;
 pub mod credentials;
+pub mod hooks;
 pub mod models;
+pub mod people;
 pub mod profiles;
+pub mod prompts;
 pub mod providers;
 pub mod sessions;
 pub mod settings_phase1;
@@ -25,12 +29,16 @@ pub mod settings_phase1;
 // Re-export all public items from each submodule so the router builder
 // and external callers can still use `handlers::*` paths.
 pub use admin::*;
+pub use agents::*;
 pub use auth::*;
 pub use capabilities::*;
 pub use chat::*;
 pub use credentials::*;
+pub use hooks::*;
 pub use models::*;
+pub use people::*;
 pub use profiles::*;
+pub use prompts::*;
 pub use providers::*;
 pub use sessions::*;
 pub use settings_phase1::*;
@@ -80,13 +88,15 @@ mod tests {
     use allthecodes_engine::lifecycle::QueryEngine;
     use allthecodes_engine::types::config::QueryEngineConfig;
     use allthecodes_engine::types::tool::PermissionMode;
+    use allthecodes_ipc_protocol::subsystem_types::{AgentDefinitionEntry, AgentDefinitionSource};
     use axum::body::to_bytes;
-    use axum::extract::State;
+    use axum::extract::{Path as AxumPath, Query, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use axum::Json;
     use serde_json::{json, Value};
     use serial_test::serial;
+    use std::path::Path;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -115,8 +125,12 @@ mod tests {
     }
 
     fn make_web_state() -> WebState {
+        make_web_state_with_cwd(Path::new("."))
+    }
+
+    fn make_web_state_with_cwd(cwd: &Path) -> WebState {
         let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
-            cwd: ".".to_string(),
+            cwd: cwd.to_string_lossy().to_string(),
             tools: vec![],
             custom_system_prompt: None,
             append_system_prompt: None,
@@ -139,6 +153,31 @@ mod tests {
         WebState::new(engine, Arc::new(AtomicBool::new(false)))
     }
 
+    fn make_agent_entry(name: &str, source: AgentDefinitionSource) -> AgentDefinitionEntry {
+        AgentDefinitionEntry {
+            name: name.to_string(),
+            description: format!("Agent {name}"),
+            system_prompt: "You are a test agent.".to_string(),
+            tools: vec!["Read".to_string()],
+            disallowed_tools: vec![],
+            model: None,
+            color: None,
+            permission_mode: None,
+            memory: None,
+            max_turns: None,
+            effort: None,
+            background: false,
+            isolation: None,
+            skills: vec![],
+            hooks: Value::Null,
+            mcp_servers: vec![],
+            initial_prompt: None,
+            filename: None,
+            source,
+            file_path: None,
+        }
+    }
+
     async fn response_json(response: axum::response::Response) -> Value {
         let body = to_bytes(response.into_body(), 1024 * 1024)
             .await
@@ -159,7 +198,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn set_model_rejects_values_outside_available_models() {
+        let (_home, _guard) = temp_home();
         let state = make_web_state();
         state.engine().update_app_state(|s| {
             s.settings.available_models = vec!["gpt-4o".to_string()];
@@ -189,10 +230,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn set_model_accepts_alias_when_full_id_is_allowlisted() {
+        let (_home, _guard) = temp_home();
         let state = make_web_state();
         let expected_model = allthecodes_commands::model::resolve_model_alias("SOTA");
         state.engine().update_app_state(|s| {
+            s.settings.sota_model = Some(expected_model.clone());
             s.settings.available_models = vec![expected_model.clone()];
         });
 
@@ -217,7 +261,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn set_permission_mode_auto_respects_disabled_policy() {
+        let (_home, _guard) = temp_home();
         let state = make_web_state();
         state.engine().update_app_state(|s| {
             s.tool_permission_context.is_auto_mode_available = Some(false);
@@ -446,5 +492,324 @@ mod tests {
         assert!(body["version"].as_str().is_some());
         assert_eq!(body["capabilities"]["settings"], json!(true));
         assert_eq!(body["capabilities"]["memory"], json!(true));
+        assert_eq!(body["capabilities"]["agents"], json!(true));
+        assert_eq!(body["capabilities"]["people"], json!(true));
+        assert_eq!(body["capabilities"]["hooks"], json!(true));
+        assert_eq!(body["capabilities"]["prompts"], json!(true));
+    }
+
+    #[test]
+    fn build_router_accepts_phase2_routes() {
+        let _router = crate::build_router(make_web_state());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn agents_rest_handlers_list_persist_and_restore() {
+        let (home, _guard) = temp_home();
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = agents_list_handler(State(state.clone()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .any(|agent| agent["name"] == json!("general-purpose")));
+        assert!(body["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .any(|tool| tool["name"] == json!("Read")));
+
+        let response = agents_create_handler(
+            State(state.clone()),
+            Json(AgentUpsertRequest {
+                entry: make_agent_entry("web-user", AgentDefinitionSource::User),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(home.path().join("agents/web-user.md").exists());
+
+        let response = agents_create_handler(
+            State(state.clone()),
+            Json(AgentUpsertRequest {
+                entry: make_agent_entry("web-project", AgentDefinitionSource::Project),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(project
+            .path()
+            .join(".allthecodes/agents/web-project.md")
+            .exists());
+
+        let response = agents_update_handler(
+            State(state.clone()),
+            AxumPath("general-purpose".to_string()),
+            Json(AgentUpsertRequest {
+                entry: make_agent_entry("general-purpose", AgentDefinitionSource::Builtin),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("validation_error"));
+
+        let response = agents_delete_handler(
+            State(state.clone()),
+            AxumPath("general-purpose".to_string()),
+            Query(AgentDeleteQuery {
+                source: "builtin".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = agents_create_handler(
+            State(state.clone()),
+            Json(AgentUpsertRequest {
+                entry: make_agent_entry("general-purpose", AgentDefinitionSource::User),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(home.path().join("agents/general-purpose.md").exists());
+
+        let response = agents_restore_handler(
+            State(state.clone()),
+            AxumPath("general-purpose".to_string()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!home.path().join("agents/general-purpose.md").exists());
+        let body = response_json(response).await;
+        assert!(body["agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .any(|agent| {
+                agent["name"] == json!("general-purpose")
+                    && agent["source"]["kind"] == json!("builtin")
+            }));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn people_crud_round_trips_json_and_validates_ids() {
+        let (home, _guard) = temp_home();
+
+        let response = people_create_handler(Json(PersonCreateRequest {
+            id: None,
+            name: "Ada Lovelace".to_string(),
+            telegram_id: Some("ada-tg".to_string()),
+            discord_id: None,
+            discord_username: Some("ada".to_string()),
+            feishu_id: None,
+            username: Some("ada".to_string()),
+            profile_content: "First programmer".to_string(),
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["id"], json!("ada-lovelace"));
+        assert!(home.path().join("people/ada-lovelace.json").exists());
+
+        let response = people_create_handler(Json(PersonCreateRequest {
+            id: Some("ada-lovelace".to_string()),
+            name: "Ada Duplicate".to_string(),
+            telegram_id: None,
+            discord_id: None,
+            discord_username: None,
+            feishu_id: None,
+            username: None,
+            profile_content: String::new(),
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = people_update_handler(
+            AxumPath("ada-lovelace".to_string()),
+            Json(PersonUpdateRequest {
+                name: Some("Ada Byron".to_string()),
+                telegram_id: Some(None),
+                discord_id: None,
+                discord_username: None,
+                feishu_id: None,
+                username: None,
+                profile_content: Some("Updated profile".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["name"], json!("Ada Byron"));
+        assert_eq!(body["telegram_id"], Value::Null);
+
+        let response = people_create_handler(Json(PersonCreateRequest {
+            id: Some("bad/id".to_string()),
+            name: "Bad".to_string(),
+            telegram_id: None,
+            discord_id: None,
+            discord_username: None,
+            feishu_id: None,
+            username: None,
+            profile_content: String::new(),
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = people_delete_handler(AxumPath("ada-lovelace".to_string()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!home.path().join("people/ada-lovelace.json").exists());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn hooks_crud_updates_user_settings_only_and_test_is_explicit_501() {
+        let (home, _guard) = temp_home();
+        let initial = allthecodes_config::settings::RawSettings {
+            language: Some("en".to_string()),
+            ..Default::default()
+        };
+        allthecodes_config::settings::write_user_settings(&initial).expect("seed settings");
+
+        let config = json!({
+            "matcher": "Read",
+            "hooks": [{ "type": "command", "command": "echo ok" }]
+        });
+        let response = hooks_create_handler(Json(HookEventRequest {
+            event: "PreToolUse".to_string(),
+            configs: vec![config.clone()],
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert_eq!(raw.language.as_deref(), Some("en"));
+        assert_eq!(
+            raw.hooks.as_ref().and_then(|hooks| hooks.get("PreToolUse")),
+            Some(&json!([config.clone()]))
+        );
+
+        let response = hooks_create_handler(Json(HookEventRequest {
+            event: "PreToolUse".to_string(),
+            configs: vec![config.clone()],
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = hooks_update_handler(
+            AxumPath("PreToolUse".to_string()),
+            Json(HookEventUpdateRequest {
+                configs: vec![json!({ "matcher": "*", "hooks": [] })],
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = hooks_create_handler(Json(HookEventRequest {
+            event: "PostToolUse".to_string(),
+            configs: vec![json!({ "matcher": "Read" })],
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = hooks_test_handler(Json(HookEventRequest {
+            event: "PreToolUse".to_string(),
+            configs: vec![json!({ "matcher": "*", "hooks": [] })],
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("hook_test_not_implemented"));
+
+        let response = hooks_delete_handler(AxumPath("PreToolUse".to_string()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert!(!raw.hooks.unwrap_or_default().contains_key("PreToolUse"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn prompts_crud_round_trips_store_and_rejects_slash_names() {
+        let (home, _guard) = temp_home();
+
+        let response = prompts_create_handler(Json(PromptCreateRequest {
+            id: None,
+            name: "Summarize Thread".to_string(),
+            content: "Summarize this thread.".to_string(),
+            description: "summary prompt".to_string(),
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["id"], json!("summarize-thread"));
+        assert!(home.path().join("quick-prompts.json").exists());
+
+        let response = prompts_create_handler(Json(PromptCreateRequest {
+            id: Some("summarize-thread".to_string()),
+            name: "Duplicate".to_string(),
+            content: "duplicate".to_string(),
+            description: String::new(),
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = prompts_create_handler(Json(PromptCreateRequest {
+            id: None,
+            name: "/bad".to_string(),
+            content: "bad".to_string(),
+            description: String::new(),
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = prompts_update_handler(
+            AxumPath("summarize-thread".to_string()),
+            Json(PromptUpdateRequest {
+                name: Some("Summarize".to_string()),
+                content: Some("Updated".to_string()),
+                description: Some("updated description".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["content"], json!("Updated"));
+
+        let response = prompts_delete_handler(AxumPath("summarize-thread".to_string()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["prompts"], json!([]));
     }
 }
