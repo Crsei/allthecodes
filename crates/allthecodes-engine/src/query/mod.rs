@@ -1,4 +1,5 @@
 pub mod deps;
+pub mod goal_runtime;
 pub mod loop_helpers;
 pub mod loop_impl;
 pub mod stop_hooks;

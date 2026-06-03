@@ -75,6 +75,8 @@ pub(crate) struct QueryEngineState {
     pub(crate) abort_reason: Option<AbortReason>,
     /// Accumulated usage across all API calls.
     pub(crate) usage: UsageTracking,
+    /// Runtime-only session goal accounting state.
+    pub(crate) goal_runtime: types::GoalRuntimeState,
     /// History of permission denials.
     pub(crate) permission_denials: Vec<PermissionDenial>,
     /// Total turn count across all `submit_message` invocations.
@@ -263,6 +265,7 @@ impl QueryEngine {
                 messages: initial_messages,
                 abort_reason: None,
                 usage: UsageTracking::default(),
+                goal_runtime: types::GoalRuntimeState::default(),
                 permission_denials: Vec::new(),
                 total_turn_count: 0,
                 app_state,

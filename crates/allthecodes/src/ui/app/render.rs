@@ -472,7 +472,7 @@ impl App {
         if let Some(goal) = &self.active_goal {
             parts.push(format!(
                 "goal={} {} {} {}t",
-                goal.status,
+                render_goal_status(&goal.status),
                 truncate_status_text(&goal.objective, 28),
                 format_status_duration(goal.time_used_seconds),
                 goal.tokens_used
@@ -695,6 +695,18 @@ fn truncate_status_text(text: &str, max_chars: usize) -> String {
         .collect::<String>();
     out.push_str("...");
     out
+}
+
+fn render_goal_status(status: &str) -> &str {
+    match status {
+        "active" => "active",
+        "paused" => "paused",
+        "blocked" => "blocked",
+        "usage_limited" => "usage-limited",
+        "budget_limited" => "budget-limited",
+        "complete" | "completed" => "complete",
+        other => other,
+    }
 }
 
 fn format_status_duration(seconds: u64) -> String {

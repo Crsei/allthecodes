@@ -13,6 +13,7 @@ use crate::types::message::{
     AssistantMessage, Attachment, AttachmentMessage, ContentBlock, Message, MessageContent,
     QueryYield, Usage, UserMessage,
 };
+use crate::types::tool::PermissionMode;
 use allthecodes_tools::goals::{self, GoalStatus};
 use serial_test::serial;
 use std::path::Path;
@@ -174,6 +175,65 @@ async fn test_completed_goal_does_not_continue() {
         request_start_count(&items),
         1,
         "completed goal should not trigger continuation"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_non_active_goal_statuses_do_not_continue() {
+    for (session_id, status) in [
+        ("goal-paused-query", GoalStatus::Paused),
+        ("goal-blocked-query", GoalStatus::Blocked),
+        ("goal-usage-limited-query", GoalStatus::UsageLimited),
+        ("goal-budget-limited-query", GoalStatus::BudgetLimited),
+    ] {
+        let tempdir = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+        save_goal(session_id, status);
+
+        let deps = Arc::new(
+            MockDeps::new(vec![make_text_response("Done.")]).with_audit_session(session_id),
+        );
+
+        let stream = query(
+            make_query_params(vec![make_user_message_for_test("start")]),
+            deps.clone(),
+        );
+        let items: Vec<QueryYield> = stream.collect().await;
+
+        assert_eq!(
+            request_start_count(&items),
+            1,
+            "non-active goal should not trigger continuation for {session_id}"
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_plan_mode_suppresses_active_goal_continuation() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+    save_goal("goal-plan-mode-query", GoalStatus::Active);
+
+    let mut app_state = crate::types::app_state::AppState::default();
+    app_state.tool_permission_context.mode = PermissionMode::Plan;
+    let deps = Arc::new(
+        MockDeps::new(vec![make_text_response("Planning only.")])
+            .with_audit_session("goal-plan-mode-query")
+            .with_app_state(app_state),
+    );
+
+    let stream = query(
+        make_query_params(vec![make_user_message_for_test("start")]),
+        deps.clone(),
+    );
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    assert_eq!(
+        request_start_count(&items),
+        1,
+        "plan mode should suppress automatic goal continuation"
     );
 }
 

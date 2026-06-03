@@ -39,6 +39,7 @@ use crate::types::transitions::Continue;
 use crate::services::tool_use_summary::{self, ToolInfo};
 
 use super::deps::QueryDeps;
+use super::goal_runtime::GoalContinuationScheduler;
 use super::loop_helpers::{
     backfill_observable_tool_inputs, classify_model_call_failure, execute_tool_calls,
     handle_max_output_tokens, handle_prompt_too_long, is_stream_progress_event, make_abort_message,
@@ -63,6 +64,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
         let (turn_context, mut state) = QueryRunContext::from_params(params);
         let mut budget_tracker = BudgetTracker::new();
+        let mut goal_continuation_scheduler = GoalContinuationScheduler::default();
         let mut cumulative_usage = Usage::default();
 
         // Main loop
@@ -661,7 +663,9 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     }
                 }
 
-                if let Some(continuation) = active_goal_continuation(&deps) {
+                if let Some(continuation) =
+                    goal_continuation_scheduler.next_idle_continuation(&deps, &turn_context, &state)
+                {
                     if let Some(max) = turn_context.max_turns {
                         if state.turn_count >= max {
                             info!(turns = state.turn_count, max = max, "max turns reached");
@@ -677,12 +681,13 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             break;
                         }
                     }
-                    if !goal_is_still_active(&deps, &continuation.goal_id) {
+                    if !goal_continuation_scheduler.confirm_ready(&deps, &continuation.goal_id) {
                         break;
                     }
                     debug!("active goal still open; continuing query loop");
                     let user_msg = make_user_message(&deps, &continuation.message, true);
                     state.messages.push(Message::User(user_msg));
+                    goal_continuation_scheduler.mark_dispatched(&continuation.goal_id);
                     state.transition = Some(Continue::NextTurn);
                     state.turn_count += 1;
                     continue;
@@ -855,51 +860,6 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
         }
 
         info!(turns = state.turn_count, "query loop finished");
-    }
-}
-
-struct ActiveGoalContinuation {
-    goal_id: String,
-    message: String,
-}
-
-fn active_goal_continuation(deps: &Arc<dyn QueryDeps>) -> Option<ActiveGoalContinuation> {
-    let session_id = deps.audit_context().session_id;
-    let goal = match allthecodes_tools::goals::load_goal_for_session(&session_id) {
-        Ok(Some(goal)) => goal,
-        Ok(None) => return None,
-        Err(error) => {
-            warn!(%error, "failed to load active goal for continuation");
-            return None;
-        }
-    };
-
-    if goal.status != allthecodes_tools::goals::GoalStatus::Active {
-        return None;
-    }
-
-    Some(ActiveGoalContinuation {
-        goal_id: goal.goal_id.clone(),
-        message: format!(
-            "Continue working toward the active session goal:\n\n{}\n\n\
-         If the goal is complete, call UpdateGoal with status=complete. \
-         If progress is blocked by missing external input, call UpdateGoal with status=blocked.",
-            goal.objective
-        ),
-    })
-}
-
-fn goal_is_still_active(deps: &Arc<dyn QueryDeps>, goal_id: &str) -> bool {
-    let session_id = deps.audit_context().session_id;
-    match allthecodes_tools::goals::load_goal_for_session(&session_id) {
-        Ok(Some(goal)) => {
-            goal.goal_id == goal_id && goal.status == allthecodes_tools::goals::GoalStatus::Active
-        }
-        Ok(None) => false,
-        Err(error) => {
-            warn!(%error, "failed to reload active goal before continuation");
-            false
-        }
     }
 }
 

@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::session::transcript;
 use crate::types::config::QueryEngineConfig;
 use crate::types::message::{
-    Attachment, Message, MessageContent, QueryYield, StreamEvent, SystemSubtype,
+    Attachment, Message, MessageContent, QueryYield, StreamEvent, SystemSubtype, Usage,
 };
 
 use super::super::types::{AbortReason, UsageTrackingExt};
@@ -30,6 +30,11 @@ pub(super) struct StreamContext<'a> {
     pub(super) telemetry_submit_span: &'a mut SubmitTelemetrySpan,
     pub(super) model_name: &'a str,
     pub(super) api_started_at: Instant,
+}
+
+pub(super) struct BudgetStop {
+    pub(super) goal_update: Option<SdkMessage>,
+    pub(super) result: SdkResult,
 }
 
 pub(super) fn process_stream_item(
@@ -72,8 +77,6 @@ fn handle_assistant_message(
             state.usage.add_usage(msg_usage, assistant_msg.cost_usd);
         }
     }
-    let usage_snap = ctx.state_ref.read().usage.clone();
-
     let action = StreamAction::Yield(SdkMessage::Assistant(SdkAssistantMessage {
         message: assistant_msg.clone(),
         session_id: ctx.session_id.to_string(),
@@ -95,7 +98,10 @@ fn handle_assistant_message(
     }
 
     let mut actions = vec![action];
-    if let Some(goal_update) = account_goal_runtime_message(ctx.session_id.as_str(), &usage_snap) {
+    let token_delta = assistant_msg.usage.as_ref().map(assistant_usage_tokens);
+    if let Some(goal_update) =
+        account_goal_runtime_message(ctx.session_id.as_str(), ctx.state_ref, token_delta)
+    {
         actions.push(StreamAction::Yield(goal_update));
     }
     actions
@@ -103,22 +109,140 @@ fn handle_assistant_message(
 
 pub(super) fn account_goal_runtime_message(
     session_id: &str,
-    usage: &UsageTracking,
+    state_ref: &Arc<parking_lot::RwLock<QueryEngineState>>,
+    explicit_token_delta: Option<u64>,
 ) -> Option<SdkMessage> {
-    match allthecodes_tools::goals::account_goal_runtime_for_session(session_id, usage) {
-        Ok(Some(goal)) => {
-            let event = if goal.status == allthecodes_tools::goals::GoalStatus::BudgetLimited {
-                "budget_limited"
-            } else {
-                "runtime_updated"
-            };
-            Some(goal_updated_message(session_id, event, goal))
+    let goal = match allthecodes_tools::goals::load_goal_for_session(session_id) {
+        Ok(Some(goal)) => goal,
+        Ok(None) => {
+            state_ref.write().goal_runtime.clear_active();
+            return None;
         }
-        Ok(None) => None,
+        Err(error) => {
+            warn!(%error, "failed to load goal for runtime accounting");
+            return None;
+        }
+    };
+
+    if !allthecodes_tools::goals::goal_is_active(&goal) {
+        state_ref.write().goal_runtime.clear_for_goal(&goal.goal_id);
+        return None;
+    }
+
+    let now = Instant::now();
+    let (token_delta, seconds_delta) = {
+        let mut state = state_ref.write();
+        let usage = state.usage.clone();
+        if let Some(token_delta) = explicit_token_delta {
+            state
+                .goal_runtime
+                .account_explicit_token_delta(&goal.goal_id, &usage, token_delta, now)
+        } else {
+            let Some((token_delta, seconds_delta)) =
+                state.goal_runtime.account_delta(&goal.goal_id, &usage, now)
+            else {
+                return None;
+            };
+            (token_delta, seconds_delta)
+        }
+    };
+
+    if token_delta == 0 && seconds_delta == 0 {
+        return None;
+    }
+
+    match allthecodes_tools::goals::account_goal_runtime_delta_for_session(
+        session_id,
+        &goal.goal_id,
+        token_delta,
+        seconds_delta,
+        chrono::Utc::now(),
+    ) {
+        Ok(Some(goal)) => goal_runtime_update_message(session_id, state_ref, goal),
+        Ok(None) => {
+            state_ref.write().goal_runtime.clear_active();
+            None
+        }
         Err(error) => {
             warn!(%error, "failed to update goal runtime accounting");
             None
         }
+    }
+}
+
+fn assistant_usage_tokens(usage: &Usage) -> u64 {
+    usage
+        .input_tokens
+        .saturating_add(usage.output_tokens)
+        .saturating_add(usage.cache_read_input_tokens)
+        .saturating_add(usage.cache_creation_input_tokens)
+}
+
+fn goal_runtime_update_message(
+    session_id: &str,
+    state_ref: &Arc<parking_lot::RwLock<QueryEngineState>>,
+    goal: allthecodes_tools::goals::GoalRecord,
+) -> Option<SdkMessage> {
+    use allthecodes_tools::goals::GoalStatus;
+
+    match goal.status {
+        GoalStatus::BudgetLimited => {
+            let mut state = state_ref.write();
+            state.goal_runtime.clear_for_goal(&goal.goal_id);
+            if state
+                .goal_runtime
+                .budget_warning_already_sent(&goal.goal_id)
+            {
+                None
+            } else {
+                state.goal_runtime.mark_budget_warning_sent(&goal.goal_id);
+                Some(goal_updated_message(session_id, "budget_limited", goal))
+            }
+        }
+        GoalStatus::Active => Some(goal_updated_message(session_id, "runtime_updated", goal)),
+        _ => {
+            state_ref.write().goal_runtime.clear_for_goal(&goal.goal_id);
+            Some(goal_updated_message(
+                session_id,
+                goal_status_event(&goal.status),
+                goal,
+            ))
+        }
+    }
+}
+
+pub(super) fn prime_goal_runtime_for_session(
+    session_id: &str,
+    state_ref: &Arc<parking_lot::RwLock<QueryEngineState>>,
+) {
+    match allthecodes_tools::goals::load_goal_for_session(session_id) {
+        Ok(Some(goal)) if allthecodes_tools::goals::goal_is_active(&goal) => {
+            let usage = state_ref.read().usage.clone();
+            state_ref
+                .write()
+                .goal_runtime
+                .prime_active_goal(&goal.goal_id, &usage, Instant::now());
+        }
+        Ok(Some(goal)) => {
+            state_ref.write().goal_runtime.clear_for_goal(&goal.goal_id);
+        }
+        Ok(None) => {
+            state_ref.write().goal_runtime.clear_active();
+        }
+        Err(error) => {
+            warn!(%error, "failed to prime goal runtime accounting");
+        }
+    }
+}
+
+fn goal_status_event(status: &allthecodes_tools::goals::GoalStatus) -> &'static str {
+    match status {
+        allthecodes_tools::goals::GoalStatus::Active => "runtime_updated",
+        allthecodes_tools::goals::GoalStatus::Paused => "paused",
+        allthecodes_tools::goals::GoalStatus::Complete => "complete",
+        allthecodes_tools::goals::GoalStatus::Blocked => "blocked",
+        allthecodes_tools::goals::GoalStatus::UsageLimited => "usage_limited",
+        allthecodes_tools::goals::GoalStatus::BudgetLimited => "budget_limited",
     }
 }
 
@@ -534,6 +658,58 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
+    fn cost_budget_stop_marks_goal_usage_limited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tmp.path());
+        let mut config = make_config();
+        config.max_budget_usd = Some(1.0);
+        let engine = QueryEngine::new(config);
+        let session_id = engine.session_id.clone();
+        let goal = allthecodes_tools::goals::create_goal_record(
+            "stay within cost limit",
+            None,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let goal_id = goal.goal_id.clone();
+        allthecodes_tools::goals::save_goal_for_session(session_id.as_str(), &goal).unwrap();
+        {
+            let mut state = engine.state.write();
+            state.usage.total_cost_usd = 2.0;
+            state.goal_runtime.active_goal_id = Some(goal_id);
+        }
+
+        let mut submit_turn = SubmitTurnState::new();
+        let mut submit_langfuse_trace = None;
+        let mut telemetry_submit_span = None;
+        let mut ctx = StreamContext {
+            config: &engine.config,
+            state_ref: &engine.state,
+            session_id: &session_id,
+            submit_turn: &mut submit_turn,
+            replay_user_messages: false,
+            submit_langfuse_trace: &mut submit_langfuse_trace,
+            telemetry_submit_span: &mut telemetry_submit_span,
+            model_name: "test-model",
+            api_started_at: Instant::now(),
+        };
+
+        let stop = check_budget(&mut ctx).expect("budget stop");
+        let Some(SdkMessage::GoalUpdated(update)) = stop.goal_update else {
+            panic!("expected usage_limited goal update");
+        };
+        assert_eq!(update.event, "usage_limited");
+        let goal = allthecodes_tools::goals::load_goal_for_session(session_id.as_str())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            goal.status,
+            allthecodes_tools::goals::GoalStatus::UsageLimited
+        );
+    }
+
+    #[test]
     fn compact_boundary_sdk_event_hides_internal_metadata() {
         let engine = QueryEngine::new(make_config());
         let session_id = engine.session_id.clone();
@@ -595,7 +771,7 @@ mod tests {
     }
 }
 
-pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<SdkResult> {
+pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<BudgetStop> {
     let max_budget = ctx.config.max_budget_usd?;
     let current_cost = ctx.state_ref.read().usage.total_cost_usd;
     if current_cost < max_budget {
@@ -617,13 +793,29 @@ pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<SdkResult> {
         let state = ctx.state_ref.read();
         (state.usage.clone(), state.permission_denials.clone())
     };
-    if let Err(error) = allthecodes_tools::goals::mark_goal_budget_limited_for_session(
+    let active_goal_id = ctx.state_ref.read().goal_runtime.active_goal_id.clone();
+    let goal_update = match allthecodes_tools::goals::mark_goal_usage_limited_for_session(
         ctx.session_id.as_str(),
-        &usage_snap,
+        active_goal_id.as_deref(),
         format!("max budget exceeded: cost ${current_cost:.4} >= ${max_budget:.4}"),
     ) {
-        warn!(%error, "failed to mark goal budget-limited after cost budget stop");
-    }
+        Ok(Some(goal)) if goal.status == allthecodes_tools::goals::GoalStatus::UsageLimited => {
+            ctx.state_ref
+                .write()
+                .goal_runtime
+                .clear_for_goal(&goal.goal_id);
+            Some(goal_updated_message(
+                ctx.session_id.as_str(),
+                "usage_limited",
+                goal,
+            ))
+        }
+        Ok(_) => None,
+        Err(error) => {
+            warn!(%error, "failed to mark goal usage-limited after cost budget stop");
+            None
+        }
+    };
     let result_text = format!(
         "Stopped: cost ${:.4} exceeded budget ${:.4}",
         current_cost, max_budget
@@ -635,20 +827,23 @@ pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<SdkResult> {
     );
     finish_submit_telemetry(ctx.telemetry_submit_span, ctx.model_name, &usage_snap);
 
-    Some(SdkResult {
-        subtype: ResultSubtype::ErrorMaxBudgetUsd,
-        is_error: true,
-        duration_ms: ctx.submit_turn.duration_ms(),
-        duration_api_ms: ctx.api_started_at.elapsed().as_millis() as u64,
-        num_turns: ctx.submit_turn.turn_count_this_submit,
-        result: result_text,
-        stop_reason: ctx.submit_turn.last_stop_reason.clone(),
-        session_id: ctx.session_id.to_string(),
-        total_cost_usd: current_cost,
-        usage: usage_snap,
-        permission_denials: denials_snap,
-        structured_output: ctx.submit_turn.structured_output.clone(),
-        uuid: Uuid::new_v4(),
-        errors: ctx.submit_turn.collected_errors.clone(),
+    Some(BudgetStop {
+        goal_update,
+        result: SdkResult {
+            subtype: ResultSubtype::ErrorMaxBudgetUsd,
+            is_error: true,
+            duration_ms: ctx.submit_turn.duration_ms(),
+            duration_api_ms: ctx.api_started_at.elapsed().as_millis() as u64,
+            num_turns: ctx.submit_turn.turn_count_this_submit,
+            result: result_text,
+            stop_reason: ctx.submit_turn.last_stop_reason.clone(),
+            session_id: ctx.session_id.to_string(),
+            total_cost_usd: current_cost,
+            usage: usage_snap,
+            permission_denials: denials_snap,
+            structured_output: ctx.submit_turn.structured_output.clone(),
+            uuid: Uuid::new_v4(),
+            errors: ctx.submit_turn.collected_errors.clone(),
+        },
     })
 }

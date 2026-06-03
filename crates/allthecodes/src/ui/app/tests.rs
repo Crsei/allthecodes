@@ -524,6 +524,43 @@ fn status_bar_renders_goal_summary() {
 }
 
 #[test]
+#[serial]
+fn status_bar_renders_all_goal_statuses_distinctly() {
+    let home = tempfile::tempdir().expect("allthecodes home");
+    let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+
+    for (status, label) in [
+        ("active", "active"),
+        ("paused", "paused"),
+        ("blocked", "blocked"),
+        ("usage_limited", "usage-limited"),
+        ("budget_limited", "budget-limited"),
+        ("complete", "complete"),
+    ] {
+        let mut app = App::new();
+        app.accept_workspace_trust();
+        app.update_goal_status(
+            "updated",
+            &serde_json::json!({
+                "objective": "ship",
+                "status": status,
+                "tokens_used": 7,
+                "time_used_seconds": 1
+            }),
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("draw");
+
+        let content = buffer_to_lines(terminal.backend().buffer(), 80, 12).join("\n");
+        assert!(
+            content.contains(&format!("goal={label} ship 1s 7t")),
+            "missing goal status label {label} in {content:?}"
+        );
+    }
+}
+
+#[test]
 fn slash_opens_command_palette_and_selection_keeps_argument_entry() {
     let mut app = App::new();
 

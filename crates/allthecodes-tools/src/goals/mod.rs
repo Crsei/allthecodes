@@ -463,6 +463,32 @@ pub fn account_goal_runtime_for_session(
     Ok(Some(goal))
 }
 
+pub fn account_goal_runtime_delta_for_session(
+    session_id: &str,
+    expected_goal_id: &str,
+    token_delta: u64,
+    seconds_delta: u64,
+    now: DateTime<Utc>,
+) -> Result<Option<GoalRecord>> {
+    let Some(goal) = load_goal_for_session(session_id)? else {
+        return Ok(None);
+    };
+    if !goal_is_active(&goal) {
+        return Ok(Some(goal));
+    }
+
+    let goal = apply_goal_usage_delta(
+        goal,
+        token_delta,
+        seconds_delta,
+        now,
+        Some(expected_goal_id),
+    )
+    .map_err(|error| anyhow::anyhow!(error.message()))?;
+    save_goal_for_session(session_id, &goal)?;
+    Ok(Some(goal))
+}
+
 pub fn mark_goal_budget_limited_for_session(
     session_id: &str,
     usage: &UsageTracking,
@@ -482,6 +508,29 @@ pub fn mark_goal_budget_limited_for_session(
         )
         .map_err(|error| anyhow::anyhow!(error.message()))?;
         save_goal_for_session(session_id, &goal)?;
+    }
+    Ok(Some(goal))
+}
+
+pub fn mark_goal_usage_limited_for_session(
+    session_id: &str,
+    expected_goal_id: Option<&str>,
+    reason: impl Into<String>,
+) -> Result<Option<GoalRecord>> {
+    let Some(goal) = load_goal_for_session(session_id)? else {
+        return Ok(None);
+    };
+    if goal_is_active(&goal) || goal.status == GoalStatus::UsageLimited {
+        let goal = update_goal_status(
+            goal,
+            GoalStatus::UsageLimited,
+            Some(reason.into()),
+            Utc::now(),
+            expected_goal_id,
+        )
+        .map_err(|error| anyhow::anyhow!(error.message()))?;
+        save_goal_for_session(session_id, &goal)?;
+        return Ok(Some(goal));
     }
     Ok(Some(goal))
 }
@@ -756,6 +805,31 @@ fn tool_error_code(code: &str, message: &str, goal: Option<GoalRecord>) -> Value
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
+    use std::path::Path;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_ref() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     fn now() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-06-03T00:00:00Z")
@@ -873,5 +947,44 @@ mod tests {
         assert_eq!(unchanged.tokens_used, 100);
         assert_eq!(unchanged.time_used_seconds, 7);
         assert_eq!(unchanged.status, GoalStatus::BudgetLimited);
+    }
+
+    #[test]
+    #[serial]
+    fn session_delta_accounting_rejects_stale_goal_id() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+        let session_id = "goal-delta-stale";
+        let goal = goal();
+        let id = goal.goal_id.clone();
+        save_goal_for_session(session_id, &goal).unwrap();
+
+        account_goal_runtime_delta_for_session(session_id, &id, 10, 1, now()).unwrap();
+        let stale = account_goal_runtime_delta_for_session(session_id, "other", 10, 1, now());
+
+        assert!(stale.is_err());
+        let stored = load_goal_for_session(session_id).unwrap().unwrap();
+        assert_eq!(stored.tokens_used, 10);
+        assert_eq!(stored.time_used_seconds, 1);
+    }
+
+    #[test]
+    #[serial]
+    fn session_usage_limit_marks_usage_limited() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+        let session_id = "goal-usage-limited";
+        let goal = goal();
+        let id = goal.goal_id.clone();
+        save_goal_for_session(session_id, &goal).unwrap();
+
+        let limited =
+            mark_goal_usage_limited_for_session(session_id, Some(&id), "cost limit reached")
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(limited.status, GoalStatus::UsageLimited);
+        assert_eq!(limited.status_reason.as_deref(), Some("cost limit reached"));
+        assert!(limited.usage_limited_at.is_some());
     }
 }
