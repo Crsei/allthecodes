@@ -630,7 +630,8 @@ impl Tool for WorkflowTool {
                 ))
             }
             "status" => {
-                let workflow_id = string_param(&input, "workflow_id").unwrap();
+                let workflow_id = string_param(&input, "workflow_id")
+                    .ok_or_else(|| anyhow!("workflow_id is required for workflow status"))?;
                 let record = load_workflow_by_id(workflow_id)?;
                 let run = load_workflow_run(workflow_id)?;
                 let preview = workflow_progress_summary(&record);
@@ -666,7 +667,8 @@ impl Tool for WorkflowTool {
                 ))
             }
             "cancel" => {
-                let workflow_id = string_param(&input, "workflow_id").unwrap();
+                let workflow_id = string_param(&input, "workflow_id")
+                    .ok_or_else(|| anyhow!("workflow_id is required for workflow cancel"))?;
                 let mut record = load_workflow_by_id(workflow_id)?;
                 record.status = "cancelled".into();
                 record.updated_at = Utc::now().to_rfc3339();

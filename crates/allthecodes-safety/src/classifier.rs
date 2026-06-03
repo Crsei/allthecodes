@@ -566,32 +566,33 @@ pub fn redact_classifier_text(input: &str) -> String {
     ];
 
     let mut out = input.to_string();
-    let quoted_secret_value = Regex::new(&format!(
+    if let Ok(quoted_secret_value) = Regex::new(&format!(
         r#"(?i)(?P<prefix>["']?(?:{})["']?\s*[:=]\s*)(?P<quote>["'])[^"']*(?P<close>["'])"#,
         SECRET_KEY_PATTERN
-    ))
-    .expect("classifier quoted secret redaction regex must compile");
-    out = quoted_secret_value
-        .replace_all(&out, |caps: &regex::Captures| {
-            format!(
-                "{}{}<redacted>{}",
-                &caps["prefix"], &caps["quote"], &caps["close"]
-            )
-        })
-        .into_owned();
+    )) {
+        out = quoted_secret_value
+            .replace_all(&out, |caps: &regex::Captures| {
+                format!(
+                    "{}{}<redacted>{}",
+                    &caps["prefix"], &caps["quote"], &caps["close"]
+                )
+            })
+            .into_owned();
+    }
 
-    let unquoted_secret_value = Regex::new(&format!(
+    if let Ok(unquoted_secret_value) = Regex::new(&format!(
         r#"(?i)(?P<prefix>["']?(?:{})["']?\s*[:=]\s*)[^"'\s,}}\]]+"#,
         SECRET_KEY_PATTERN
-    ))
-    .expect("classifier unquoted secret redaction regex must compile");
-    out = unquoted_secret_value
-        .replace_all(&out, "${prefix}<redacted>")
-        .into_owned();
+    )) {
+        out = unquoted_secret_value
+            .replace_all(&out, "${prefix}<redacted>")
+            .into_owned();
+    }
 
     for (pattern, replacement) in patterns {
-        let regex = Regex::new(pattern).expect("classifier redaction regex must compile");
-        out = regex.replace_all(&out, replacement).into_owned();
+        if let Ok(regex) = Regex::new(pattern) {
+            out = regex.replace_all(&out, replacement).into_owned();
+        }
     }
     out
 }

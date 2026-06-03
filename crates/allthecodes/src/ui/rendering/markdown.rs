@@ -16,7 +16,7 @@ use super::theme::Theme;
 
 thread_local! {
     static MD_CACHE: RefCell<LruCache<u64, Vec<Line<'static>>>> =
-        RefCell::new(LruCache::new(NonZeroUsize::new(256).unwrap()));
+        RefCell::new(LruCache::new(NonZeroUsize::new(256).unwrap_or(NonZeroUsize::MIN)));
 }
 
 fn cache_key(text: &str, theme: &Theme) -> u64 {

@@ -296,8 +296,8 @@ fn take_complete_eventstream_frame(buffer: &mut Vec<u8>) -> Result<Option<Vec<u8
         return Ok(None);
     }
 
-    let total_len = u32::from_be_bytes(buffer[0..4].try_into().expect("slice length")) as usize;
-    let headers_len = u32::from_be_bytes(buffer[4..8].try_into().expect("slice length")) as usize;
+    let total_len = read_u32_be_at(buffer, 0, "event stream total length")? as usize;
+    let headers_len = read_u32_be_at(buffer, 4, "event stream headers length")? as usize;
     if total_len < 16 {
         bail!("invalid Bedrock event stream frame length {}", total_len);
     }
@@ -320,8 +320,8 @@ fn decode_eventstream_message(frame: &[u8]) -> Result<EventStreamMessage> {
         bail!("Bedrock event stream frame is too short");
     }
 
-    let total_len = u32::from_be_bytes(frame[0..4].try_into().expect("slice length")) as usize;
-    let headers_len = u32::from_be_bytes(frame[4..8].try_into().expect("slice length")) as usize;
+    let total_len = read_u32_be_at(frame, 0, "event stream total length")? as usize;
+    let headers_len = read_u32_be_at(frame, 4, "event stream headers length")? as usize;
     if total_len != frame.len() {
         bail!(
             "Bedrock event stream frame length mismatch: header {}, actual {}",
@@ -330,17 +330,13 @@ fn decode_eventstream_message(frame: &[u8]) -> Result<EventStreamMessage> {
         );
     }
 
-    let expected_prelude_crc = u32::from_be_bytes(frame[8..12].try_into().expect("slice length"));
+    let expected_prelude_crc = read_u32_be_at(frame, 8, "event stream prelude CRC")?;
     let actual_prelude_crc = crc32(&frame[0..8]);
     if expected_prelude_crc != actual_prelude_crc {
         bail!("Bedrock event stream prelude CRC mismatch");
     }
 
-    let expected_message_crc = u32::from_be_bytes(
-        frame[frame.len() - 4..frame.len()]
-            .try_into()
-            .expect("slice length"),
-    );
+    let expected_message_crc = read_u32_be_at(frame, frame.len() - 4, "event stream message CRC")?;
     let actual_message_crc = crc32(&frame[..frame.len() - 4]);
     if expected_message_crc != actual_message_crc {
         bail!("Bedrock event stream message CRC mismatch");
@@ -460,7 +456,7 @@ fn read_u8(bytes: &[u8], offset: &mut usize) -> Result<u8> {
 
 fn read_u16(bytes: &[u8], offset: &mut usize) -> Result<u16> {
     let raw = read_bytes(bytes, offset, 2)?;
-    Ok(u16::from_be_bytes(raw.try_into().expect("slice length")))
+    Ok(u16::from_be_bytes([raw[0], raw[1]]))
 }
 
 fn read_bytes<'a>(bytes: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8]> {
@@ -471,6 +467,24 @@ fn read_bytes<'a>(bytes: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a
     let out = &bytes[*offset..end];
     *offset = end;
     Ok(out)
+}
+
+fn read_u32_be_at(bytes: &[u8], offset: usize, label: &str) -> Result<u32> {
+    let end = offset.saturating_add(4);
+    if end > bytes.len() {
+        bail!(
+            "truncated Bedrock event stream {label}: need bytes {}..{}, frame has {} bytes",
+            offset,
+            end,
+            bytes.len()
+        );
+    }
+    Ok(u32::from_be_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ]))
 }
 
 fn crc32(bytes: &[u8]) -> u32 {

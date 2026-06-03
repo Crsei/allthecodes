@@ -430,9 +430,16 @@ pub(crate) async fn execute_tool_calls(
             let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TOOLS));
             let mut handles = Vec::new();
             for (id, name, input) in batch {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
                 let tool_use_id = id.clone();
                 let tool_name = name.clone();
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        warn!(%error, tool = %tool_name, "tool concurrency limiter closed");
+                        results.push(internal_tool_error_result(tool_use_id, tool_name, error));
+                        continue;
+                    }
+                };
                 let deps = deps.clone();
                 let parent = parent_message.clone();
                 let tools = tools.clone();

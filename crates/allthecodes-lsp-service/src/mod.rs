@@ -532,6 +532,15 @@ async fn get_or_start_client(
     Ok(key)
 }
 
+fn get_client_mut<'a>(
+    clients: &'a mut HashMap<String, client::LspClient>,
+    key: &str,
+) -> Result<&'a mut client::LspClient> {
+    clients
+        .get_mut(key)
+        .with_context(|| format!("LSP client missing after startup for server key: {key}"))
+}
+
 /// Reconstruct a `CallHierarchyItem` JSON from a [`SymbolInfo`] for call
 /// hierarchy requests (incoming/outgoing calls).
 ///
@@ -657,7 +666,7 @@ pub async fn open_document(
 ) -> Result<DocumentSyncState> {
     let mut clients = LSP_CLIENTS.lock().await;
     let key = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&key).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &key)?;
     let state = client.open_document(uri, language_id, text).await?;
     let _ = client.drain_notifications(Duration::from_millis(250)).await;
     emit_document_synced("open", &state);
@@ -676,7 +685,7 @@ pub async fn change_document(
     }
     let mut clients = LSP_CLIENTS.lock().await;
     let key = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&key).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &key)?;
     let state = client
         .change_document(uri, full_text, changes, version)
         .await?;
@@ -688,7 +697,7 @@ pub async fn change_document(
 pub async fn save_document(uri: &str, text: Option<String>) -> Result<DocumentSyncState> {
     let mut clients = LSP_CLIENTS.lock().await;
     let key = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&key).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &key)?;
     let state = client.save_document(uri, text).await?;
     let _ = client.drain_notifications(Duration::from_millis(350)).await;
     emit_document_synced("save", &state);
@@ -737,7 +746,7 @@ pub async fn completion(
 ) -> Result<Vec<CompletionItemInfo>> {
     let mut clients = LSP_CLIENTS.lock().await;
     let key = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&key).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &key)?;
     client.ensure_file_open(uri).await?;
 
     let mut params = serde_json::json!({
@@ -788,7 +797,7 @@ pub fn server_info_snapshot() -> Vec<LspServerInfo> {
 pub async fn go_to_definition(uri: &str, line: u32, character: u32) -> Result<Vec<SourceLocation>> {
     let mut clients = LSP_CLIENTS.lock().await;
     let lang = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&lang).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &lang)?;
     client.ensure_file_open(uri).await?;
 
     let params = serde_json::json!({
@@ -807,7 +816,7 @@ pub async fn go_to_implementation(
 ) -> Result<Vec<SourceLocation>> {
     let mut clients = LSP_CLIENTS.lock().await;
     let lang = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&lang).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &lang)?;
     client.ensure_file_open(uri).await?;
 
     let params = serde_json::json!({
@@ -824,7 +833,7 @@ pub async fn go_to_implementation(
 pub async fn find_references(uri: &str, line: u32, character: u32) -> Result<Vec<SourceLocation>> {
     let mut clients = LSP_CLIENTS.lock().await;
     let lang = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&lang).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &lang)?;
     client.ensure_file_open(uri).await?;
 
     let params = serde_json::json!({
@@ -840,7 +849,7 @@ pub async fn find_references(uri: &str, line: u32, character: u32) -> Result<Vec
 pub async fn hover(uri: &str, line: u32, character: u32) -> Result<HoverInfo> {
     let mut clients = LSP_CLIENTS.lock().await;
     let lang = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&lang).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &lang)?;
     client.ensure_file_open(uri).await?;
 
     let params = serde_json::json!({
@@ -855,7 +864,7 @@ pub async fn hover(uri: &str, line: u32, character: u32) -> Result<HoverInfo> {
 pub async fn document_symbols(uri: &str) -> Result<Vec<SymbolInfo>> {
     let mut clients = LSP_CLIENTS.lock().await;
     let lang = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&lang).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &lang)?;
     client.ensure_file_open(uri).await?;
 
     let params = serde_json::json!({
@@ -884,7 +893,7 @@ pub async fn workspace_symbols(query: &str) -> Result<Vec<SymbolInfo>> {
     };
 
     let lang = lang.ok_or_else(|| anyhow::anyhow!("No LSP server running"))?;
-    let client = clients.get_mut(&lang).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &lang)?;
 
     let params = serde_json::json!({
         "query": query
@@ -901,7 +910,7 @@ pub async fn prepare_call_hierarchy(
 ) -> Result<Vec<SymbolInfo>> {
     let mut clients = LSP_CLIENTS.lock().await;
     let lang = get_or_start_client(uri, &mut clients).await?;
-    let client = clients.get_mut(&lang).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &lang)?;
     client.ensure_file_open(uri).await?;
 
     let params = serde_json::json!({
@@ -922,7 +931,7 @@ pub async fn incoming_calls(item: &SymbolInfo) -> Result<Vec<SymbolInfo>> {
 
     let mut clients = LSP_CLIENTS.lock().await;
     let lang = get_or_start_client(&uri_str, &mut clients).await?;
-    let client = clients.get_mut(&lang).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &lang)?;
 
     let call_item = symbol_info_to_call_hierarchy_json(item)?;
     let params = serde_json::json!({ "item": call_item });
@@ -940,7 +949,7 @@ pub async fn outgoing_calls(item: &SymbolInfo) -> Result<Vec<SymbolInfo>> {
 
     let mut clients = LSP_CLIENTS.lock().await;
     let lang = get_or_start_client(&uri_str, &mut clients).await?;
-    let client = clients.get_mut(&lang).expect("LSP client must exist after get_or_start_client");
+    let client = get_client_mut(&mut clients, &lang)?;
 
     let call_item = symbol_info_to_call_hierarchy_json(item)?;
     let params = serde_json::json!({ "item": call_item });

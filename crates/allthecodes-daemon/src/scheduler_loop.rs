@@ -43,9 +43,9 @@ pub async fn scheduler_loop(state: DaemonState) {
             }
         };
 
-        for task in due {
+        if let Some(task) = due.into_iter().next() {
             if state.is_query_running.swap(true, Ordering::SeqCst) {
-                break;
+                continue;
             }
 
             let prompt = match &task.payload {
@@ -104,8 +104,6 @@ pub async fn scheduler_loop(state: DaemonState) {
                 }
                 state_clone.is_query_running.store(false, Ordering::SeqCst);
             });
-
-            break;
         }
     }
 }

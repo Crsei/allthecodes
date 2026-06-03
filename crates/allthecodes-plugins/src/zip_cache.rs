@@ -62,7 +62,7 @@ impl ZipCache {
 
 impl Default for ZipCache {
     fn default() -> Self {
-        Self::new(NonZeroUsize::new(DEFAULT_CACHE_CAPACITY).unwrap())
+        Self::new(NonZeroUsize::new(DEFAULT_CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN))
     }
 }
 

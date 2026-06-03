@@ -499,7 +499,9 @@ pub fn validate_heredocs(command: &str) -> Result<(), String> {
         if pending.is_empty() {
             break;
         }
-        let spec = pending.front().expect("heredoc specs should not be empty (is_empty checked above)");
+        let Some(spec) = pending.front() else {
+            break;
+        };
         let candidate = if spec.strip_tabs {
             line.trim_start_matches('\t')
         } else {

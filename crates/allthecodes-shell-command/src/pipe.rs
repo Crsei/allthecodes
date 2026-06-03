@@ -168,10 +168,13 @@ fn rebuild_tokens(tokens: &[String]) -> String {
 
         // Environment variable assignments — only at command start
         if is_env_var_assignment(token) && !seen_non_env_var {
-            let eq_pos = token.find('=').unwrap();
-            let name = &token[..eq_pos];
-            let value = &token[eq_pos + 1..];
-            parts.push(format!("{}={}", name, quote_shell_token(value)));
+            if let Some(eq_pos) = token.find('=') {
+                let name = &token[..eq_pos];
+                let value = &token[eq_pos + 1..];
+                parts.push(format!("{}={}", name, quote_shell_token(value)));
+            } else {
+                parts.push(quote_shell_token(token));
+            }
             i += 1;
             continue;
         }
@@ -257,7 +260,9 @@ static BACKSLASH_NL_RE: LazyLock<Regex> =
 fn join_continuation_lines(command: &str) -> String {
     BACKSLASH_NL_RE
         .replace_all(command, |caps: &regex::Captures| {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else {
+                return String::new();
+            };
             let text = m.as_str();
             let backslash_count = text.len() - 1; // -1 for the \n
             if backslash_count % 2 == 1 {

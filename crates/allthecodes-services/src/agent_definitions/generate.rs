@@ -56,11 +56,20 @@ pub fn spawn_generation(user_prompt: String, existing_names: Vec<String>) {
             run_generation(user_prompt, existing_names).await;
         });
     } else {
-        tokio::runtime::Builder::new_current_thread()
+        let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("create single-thread runtime")
-            .block_on(async { run_generation(user_prompt, existing_names).await });
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                emit(AgentSettingsEvent::Error {
+                    name: "__generate__".into(),
+                    error: format!("Failed to create generation runtime: {error}"),
+                });
+                return;
+            }
+        };
+        runtime.block_on(async { run_generation(user_prompt, existing_names).await });
     }
 }
 

@@ -60,7 +60,7 @@ impl PathCompletionProvider {
         Self {
             include_hidden: false,
             include_files: true,
-            cache: LruCache::new(NonZeroUsize::new(MAX_CACHED_DIRS).unwrap()),
+            cache: LruCache::new(NonZeroUsize::new(MAX_CACHED_DIRS).unwrap_or(NonZeroUsize::MIN)),
             cache_ttl: DEFAULT_CACHE_TTL,
         }
     }
@@ -252,7 +252,8 @@ impl Default for PathCompletionProvider {
 impl Clone for PathCompletionProvider {
     fn clone(&self) -> Self {
         // Re-create the cache since LruCache doesn't Clone
-        let mut new_cache = LruCache::new(NonZeroUsize::new(MAX_CACHED_DIRS).unwrap());
+        let mut new_cache =
+            LruCache::new(NonZeroUsize::new(MAX_CACHED_DIRS).unwrap_or(NonZeroUsize::MIN));
         // Copy all cache entries
         for (dir, entry) in self.cache.iter() {
             let _ = new_cache.put(

@@ -502,7 +502,12 @@ pub fn extract_heredocs(
     }
 
     // --- Security: backticks before first `<<` ---
-    let first_heredoc_pos = command.find("<<").unwrap();
+    let Some(first_heredoc_pos) = command.find("<<") else {
+        return HeredocExtractionResult {
+            processed_command: command.to_string(),
+            heredocs: HashMap::new(),
+        };
+    };
     if first_heredoc_pos > 0 {
         let before = &command_bytes[..first_heredoc_pos];
         if before.contains(&b'`') {
