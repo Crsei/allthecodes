@@ -558,6 +558,30 @@ fn test_query_engine_abort() {
 }
 
 #[test]
+#[serial_test::serial]
+fn test_query_engine_abort_pauses_active_goal() {
+    let temp = tempdir().unwrap();
+    let _home = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+    let engine = QueryEngine::new(make_config());
+    let session_id = engine.current_session_id();
+    let goal =
+        allthecodes_tools::goals::create_goal_record("ship", None, chrono::Utc::now()).unwrap();
+    allthecodes_tools::goals::save_goal_for_session(session_id.as_str(), &goal).unwrap();
+
+    engine.abort();
+
+    let stored = allthecodes_tools::goals::load_goal_for_session(session_id.as_str())
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, allthecodes_tools::goals::GoalStatus::Paused);
+    assert_eq!(
+        stored.status_reason.as_deref(),
+        Some("task aborted by user")
+    );
+    assert!(engine.state.read().goal_runtime.active_goal_id.is_none());
+}
+
+#[test]
 fn test_query_engine_sleep_control() {
     let engine = QueryEngine::new(make_config());
     assert!(!engine.is_sleeping());

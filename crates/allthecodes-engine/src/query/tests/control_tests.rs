@@ -6,7 +6,8 @@ use super::super::super::deps::ModelResponse;
 use super::super::*;
 use super::mocks::{
     make_query_params, make_text_response, make_text_response_with_stop_and_output_tokens,
-    make_user_message_for_test, request_start_count, MockDeps, StopContinuationHookRunner,
+    make_user_message_for_test, request_start_count, MockDeps, MockStreamStep,
+    StopContinuationHookRunner,
 };
 use crate::types::config::{QueryGates, QueryParams, QuerySource, TaskBudget};
 use crate::types::message::{
@@ -234,6 +235,73 @@ async fn test_plan_mode_suppresses_active_goal_continuation() {
         request_start_count(&items),
         1,
         "plan mode should suppress automatic goal continuation"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_empty_goal_continuation_marks_usage_limited() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+    save_goal("goal-empty-continuation", GoalStatus::Active);
+
+    let deps = Arc::new(
+        MockDeps::new(vec![
+            make_text_response("Still working."),
+            make_text_response(""),
+            make_text_response("   "),
+        ])
+        .with_audit_session("goal-empty-continuation"),
+    );
+
+    let stream = query(
+        make_query_params(vec![make_user_message_for_test("start")]),
+        deps.clone(),
+    );
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    assert_eq!(
+        request_start_count(&items),
+        3,
+        "two empty automatic continuations should stop recovery"
+    );
+    let goal = goals::load_goal_for_session("goal-empty-continuation")
+        .unwrap()
+        .unwrap();
+    assert_eq!(goal.status, GoalStatus::UsageLimited);
+    assert_eq!(
+        goal.status_reason.as_deref(),
+        Some("automatic goal continuation returned empty responses")
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_prompt_overflow_marks_active_goal_usage_limited() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+    save_goal("goal-prompt-overflow", GoalStatus::Active);
+
+    let deps = Arc::new(
+        MockDeps::from_steps(vec![MockStreamStep::Error(
+            "prompt_too_long: context overflow".to_string(),
+        )])
+        .with_audit_session("goal-prompt-overflow"),
+    );
+
+    let stream = query(
+        make_query_params(vec![make_user_message_for_test("start")]),
+        deps.clone(),
+    );
+    let _items: Vec<QueryYield> = stream.collect().await;
+
+    let goal = goals::load_goal_for_session("goal-prompt-overflow")
+        .unwrap()
+        .unwrap();
+    assert_eq!(goal.status, GoalStatus::UsageLimited);
+    assert_eq!(
+        goal.status_reason.as_deref(),
+        Some("context overflow prevented goal continuation")
     );
 }
 

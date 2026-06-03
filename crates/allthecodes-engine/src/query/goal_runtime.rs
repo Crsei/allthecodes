@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tracing::warn;
 
+use crate::types::message::{AssistantMessage, ContentBlock};
 use crate::types::state::QueryLoopState;
 use crate::types::tool::PermissionMode;
 
@@ -16,6 +17,8 @@ pub(crate) struct ActiveGoalContinuation {
 #[derive(Debug, Default)]
 pub(crate) struct GoalContinuationScheduler {
     queued_for: Option<String>,
+    in_flight_for: Option<String>,
+    empty_response_count: usize,
 }
 
 impl GoalContinuationScheduler {
@@ -62,7 +65,44 @@ If progress is blocked by missing external input, call UpdateGoal with status=bl
         if self.queued_for.as_deref() == Some(goal_id) {
             self.queued_for = None;
         }
+        self.in_flight_for = Some(goal_id.to_string());
     }
+
+    pub(crate) fn observe_assistant_response(
+        &mut self,
+        assistant_message: &AssistantMessage,
+    ) -> Option<String> {
+        let goal_id = self.in_flight_for.take()?;
+        if assistant_has_progress(assistant_message) {
+            self.empty_response_count = 0;
+            return None;
+        }
+
+        self.empty_response_count += 1;
+        if self.empty_response_count >= 2 {
+            self.clear();
+            Some(goal_id)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.queued_for = None;
+        self.in_flight_for = None;
+        self.empty_response_count = 0;
+    }
+}
+
+fn assistant_has_progress(assistant_message: &AssistantMessage) -> bool {
+    assistant_message.content.iter().any(|block| match block {
+        ContentBlock::Text { text } => !text.trim().is_empty(),
+        ContentBlock::Thinking { thinking, .. } => !thinking.trim().is_empty(),
+        ContentBlock::ConnectorText { connector_text, .. } => !connector_text.trim().is_empty(),
+        ContentBlock::ToolUse { .. } | ContentBlock::ServerToolUse { .. } => true,
+        ContentBlock::ToolResult { .. } | ContentBlock::RedactedThinking { .. } => true,
+        ContentBlock::Image { .. } => true,
+    })
 }
 
 fn suppress_goal_continuation(
@@ -104,5 +144,35 @@ fn goal_is_still_active(deps: &Arc<dyn QueryDeps>, goal_id: &str) -> bool {
             warn!(%error, "failed to reload active goal before continuation");
             false
         }
+    }
+}
+
+pub(crate) fn mark_active_goal_paused(deps: &Arc<dyn QueryDeps>, reason: impl Into<String>) {
+    let session_id = deps.audit_context().session_id;
+    let reason = reason.into();
+    let Some(goal) = active_goal(deps) else {
+        return;
+    };
+    if let Err(error) = allthecodes_tools::goals::mark_goal_paused_for_session(
+        &session_id,
+        Some(&goal.goal_id),
+        reason,
+    ) {
+        warn!(%error, "failed to pause active goal");
+    }
+}
+
+pub(crate) fn mark_active_goal_usage_limited(deps: &Arc<dyn QueryDeps>, reason: impl Into<String>) {
+    let session_id = deps.audit_context().session_id;
+    let reason = reason.into();
+    let Some(goal) = active_goal(deps) else {
+        return;
+    };
+    if let Err(error) = allthecodes_tools::goals::mark_goal_usage_limited_for_session(
+        &session_id,
+        Some(&goal.goal_id),
+        reason,
+    ) {
+        warn!(%error, "failed to mark active goal usage-limited");
     }
 }

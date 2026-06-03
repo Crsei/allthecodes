@@ -535,6 +535,29 @@ pub fn mark_goal_usage_limited_for_session(
     Ok(Some(goal))
 }
 
+pub fn mark_goal_paused_for_session(
+    session_id: &str,
+    expected_goal_id: Option<&str>,
+    reason: impl Into<String>,
+) -> Result<Option<GoalRecord>> {
+    let Some(goal) = load_goal_for_session(session_id)? else {
+        return Ok(None);
+    };
+    if goal_is_active(&goal) || goal.status == GoalStatus::Paused {
+        let goal = update_goal_status(
+            goal,
+            GoalStatus::Paused,
+            Some(reason.into()),
+            Utc::now(),
+            expected_goal_id,
+        )
+        .map_err(|error| anyhow::anyhow!(error.message()))?;
+        save_goal_for_session(session_id, &goal)?;
+        return Ok(Some(goal));
+    }
+    Ok(Some(goal))
+}
+
 pub struct GetGoalTool;
 pub struct CreateGoalTool;
 pub struct UpdateGoalTool;

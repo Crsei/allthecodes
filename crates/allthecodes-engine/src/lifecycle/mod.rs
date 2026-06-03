@@ -136,6 +136,21 @@ impl ActiveSteerState {
     }
 }
 
+fn pause_active_goal_for_abort(session_id: &str) -> anyhow::Result<()> {
+    let Some(goal) = allthecodes_tools::goals::load_goal_for_session(session_id)? else {
+        return Ok(());
+    };
+    if !allthecodes_tools::goals::goal_is_active(&goal) {
+        return Ok(());
+    }
+    allthecodes_tools::goals::mark_goal_paused_for_session(
+        session_id,
+        Some(&goal.goal_id),
+        "task aborted by user",
+    )?;
+    Ok(())
+}
+
 pub struct SteerError {
     message: String,
 }
@@ -421,7 +436,15 @@ impl QueryEngine {
     pub fn abort(&self) {
         info!("aborting query engine");
         self.aborted.store(true, Ordering::SeqCst);
-        self.state.write().abort_reason = Some(AbortReason::UserAbort);
+        let session_id = self.current_session_id();
+        {
+            let mut state = self.state.write();
+            state.abort_reason = Some(AbortReason::UserAbort);
+            state.goal_runtime.clear_active();
+        }
+        if let Err(error) = pause_active_goal_for_abort(session_id.as_str()) {
+            warn!(%error, "failed to pause active goal after abort");
+        }
     }
 
     pub fn submit_steer_message(&self, text: String) -> Result<(), SteerError> {

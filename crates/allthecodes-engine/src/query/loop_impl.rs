@@ -39,7 +39,9 @@ use crate::types::transitions::Continue;
 use crate::services::tool_use_summary::{self, ToolInfo};
 
 use super::deps::QueryDeps;
-use super::goal_runtime::GoalContinuationScheduler;
+use super::goal_runtime::{
+    mark_active_goal_paused, mark_active_goal_usage_limited, GoalContinuationScheduler,
+};
 use super::loop_helpers::{
     backfill_observable_tool_inputs, classify_model_call_failure, execute_tool_calls,
     handle_max_output_tokens, handle_prompt_too_long, is_stream_progress_event, make_abort_message,
@@ -95,6 +97,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
             if deps.is_aborted() {
                 info!("aborted before API call");
+                goal_continuation_scheduler.clear();
+                mark_active_goal_paused(&deps, "task aborted by user");
                 yield QueryYield::Message(Message::Assistant(make_abort_message(
                     &deps,
                     "AbortedStreaming",
@@ -234,6 +238,11 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                                     continue 'query_loop;
                                 }
                                 PromptRecovery::Terminal => {
+                                    goal_continuation_scheduler.clear();
+                                    mark_active_goal_usage_limited(
+                                        &deps,
+                                        "context overflow prevented goal continuation",
+                                    );
                                     yield QueryYield::Message(Message::Assistant(
                                         make_error_message(&deps, &error_str),
                                     ));
@@ -510,6 +519,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                 let observable_assistant =
                     backfill_observable_tool_inputs(&assistant_message, &tools).into_owned();
                 yield QueryYield::Message(Message::Assistant(observable_assistant));
+                goal_continuation_scheduler.clear();
+                mark_active_goal_paused(&deps, "task aborted by user");
                 break;
             }
 
@@ -540,6 +551,16 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
             let tool_uses = stop_hooks::extract_tool_uses(&assistant_message);
+            if goal_continuation_scheduler
+                .observe_assistant_response(&assistant_message)
+                .is_some()
+            {
+                mark_active_goal_usage_limited(
+                    &deps,
+                    "automatic goal continuation returned empty responses",
+                );
+                break;
+            }
 
             if tool_uses.is_empty() {
                 if let Some(executor) = streaming_tool_executor {
@@ -573,6 +594,11 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             continue;
                         }
                         MaxTokensRecovery::Terminal => {
+                            goal_continuation_scheduler.clear();
+                            mark_active_goal_usage_limited(
+                                &deps,
+                                "max output token recovery exhausted",
+                            );
                             break;
                         }
                     }
@@ -732,6 +758,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
                 if deps.is_aborted() {
                     info!("aborted during tool execution");
+                    goal_continuation_scheduler.clear();
+                    mark_active_goal_paused(&deps, "task aborted by user");
                     break;
                 }
 
