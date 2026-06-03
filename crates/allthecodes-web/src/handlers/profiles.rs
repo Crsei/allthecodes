@@ -9,7 +9,9 @@ use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use allthecodes_config::settings::{load_global_config, write_user_settings, ProviderProfileSettings};
+use allthecodes_config::settings::{
+    load_global_config, write_user_settings, ProviderProfileSettings,
+};
 
 use crate::handlers::ApiError;
 
@@ -71,7 +73,10 @@ fn load_profile_list() -> (Option<String>, Vec<ProfileSummary>) {
     (active_id, profiles)
 }
 
-fn save_profile_list(active_id: &Option<String>, profiles: &[ProfileSummary]) -> Result<(), String> {
+fn save_profile_list(
+    active_id: &Option<String>,
+    profiles: &[ProfileSummary],
+) -> Result<(), String> {
     let mut settings = load_global_config().unwrap_or_default();
     settings.active_auth_profile = active_id.clone();
 
@@ -110,9 +115,7 @@ pub async fn profiles_list_handler() -> impl IntoResponse {
 }
 
 /// POST /api/profiles — Create a new profile.
-pub async fn profiles_create_handler(
-    Json(req): Json<ProfileCreateRequest>,
-) -> impl IntoResponse {
+pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> impl IntoResponse {
     if req.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -120,7 +123,8 @@ pub async fn profiles_create_handler(
                 error: "Profile name cannot be empty".into(),
                 code: "validation_error".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let (active_id, mut profiles) = load_profile_list();
@@ -133,7 +137,8 @@ pub async fn profiles_create_handler(
                 error: format!("Profile '{}' already exists", req.name),
                 code: "conflict".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let now = Utc::now().timestamp();
@@ -149,21 +154,21 @@ pub async fn profiles_create_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// GET /api/profiles/{id} — Get a single profile detail.
-pub async fn profiles_detail_handler(
-    AxumPath(id): AxumPath<String>,
-) -> impl IntoResponse {
+pub async fn profiles_detail_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
     let (_, profiles) = load_profile_list();
     if let Some(profile) = profiles.into_iter().find(|p| p.id == id) {
         Json(profile).into_response()
@@ -174,7 +179,8 @@ pub async fn profiles_detail_handler(
                 error: format!("Profile '{}' not found", id),
                 code: "not_found".into(),
             }),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 
@@ -194,7 +200,8 @@ pub async fn profiles_update_handler(
                     error: format!("Profile '{}' not found", id),
                     code: "not_found".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -207,7 +214,8 @@ pub async fn profiles_update_handler(
                     error: "Profile name cannot be empty".into(),
                     code: "validation_error".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
         profile.id = trimmed.clone();
         profile.name = trimmed;
@@ -218,21 +226,21 @@ pub async fn profiles_update_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// DELETE /api/profiles/{id} — Delete a profile.
-pub async fn profiles_delete_handler(
-    AxumPath(id): AxumPath<String>,
-) -> impl IntoResponse {
+pub async fn profiles_delete_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
     let (active_id, mut profiles) = load_profile_list();
 
     let pos = match profiles.iter().position(|p| p.id == id) {
@@ -244,7 +252,8 @@ pub async fn profiles_delete_handler(
                     error: format!("Profile '{}' not found", id),
                     code: "not_found".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -260,21 +269,21 @@ pub async fn profiles_delete_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// POST /api/profiles/{id}/switch — Switch the active profile.
-pub async fn profiles_switch_handler(
-    AxumPath(id): AxumPath<String>,
-) -> impl IntoResponse {
+pub async fn profiles_switch_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
     let (_, mut profiles) = load_profile_list();
 
     if !profiles.iter().any(|p| p.id == id) {
@@ -284,7 +293,8 @@ pub async fn profiles_switch_handler(
                 error: format!("Profile '{}' not found", id),
                 code: "not_found".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Update active flags
@@ -297,21 +307,21 @@ pub async fn profiles_switch_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: new_active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// POST /api/profiles/import — Import a profile from a JSON payload.
-pub async fn profiles_import_handler(
-    Json(req): Json<ProfileImportRequest>,
-) -> impl IntoResponse {
+pub async fn profiles_import_handler(Json(req): Json<ProfileImportRequest>) -> impl IntoResponse {
     let payload = match req.payload {
         Some(p) => p,
         None => {
@@ -321,12 +331,16 @@ pub async fn profiles_import_handler(
                     error: "Missing 'payload' field".into(),
                     code: "validation_error".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
     // Extract profile name from payload
-    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("imported");
+    let name = payload
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("imported");
     let (active_id, mut profiles) = load_profile_list();
 
     let now = Utc::now().timestamp();
@@ -342,21 +356,21 @@ pub async fn profiles_import_handler(
         Ok(()) => Json(ProfileListResponse {
             active_profile_id: active_id,
             profiles,
-        }).into_response(),
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// GET /api/profiles/{id}/export — Export a profile as JSON.
-pub async fn profiles_export_handler(
-    AxumPath(id): AxumPath<String>,
-) -> Response {
+pub async fn profiles_export_handler(AxumPath(id): AxumPath<String>) -> Response {
     let (_, profiles) = load_profile_list();
     let profile = match profiles.into_iter().find(|p| p.id == id) {
         Some(p) => p,
@@ -367,7 +381,8 @@ pub async fn profiles_export_handler(
                     error: format!("Profile '{}' not found", id),
                     code: "not_found".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 

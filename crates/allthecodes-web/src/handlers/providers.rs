@@ -9,10 +9,12 @@ use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use allthecodes_config::settings::{load_global_config, write_user_settings, ProviderProfileSettings};
+use allthecodes_config::settings::{
+    load_global_config, write_user_settings, ProviderProfileSettings,
+};
 
-use crate::handlers::ApiError;
 use crate::handlers::models::ModelSummary;
+use crate::handlers::ApiError;
 use crate::state::WebState;
 
 #[derive(Serialize)]
@@ -85,7 +87,10 @@ fn provider_summaries_from_settings() -> Vec<ProviderSummary> {
 
     if let Some(profiles) = settings.auth_profiles {
         for (id, profile) in profiles {
-            let kind = profile.api_provider.clone().unwrap_or_else(|| "anthropic".to_string());
+            let kind = profile
+                .api_provider
+                .clone()
+                .unwrap_or_else(|| "anthropic".to_string());
             providers.push(ProviderSummary {
                 id: id.clone(),
                 name: id.clone(),
@@ -108,9 +113,7 @@ fn provider_summaries_from_settings() -> Vec<ProviderSummary> {
 }
 
 /// GET /api/providers — List all providers.
-pub async fn providers_list_handler(
-    State(state): State<WebState>,
-) -> impl IntoResponse {
+pub async fn providers_list_handler(State(state): State<WebState>) -> impl IntoResponse {
     let providers = provider_summaries_from_settings();
 
     // Also add the engine's current provider if it's not already listed
@@ -124,9 +127,7 @@ pub async fn providers_list_handler(
 }
 
 /// POST /api/providers — Create a new provider.
-pub async fn providers_create_handler(
-    Json(req): Json<ProviderCreateRequest>,
-) -> Response {
+pub async fn providers_create_handler(Json(req): Json<ProviderCreateRequest>) -> Response {
     let mut settings = load_global_config().unwrap_or_default();
     let mut profiles = settings.auth_profiles.clone().unwrap_or_default();
 
@@ -137,7 +138,8 @@ pub async fn providers_create_handler(
                 error: format!("Provider '{}' already exists", req.name),
                 code: "conflict".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let profile = ProviderProfileSettings {
@@ -162,7 +164,8 @@ pub async fn providers_create_handler(
             Json(ProviderListResponse {
                 profile_id: None,
                 providers,
-            }).into_response()
+            })
+            .into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -170,7 +173,8 @@ pub async fn providers_create_handler(
                 error: e.to_string(),
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -191,7 +195,8 @@ pub async fn providers_update_handler(
                     error: format!("Provider '{}' already exists", name),
                     code: "conflict".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
@@ -204,7 +209,8 @@ pub async fn providers_update_handler(
                     error: format!("Provider '{}' not found", id),
                     code: "not_found".into(),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -220,7 +226,8 @@ pub async fn providers_update_handler(
             Json(ProviderListResponse {
                 profile_id: None,
                 providers,
-            }).into_response()
+            })
+            .into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -228,14 +235,13 @@ pub async fn providers_update_handler(
                 error: e.to_string(),
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// DELETE /api/providers/{id} — Delete a provider.
-pub async fn providers_delete_handler(
-    AxumPath(id): AxumPath<String>,
-) -> Response {
+pub async fn providers_delete_handler(AxumPath(id): AxumPath<String>) -> Response {
     let mut settings = load_global_config().unwrap_or_default();
     let mut profiles = settings.auth_profiles.clone().unwrap_or_default();
 
@@ -246,7 +252,8 @@ pub async fn providers_delete_handler(
                 error: format!("Provider '{}' not found", id),
                 code: "not_found".into(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     settings.auth_profiles = Some(profiles);
@@ -257,7 +264,8 @@ pub async fn providers_delete_handler(
             Json(ProviderListResponse {
                 profile_id: None,
                 providers,
-            }).into_response()
+            })
+            .into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -265,7 +273,8 @@ pub async fn providers_delete_handler(
                 error: e.to_string(),
                 code: "internal_error".into(),
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -300,5 +309,6 @@ pub async fn providers_refresh_models_handler(
         provider_id: id,
         refreshed_at: Some(Utc::now().timestamp()),
         models,
-    }).into_response()
+    })
+    .into_response()
 }

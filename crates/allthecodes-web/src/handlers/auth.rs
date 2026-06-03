@@ -60,7 +60,7 @@ pub async fn auth_status_handler() -> impl IntoResponse {
     let authenticated = auth.is_authenticated();
     let subject = auth.api_key().map(|k| {
         if k.len() > 8 {
-            format!("{}...{}", &k[..4], &k[k.len()-4..])
+            format!("{}...{}", &k[..4], &k[k.len() - 4..])
         } else {
             "unknown".to_string()
         }
@@ -78,9 +78,7 @@ pub async fn auth_status_handler() -> impl IntoResponse {
 }
 
 /// POST /api/auth/login — Authenticate with an API key or token.
-pub async fn auth_login_handler(
-    Json(req): Json<LoginRequest>,
-) -> Response {
+pub async fn auth_login_handler(Json(req): Json<LoginRequest>) -> Response {
     // Accept API key from token field
     if let Some(token) = &req.token {
         if allthecodes_auth::api_key::validate_api_key(token) {
@@ -90,11 +88,12 @@ pub async fn auth_login_handler(
                         authenticated: true,
                         session_id: None,
                         expires_at: None,
-                        subject: Some(format!("{}...{}", &token[..4], &token[token.len()-4..])),
+                        subject: Some(format!("{}...{}", &token[..4], &token[token.len() - 4..])),
                         profile_id: None,
                         access_token: None,
                         bearer_token: Some(token.clone()),
-                    }).into_response();
+                    })
+                    .into_response();
                 }
                 Err(e) => {
                     return (
@@ -103,7 +102,8 @@ pub async fn auth_login_handler(
                             error: format!("Failed to store API key: {}", e),
                             code: "internal_error".into(),
                         }),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             }
         }
@@ -115,11 +115,16 @@ pub async fn auth_login_handler(
                         authenticated: true,
                         session_id: None,
                         expires_at: None,
-                        subject: Some(format!("openai:{}...{}", &token[..4], &token[token.len()-4..])),
+                        subject: Some(format!(
+                            "openai:{}...{}",
+                            &token[..4],
+                            &token[token.len() - 4..]
+                        )),
                         profile_id: None,
                         access_token: None,
                         bearer_token: Some(token.clone()),
-                    }).into_response();
+                    })
+                    .into_response();
                 }
                 Err(e) => {
                     return (
@@ -128,7 +133,8 @@ pub async fn auth_login_handler(
                             error: format!("Failed to store API key: {}", e),
                             code: "internal_error".into(),
                         }),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             }
         }
@@ -140,7 +146,8 @@ pub async fn auth_login_handler(
             error: "Invalid API key format".into(),
             code: "validation_error".into(),
         }),
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// POST /api/auth/logout — Clear authentication.

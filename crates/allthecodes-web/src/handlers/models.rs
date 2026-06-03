@@ -58,9 +58,7 @@ pub struct SetDefaultModelRequest {
 }
 
 /// GET /api/models — List the model registry.
-pub async fn models_list_handler(
-    State(state): State<WebState>,
-) -> impl IntoResponse {
+pub async fn models_list_handler(State(state): State<WebState>) -> impl IntoResponse {
     let engine = state.engine();
     let app_state = engine.app_state();
     let available = &app_state.settings.available_models;
@@ -102,7 +100,8 @@ pub async fn models_update_handler(
         profile_id: None,
         default_model_id: None,
         models: Vec::new(),
-    }).into_response()
+    })
+    .into_response()
 }
 
 /// POST /api/models/default — Set the default model.
@@ -118,5 +117,6 @@ pub async fn models_set_default_handler(
     Json(SettingsResponse {
         ok: true,
         message: format!("Default model set to {}", req.model_id),
-    }).into_response()
+    })
+    .into_response()
 }

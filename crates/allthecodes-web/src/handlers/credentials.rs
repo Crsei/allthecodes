@@ -76,7 +76,7 @@ pub async fn credentials_handler() -> impl IntoResponse {
     if auth.is_authenticated() {
         let subject = auth.api_key().map(|k| {
             if k.len() > 8 {
-                format!("{}...{}", &k[..4], &k[k.len()-4..])
+                format!("{}...{}", &k[..4], &k[k.len() - 4..])
             } else {
                 "configured".to_string()
             }
@@ -113,19 +113,22 @@ pub async fn oauth_start_handler(
         user_code: None,
         expires_at: None,
         interval_ms: None,
-        message: Some("OAuth flow is not available in the web UI yet. Use the CLI `/login` command instead.".to_string()),
-    }).into_response()
+        message: Some(
+            "OAuth flow is not available in the web UI yet. Use the CLI `/login` command instead."
+                .to_string(),
+        ),
+    })
+    .into_response()
 }
 
 /// POST /api/oauth/{provider}/poll — Poll OAuth flow status.
-pub async fn oauth_poll_handler(
-    AxumPath(provider): AxumPath<String>,
-) -> Response {
+pub async fn oauth_poll_handler(AxumPath(provider): AxumPath<String>) -> Response {
     Json(OAuthPollResponse {
         flow_id: String::new(),
         provider,
         status: "failed".to_string(),
         credential: None,
         message: Some("OAuth flow is not available in the web UI yet.".to_string()),
-    }).into_response()
+    })
+    .into_response()
 }

@@ -32,6 +32,13 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps.insert("people".into(), true);
     caps.insert("hooks".into(), true);
     caps.insert("prompts".into(), true);
+    caps.insert("mcp_servers".into(), true);
+    caps.insert("plugins".into(), true);
+    caps.insert("channels".into(), true);
+    caps.insert("computer_use".into(), true);
+    caps.insert("appshots".into(), true);
+    caps.insert("activity_recorder".into(), true);
+    caps.insert("chrome_relay".into(), true);
     caps.insert("git".into(), true);
     caps.insert("proxy".into(), true);
     caps.insert("debug".into(), true);
@@ -39,7 +46,7 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     // Not yet implemented
     caps.insert("auth".into(), true);
     caps.insert("profiles".into(), true);
-    caps.insert("gateways".into(), false);
+    caps.insert("gateways".into(), true);
     caps.insert("models".into(), true);
     caps.insert("providers".into(), true);
     caps.insert("credentials".into(), true);

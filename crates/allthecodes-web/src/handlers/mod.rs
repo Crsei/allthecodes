@@ -11,39 +11,53 @@ use serde::Serialize;
 
 use allthecodes_commands::Command;
 
+pub mod activity_recorder;
 pub mod admin;
 pub mod agents;
+pub mod appshots;
 pub mod auth;
 pub mod capabilities;
+pub mod channels;
 pub mod chat;
+pub mod chrome_relay;
+pub mod computer_use;
 pub mod credentials;
 pub mod git;
 pub mod hooks;
+pub mod mcp_servers;
 pub mod models;
 pub mod people;
+pub mod plugins;
 pub mod profiles;
 pub mod prompts;
-pub mod proxy;
 pub mod providers;
+pub mod proxy;
 pub mod sessions;
 pub mod settings_phase1;
 
 // Re-export all public items from each submodule so the router builder
 // and external callers can still use `handlers::*` paths.
+pub use activity_recorder::*;
 pub use admin::*;
 pub use agents::*;
+pub use appshots::*;
 pub use auth::*;
 pub use capabilities::*;
+pub use channels::*;
 pub use chat::*;
-pub use git::*;
+pub use chrome_relay::*;
+pub use computer_use::*;
 pub use credentials::*;
+pub use git::*;
 pub use hooks::*;
+pub use mcp_servers::*;
 pub use models::*;
 pub use people::*;
+pub use plugins::*;
 pub use profiles::*;
-pub use proxy::*;
 pub use prompts::*;
 pub use providers::*;
+pub use proxy::*;
 pub use sessions::*;
 pub use settings_phase1::*;
 
@@ -81,6 +95,17 @@ pub(crate) fn get_all_commands() -> Vec<Command> {
         .unwrap_or_default()
 }
 
+pub(crate) fn setting_bool(state: &crate::state::WebState, path: &str) -> Option<bool> {
+    let map = state.engine().app_state().settings.settings_map();
+    let mut parts = path.split('.');
+    let first = parts.next()?;
+    let mut value = map.get(first)?;
+    for part in parts {
+        value = value.get(part)?;
+    }
+    value.as_bool()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -92,7 +117,9 @@ mod tests {
     use allthecodes_engine::lifecycle::QueryEngine;
     use allthecodes_engine::types::config::QueryEngineConfig;
     use allthecodes_engine::types::tool::PermissionMode;
-    use allthecodes_ipc_protocol::subsystem_types::{AgentDefinitionEntry, AgentDefinitionSource};
+    use allthecodes_ipc_protocol::subsystem_types::{
+        AgentDefinitionEntry, AgentDefinitionSource, ConfigScope, McpServerConfigEntry,
+    };
     use axum::body::to_bytes;
     use axum::extract::{Path as AxumPath, Query, State};
     use axum::http::StatusCode;
@@ -179,6 +206,22 @@ mod tests {
             filename: None,
             source,
             file_path: None,
+        }
+    }
+
+    fn make_mcp_entry(name: &str, scope: ConfigScope) -> McpServerConfigEntry {
+        McpServerConfigEntry {
+            name: name.to_string(),
+            transport: "stdio".to_string(),
+            command: Some("echo".to_string()),
+            args: Some(vec!["ok".to_string()]),
+            url: None,
+            headers: None,
+            oauth: None,
+            env: None,
+            browser_mcp: None,
+            disabled: None,
+            scope,
         }
     }
 
@@ -500,11 +543,280 @@ mod tests {
         assert_eq!(body["capabilities"]["people"], json!(true));
         assert_eq!(body["capabilities"]["hooks"], json!(true));
         assert_eq!(body["capabilities"]["prompts"], json!(true));
+        assert_eq!(body["capabilities"]["mcp_servers"], json!(true));
+        assert_eq!(body["capabilities"]["plugins"], json!(true));
+        assert_eq!(body["capabilities"]["channels"], json!(true));
+        assert_eq!(body["capabilities"]["gateways"], json!(true));
+        assert_eq!(body["capabilities"]["computer_use"], json!(true));
+        assert_eq!(body["capabilities"]["appshots"], json!(true));
+        assert_eq!(body["capabilities"]["activity_recorder"], json!(true));
+        assert_eq!(body["capabilities"]["chrome_relay"], json!(true));
     }
 
     #[test]
-    fn build_router_accepts_phase2_routes() {
+    fn build_router_accepts_phase3_routes() {
         let _router = crate::build_router(make_web_state());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn mcp_servers_crud_uses_editable_settings_scopes() {
+        let (home, _guard) = temp_home();
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+
+        let mut user = allthecodes_config::settings::RawSettings::default();
+        user.extra.insert(
+            "mcpServers".to_string(),
+            json!({
+                "user-srv": {
+                    "type": "stdio",
+                    "command": "user-cmd"
+                }
+            }),
+        );
+        allthecodes_config::settings::write_user_settings(&user).expect("seed user settings");
+
+        let mut project_raw = allthecodes_config::settings::RawSettings::default();
+        project_raw.extra.insert(
+            "mcpServers".to_string(),
+            json!({
+                "project-srv": {
+                    "type": "stdio",
+                    "command": "project-cmd"
+                }
+            }),
+        );
+        let project_settings = project.path().join(".allthecodes").join("settings.json");
+        allthecodes_config::settings::write_settings_file(&project_settings, &project_raw)
+            .expect("seed project settings");
+
+        let response = mcp_servers_list_handler(State(state.clone()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let servers = body["servers"].as_array().expect("servers");
+        assert!(servers.iter().any(|server| {
+            server["name"] == json!("user-srv") && server["scope"]["kind"] == json!("user")
+        }));
+        assert!(servers.iter().any(|server| {
+            server["name"] == json!("project-srv") && server["scope"]["kind"] == json!("project")
+        }));
+
+        let response = mcp_servers_create_handler(
+            State(state.clone()),
+            Json(McpServerUpsertRequest::Entry(make_mcp_entry(
+                "created",
+                ConfigScope::User,
+            ))),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert_eq!(raw.extra["mcpServers"]["created"]["command"], json!("echo"));
+
+        let mut updated = make_mcp_entry("created", ConfigScope::User);
+        updated.command = Some("printf".to_string());
+        let response = mcp_servers_update_handler(
+            State(state.clone()),
+            AxumPath("created".to_string()),
+            Json(McpServerUpsertRequest::Wrapped { entry: updated }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert_eq!(
+            raw.extra["mcpServers"]["created"]["command"],
+            json!("printf")
+        );
+
+        let response = mcp_servers_delete_handler(
+            State(state.clone()),
+            AxumPath("created".to_string()),
+            Query(McpServerDeleteQuery {
+                scope: "user".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert!(raw.extra["mcpServers"].get("created").is_none());
+
+        let response = mcp_servers_create_handler(
+            State(state.clone()),
+            Json(McpServerUpsertRequest::Entry(make_mcp_entry(
+                "plugin-owned",
+                ConfigScope::Plugin {
+                    id: "plug".to_string(),
+                },
+            ))),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("validation_error"));
+
+        let response = mcp_servers_delete_handler(
+            State(state),
+            AxumPath("project-srv".to_string()),
+            Query(McpServerDeleteQuery {
+                scope: "plugin:plug".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn plugins_local_install_list_marketplace_and_uninstall_round_trip() {
+        let (_home, _guard) = temp_home();
+        allthecodes_plugins::clear_plugins();
+        let state = make_web_state();
+        let plugin_source = tempfile::tempdir().expect("plugin source");
+        std::fs::write(
+            plugin_source.path().join("plugin.json"),
+            r#"{
+                "name": "local-plugin",
+                "display_name": "Local Plugin",
+                "version": "1.0.0",
+                "description": "Local test plugin"
+            }"#,
+        )
+        .expect("plugin manifest");
+
+        let response = plugins_install_handler(
+            State(state),
+            Json(PluginInstallRequest {
+                source: plugin_source.path().to_string_lossy().to_string(),
+                scope: Some("user".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["plugin"]["id"], json!("local-plugin@local"));
+        assert_eq!(body["fresh_install"], json!(true));
+
+        let response = plugins_list_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["plugins"]
+            .as_array()
+            .expect("plugins")
+            .iter()
+            .any(|plugin| plugin["id"] == json!("local-plugin@local")));
+        assert!(body["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .is_empty());
+
+        let response = plugins_marketplace_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["plugins"].is_array());
+
+        let response = plugins_uninstall_handler(
+            AxumPath("local-plugin@local".to_string()),
+            Json(PluginUninstallRequest { purge: false }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = plugins_list_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["plugins"].as_array().expect("plugins").is_empty());
+        allthecodes_plugins::clear_plugins();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn channels_report_stopped_daemon_without_starting_it() {
+        let (_home, _guard) = temp_home();
+
+        let response = channels_list_handler().await.into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("daemon_stopped"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn system_action_endpoints_return_explicit_501_codes() {
+        let (_home, _guard) = temp_home();
+
+        let response = computer_use_test_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("computer_use_test_not_implemented"));
+
+        let response =
+            computer_use_permission_request_handler(AxumPath("accessibility".to_string()))
+                .await
+                .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = response_json(response).await;
+        assert_eq!(
+            body["code"],
+            json!("computer_use_permission_request_not_implemented")
+        );
+
+        let response = appshots_capture_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("appshots_capture_not_implemented"));
+
+        let response = chrome_relay_launch_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("chrome_relay_launch_not_implemented"));
+
+        let response = chrome_relay_token_regenerate_handler()
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = response_json(response).await;
+        assert_eq!(
+            body["code"],
+            json!("chrome_relay_token_regenerate_not_implemented")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn activity_recorder_empty_store_status_sessions_and_clear_round_trip() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+
+        let response = activity_recorder_status_handler(State(state))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["enabled"], json!(false));
+        assert_eq!(body["available"], json!(false));
+
+        let response = activity_recorder_sessions_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["sessions"], json!([]));
+
+        let response = activity_recorder_clear_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["cleared"], json!(0));
+        assert_eq!(body["sessions"], json!([]));
     }
 
     #[tokio::test]
