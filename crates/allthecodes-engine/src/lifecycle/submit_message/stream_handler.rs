@@ -475,22 +475,13 @@ mod tests {
         let _home = EnvGuard::set_path("ALLTHECODES_HOME", tmp.path());
         let engine = QueryEngine::new(make_config());
         let session_id = engine.session_id.clone();
-        let now = chrono::Utc::now().to_rfc3339();
-        allthecodes_tools::goals::save_goal_for_session(
-            session_id.as_str(),
-            &allthecodes_tools::goals::GoalRecord {
-                objective: "stay within budget".to_string(),
-                token_budget: Some(10),
-                tokens_used: 0,
-                time_used_seconds: 0,
-                status: allthecodes_tools::goals::GoalStatus::Active,
-                created_at: now.clone(),
-                updated_at: now,
-                completed_at: None,
-                status_reason: None,
-            },
+        let goal = allthecodes_tools::goals::create_goal_record(
+            "stay within budget",
+            Some(10),
+            chrono::Utc::now(),
         )
         .unwrap();
+        allthecodes_tools::goals::save_goal_for_session(session_id.as_str(), &goal).unwrap();
 
         let assistant = AssistantMessage {
             uuid: uuid::Uuid::new_v4(),

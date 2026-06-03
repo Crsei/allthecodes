@@ -13,7 +13,7 @@ use crate::types::message::{
     AssistantMessage, Attachment, AttachmentMessage, ContentBlock, Message, MessageContent,
     QueryYield, Usage, UserMessage,
 };
-use allthecodes_tools::goals::{self, GoalRecord, GoalStatus};
+use allthecodes_tools::goals::{self, GoalStatus};
 use serial_test::serial;
 use std::path::Path;
 
@@ -239,22 +239,9 @@ async fn test_max_turns_limit() {
 }
 
 fn save_goal(session_id: &str, status: GoalStatus) {
-    let now = chrono::Utc::now().to_rfc3339();
-    goals::save_goal_for_session(
-        session_id,
-        &GoalRecord {
-            objective: "ship the feature".to_string(),
-            token_budget: None,
-            tokens_used: 0,
-            time_used_seconds: 0,
-            status,
-            created_at: now.clone(),
-            updated_at: now,
-            completed_at: None,
-            status_reason: None,
-        },
-    )
-    .unwrap();
+    let mut goal = goals::create_goal_record("ship the feature", None, chrono::Utc::now()).unwrap();
+    goal.status = status;
+    goals::save_goal_for_session(session_id, &goal).unwrap();
 }
 
 #[tokio::test]

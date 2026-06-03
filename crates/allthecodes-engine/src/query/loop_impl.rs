@@ -661,7 +661,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     }
                 }
 
-                if let Some(continuation_message) = active_goal_continuation_message(&deps) {
+                if let Some(continuation) = active_goal_continuation(&deps) {
                     if let Some(max) = turn_context.max_turns {
                         if state.turn_count >= max {
                             info!(turns = state.turn_count, max = max, "max turns reached");
@@ -677,8 +677,11 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             break;
                         }
                     }
+                    if !goal_is_still_active(&deps, &continuation.goal_id) {
+                        break;
+                    }
                     debug!("active goal still open; continuing query loop");
-                    let user_msg = make_user_message(&deps, &continuation_message, true);
+                    let user_msg = make_user_message(&deps, &continuation.message, true);
                     state.messages.push(Message::User(user_msg));
                     state.transition = Some(Continue::NextTurn);
                     state.turn_count += 1;
@@ -855,7 +858,12 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
     }
 }
 
-fn active_goal_continuation_message(deps: &Arc<dyn QueryDeps>) -> Option<String> {
+struct ActiveGoalContinuation {
+    goal_id: String,
+    message: String,
+}
+
+fn active_goal_continuation(deps: &Arc<dyn QueryDeps>) -> Option<ActiveGoalContinuation> {
     let session_id = deps.audit_context().session_id;
     let goal = match allthecodes_tools::goals::load_goal_for_session(&session_id) {
         Ok(Some(goal)) => goal,
@@ -870,12 +878,29 @@ fn active_goal_continuation_message(deps: &Arc<dyn QueryDeps>) -> Option<String>
         return None;
     }
 
-    Some(format!(
-        "Continue working toward the active session goal:\n\n{}\n\n\
+    Some(ActiveGoalContinuation {
+        goal_id: goal.goal_id.clone(),
+        message: format!(
+            "Continue working toward the active session goal:\n\n{}\n\n\
          If the goal is complete, call UpdateGoal with status=complete. \
          If progress is blocked by missing external input, call UpdateGoal with status=blocked.",
-        goal.objective
-    ))
+            goal.objective
+        ),
+    })
+}
+
+fn goal_is_still_active(deps: &Arc<dyn QueryDeps>, goal_id: &str) -> bool {
+    let session_id = deps.audit_context().session_id;
+    match allthecodes_tools::goals::load_goal_for_session(&session_id) {
+        Ok(Some(goal)) => {
+            goal.goal_id == goal_id && goal.status == allthecodes_tools::goals::GoalStatus::Active
+        }
+        Ok(None) => false,
+        Err(error) => {
+            warn!(%error, "failed to reload active goal before continuation");
+            false
+        }
+    }
 }
 
 fn should_accept_partial_response_after_chunk_read_error(

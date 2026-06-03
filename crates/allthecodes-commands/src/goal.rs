@@ -6,7 +6,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::{CommandContext, CommandHandler, CommandResult};
-use allthecodes_tools::goals::{self, GoalRecord, GoalStatus};
+use allthecodes_tools::goals::{self, GoalError, GoalRecord, GoalStatus};
 use allthecodes_types::message::{Message, MessageContent, UserMessage};
 
 pub struct GoalHandler;
@@ -24,6 +24,14 @@ enum GoalCommand {
     Block {
         reason: Option<String>,
     },
+    Pause {
+        reason: Option<String>,
+    },
+    Resume {
+        reason: Option<String>,
+    },
+    Clear,
+    Edit,
     Help,
 }
 
@@ -38,6 +46,12 @@ impl CommandHandler for GoalHandler {
             }) => create_goal(ctx, objective, token_budget),
             Ok(GoalCommand::Complete { reason }) => update_goal(ctx, GoalStatus::Complete, reason),
             Ok(GoalCommand::Block { reason }) => update_goal(ctx, GoalStatus::Blocked, reason),
+            Ok(GoalCommand::Pause { reason }) => update_goal(ctx, GoalStatus::Paused, reason),
+            Ok(GoalCommand::Resume { reason }) => update_goal(ctx, GoalStatus::Active, reason),
+            Ok(GoalCommand::Clear) => clear_goal(ctx),
+            Ok(GoalCommand::Edit) => Ok(CommandResult::Output(
+                "`/goal edit` is not supported in this command surface yet. Use `/goal clear` and then `/goal <objective>` to replace a goal.".to_string(),
+            )),
             Ok(GoalCommand::Help) => Ok(CommandResult::Output(usage())),
             Err(message) => Ok(CommandResult::Output(format!("{message}\n\n{}", usage()))),
         }
@@ -65,6 +79,18 @@ fn parse_goal_command(args: &str) -> std::result::Result<GoalCommand, String> {
                 reason: non_empty(rest).map(str::to_string),
             });
         }
+        "pause" | "paused" => {
+            return Ok(GoalCommand::Pause {
+                reason: non_empty(rest).map(str::to_string),
+            });
+        }
+        "resume" | "resumed" => {
+            return Ok(GoalCommand::Resume {
+                reason: non_empty(rest).map(str::to_string),
+            });
+        }
+        "clear" => return Ok(GoalCommand::Clear),
+        "edit" => return Ok(GoalCommand::Edit),
         "set" | "create" => parse_create_args(rest),
         _ => parse_create_args(trimmed),
     }
@@ -124,25 +150,17 @@ fn create_goal(
     token_budget: Option<u64>,
 ) -> Result<CommandResult> {
     if let Some(existing) = goals::load_goal_for_session(ctx.session_id.as_str())? {
-        if is_open(&existing.status) {
+        if goals::goal_is_open(&existing) {
             return Ok(CommandResult::Output(format!(
-                "A session can only have one unfinished goal.\n\n{}",
+                "A session can only have one unfinished goal. Use `/goal clear` before setting a replacement.\n\n{}",
                 format_goal(&existing)
             )));
         }
     }
 
-    let now = Utc::now().to_rfc3339();
-    let goal = GoalRecord {
-        objective: objective.clone(),
-        token_budget,
-        tokens_used: 0,
-        time_used_seconds: 0,
-        status: GoalStatus::Active,
-        created_at: now.clone(),
-        updated_at: now,
-        completed_at: None,
-        status_reason: None,
+    let goal = match goals::create_goal_record(objective, token_budget, Utc::now()) {
+        Ok(goal) => goal,
+        Err(error) => return Ok(CommandResult::Output(error.message())),
     };
     goals::save_goal_for_session(ctx.session_id.as_str(), &goal)?;
 
@@ -174,13 +192,27 @@ fn update_goal(
 
     let now = Utc::now();
     goal.time_used_seconds = elapsed_goal_seconds(&goal.created_at, now);
-    goal.updated_at = now.to_rfc3339();
-    goal.completed_at = (status == GoalStatus::Complete).then(|| goal.updated_at.clone());
-    goal.status = status;
-    goal.status_reason = reason;
+    let goal = match goals::update_goal_status(goal, status, reason, now, None) {
+        Ok(goal) => goal,
+        Err(GoalError::InvalidGoalTransition { .. }) => {
+            return Ok(CommandResult::Output(
+                "That goal status change is not allowed from the current state.".to_string(),
+            ));
+        }
+        Err(error) => return Ok(CommandResult::Output(error.message())),
+    };
     goals::save_goal_for_session(ctx.session_id.as_str(), &goal)?;
 
     Ok(CommandResult::Output(format_goal(&goal)))
+}
+
+fn clear_goal(ctx: &CommandContext) -> Result<CommandResult> {
+    let removed = goals::clear_goal_for_session(ctx.session_id.as_str())?;
+    if removed {
+        Ok(CommandResult::Output("Session goal cleared.".to_string()))
+    } else {
+        Ok(CommandResult::Output("No session goal exists.".to_string()))
+    }
 }
 
 fn render_status(ctx: &CommandContext) -> Result<CommandResult> {
@@ -190,10 +222,6 @@ fn render_status(ctx: &CommandContext) -> Result<CommandResult> {
             "No session goal exists. Use `/goal <objective>` to set one.".to_string(),
         )),
     }
-}
-
-fn is_open(status: &GoalStatus) -> bool {
-    matches!(status, GoalStatus::Active | GoalStatus::BudgetLimited)
 }
 
 fn elapsed_goal_seconds(created_at: &str, now: chrono::DateTime<Utc>) -> u64 {
@@ -228,15 +256,30 @@ fn format_goal(goal: &GoalRecord) -> String {
         lines.push(format!("Reason:    {reason}"));
     }
     lines.push(format!("Updated:   {}", goal.updated_at));
+    lines.push(command_hints(&goal.status).to_string());
     lines.join("\n")
 }
 
 fn status_label(status: &GoalStatus) -> &'static str {
     match status {
         GoalStatus::Active => "active",
+        GoalStatus::Paused => "paused",
         GoalStatus::Complete => "complete",
         GoalStatus::Blocked => "blocked",
+        GoalStatus::UsageLimited => "usage_limited",
         GoalStatus::BudgetLimited => "budget_limited",
+    }
+}
+
+fn command_hints(status: &GoalStatus) -> &'static str {
+    match status {
+        GoalStatus::Active => "Commands:  /goal pause, /goal complete, /goal block, /goal clear",
+        GoalStatus::Paused => "Commands:  /goal resume, /goal clear",
+        GoalStatus::Blocked | GoalStatus::UsageLimited => {
+            "Commands:  /goal resume, /goal complete, /goal clear"
+        }
+        GoalStatus::BudgetLimited => "Commands:  /goal complete, /goal clear",
+        GoalStatus::Complete => "Commands:  /goal <objective>, /goal clear",
     }
 }
 
@@ -272,8 +315,11 @@ fn usage() -> String {
     "Usage: /goal [status]\n\
      Usage: /goal [--tokens N] <objective>\n\
      Usage: /goal set [--tokens N] <objective>\n\
+     Usage: /goal pause [reason]\n\
+     Usage: /goal resume [reason]\n\
      Usage: /goal complete [reason]\n\
-     Usage: /goal block [reason]"
+     Usage: /goal block [reason]\n\
+     Usage: /goal clear"
         .to_string()
 }
 
@@ -339,6 +385,17 @@ mod tests {
                 reason: Some("all tests pass".to_string())
             }
         );
+        assert_eq!(
+            parse_goal_command("pause waiting").unwrap(),
+            GoalCommand::Pause {
+                reason: Some("waiting".to_string())
+            }
+        );
+        assert_eq!(
+            parse_goal_command("resume").unwrap(),
+            GoalCommand::Resume { reason: None }
+        );
+        assert_eq!(parse_goal_command("clear").unwrap(), GoalCommand::Clear);
     }
 
     #[tokio::test]
@@ -361,6 +418,8 @@ mod tests {
                     .expect("goal");
                 assert_eq!(stored.objective, "ship the release");
                 assert_eq!(stored.token_budget, Some(100));
+                assert_eq!(stored.schema_version, goals::GOAL_SCHEMA_VERSION);
+                assert!(!stored.goal_id.is_empty());
             }
             _ => panic!("expected query"),
         }
@@ -400,6 +459,65 @@ mod tests {
                 assert!(text.contains("Status:    complete"));
                 assert!(text.contains("Reason:    shipped"));
             }
+            _ => panic!("expected output"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn pauses_resumes_and_clears_goal() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+        let mut ctx = test_ctx("goal-pause-resume-clear");
+
+        GoalHandler.execute("ship", &mut ctx).await.unwrap();
+        let paused = GoalHandler
+            .execute("pause waiting on review", &mut ctx)
+            .await
+            .unwrap();
+        match paused {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Status:    paused"));
+                assert!(text.contains("Reason:    waiting on review"));
+            }
+            _ => panic!("expected output"),
+        }
+
+        let resumed = GoalHandler
+            .execute("resume unblocked", &mut ctx)
+            .await
+            .unwrap();
+        match resumed {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Status:    active"));
+                assert!(text.contains("Reason:    unblocked"));
+            }
+            _ => panic!("expected output"),
+        }
+
+        let cleared = GoalHandler.execute("clear", &mut ctx).await.unwrap();
+        match cleared {
+            CommandResult::Output(text) => assert_eq!(text, "Session goal cleared."),
+            _ => panic!("expected output"),
+        }
+        assert!(goals::load_goal_for_session("goal-pause-resume-clear")
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn rejects_replacing_paused_goal_without_clear() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+        let mut ctx = test_ctx("goal-replace-paused");
+
+        GoalHandler.execute("first", &mut ctx).await.unwrap();
+        GoalHandler.execute("pause", &mut ctx).await.unwrap();
+        let result = GoalHandler.execute("second", &mut ctx).await.unwrap();
+
+        match result {
+            CommandResult::Output(text) => assert!(text.contains("Use `/goal clear`")),
             _ => panic!("expected output"),
         }
     }
