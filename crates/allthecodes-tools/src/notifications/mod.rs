@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write as _;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -86,8 +86,10 @@ impl Tool for PushNotificationTool {
         _parent: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
-        let title = string_param(&input, "title").unwrap();
-        let body = notification_body(&input).unwrap();
+        let title = string_param(&input, "title")
+            .ok_or_else(|| anyhow!("Missing required parameter: title"))?;
+        let body = notification_body(&input)
+            .ok_or_else(|| anyhow!("Missing required parameter: body"))?;
         let priority = notification_priority(&input);
         let target = string_param(&input, "target").unwrap_or("local");
         let is_webhook_target = target.starts_with("webhook:");

@@ -370,7 +370,8 @@ fn update_ready_workflow_steps(record: &mut WorkflowRecord) {
 }
 
 fn advance_workflow(input: &Value) -> Result<(WorkflowRecord, String, PathBuf, PathBuf)> {
-    let workflow_id = string_param(input, "workflow_id").unwrap();
+    let workflow_id = string_param(input, "workflow_id")
+        .ok_or_else(|| anyhow!("Missing required parameter: workflow_id"))?;
     let mut record = load_workflow_by_id(workflow_id)?;
     if matches!(record.status.as_str(), "cancelled" | "completed" | "failed") {
         bail!(
@@ -759,8 +760,12 @@ impl Tool for WorkflowTool {
                 let now = Utc::now().to_rfc3339();
                 let record = WorkflowRecord {
                     workflow_id,
-                    name: string_param(&input, "name").unwrap().to_string(),
-                    goal: string_param(&input, "goal").unwrap().to_string(),
+                    name: string_param(&input, "name")
+                        .ok_or_else(|| anyhow!("Missing required parameter: name"))?
+                        .to_string(),
+                    goal: string_param(&input, "goal")
+                        .ok_or_else(|| anyhow!("Missing required parameter: goal"))?
+                        .to_string(),
                     status: "started".into(),
                     created_at: now.clone(),
                     updated_at: now,

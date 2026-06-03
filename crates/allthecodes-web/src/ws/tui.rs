@@ -307,7 +307,7 @@ async fn handle_tui_socket(
                                         }
                                         "close" => {
                                             info!("TUI WebSocket close frame received");
-                                            let _ = child_io.lock().unwrap().kill();
+                                            let _ = child_io.lock().expect("child_io lock poisoned").kill();
                                             break;
                                         }
                                         _ => {}
@@ -333,7 +333,7 @@ async fn handle_tui_socket(
                         }
                         Some(Ok(Message::Close(_))) => {
                             info!("TUI WebSocket closed by client");
-                            let _ = child_io.lock().unwrap().kill();
+                            let _ = child_io.lock().expect("child_io lock poisoned").kill();
                             break;
                         }
                         Some(Ok(_)) => {
@@ -362,11 +362,11 @@ async fn handle_tui_socket(
 
         // The MVP policy is to terminate the PTY process when the WebSocket
         // disconnects, even if the browser did not send an explicit close.
-        let _ = child_io.lock().unwrap().kill();
+        let _ = child_io.lock().expect("child_io lock poisoned").kill();
 
         // Wait for child process and send exit code
         let exit_code = {
-            let mut child_guard = child_io.lock().unwrap();
+            let mut child_guard = child_io.lock().expect("child_io lock poisoned");
             match child_guard.wait() {
                 Ok(status) => {
                     let code = status.exit_code() as i32;

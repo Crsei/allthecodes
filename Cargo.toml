@@ -194,6 +194,21 @@ which = "7"
 serial_test = "3"
 
 # ============================================================
+# Workspace-level lint config — warn on unwrap/expect/panic
+# in production code. Test code is exempt via clippy.toml.
+# ------------------------------------------------------------
+# NOTE: These are set to "warn" during cleanup. Once all
+# production-code unwrap/expect/panic calls are addressed,
+# promote individual entries to "deny" as appropriate.
+# ============================================================
+
+[workspace.lints]
+clippy.unwrap_used = "warn"
+clippy.expect_used = "warn"
+clippy.panic = "warn"
+clippy.panic_in_result_fn = "warn"
+
+# ============================================================
 # Profiles (apply to the whole workspace)
 # ============================================================
 

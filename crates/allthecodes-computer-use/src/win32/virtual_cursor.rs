@@ -159,7 +159,7 @@ pub fn global_cursor() -> &'static Mutex<VirtualCursor> {
 
 /// Bind the global cursor to a window by handle.
 pub async fn bind_global(hwnd: Hwnd) -> anyhow::Result<(i32, i32, i32, i32)> {
-    let mut cursor = global_cursor().lock().unwrap();
+    let mut cursor = global_cursor().lock().expect("GLOBAL_VIRTUAL_CURSOR lock poisoned");
     cursor.bind_to_window(hwnd).await
 }
 
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_global_cursor_instance() {
-        let cursor = global_cursor().lock().unwrap();
+        let cursor = global_cursor().lock().expect("GLOBAL_VIRTUAL_CURSOR lock poisoned");
         assert!(!cursor.active);
     }
 }

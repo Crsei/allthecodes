@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -330,7 +330,8 @@ impl Tool for VaultHttpFetchTool {
         _parent: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
-        let url = string_param(&input, "url").unwrap();
+        let url = string_param(&input, "url")
+            .ok_or_else(|| anyhow!("Missing required parameter: url"))?;
         let method = string_param(&input, "method").unwrap_or("GET");
         let client = reqwest::Client::builder()
             .timeout(VAULT_HTTP_TIMEOUT)

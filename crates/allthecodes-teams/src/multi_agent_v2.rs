@@ -341,7 +341,9 @@ impl Tool for FollowupTaskTool {
             .or_else(|| active_team_name(ctx))
             .ok_or_else(|| anyhow!("No active team. Create a team first."))?;
         let mut team_file = helpers::read_team_file(&team)?;
-        let (target_key, target) = target_param(&input).unwrap();
+        let (target_key, target) = target_param(&input).ok_or_else(|| {
+            anyhow!("Missing target parameter (agent_id, task_path, task_id, nickname, or name)")
+        })?;
         let member = find_member(&team_file, target)
             .ok_or_else(|| {
                 anyhow!("No agent matching {target_key}='{target}' exists in team '{team}'")
@@ -380,7 +382,9 @@ impl Tool for FollowupTaskTool {
             &member.name,
             TeammateMessage {
                 from: sender,
-                text: string_param(&input, "message").unwrap().to_string(),
+                text: string_param(&input, "message")
+                    .ok_or_else(|| anyhow!("Missing 'message' parameter for followup task"))?
+                    .to_string(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 read: false,
                 color: None,
@@ -481,7 +485,9 @@ impl Tool for WaitAgentTool {
             .map(ToOwned::to_owned)
             .or_else(|| active_team_name(ctx))
             .ok_or_else(|| anyhow!("No active team. Create a team first."))?;
-        let (target_key, target) = target_param(&input).unwrap();
+        let (target_key, target) = target_param(&input).ok_or_else(|| {
+            anyhow!("Missing target parameter (agent_id, task_path, task_id, nickname, or name)")
+        })?;
         let timeout = Duration::from_millis(
             input
                 .get("timeout_ms")
@@ -576,7 +582,9 @@ impl Tool for CloseAgentTool {
             .map(ToOwned::to_owned)
             .or_else(|| active_team_name(ctx))
             .ok_or_else(|| anyhow!("No active team. Create a team first."))?;
-        let (target_key, target) = target_param(&input).unwrap();
+        let (target_key, target) = target_param(&input).ok_or_else(|| {
+            anyhow!("Missing target parameter (agent_id, task_path, task_id, nickname, or name)")
+        })?;
         let team_file = helpers::read_team_file(&team)?;
         let member = find_member(&team_file, target).ok_or_else(|| {
             anyhow!("No agent matching {target_key}='{target}' exists in team '{team}'")

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -283,7 +283,8 @@ impl Tool for LocalMemoryRecallTool {
         _parent: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
-        let action = string_param(&input, "action").unwrap();
+        let action = string_param(&input, "action")
+            .ok_or_else(|| anyhow!("Missing required parameter: action"))?;
         let root = local_memory_root();
         match action {
             "list_stores" => {
@@ -313,7 +314,9 @@ impl Tool for LocalMemoryRecallTool {
                 })
             }
             "list_entries" => {
-                let store = safe_memory_segment(string_param(&input, "store").unwrap(), "store")?;
+                let store_raw = string_param(&input, "store")
+                    .ok_or_else(|| anyhow!("Missing required parameter: store"))?;
+                let store = safe_memory_segment(store_raw, "store")?;
                 let store_dir = canonical_memory_store_dir(&root, &store)?;
                 let mut files = Vec::new();
                 list_memory_entry_files(&store_dir, &mut files);
@@ -351,8 +354,11 @@ impl Tool for LocalMemoryRecallTool {
                 })
             }
             "fetch" => {
-                let store = safe_memory_segment(string_param(&input, "store").unwrap(), "store")?;
-                let key = string_param(&input, "key").unwrap();
+                let store_raw = string_param(&input, "store")
+                    .ok_or_else(|| anyhow!("Missing required parameter: store"))?;
+                let store = safe_memory_segment(store_raw, "store")?;
+                let key = string_param(&input, "key")
+                    .ok_or_else(|| anyhow!("Missing required parameter: key"))?;
                 let preview_only = input
                     .get("preview_only")
                     .and_then(Value::as_bool)
