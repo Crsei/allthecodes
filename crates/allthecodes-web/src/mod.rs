@@ -180,6 +180,10 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/tui/ws", any(ws::tui::tui_ws_handler))
         // Phase 5: IPC WebSocket bridge for FrontendMessage/BackendMessage
         .route("/api/ipc/ws", any(ws::ipc::ipc_ws_handler))
+        // Right sidebar: git history, file changes, and web preview proxy
+        .route("/api/git/log", get(handlers::git_log_handler))
+        .route("/api/git/diff", get(handlers::git_diff_handler))
+        .route("/api/proxy", get(handlers::proxy_handler))
         // API catch-all: unregistered /api/* paths return JSON 501
         .route(
             "/api/{*path}",

@@ -32,6 +32,8 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps.insert("people".into(), true);
     caps.insert("hooks".into(), true);
     caps.insert("prompts".into(), true);
+    caps.insert("git".into(), true);
+    caps.insert("proxy".into(), true);
     caps.insert("debug".into(), true);
     caps.insert("state".into(), true);
     // Not yet implemented

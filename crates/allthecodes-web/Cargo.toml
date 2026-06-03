@@ -26,9 +26,11 @@ allthecodes-permissions = { workspace = true }
 allthecodes-services = { workspace = true }
 allthecodes-session = { workspace = true }
 allthecodes-types = { workspace = true }
+allthecodes-utils = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
 portable-pty = { workspace = true }
+reqwest = { workspace = true }
 rust-embed = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

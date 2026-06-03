@@ -8,7 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use git2::{BranchType, Delta, Diff, Repository, StatusOptions};
+use git2::{BranchType, Delta, Diff, DiffOptions, Repository, StatusOptions};
+use serde::Serialize;
 
 // =============================================================================
 // Repository detection
@@ -205,6 +206,19 @@ pub enum DeltaKind {
     Other,
 }
 
+impl DeltaKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeltaKind::Added => "added",
+            DeltaKind::Deleted => "deleted",
+            DeltaKind::Modified => "modified",
+            DeltaKind::Renamed => "renamed",
+            DeltaKind::Copied => "copied",
+            DeltaKind::Other => "other",
+        }
+    }
+}
+
 impl From<Delta> for DeltaKind {
     fn from(d: Delta) -> Self {
         match d {
@@ -216,6 +230,54 @@ impl From<Delta> for DeltaKind {
             _ => DeltaKind::Other,
         }
     }
+}
+
+/// Line-level diff for a single file.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileDiff {
+    /// Path of the file (new path for renames).
+    pub path: String,
+    /// Old path for renames, `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    /// Kind of change.
+    pub delta: String,
+    /// Number of lines added.
+    pub additions: usize,
+    /// Number of lines removed.
+    pub deletions: usize,
+    /// Line-level hunks.
+    pub hunks: Vec<DiffHunk>,
+}
+
+/// One hunk inside a file diff.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffHunk {
+    pub header: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub lines: Vec<DiffLine>,
+}
+
+/// One line inside a diff hunk.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffLine {
+    #[serde(rename = "type")]
+    pub line_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_no: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_no: Option<u32>,
+    pub content: String,
+}
+
+/// Add/delete stats for one commit.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct CommitStats {
+    pub additions: usize,
+    pub deletions: usize,
 }
 
 /// Get the staged diff (index vs HEAD), similar to `git diff --cached`.
@@ -239,6 +301,18 @@ pub fn diff_unstaged(path: &Path) -> Result<Vec<DiffEntry>> {
         .context("Failed to compute unstaged diff")?;
 
     collect_diff_entries(&diff)
+}
+
+/// Get the unstaged diff with line-level hunks, similar to `git diff`.
+pub fn diff_unstaged_with_hunks(path: &Path, file: Option<&str>) -> Result<Vec<FileDiff>> {
+    let repo = open_repo(path)?;
+    let mut opts = diff_options_for_file(file);
+
+    let diff = repo
+        .diff_index_to_workdir(None, Some(&mut opts))
+        .context("Failed to compute unstaged diff")?;
+
+    collect_file_diffs(&diff)
 }
 
 /// Get the diff between two commits by their OID strings.
@@ -267,6 +341,79 @@ pub fn diff_between(path: &Path, from_ref: &str, to_ref: &str) -> Result<Vec<Dif
         .context("Failed to compute diff between commits")?;
 
     collect_diff_entries(&diff)
+}
+
+/// Get the line-level diff between two commits by their OID/revspec strings.
+pub fn diff_between_with_hunks(
+    path: &Path,
+    from_ref: &str,
+    to_ref: &str,
+    file: Option<&str>,
+) -> Result<Vec<FileDiff>> {
+    let repo = open_repo(path)?;
+
+    let from_obj = repo
+        .revparse_single(from_ref)
+        .with_context(|| format!("Cannot resolve ref: {}", from_ref))?;
+    let to_obj = repo
+        .revparse_single(to_ref)
+        .with_context(|| format!("Cannot resolve ref: {}", to_ref))?;
+
+    let from_tree = from_obj
+        .peel_to_tree()
+        .with_context(|| format!("Cannot peel to tree: {}", from_ref))?;
+    let to_tree = to_obj
+        .peel_to_tree()
+        .with_context(|| format!("Cannot peel to tree: {}", to_ref))?;
+
+    let mut opts = diff_options_for_file(file);
+    let diff = repo
+        .diff_tree_to_tree(Some(&from_tree), Some(&to_tree), Some(&mut opts))
+        .context("Failed to compute diff between commits")?;
+
+    collect_file_diffs(&diff)
+}
+
+/// Get the line-level diff introduced by `commit_ref`, relative to its first parent.
+pub fn diff_commit_with_hunks(
+    path: &Path,
+    commit_ref: &str,
+    file: Option<&str>,
+) -> Result<Vec<FileDiff>> {
+    let repo = open_repo(path)?;
+    let commit = repo
+        .revparse_single(commit_ref)
+        .with_context(|| format!("Cannot resolve ref: {}", commit_ref))?
+        .peel_to_commit()
+        .with_context(|| format!("Cannot peel to commit: {}", commit_ref))?;
+
+    let tree = commit.tree().context("Failed to read commit tree")?;
+    let parent_tree = if commit.parent_count() > 0 {
+        Some(
+            commit
+                .parent(0)
+                .context("Failed to read commit parent")?
+                .tree()
+                .context("Failed to read parent tree")?,
+        )
+    } else {
+        None
+    };
+
+    let mut opts = diff_options_for_file(file);
+    let diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))
+        .context("Failed to compute commit diff")?;
+
+    collect_file_diffs(&diff)
+}
+
+fn diff_options_for_file(file: Option<&str>) -> DiffOptions {
+    let mut opts = DiffOptions::new();
+    if let Some(file) = file {
+        opts.pathspec(file);
+    }
+    opts
 }
 
 /// Collect `DiffEntry` items from a `git2::Diff`.
@@ -312,6 +459,91 @@ fn collect_diff_entries(diff: &Diff) -> Result<Vec<DiffEntry>> {
     }
 
     Ok(entries)
+}
+
+fn collect_file_diffs(diff: &Diff) -> Result<Vec<FileDiff>> {
+    let mut files = Vec::new();
+
+    for (i, delta) in diff.deltas().enumerate() {
+        let new_file = delta.new_file();
+        let old_file = delta.old_file();
+
+        let path = new_file
+            .path()
+            .or_else(|| old_file.path())
+            .and_then(|p| p.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        let old_path = if delta.status() == Delta::Renamed {
+            old_file
+                .path()
+                .and_then(|p| p.to_str())
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+
+        let mut additions = 0usize;
+        let mut deletions = 0usize;
+        let mut hunks = Vec::new();
+
+        if let Some(patch) = git2::Patch::from_diff(diff, i)
+            .with_context(|| format!("Failed to read patch for {}", path))?
+        {
+            let (_, adds, dels) = patch.line_stats().unwrap_or((0, 0, 0));
+            additions = adds;
+            deletions = dels;
+
+            for hunk_idx in 0..patch.num_hunks() {
+                let (hunk, line_count) = patch
+                    .hunk(hunk_idx)
+                    .with_context(|| format!("Failed to read diff hunk for {}", path))?;
+                let mut lines = Vec::with_capacity(line_count);
+
+                for line_idx in 0..line_count {
+                    let line = patch.line_in_hunk(hunk_idx, line_idx).with_context(|| {
+                        format!("Failed to read diff line for {} hunk {}", path, hunk_idx)
+                    })?;
+
+                    let line_type = match line.origin() {
+                        '+' => "addition",
+                        '-' => "deletion",
+                        _ => "context",
+                    };
+
+                    lines.push(DiffLine {
+                        line_type: line_type.to_string(),
+                        old_no: line.old_lineno(),
+                        new_no: line.new_lineno(),
+                        content: String::from_utf8_lossy(line.content()).into_owned(),
+                    });
+                }
+
+                hunks.push(DiffHunk {
+                    header: String::from_utf8_lossy(hunk.header())
+                        .trim_end()
+                        .to_string(),
+                    old_start: hunk.old_start(),
+                    old_lines: hunk.old_lines(),
+                    new_start: hunk.new_start(),
+                    new_lines: hunk.new_lines(),
+                    lines,
+                });
+            }
+        }
+
+        files.push(FileDiff {
+            path,
+            old_path,
+            delta: DeltaKind::from(delta.status()).as_str().to_string(),
+            additions,
+            deletions,
+            hunks,
+        });
+    }
+
+    Ok(files)
 }
 
 // =============================================================================
@@ -379,6 +611,23 @@ pub fn get_log(path: &Path, max_count: usize) -> Result<Vec<LogEntry>> {
     }
 
     Ok(entries)
+}
+
+/// Return true when `commit_ref` changes `file` relative to its first parent.
+pub fn commit_touches_file(path: &Path, commit_ref: &str, file: &str) -> Result<bool> {
+    Ok(!diff_commit_with_hunks(path, commit_ref, Some(file))?.is_empty())
+}
+
+/// Compute aggregate additions/deletions introduced by `commit_ref`.
+pub fn get_commit_stats(path: &Path, commit_ref: &str, file: Option<&str>) -> Result<CommitStats> {
+    let files = diff_commit_with_hunks(path, commit_ref, file)?;
+    Ok(files
+        .iter()
+        .fold(CommitStats::default(), |mut stats, file| {
+            stats.additions += file.additions;
+            stats.deletions += file.deletions;
+            stats
+        }))
 }
 
 // =============================================================================
@@ -696,6 +945,51 @@ mod tests {
         assert_eq!(diff.len(), 1);
         assert_eq!(diff[0].path, "README.md");
         assert_eq!(diff[0].delta, DeltaKind::Modified);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_diff_unstaged_with_hunks() {
+        let (dir, _repo) = setup_test_repo("diff_unstaged_with_hunks");
+
+        fs::write(dir.join("README.md"), "# Changed\nNew line\n").unwrap();
+
+        let diff = diff_unstaged_with_hunks(&dir, Some("README.md")).unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].path, "README.md");
+        assert_eq!(diff[0].delta, "modified");
+        assert_eq!(diff[0].additions, 2);
+        assert_eq!(diff[0].deletions, 1);
+        assert_eq!(diff[0].hunks.len(), 1);
+        assert!(diff[0].hunks[0]
+            .lines
+            .iter()
+            .any(|line| line.line_type == "addition" && line.content == "New line\n"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_commit_stats_and_touches_file() {
+        let (dir, repo) = setup_test_repo("commit_stats_and_touches_file");
+
+        let oid = {
+            let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+            let mut index = repo.index().unwrap();
+            fs::write(dir.join("feature.txt"), "one\ntwo\n").unwrap();
+            index.add_path(Path::new("feature.txt")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "Add feature", &tree, &[&parent])
+                .unwrap()
+        };
+
+        let stats = get_commit_stats(&dir, &oid.to_string(), Some("feature.txt")).unwrap();
+        assert_eq!(stats.additions, 2);
+        assert_eq!(stats.deletions, 0);
+        assert!(commit_touches_file(&dir, &oid.to_string(), "feature.txt").unwrap());
+        assert!(!commit_touches_file(&dir, &oid.to_string(), "README.md").unwrap());
         cleanup(&dir);
     }
 
