@@ -560,6 +560,59 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn session_archive_handler_returns_404_for_missing_session() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+
+        let response =
+            session_archive_handler(AxumPath("missing-session".to_string()), State(state))
+                .await
+                .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("session_not_found"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_archive_handler_rejects_active_session_with_409() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+        let active_id = state.engine().current_session_id().to_string();
+
+        let response = session_archive_handler(AxumPath(active_id), State(state))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("session_active"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_archive_handler_archives_inactive_session() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+        let session_id = "inactive-web-archive";
+        allthecodes_session::storage::save_session(session_id, &[], ".")
+            .expect("seed inactive session");
+
+        let response = session_archive_handler(AxumPath(session_id.to_string()), State(state))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["message"], json!("Session archived"));
+        assert!(!allthecodes_session::storage::get_session_file(session_id).exists());
+        assert!(allthecodes_session::storage::get_archived_session_file(session_id).exists());
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn mcp_servers_crud_uses_editable_settings_scopes() {
         let (home, _guard) = temp_home();
         let project = tempfile::tempdir().expect("project");

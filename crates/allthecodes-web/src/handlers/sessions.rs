@@ -100,6 +100,12 @@ pub struct NewSessionResponse {
     pub session_id: String,
 }
 
+#[derive(Serialize)]
+pub struct SessionMutationResponse {
+    pub ok: bool,
+    pub message: String,
+}
+
 // ---------------------------------------------------------------------------
 // Handler implementations
 // ---------------------------------------------------------------------------
@@ -273,6 +279,67 @@ pub async fn session_resume_handler(
         title,
         workspace_name,
         messages: rendered,
+    })
+    .into_response()
+}
+
+/// POST /api/sessions/:id/archive -- Hide a saved session from the default list.
+pub async fn session_archive_handler(
+    AxumPath(id): AxumPath<String>,
+    State(state): State<WebState>,
+) -> impl IntoResponse {
+    if state.is_streaming.load(Ordering::SeqCst) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "A query is in progress — abort it before archiving sessions".into(),
+                code: "engine_busy".into(),
+            }),
+        )
+            .into_response();
+    }
+    if let Some(response) = ownership_conflict_response(&state) {
+        return response;
+    }
+    if state.engine().current_session_id().to_string() == id {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "Cannot archive the active session".into(),
+                code: "session_active".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    info!(session_id = %id, "POST /api/sessions/:id/archive");
+
+    if let Err(e) = storage::load_session_info(&id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("Session not found: {}", e),
+                code: "session_not_found".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = storage::archive_session(&id) {
+        warn!(session_id = %id, error = %e, "failed to archive session");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("Failed to archive session: {}", e),
+                code: "session_archive_failed".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    Json(SessionMutationResponse {
+        ok: true,
+        message: "Session archived".into(),
     })
     .into_response()
 }

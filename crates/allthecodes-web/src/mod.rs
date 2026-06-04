@@ -202,6 +202,10 @@ pub fn build_router(state: WebState) -> Router {
             "/api/sessions/{id}/resume",
             post(handlers::session_resume_handler),
         )
+        .route(
+            "/api/sessions/{id}/archive",
+            post(handlers::session_archive_handler),
+        )
         // Auth endpoints
         .route("/api/auth/status", get(handlers::auth_status_handler))
         .route("/api/auth/login", post(handlers::auth_login_handler))

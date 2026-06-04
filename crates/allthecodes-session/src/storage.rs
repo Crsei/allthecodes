@@ -96,6 +96,16 @@ pub fn get_session_file(session_id: &str) -> PathBuf {
     get_session_dir().join(format!("{}.json", session_id))
 }
 
+/// Return the directory for archived sessions.
+pub fn get_archived_session_dir() -> PathBuf {
+    get_session_dir().join("archive")
+}
+
+/// Return the primary archive file path for a specific session.
+pub fn get_archived_session_file(session_id: &str) -> PathBuf {
+    get_archived_session_dir().join(format!("{}.json", session_id))
+}
+
 fn normalize_display_path(path: &Path) -> String {
     std::fs::canonicalize(path)
         .unwrap_or_else(|_| path.components().collect())
@@ -433,6 +443,84 @@ pub fn truncate_session(session_id: &str, keep: usize) -> Result<usize> {
 fn rewind_backup_path(session_id: &str) -> PathBuf {
     let ts = Utc::now().timestamp();
     get_session_dir().join(format!("{}.rewind-{}.json", session_id, ts))
+}
+
+fn available_archive_path(session_id: &str) -> PathBuf {
+    let archive_dir = get_archived_session_dir();
+    let primary = get_archived_session_file(session_id);
+    if !primary.exists() {
+        return primary;
+    }
+
+    let ts = Utc::now().timestamp();
+    for suffix in 0.. {
+        let file_name = if suffix == 0 {
+            format!("{}.archived-{}.json", session_id, ts)
+        } else {
+            format!("{}.archived-{}-{}.json", session_id, ts, suffix)
+        };
+        let candidate = archive_dir.join(file_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded archive suffix search should always return");
+}
+
+/// Move a top-level session file into the archive directory.
+///
+/// The archived JSON remains intact for future restore/listing support, but
+/// disappears from [`list_sessions`] because that function only reads the
+/// top-level sessions directory.
+pub fn archive_session(session_id: &str) -> Result<()> {
+    let src = get_session_file(session_id);
+    if !src.exists() {
+        anyhow::bail!(
+            "Session file for {} does not exist at {}",
+            session_id,
+            src.display()
+        );
+    }
+
+    let archive_dir = get_archived_session_dir();
+    std::fs::create_dir_all(&archive_dir).with_context(|| {
+        format!(
+            "Failed to create archived session directory {}",
+            archive_dir.display()
+        )
+    })?;
+
+    let dest = available_archive_path(session_id);
+
+    match std::fs::rename(&src, &dest) {
+        Ok(()) => {}
+        Err(rename_err) => {
+            std::fs::copy(&src, &dest).with_context(|| {
+                format!(
+                    "Failed to archive session {} from {} to {} after rename failed: {}",
+                    session_id,
+                    src.display(),
+                    dest.display(),
+                    rename_err
+                )
+            })?;
+            std::fs::remove_file(&src).with_context(|| {
+                format!(
+                    "Failed to remove original session file {} after copying archive",
+                    src.display()
+                )
+            })?;
+        }
+    }
+
+    debug!(
+        session_id = session_id,
+        archive_path = %dest.display(),
+        "session archived"
+    );
+
+    Ok(())
 }
 
 /// Return the raw on-disk view of a single session file.
@@ -1046,6 +1134,77 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("s4.rewind-"))
             .collect();
         assert!(backups.is_empty(), "expected no backup when no truncation");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_archive_session_moves_file_out_of_default_list() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        write_fixture_session(
+            "archive-move",
+            vec![user_sm(
+                "archive me",
+                "00000000-0000-0000-0000-000000000020",
+            )],
+            "/proj",
+        )
+        .unwrap();
+
+        archive_session("archive-move").unwrap();
+
+        assert!(!get_session_file("archive-move").exists());
+        assert!(get_archived_session_file("archive-move").exists());
+        let listed_ids: Vec<_> = list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
+        assert!(!listed_ids.iter().any(|id| id == "archive-move"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_archive_session_missing_file_returns_error() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        let error = archive_session("missing-archive").unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("missing-archive"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_archive_session_does_not_overwrite_existing_archive() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        write_fixture_session(
+            "archive-conflict",
+            vec![user_sm("top level", "00000000-0000-0000-0000-000000000021")],
+            "/proj",
+        )
+        .unwrap();
+        std::fs::create_dir_all(get_archived_session_dir()).unwrap();
+        std::fs::write(get_archived_session_file("archive-conflict"), "existing").unwrap();
+
+        archive_session("archive-conflict").unwrap();
+
+        assert!(get_archived_session_file("archive-conflict").exists());
+        let archived: Vec<_> = std::fs::read_dir(get_archived_session_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+
+        assert!(archived.iter().any(|name| name == "archive-conflict.json"));
+        assert!(archived.iter().any(|name| {
+            name.starts_with("archive-conflict.archived-") && name.ends_with(".json")
+        }));
+        assert_eq!(archived.len(), 2);
     }
 
     #[test]
