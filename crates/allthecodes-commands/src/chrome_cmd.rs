@@ -120,7 +120,7 @@ fn render_status() -> String {
     }
 
     lines.push(String::new());
-    lines.push("  Docs: docs/reference/browser-mcp-config.md".into());
+    lines.push("  Docs: development/reference/browser-mcp-config.md".into());
     lines.push("  Usage: /chrome, /chrome reconnect, /chrome help".into());
 
     lines.join("\n")

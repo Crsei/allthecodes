@@ -56,7 +56,7 @@ pub async fn spawn_team_memory_server(
         .iter()
         .find(|p| p.exists())
         .cloned()
-        .unwrap_or_else(|| candidates.last().unwrap().clone());
+        .unwrap_or_else(|| std::path::PathBuf::from("ui/team-memory-server/index.ts"));
 
     info!(
         port,

@@ -31,7 +31,7 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::Mutex as SyncMutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

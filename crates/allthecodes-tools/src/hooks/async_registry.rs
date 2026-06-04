@@ -72,7 +72,7 @@ pub fn register_pending_async_hook(
 
     debug!("Hooks: Registering async hook {process_id} ({hook_name}) with timeout {timeout_secs}s");
 
-    let mut hooks = PENDING_HOOKS.lock().unwrap();
+    let mut hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
     hooks.insert(
         process_id.to_string(),
         PendingHookState {
@@ -88,7 +88,7 @@ pub fn register_pending_async_hook(
 
 /// Get all pending async hooks that haven't had their response sent yet.
 pub fn get_pending_async_hooks() -> Vec<PendingAsyncHook> {
-    let hooks = PENDING_HOOKS.lock().unwrap();
+    let hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
     hooks
         .values()
         .filter(|h| !h.info.response_attachment_sent)
@@ -98,7 +98,7 @@ pub fn get_pending_async_hooks() -> Vec<PendingAsyncHook> {
 
 /// Mark a pending hook as completed with the given output.
 pub fn complete_async_hook(process_id: &str, stdout: &str, stderr: &str, exit_code: i32) {
-    let mut hooks = PENDING_HOOKS.lock().unwrap();
+    let mut hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
     if let Some(hook) = hooks.get_mut(process_id) {
         hook.stdout = stdout.to_string();
         hook.stderr = stderr.to_string();
@@ -112,7 +112,7 @@ pub fn check_for_async_hook_responses(max_hooks: usize) -> Vec<AsyncHookResponse
     let mut responses = Vec::new();
     let mut to_remove = Vec::new();
 
-    let mut hooks = PENDING_HOOKS.lock().unwrap();
+    let mut hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
 
     for (process_id, hook) in hooks.iter_mut() {
         if responses.len() >= max_hooks {
@@ -169,7 +169,7 @@ pub fn check_for_async_hook_responses(max_hooks: usize) -> Vec<AsyncHookResponse
     drop(hooks);
 
     // Remove processed hooks
-    let mut hooks = PENDING_HOOKS.lock().unwrap();
+    let mut hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
     for id in to_remove {
         hooks.remove(&id);
     }
@@ -179,7 +179,7 @@ pub fn check_for_async_hook_responses(max_hooks: usize) -> Vec<AsyncHookResponse
 
 /// Remove delivered async hooks by process IDs.
 pub fn remove_delivered_async_hooks(process_ids: &[String]) {
-    let mut hooks = PENDING_HOOKS.lock().unwrap();
+    let mut hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
     for id in process_ids {
         if let Some(hook) = hooks.get(id) {
             if hook.info.response_attachment_sent {
@@ -194,12 +194,12 @@ pub fn remove_delivered_async_hooks(process_ids: &[String]) {
 /// Finalize all pending async hooks (called on shutdown).
 pub async fn finalize_pending_async_hooks() {
     let hooks: Vec<String> = {
-        let hooks = PENDING_HOOKS.lock().unwrap();
+        let hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
         hooks.keys().cloned().collect()
     };
 
     for id in hooks {
-        let mut hooks = PENDING_HOOKS.lock().unwrap();
+        let mut hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
         if let Some(hook) = hooks.remove(&id) {
             if let Some(stop) = hook.stop_progress {
                 stop();
@@ -211,7 +211,7 @@ pub async fn finalize_pending_async_hooks() {
 
 /// Clear all async hooks (test utility).
 pub fn clear_all_async_hooks() {
-    let mut hooks = PENDING_HOOKS.lock().unwrap();
+    let mut hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
     for (_, hook) in hooks.drain() {
         if let Some(stop) = hook.stop_progress {
             stop();

@@ -19,15 +19,22 @@ allthecodes-auth = { workspace = true }
 allthecodes-bootstrap = { workspace = true }
 allthecodes-commands = { workspace = true }
 allthecodes-config = { workspace = true }
+allthecodes-computer-use = { workspace = true }
 allthecodes-daemon = { workspace = true }
 allthecodes-engine = { workspace = true }
+allthecodes-gateway = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
+allthecodes-mcp = { workspace = true }
 allthecodes-permissions = { workspace = true }
+allthecodes-plugins = { workspace = true }
+allthecodes-services = { workspace = true }
 allthecodes-session = { workspace = true }
 allthecodes-types = { workspace = true }
+allthecodes-utils = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
 portable-pty = { workspace = true }
+reqwest = { workspace = true }
 rust-embed = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -36,4 +43,6 @@ tower-http = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+serial_test = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }

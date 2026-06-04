@@ -273,10 +273,9 @@ fn save_lsp_recommendation_settings(settings: &LspRecommendationSettings) {
             return;
         }
     };
-    value
-        .as_object_mut()
-        .expect("value is object")
-        .insert(LSP_RECOMMENDATIONS_KEY.to_string(), encoded);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(LSP_RECOMMENDATIONS_KEY.to_string(), encoded);
+    }
     if let Err(err) = super::mcp_config::write_settings_value(&path, &value) {
         tracing::warn!(error = %err, "LSP recommendations: write user settings failed");
     }

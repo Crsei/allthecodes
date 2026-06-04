@@ -33,8 +33,13 @@ fn url_matches_pattern(url: &str, pattern: &str) -> bool {
     // Escape regex special characters except *
     let escaped = regex::escape(pattern);
     let regex_str = escaped.replace(r"\*", ".*");
-    let re = regex::Regex::new(&format!("^{regex_str}$")).unwrap();
-    re.is_match(url)
+    match regex::Regex::new(&format!("^{regex_str}$")) {
+        Ok(re) => re.is_match(url),
+        Err(error) => {
+            warn!(pattern = pattern, %error, "invalid HTTP hook URL allowlist pattern");
+            false
+        }
+    }
 }
 
 /// Strip CR, LF, and NUL bytes from a header value to prevent HTTP header
@@ -49,7 +54,9 @@ fn interpolate_env_vars(
     value: &str,
     allowed_env_vars: &std::collections::HashSet<String>,
 ) -> String {
-    let re = regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)\}|\$([A-Z_][A-Z0-9_]*)").unwrap();
+    let Ok(re) = regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)\}|\$([A-Z_][A-Z0-9_]*)") else {
+        return sanitize_header_value(value);
+    };
     let result = re.replace_all(value, |caps: &regex::Captures| {
         let var_name = caps
             .get(1)

@@ -29,11 +29,11 @@ static PENDING_EVENTS: LazyLock<Mutex<Vec<HookExecutionEvent>>> =
 /// Register a hook event handler. Replaces any previously registered handler.
 /// If there are pending events, they are immediately forwarded to the new handler.
 pub fn register_hook_event_handler(handler: Option<Box<dyn Fn(HookExecutionEvent) + Send>>) {
-    let mut guard = EVENT_HANDLER.lock().unwrap();
+    let mut guard = EVENT_HANDLER.lock().expect("EVENT_HANDLER lock poisoned");
     *guard = handler;
 
     if guard.is_some() {
-        let mut pending = PENDING_EVENTS.lock().unwrap();
+        let mut pending = PENDING_EVENTS.lock().expect("PENDING_EVENTS lock poisoned");
         for event in pending.drain(..) {
             if let Some(ref h) = *guard {
                 h(event);
@@ -43,11 +43,11 @@ pub fn register_hook_event_handler(handler: Option<Box<dyn Fn(HookExecutionEvent
 }
 
 fn emit(event: HookExecutionEvent) {
-    let handler = EVENT_HANDLER.lock().unwrap();
+    let handler = EVENT_HANDLER.lock().expect("EVENT_HANDLER lock poisoned");
     if let Some(ref h) = *handler {
         h(event);
     } else {
-        let mut pending = PENDING_EVENTS.lock().unwrap();
+        let mut pending = PENDING_EVENTS.lock().expect("PENDING_EVENTS lock poisoned");
         if pending.len() >= MAX_PENDING_EVENTS {
             pending.remove(0);
         }
@@ -105,8 +105,8 @@ pub fn set_all_hook_events_enabled(enabled: bool) {
 
 /// Clear all hook event state.
 pub fn clear_hook_event_state() {
-    *EVENT_HANDLER.lock().unwrap() = None;
-    PENDING_EVENTS.lock().unwrap().clear();
+    *EVENT_HANDLER.lock().expect("EVENT_HANDLER lock poisoned") = None;
+    PENDING_EVENTS.lock().expect("PENDING_EVENTS lock poisoned").clear();
     ALL_HOOK_EVENTS_ENABLED.store(false, Ordering::Relaxed);
 }
 

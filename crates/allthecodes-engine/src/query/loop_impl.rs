@@ -39,6 +39,9 @@ use crate::types::transitions::Continue;
 use crate::services::tool_use_summary::{self, ToolInfo};
 
 use super::deps::QueryDeps;
+use super::goal_runtime::{
+    mark_active_goal_paused, mark_active_goal_usage_limited, GoalContinuationScheduler,
+};
 use super::loop_helpers::{
     backfill_observable_tool_inputs, classify_model_call_failure, execute_tool_calls,
     handle_max_output_tokens, handle_prompt_too_long, is_stream_progress_event, make_abort_message,
@@ -63,6 +66,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
         let (turn_context, mut state) = QueryRunContext::from_params(params);
         let mut budget_tracker = BudgetTracker::new();
+        let mut goal_continuation_scheduler = GoalContinuationScheduler::default();
         let mut cumulative_usage = Usage::default();
 
         // Main loop
@@ -93,6 +97,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
             if deps.is_aborted() {
                 info!("aborted before API call");
+                goal_continuation_scheduler.clear();
+                mark_active_goal_paused(&deps, "task aborted by user");
                 yield QueryYield::Message(Message::Assistant(make_abort_message(
                     &deps,
                     "AbortedStreaming",
@@ -232,6 +238,11 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                                     continue 'query_loop;
                                 }
                                 PromptRecovery::Terminal => {
+                                    goal_continuation_scheduler.clear();
+                                    mark_active_goal_usage_limited(
+                                        &deps,
+                                        "context overflow prevented goal continuation",
+                                    );
                                     yield QueryYield::Message(Message::Assistant(
                                         make_error_message(&deps, &error_str),
                                     ));
@@ -508,6 +519,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                 let observable_assistant =
                     backfill_observable_tool_inputs(&assistant_message, &tools).into_owned();
                 yield QueryYield::Message(Message::Assistant(observable_assistant));
+                goal_continuation_scheduler.clear();
+                mark_active_goal_paused(&deps, "task aborted by user");
                 break;
             }
 
@@ -538,6 +551,16 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
             let tool_uses = stop_hooks::extract_tool_uses(&assistant_message);
+            if goal_continuation_scheduler
+                .observe_assistant_response(&assistant_message)
+                .is_some()
+            {
+                mark_active_goal_usage_limited(
+                    &deps,
+                    "automatic goal continuation returned empty responses",
+                );
+                break;
+            }
 
             if tool_uses.is_empty() {
                 if let Some(executor) = streaming_tool_executor {
@@ -571,6 +594,11 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             continue;
                         }
                         MaxTokensRecovery::Terminal => {
+                            goal_continuation_scheduler.clear();
+                            mark_active_goal_usage_limited(
+                                &deps,
+                                "max output token recovery exhausted",
+                            );
                             break;
                         }
                     }
@@ -661,7 +689,9 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     }
                 }
 
-                if let Some(continuation_message) = active_goal_continuation_message(&deps) {
+                if let Some(continuation) =
+                    goal_continuation_scheduler.next_idle_continuation(&deps, &turn_context, &state)
+                {
                     if let Some(max) = turn_context.max_turns {
                         if state.turn_count >= max {
                             info!(turns = state.turn_count, max = max, "max turns reached");
@@ -677,9 +707,13 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             break;
                         }
                     }
+                    if !goal_continuation_scheduler.confirm_ready(&deps, &continuation.goal_id) {
+                        break;
+                    }
                     debug!("active goal still open; continuing query loop");
-                    let user_msg = make_user_message(&deps, &continuation_message, true);
+                    let user_msg = make_user_message(&deps, &continuation.message, true);
                     state.messages.push(Message::User(user_msg));
+                    goal_continuation_scheduler.mark_dispatched(&continuation.goal_id);
                     state.transition = Some(Continue::NextTurn);
                     state.turn_count += 1;
                     continue;
@@ -724,6 +758,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
                 if deps.is_aborted() {
                     info!("aborted during tool execution");
+                    goal_continuation_scheduler.clear();
+                    mark_active_goal_paused(&deps, "task aborted by user");
                     break;
                 }
 
@@ -853,29 +889,6 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
         info!(turns = state.turn_count, "query loop finished");
     }
-}
-
-fn active_goal_continuation_message(deps: &Arc<dyn QueryDeps>) -> Option<String> {
-    let session_id = deps.audit_context().session_id;
-    let goal = match allthecodes_tools::goals::load_goal_for_session(&session_id) {
-        Ok(Some(goal)) => goal,
-        Ok(None) => return None,
-        Err(error) => {
-            warn!(%error, "failed to load active goal for continuation");
-            return None;
-        }
-    };
-
-    if goal.status != allthecodes_tools::goals::GoalStatus::Active {
-        return None;
-    }
-
-    Some(format!(
-        "Continue working toward the active session goal:\n\n{}\n\n\
-         If the goal is complete, call UpdateGoal with status=complete. \
-         If progress is blocked by missing external input, call UpdateGoal with status=blocked.",
-        goal.objective
-    ))
 }
 
 fn should_accept_partial_response_after_chunk_read_error(

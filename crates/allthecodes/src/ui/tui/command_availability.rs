@@ -48,7 +48,11 @@ fn is_goal_status_command(input: &str) -> bool {
         .strip_prefix(command_name)
         .unwrap_or_default()
         .trim();
-    matches!(args, "" | "status" | "show" | "help" | "-h" | "--help")
+    let (verb, _) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+    matches!(
+        verb,
+        "" | "status" | "show" | "help" | "-h" | "--help" | "pause" | "resume" | "clear"
+    )
 }
 
 fn resolve_command<'a>(
@@ -134,6 +138,7 @@ mod tests {
         assert_eq!(disabled("/model opus"), "model");
         assert_eq!(disabled("/goal ship the release"), "goal");
         assert_eq!(disabled("/goal complete shipped"), "goal");
+        assert_eq!(disabled("/goal block waiting on input"), "goal");
     }
 
     #[test]
@@ -144,6 +149,18 @@ mod tests {
         );
         assert_eq!(
             slash_command_availability_during_task("/goal status"),
+            TaskCommandAvailability::Allowed
+        );
+        assert_eq!(
+            slash_command_availability_during_task("/goal pause waiting"),
+            TaskCommandAvailability::Allowed
+        );
+        assert_eq!(
+            slash_command_availability_during_task("/goal resume"),
+            TaskCommandAvailability::Allowed
+        );
+        assert_eq!(
+            slash_command_availability_during_task("/goal clear"),
             TaskCommandAvailability::Allowed
         );
     }

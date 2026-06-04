@@ -33,7 +33,13 @@ pub struct SnapshotExportReport {
 /// register tools — Chrome captures stderr as error logs, so we skip every
 /// side-effect beyond bridging stdin↔socket.
 pub fn run_chrome_native_host() -> ExitCode {
-    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(error) => {
+            eprintln!("chrome-native-host runtime error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     rt.block_on(async {
         match allthecodes_browser::native_host::run().await {
             Ok(()) => ExitCode::SUCCESS,
@@ -48,7 +54,13 @@ pub fn run_chrome_native_host() -> ExitCode {
 /// Run the Claude-in-Chrome stdio MCP bridge. Spawned as an MCP subprocess
 /// by the allthecodes MCP manager when `--chrome` is active.
 pub fn run_claude_in_chrome_mcp() -> ExitCode {
-    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(error) => {
+            eprintln!("claude-in-chrome-mcp runtime error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     rt.block_on(async {
         match allthecodes_browser::mcp_bridge::run().await {
             Ok(()) => ExitCode::SUCCESS,

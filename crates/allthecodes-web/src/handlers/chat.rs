@@ -1,0 +1,208 @@
+//! Chat, abort, and state handlers — core chat API.
+
+use std::collections::HashMap;
+use std::sync::atomic::Ordering;
+
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tracing::info;
+
+use allthecodes_daemon::web::sdk_stream_to_sse;
+use allthecodes_engine::types::config::QuerySource;
+use allthecodes_types::sdk::SdkMessage;
+
+use crate::handlers::ApiError;
+use crate::state::{SessionOwner, WebState};
+
+#[derive(Serialize)]
+pub struct UsageResponse {
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub total_cost_usd: f64,
+    pub api_call_count: u64,
+}
+
+#[derive(Serialize, Clone)]
+pub struct CommandInfo {
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub description: String,
+}
+
+#[derive(Deserialize)]
+pub struct ChatRequest {
+    pub message: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct AbortRequest {
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct StateResponse {
+    pub model: String,
+    pub session_id: String,
+    pub tools: Vec<String>,
+    pub permission_mode: String,
+    pub thinking_enabled: Option<bool>,
+    pub fast_mode: bool,
+    pub effort: Option<String>,
+    // Phase 3 additions
+    pub usage: UsageResponse,
+    pub commands: Vec<CommandInfo>,
+    pub settings_map: HashMap<String, Value>,
+    pub version: String,
+    pub capabilities: HashMap<String, bool>,
+}
+
+/// POST /api/chat -- Start a streaming chat response via SSE.
+pub async fn chat_handler(
+    State(state): State<WebState>,
+    Json(req): Json<ChatRequest>,
+) -> impl IntoResponse {
+    // Check if already streaming
+    if state.is_streaming.load(Ordering::SeqCst) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "A query is already in progress".into(),
+                code: "engine_busy".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    let engine = state.engine();
+    let active_session_id = req
+        .session_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| engine.current_session_id().to_string());
+    if let Err(owner) = state.try_claim_chat(active_session_id.clone()) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: format!(
+                    "Session is currently owned by {:?}{}",
+                    owner.owner,
+                    owner
+                        .session_id
+                        .as_deref()
+                        .map(|id| format!(" ({id})"))
+                        .unwrap_or_default()
+                ),
+                code: "session_owned".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    let requested_session = active_session_id.as_str();
+    info!(
+        message = %req.message,
+        session_id = %requested_session,
+        "POST /api/chat"
+    );
+
+    state.is_streaming.store(true, Ordering::SeqCst);
+
+    // Get the stream from the engine
+    let stream = engine.submit_message(&req.message, QuerySource::Sdk);
+
+    // Wrap in a stream that clears is_streaming when done
+    let is_streaming = state.is_streaming.clone();
+    let release_state = state.clone();
+    let wrapped_stream = Box::pin(futures::stream::unfold(
+        (stream, is_streaming, release_state, false),
+        |(mut stream, flag, release_state, done)| async move {
+            if done {
+                return None;
+            }
+            use futures::StreamExt;
+            match stream.next().await {
+                Some(msg) => {
+                    let is_result = matches!(&msg, SdkMessage::Result(_));
+                    if is_result {
+                        flag.store(false, Ordering::SeqCst);
+                        release_state.release_owner(SessionOwner::ChatStream);
+                    }
+                    Some((msg, (stream, flag, release_state, is_result)))
+                }
+                None => {
+                    flag.store(false, Ordering::SeqCst);
+                    release_state.release_owner(SessionOwner::ChatStream);
+                    None
+                }
+            }
+        },
+    ));
+
+    sdk_stream_to_sse(wrapped_stream).into_response()
+}
+
+/// POST /api/abort -- Abort the current generation.
+pub async fn abort_handler(
+    State(state): State<WebState>,
+    Json(req): Json<AbortRequest>,
+) -> impl IntoResponse {
+    let requested_session = req.session_id.as_deref().unwrap_or("");
+    info!(session_id = %requested_session, "POST /api/abort");
+    state.engine().abort();
+    state.is_streaming.store(false, Ordering::SeqCst);
+    state.release_owner(SessionOwner::ChatStream);
+    StatusCode::OK
+}
+
+/// GET /api/state -- Return current application state (enhanced for Phase 3).
+pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
+    let app_state = state.engine().app_state();
+    let permission_mode = app_state.tool_permission_context.mode.as_str();
+
+    // Get tool names from engine
+    let tool_names: Vec<String> = state.engine().tool_names();
+
+    // Get usage tracking
+    let usage = state.engine().usage();
+
+    // Get command list
+    let commands: Vec<CommandInfo> = crate::handlers::get_all_commands()
+        .iter()
+        .map(|c| CommandInfo {
+            name: c.name.clone(),
+            aliases: c.aliases.clone(),
+            description: c.description.clone(),
+        })
+        .collect();
+
+    Json(StateResponse {
+        model: app_state.main_loop_model.clone(),
+        session_id: state.engine().current_session_id().to_string(),
+        tools: tool_names,
+        permission_mode: permission_mode.to_string(),
+        thinking_enabled: app_state.thinking_enabled,
+        fast_mode: app_state.fast_mode,
+        effort: app_state.effort_value.clone(),
+        usage: UsageResponse {
+            total_input_tokens: usage.total_input_tokens,
+            total_output_tokens: usage.total_output_tokens,
+            total_cache_read_tokens: usage.total_cache_read_tokens,
+            total_cache_creation_tokens: usage.total_cache_creation_tokens,
+            total_cost_usd: usage.total_cost_usd,
+            api_call_count: usage.api_call_count,
+        },
+        commands,
+        settings_map: app_state.settings.settings_map(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        capabilities: crate::handlers::capabilities_map(),
+    })
+}

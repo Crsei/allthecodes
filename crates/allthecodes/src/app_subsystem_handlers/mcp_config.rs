@@ -96,7 +96,12 @@ pub fn upsert_mcp_entry(
         ));
     }
 
-    let obj = settings.as_object_mut().unwrap();
+    let obj = settings.as_object_mut().ok_or_else(|| {
+        (
+            entry.name.clone(),
+            format!("{} is not a JSON object", path.display()),
+        )
+    })?;
     let servers = obj
         .entry("mcpServers")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
@@ -106,7 +111,12 @@ pub fn upsert_mcp_entry(
             format!("{} has a non-object `mcpServers` field", path.display()),
         ));
     }
-    let servers_obj = servers.as_object_mut().unwrap();
+    let servers_obj = servers.as_object_mut().ok_or_else(|| {
+        (
+            entry.name.clone(),
+            format!("{} has a non-object `mcpServers` field", path.display()),
+        )
+    })?;
     servers_obj.insert(entry.name.clone(), entry_to_settings_value(&entry));
 
     write_settings_value(&path, &settings).map_err(|e| (entry.name.clone(), e))?;

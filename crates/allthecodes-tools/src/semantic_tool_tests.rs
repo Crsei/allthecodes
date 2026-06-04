@@ -15,7 +15,7 @@ mod tests {
         parse_patch, ApplyPatchFreeformTool, ApplyPatchTool, PatchLine, PatchOp,
     };
     use crate::goals::{
-        account_goal_runtime_for_session, CreateGoalTool, GoalStatus, UpdateGoalTool,
+        account_goal_runtime_for_session, CreateGoalTool, GetGoalTool, GoalStatus, UpdateGoalTool,
     };
     use crate::media::{filter_tools_for_model_capabilities, ViewImageAliasTool, ViewImageTool};
     use crate::memory::{local_memory_root, LocalMemoryRecallTool, LOCAL_MEMORY_PREVIEW_BYTES};
@@ -703,6 +703,13 @@ mod tests {
         assert_eq!(created.data["created"], true);
         assert_eq!(created.data["goal"]["tokens_used"], 0);
         assert_eq!(created.data["goal"]["status"], "active");
+        assert_eq!(created.data["remaining_tokens"], 1000);
+
+        let fetched = GetGoalTool
+            .call(json!({}), &ctx, &parent, None)
+            .await
+            .unwrap();
+        assert_eq!(fetched.data["remaining_tokens"], 1000);
 
         let usage = UsageTracking {
             total_input_tokens: 600,
@@ -729,20 +736,82 @@ mod tests {
             .unwrap();
         assert_eq!(updated.data["updated"], true);
         assert_eq!(updated.data["goal"]["status"], "complete");
-        assert_eq!(
-            updated.data["completion_budget_report"]["tokens_used"],
-            1100
-        );
-        assert_eq!(
-            updated.data["completion_budget_report"]["over_budget_tokens"],
-            100
-        );
+        assert_eq!(updated.data["runtime"]["over_budget_tokens"], 100);
+        assert!(updated.data["completion_budget_report"]
+            .as_str()
+            .unwrap()
+            .contains("Report final goal usage"));
 
         let recreated = CreateGoalTool
             .call(json!({"objective": "next"}), &ctx, &parent, None)
             .await
             .unwrap();
         assert_eq!(recreated.data["created"], true);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn semantic_goal_tool_errors_and_blocked_contract() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tmp.path());
+        let ctx = test_context("goal-errors");
+        let parent = parent_message();
+
+        let invalid = CreateGoalTool
+            .call(json!({"objective": "   "}), &ctx, &parent, None)
+            .await
+            .unwrap();
+        assert_eq!(invalid.data["error"], "invalid_goal_objective");
+        let invalid_budget = CreateGoalTool
+            .call(
+                json!({"objective": "ship", "token_budget": -1}),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid_budget.data["error"], "invalid_token_budget");
+
+        CreateGoalTool
+            .call(
+                json!({"objective": "ship", "token_budget": 10}),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .unwrap();
+        let invalid_status = UpdateGoalTool
+            .call(json!({"status": "paused"}), &ctx, &parent, None)
+            .await
+            .unwrap();
+        assert_eq!(invalid_status.data["error"], "invalid_goal_transition");
+
+        let duplicate = CreateGoalTool
+            .call(json!({"objective": "second"}), &ctx, &parent, None)
+            .await
+            .unwrap();
+        assert_eq!(duplicate.data["error"], "active_goal_exists");
+
+        let blocked = UpdateGoalTool
+            .call(
+                json!({"status": "blocked", "reason": "waiting"}),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(blocked.data["updated"], true);
+        assert_eq!(blocked.data["goal"]["status"], "blocked");
+        assert!(blocked.data["completion_budget_report"].is_null());
+
+        let recreate_while_blocked = CreateGoalTool
+            .call(json!({"objective": "replacement"}), &ctx, &parent, None)
+            .await
+            .unwrap();
+        assert_eq!(recreate_while_blocked.data["error"], "active_goal_exists");
     }
 
     #[tokio::test]

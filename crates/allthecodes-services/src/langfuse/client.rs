@@ -29,8 +29,10 @@ pub fn init_langfuse() -> anyhow::Result<Option<SdkTracer>> {
         return Ok(Some(provider.tracer("allthecodes-langfuse")));
     }
 
-    let public_key = env_var("LANGFUSE_PUBLIC_KEY").expect("checked above");
-    let secret_key = env_var("LANGFUSE_SECRET_KEY").expect("checked above");
+    let public_key = env_var("LANGFUSE_PUBLIC_KEY")
+        .expect("LANGFUSE_PUBLIC_KEY must exist (checked by is_langfuse_enabled gate)");
+    let secret_key = env_var("LANGFUSE_SECRET_KEY")
+        .expect("LANGFUSE_SECRET_KEY must exist (checked by is_langfuse_enabled gate)");
     let host = env_var("LANGFUSE_BASE_URL")
         .or_else(|| env_var("LANGFUSE_HOST"))
         .unwrap_or_else(|| "https://cloud.langfuse.com".to_string());

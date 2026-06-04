@@ -223,10 +223,10 @@ pub(crate) fn compute_drift() -> DriftReport {
     let mut updated = Vec::new();
 
     for id in disk_ids.intersection(&mem_ids) {
-        let disk = disk_by_id.get(*id).expect("id in disk");
-        let mem = mem_by_id.get(*id).expect("id in mem");
-        if status_variant_differs(&disk.status, &mem.status) {
-            updated.push((*id).clone());
+        if let (Some(disk), Some(mem)) = (disk_by_id.get(*id), mem_by_id.get(*id)) {
+            if status_variant_differs(&disk.status, &mem.status) {
+                updated.push((*id).clone());
+            }
         }
     }
 

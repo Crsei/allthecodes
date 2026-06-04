@@ -97,8 +97,8 @@ pub async fn compile_and_run(source_name: &str, source: &str) -> anyhow::Result<
             let output = tokio::process::Command::new("swiftc")
                 .args([
                     "-o",
-                    binary.to_str().unwrap(),
-                    source_path.to_str().unwrap(),
+                    binary.to_str().expect("compiled binary path must be valid UTF-8"),
+                    source_path.to_str().expect("source path must be valid UTF-8"),
                 ])
                 .output()
                 .await

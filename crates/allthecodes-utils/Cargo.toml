@@ -12,6 +12,7 @@ parking_lot = { workspace = true }
 regex = { workspace = true }
 git2 = { workspace = true }
 shell-words = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 allthecodes-types = { workspace = true }

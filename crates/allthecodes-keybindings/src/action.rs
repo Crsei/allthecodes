@@ -31,7 +31,9 @@ impl Action {
         if colon_count != 1 {
             return Err(ActionParseError::InvalidFormat(trimmed.to_string()));
         }
-        let (ns, name) = trimmed.split_once(':').expect("validated above");
+        let Some((ns, name)) = trimmed.split_once(':') else {
+            return Err(ActionParseError::InvalidFormat(trimmed.to_string()));
+        };
         if ns.is_empty() || name.is_empty() {
             return Err(ActionParseError::InvalidFormat(trimmed.to_string()));
         }

@@ -12,7 +12,7 @@
 //!   let `config::validation` read it without a reverse dep back into the
 //!   root crate).
 
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 #![allow(deprecated)] // claude_md legacy functions retained for migration
 
 pub mod change_detector;

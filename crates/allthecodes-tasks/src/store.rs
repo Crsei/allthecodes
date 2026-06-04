@@ -288,7 +288,10 @@ impl TaskStore {
             }
         }
 
-        let entry = tasks.get_mut(id).expect("snapshot came from task map");
+        let Some(entry) = tasks.get_mut(id) else {
+            self.replace_tasks(tasks);
+            return Err(TaskClaimFailure::new(TaskClaimFailureReason::TaskNotFound));
+        };
         entry.owner = Some(owner.to_string());
         entry.status = TaskStatus::InProgress;
         entry.updated_at = chrono::Utc::now().timestamp();

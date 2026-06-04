@@ -370,7 +370,8 @@ fn update_ready_workflow_steps(record: &mut WorkflowRecord) {
 }
 
 fn advance_workflow(input: &Value) -> Result<(WorkflowRecord, String, PathBuf, PathBuf)> {
-    let workflow_id = string_param(input, "workflow_id").unwrap();
+    let workflow_id = string_param(input, "workflow_id")
+        .ok_or_else(|| anyhow!("Missing required parameter: workflow_id"))?;
     let mut record = load_workflow_by_id(workflow_id)?;
     if matches!(record.status.as_str(), "cancelled" | "completed" | "failed") {
         bail!(
@@ -629,7 +630,8 @@ impl Tool for WorkflowTool {
                 ))
             }
             "status" => {
-                let workflow_id = string_param(&input, "workflow_id").unwrap();
+                let workflow_id = string_param(&input, "workflow_id")
+                    .ok_or_else(|| anyhow!("workflow_id is required for workflow status"))?;
                 let record = load_workflow_by_id(workflow_id)?;
                 let run = load_workflow_run(workflow_id)?;
                 let preview = workflow_progress_summary(&record);
@@ -665,7 +667,8 @@ impl Tool for WorkflowTool {
                 ))
             }
             "cancel" => {
-                let workflow_id = string_param(&input, "workflow_id").unwrap();
+                let workflow_id = string_param(&input, "workflow_id")
+                    .ok_or_else(|| anyhow!("workflow_id is required for workflow cancel"))?;
                 let mut record = load_workflow_by_id(workflow_id)?;
                 record.status = "cancelled".into();
                 record.updated_at = Utc::now().to_rfc3339();
@@ -759,8 +762,12 @@ impl Tool for WorkflowTool {
                 let now = Utc::now().to_rfc3339();
                 let record = WorkflowRecord {
                     workflow_id,
-                    name: string_param(&input, "name").unwrap().to_string(),
-                    goal: string_param(&input, "goal").unwrap().to_string(),
+                    name: string_param(&input, "name")
+                        .ok_or_else(|| anyhow!("Missing required parameter: name"))?
+                        .to_string(),
+                    goal: string_param(&input, "goal")
+                        .ok_or_else(|| anyhow!("Missing required parameter: goal"))?
+                        .to_string(),
                     status: "started".into(),
                     created_at: now.clone(),
                     updated_at: now,

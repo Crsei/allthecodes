@@ -25,22 +25,8 @@ fn substitute_arguments(template: &str, json_input: &str) -> String {
     if let Ok(parsed) = serde_json::from_str::<Value>(json_input) {
         if let Some(arr) = parsed.as_array() {
             // Pattern: $ARGUMENTS[N]
-            let re = Regex::new(r"\$ARGUMENTS\[(\d+)\]").unwrap();
-            let s = re.replace_all(&s, |caps: &regex::Captures| {
-                let idx: usize = caps[1].parse().unwrap_or(0);
-                arr.get(idx)
-                    .map(|v| {
-                        v.as_str()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| serde_json::to_string(v).unwrap_or_default())
-                    })
-                    .unwrap_or_default()
-            });
-
-            // Shorthand: $0, $1, $2, etc.
-            let re2 = Regex::new(r"\$(\d+)").unwrap();
-            return re2
-                .replace_all(&s, |caps: &regex::Captures| {
+            let s = if let Ok(re) = Regex::new(r"\$ARGUMENTS\[(\d+)\]") {
+                re.replace_all(&s, |caps: &regex::Captures| {
                     let idx: usize = caps[1].parse().unwrap_or(0);
                     arr.get(idx)
                         .map(|v| {
@@ -50,7 +36,27 @@ fn substitute_arguments(template: &str, json_input: &str) -> String {
                         })
                         .unwrap_or_default()
                 })
-                .to_string();
+                .to_string()
+            } else {
+                s
+            };
+
+            // Shorthand: $0, $1, $2, etc.
+            return if let Ok(re2) = Regex::new(r"\$(\d+)") {
+                re2.replace_all(&s, |caps: &regex::Captures| {
+                    let idx: usize = caps[1].parse().unwrap_or(0);
+                    arr.get(idx)
+                        .map(|v| {
+                            v.as_str()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| serde_json::to_string(v).unwrap_or_default())
+                        })
+                        .unwrap_or_default()
+                })
+                .to_string()
+            } else {
+                s
+            };
         }
     }
 

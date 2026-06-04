@@ -480,19 +480,24 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
 
         SdkMessage::GoalUpdated(update) => {
             app.update_goal_status(&update.event, &update.goal);
-            if update.event == "budget_limited" {
+            if matches!(update.event.as_str(), "budget_limited" | "usage_limited") {
                 let objective = update
                     .goal
                     .get("objective")
                     .and_then(|value| value.as_str())
                     .unwrap_or("session goal");
+                let message = if update.event == "budget_limited" {
+                    format!("Goal token budget reached: {objective}")
+                } else {
+                    format!("Goal paused by usage limit: {objective}")
+                };
                 app.add_message(Message::System(SystemMessage {
                     uuid: uuid::Uuid::new_v4(),
                     timestamp: now_ts(),
                     subtype: SystemSubtype::Informational {
                         level: InfoLevel::Warning,
                     },
-                    content: format!("Goal budget reached: {objective}"),
+                    content: message,
                 }));
             } else {
                 debug!(event = %update.event, "TUI: goal updated");

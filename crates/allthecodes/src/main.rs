@@ -161,7 +161,13 @@ fn main() -> ExitCode {
         );
     }
 
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(error) => {
+            eprintln!("error: failed to create tokio runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let _tracing_guard = {
         let _enter = rt.enter();
         startup::logging::init_tracing(cli.verbose)

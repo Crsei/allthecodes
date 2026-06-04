@@ -291,7 +291,22 @@ pub(crate) fn grouping_tool_use_key(msg: &RenderableMessage) -> Option<(usize, &
 }
 
 pub(crate) fn is_groupable_tool(name: &str) -> bool {
-    matches!(name, "Task" | "Agent" | "Read" | "Grep" | "Glob")
+    matches!(
+        name,
+        "Task"
+            | "Agent"
+            | "Read"
+            | "Grep"
+            | "Glob"
+            | "Bash"
+            | "PowerShell"
+            | "Edit"
+            | "Write"
+            | "FileEdit"
+            | "FileWrite"
+            | "MultiEdit"
+            | "NotebookEdit"
+    )
 }
 
 pub(crate) fn source_index_of(msg: &RenderableMessage) -> Option<usize> {

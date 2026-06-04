@@ -10,14 +10,15 @@ use std::path::{Path, PathBuf};
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR = <workspace>/crates/allthecodes
-    let manifest_dir =
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by cargo");
+    let Some(manifest_dir) = std::env::var_os("CARGO_MANIFEST_DIR") else {
+        return PathBuf::from(".");
+    };
     let manifest_dir = PathBuf::from(manifest_dir);
     manifest_dir
         .parent() // <workspace>/crates
         .and_then(|p| p.parent()) // <workspace>
         .map(Path::to_path_buf)
-        .expect("CARGO_MANIFEST_DIR is not nested under <workspace>/crates/")
+        .unwrap_or(manifest_dir)
 }
 
 fn main() {

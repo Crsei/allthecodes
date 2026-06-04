@@ -32,7 +32,8 @@ mod system_prompt_build;
 
 use command_handling::{bash_mode_result_message, handle_parsed_command, skill_args_from_prompt};
 use stream_handler::{
-    account_goal_runtime_message, check_budget, process_stream_item, StreamAction, StreamContext,
+    account_goal_runtime_message, check_budget, prime_goal_runtime_for_session,
+    process_stream_item, StreamAction, StreamContext,
 };
 use system_prompt_build::build_submit_system_prompt;
 
@@ -570,6 +571,8 @@ impl QueryEngine {
                 auto_classifier_fn: auto_classifier_fn.clone(),
             });
 
+            prime_goal_runtime_for_session(session_id.as_str(), &state_ref);
+
             // Run the query loop
             let inner_stream = loop_impl::query(params, deps);
 
@@ -608,8 +611,11 @@ impl QueryEngine {
                     return;
                 }
 
-                if let Some(result) = check_budget(&mut stream_ctx) {
-                    yield SdkMessage::Result(result);
+                if let Some(stop) = check_budget(&mut stream_ctx) {
+                    if let Some(goal_update) = stop.goal_update {
+                        yield goal_update;
+                    }
+                    yield SdkMessage::Result(stop.result);
                     return;
                 }
             } // end while let Some(item)
@@ -683,7 +689,7 @@ impl QueryEngine {
             finish_submit_telemetry(&mut telemetry_submit_span, &model_name, &usage_snap);
 
             if let Some(goal_update) =
-                account_goal_runtime_message(session_id.as_str(), &usage_snap)
+                account_goal_runtime_message(session_id.as_str(), &state_ref, None)
             {
                 yield goal_update;
             }
