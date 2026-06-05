@@ -1,6 +1,7 @@
 //! Chat, abort, and state handlers — core chat API.
 
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::atomic::Ordering;
 
 use axum::Json;
@@ -63,8 +64,23 @@ pub struct StateResponse {
     pub usage: UsageResponse,
     pub commands: Vec<CommandInfo>,
     pub settings_map: HashMap<String, Value>,
+    pub effective_system_prompt: String,
     pub version: String,
     pub capabilities: HashMap<String, bool>,
+}
+
+#[derive(Serialize)]
+pub struct SystemPromptResponse {
+    pub prompt: String,
+}
+
+#[derive(Serialize)]
+pub struct CodingAgentStatus {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+    pub command: Option<String>,
+    pub error: Option<String>,
 }
 
 /// POST /api/chat -- Start a streaming chat response via SSE.
@@ -199,6 +215,9 @@ pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
         })
         .collect();
 
+    let settings_map = app_state.settings.settings_map();
+    let effective_system_prompt = effective_system_prompt_from_map(&settings_map);
+
     Json(StateResponse {
         model: app_state.main_loop_model.clone(),
         session_id: state.engine().current_session_id().to_string(),
@@ -216,8 +235,78 @@ pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
             api_call_count: usage.api_call_count,
         },
         commands,
-        settings_map: app_state.settings.settings_map(),
+        settings_map,
+        effective_system_prompt,
         version: env!("CARGO_PKG_VERSION").to_string(),
         capabilities: crate::handlers::capabilities_map(),
     })
+}
+
+/// GET /api/system-prompt -- Return the prompt text currently exposed to chat.
+pub async fn system_prompt_handler(State(state): State<WebState>) -> impl IntoResponse {
+    let map = state.engine().app_state().settings.settings_map();
+    Json(SystemPromptResponse {
+        prompt: effective_system_prompt_from_map(&map),
+    })
+}
+
+/// GET /api/coding-agents/status -- Probe local agent commands for General settings.
+pub async fn coding_agent_status_handler() -> impl IntoResponse {
+    Json(vec![
+        CodingAgentStatus {
+            id: "allthecodes".to_string(),
+            label: "allthecodes".to_string(),
+            available: true,
+            command: std::env::current_exe()
+                .ok()
+                .map(|path| path.display().to_string()),
+            error: None,
+        },
+        probe_agent("claude_code", "Claude Code CLI", &["claude", "claude-code"]),
+        probe_agent("codex", "Codex CLI", &["codex"]),
+    ])
+}
+
+fn effective_system_prompt_from_map(map: &HashMap<String, Value>) -> String {
+    map.get("system_prompt")
+        .and_then(Value::as_str)
+        .filter(|prompt| !prompt.trim().is_empty())
+        .unwrap_or("You are a helpful AI assistant.")
+        .to_string()
+}
+
+fn probe_agent(id: &str, label: &str, commands: &[&str]) -> CodingAgentStatus {
+    let mut last_error = None;
+    for command in commands {
+        match Command::new(command).arg("--version").output() {
+            Ok(output) if output.status.success() => {
+                return CodingAgentStatus {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                    available: true,
+                    command: Some((*command).to_string()),
+                    error: None,
+                };
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                last_error = Some(if stderr.is_empty() {
+                    format!("{command} exited with {}", output.status)
+                } else {
+                    stderr
+                });
+            }
+            Err(err) => {
+                last_error = Some(err.to_string());
+            }
+        }
+    }
+
+    CodingAgentStatus {
+        id: id.to_string(),
+        label: label.to_string(),
+        available: false,
+        command: None,
+        error: last_error.or_else(|| Some("command not found".to_string())),
+    }
 }

@@ -383,7 +383,7 @@ fn action_to_setting_key(action: &str) -> Option<&'static str> {
         "set_show_token_usage" => "show_token_usage",
         "set_markdown" | "set_markdown_rendering" => "markdown_rendering",
         "set_single_dollar_math" => "single_dollar_math",
-        "set_infographic" => "infographic",
+        "set_infographic" | "set_infographic_visualization" => "infographic",
         "set_auto_collapse" | "set_auto_collapse_reasoning" => "auto_collapse_reasoning",
         "set_quick_reply" | "set_quick_reply_suggestions" => "quick_reply_suggestions",
         "set_default_tool_selection" => "default_tool_selection",
@@ -395,6 +395,20 @@ fn action_to_setting_key(action: &str) -> Option<&'static str> {
         "set_hashline_mode" => "hashline_mode",
         "set_effort_level" => "effort_level",
         "set_theme" => "theme",
+        "set_font_family" => "font_family",
+        "set_font_size" => "font_size",
+        "set_density" => "density",
+        "set_sidebar_width" => "sidebar_width",
+        "set_sidebar_mode" => "sidebar_mode",
+        "set_line_numbers" => "line_numbers",
+        "set_word_wrap" => "word_wrap",
+        "set_minimap" => "minimap",
+        "set_use_system_caret" => "use_system_caret",
+        "set_tool_card_expand" => "tool_card_expand",
+        "set_terminal_font" => "terminal_font",
+        "set_terminal_font_size" => "terminal_font_size",
+        "set_persist_terminals" => "persist_terminals",
+        "set_blink_cursor" => "blink_cursor",
         "set_proxy_enabled" => "proxy_enabled",
         "set_proxy_url" => "proxy_url",
         "set_prefer_ipv4" => "prefer_ipv4",
@@ -485,6 +499,20 @@ pub(crate) fn normalize_settings_path(path: &str) -> Option<&'static str> {
         "projects.effort_level" | "effort_level" => "effort_level",
         "fast_mode" => "fast_mode",
         "ui.theme" | "theme" => "theme",
+        "ui.font_family" | "font_family" => "font_family",
+        "ui.font_size" | "font_size" => "font_size",
+        "ui.density" | "density" => "density",
+        "ui.sidebar_width" | "sidebar_width" => "sidebar_width",
+        "ui.sidebar_mode" | "sidebar_mode" => "sidebar_mode",
+        "ui.line_numbers" | "line_numbers" => "line_numbers",
+        "ui.word_wrap" | "word_wrap" => "word_wrap",
+        "ui.minimap" | "minimap" => "minimap",
+        "ui.use_system_caret" | "use_system_caret" => "use_system_caret",
+        "ui.tool_card_expand" | "tool_card_expand" => "tool_card_expand",
+        "ui.terminal_font" | "terminal_font" => "terminal_font",
+        "ui.terminal_font_size" | "terminal_font_size" => "terminal_font_size",
+        "ui.persist_terminals" | "persist_terminals" => "persist_terminals",
+        "ui.blink_cursor" | "blink_cursor" => "blink_cursor",
         "network.proxy_enabled" | "proxy_enabled" => "proxy_enabled",
         "network.proxy_url" | "proxy_url" => "proxy_url",
         "network.prefer_ipv4" | "prefer_ipv4" => "prefer_ipv4",
@@ -600,11 +628,20 @@ fn setting_kind(key: &str) -> SettingKind {
         | "memory_auto_summarize"
         | "memory_nightly"
         | "cloud_sync_enabled"
-        | "token_savings_tracking" => SettingKind::Bool,
+        | "token_savings_tracking"
+        | "line_numbers"
+        | "word_wrap"
+        | "minimap"
+        | "use_system_caret"
+        | "persist_terminals"
+        | "blink_cursor" => SettingKind::Bool,
         "context_window"
         | "max_messages"
         | "max_tokens"
         | "request_timeout"
+        | "font_size"
+        | "sidebar_width"
+        | "terminal_font_size"
         | "memory_temp_ttl"
         | "memory_archive_retention" => SettingKind::U64,
         "retry_attempts"
@@ -903,7 +940,9 @@ fn parse_permission_mode(value: &str) -> PermissionMode {
 fn normalize_backend_value(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "codex" | "openai-codex" => "codex".to_string(),
-        "native" | "claude" | "claude-code" | "auto" => "native".to_string(),
+        "native" | "allthecodes" | "claude" | "claude-code" | "claude_code" | "auto" => {
+            "native".to_string()
+        }
         other => other.to_string(),
     }
 }

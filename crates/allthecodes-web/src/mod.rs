@@ -25,6 +25,11 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/chat", post(handlers::chat_handler))
         .route("/api/abort", post(handlers::abort_handler))
         .route("/api/state", get(handlers::state_handler))
+        .route("/api/system-prompt", get(handlers::system_prompt_handler))
+        .route(
+            "/api/coding-agents/status",
+            get(handlers::coding_agent_status_handler),
+        )
         .route("/api/capabilities", get(handlers::capabilities_handler))
         .route("/api/chat-modes", get(handlers::chat_modes_list_handler))
         .route(
