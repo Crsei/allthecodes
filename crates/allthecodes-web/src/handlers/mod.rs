@@ -23,8 +23,10 @@ pub mod chat_modes;
 pub mod chrome_relay;
 pub mod computer_use;
 pub mod credentials;
+pub mod gateways;
 pub mod git;
 pub mod hooks;
+pub mod logs;
 pub mod mcp_servers;
 pub mod models;
 pub mod people;
@@ -51,8 +53,10 @@ pub use chat_modes::*;
 pub use chrome_relay::*;
 pub use computer_use::*;
 pub use credentials::*;
+pub use gateways::*;
 pub use git::*;
 pub use hooks::*;
+pub use logs::*;
 pub use mcp_servers::*;
 pub use models::*;
 pub use people::*;
@@ -124,16 +128,16 @@ mod tests {
     use allthecodes_ipc_protocol::subsystem_types::{
         AgentDefinitionEntry, AgentDefinitionSource, ConfigScope, McpServerConfigEntry,
     };
-    use axum::Json;
     use axum::body::to_bytes;
     use axum::extract::{Path as AxumPath, Query, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
-    use serde_json::{Value, json};
+    use axum::Json;
+    use serde_json::{json, Value};
     use serial_test::serial;
     use std::path::Path;
-    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     struct EnvGuard {
@@ -270,12 +274,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
         assert_eq!(body["ok"], json!(false));
-        assert!(
-            body["message"]
-                .as_str()
-                .expect("message")
-                .contains("not in availableModels")
-        );
+        assert!(body["message"]
+            .as_str()
+            .expect("message")
+            .contains("not in availableModels"));
         assert_ne!(
             state.engine().app_state().main_loop_model,
             "claude-opus-4-20250514"
@@ -335,12 +337,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
         assert_eq!(body["ok"], json!(false));
-        assert!(
-            body["message"]
-                .as_str()
-                .expect("message")
-                .contains("permissions.enableAutoMode=false")
-        );
+        assert!(body["message"]
+            .as_str()
+            .expect("message")
+            .contains("permissions.enableAutoMode=false"));
         assert_eq!(
             state.engine().app_state().tool_permission_context.mode,
             PermissionMode::Default
@@ -724,12 +724,10 @@ mod tests {
         assert_eq!(body["skipped"][0]["reason"], json!("active_session"));
         assert!(!allthecodes_session::storage::get_session_file(inactive_id).exists());
         assert!(allthecodes_session::storage::get_archived_session_file(inactive_id).exists());
-        assert!(
-            allthecodes_session::storage::get_session_file(
-                &state.engine().current_session_id().to_string()
-            )
-            .exists()
-        );
+        assert!(allthecodes_session::storage::get_session_file(
+            &state.engine().current_session_id().to_string()
+        )
+        .exists());
     }
 
     #[tokio::test]
@@ -906,19 +904,15 @@ mod tests {
         let response = plugins_list_handler().await.into_response();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert!(
-            body["plugins"]
-                .as_array()
-                .expect("plugins")
-                .iter()
-                .any(|plugin| plugin["id"] == json!("local-plugin@local"))
-        );
-        assert!(
-            body["diagnostics"]
-                .as_array()
-                .expect("diagnostics")
-                .is_empty()
-        );
+        assert!(body["plugins"]
+            .as_array()
+            .expect("plugins")
+            .iter()
+            .any(|plugin| plugin["id"] == json!("local-plugin@local")));
+        assert!(body["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .is_empty());
 
         let response = plugins_marketplace_handler().await.into_response();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1033,20 +1027,16 @@ mod tests {
             .into_response();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert!(
-            body["agents"]
-                .as_array()
-                .expect("agents")
-                .iter()
-                .any(|agent| agent["name"] == json!("general-purpose"))
-        );
-        assert!(
-            body["tools"]
-                .as_array()
-                .expect("tools")
-                .iter()
-                .any(|tool| tool["name"] == json!("Read"))
-        );
+        assert!(body["agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .any(|agent| agent["name"] == json!("general-purpose")));
+        assert!(body["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .any(|tool| tool["name"] == json!("Read")));
 
         let response = agents_create_handler(
             State(state.clone()),
@@ -1068,12 +1058,10 @@ mod tests {
         .await
         .into_response();
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(
-            project
-                .path()
-                .join(".allthecodes/agents/web-project.md")
-                .exists()
-        );
+        assert!(project
+            .path()
+            .join(".allthecodes/agents/web-project.md")
+            .exists());
 
         let response = agents_update_handler(
             State(state.clone()),
@@ -1119,16 +1107,14 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!home.path().join("agents/general-purpose.md").exists());
         let body = response_json(response).await;
-        assert!(
-            body["agents"]
-                .as_array()
-                .expect("agents")
-                .iter()
-                .any(|agent| {
-                    agent["name"] == json!("general-purpose")
-                        && agent["source"]["kind"] == json!("builtin")
-                })
-        );
+        assert!(body["agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .any(|agent| {
+                agent["name"] == json!("general-purpose")
+                    && agent["source"]["kind"] == json!("builtin")
+            }));
     }
 
     #[tokio::test]

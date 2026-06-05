@@ -9,8 +9,8 @@ pub mod ws;
 use std::net::SocketAddr;
 
 use axum::{
-    Router,
     routing::{any, delete, get, patch, post, put},
+    Router,
 };
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -124,6 +124,16 @@ pub fn build_router(state: WebState) -> Router {
         .route(
             "/api/channels/{provider}/test",
             post(handlers::channels_test_handler),
+        )
+        .route("/api/gateway/status", get(handlers::gateway_status_handler))
+        .route("/api/gateways", get(handlers::gateways_list_handler))
+        .route(
+            "/api/gateways/{id}/start",
+            post(handlers::gateway_start_handler),
+        )
+        .route(
+            "/api/gateways/{id}/stop",
+            post(handlers::gateway_stop_handler),
         )
         .route(
             "/api/computer-use/status",
@@ -319,6 +329,17 @@ pub fn build_router(state: WebState) -> Router {
         .route(
             "/api/oauth/{provider}/poll",
             post(handlers::oauth_poll_handler),
+        )
+        // Logs and diagnostics panel endpoints
+        .route("/api/logs", get(handlers::logs_handler))
+        .route("/api/logs/export", get(handlers::logs_export_handler))
+        .route(
+            "/api/diagnostics/snapshot",
+            get(handlers::diagnostics_snapshot_handler),
+        )
+        .route(
+            "/api/diagnostics/traces",
+            get(handlers::diagnostics_traces_handler),
         )
         // Phase 4: xterm.js TUI WebSocket bridge
         .route("/api/tui/ws", any(ws::tui::tui_ws_handler))

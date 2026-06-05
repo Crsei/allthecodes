@@ -943,6 +943,7 @@ dependencies = [
 name = "allthecodes-web"
 version = "0.1.0"
 dependencies = [
+ "allthecodes-api",
  "allthecodes-auth",
  "allthecodes-bootstrap",
  "allthecodes-commands",
@@ -973,6 +974,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
 ]

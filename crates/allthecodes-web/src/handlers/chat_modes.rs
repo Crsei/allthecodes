@@ -3,15 +3,15 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use allthecodes_config::settings::{RawSettings, user_settings_path, write_settings_file};
+use allthecodes_config::settings::{user_settings_path, write_settings_file, RawSettings};
 use allthecodes_mcp::discovery::discover_mcp_servers_scoped;
-use allthecodes_plugins::{PluginStatus, get_enabled_plugins};
+use allthecodes_plugins::{get_enabled_plugins, PluginStatus};
 
 use crate::handlers::ApiError;
 use crate::state::WebState;

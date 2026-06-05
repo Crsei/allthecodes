@@ -1,13 +1,13 @@
 //! Session management handlers — list, detail, new, resume.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -17,8 +17,8 @@ use allthecodes_engine::types::config::QueryEngineConfig;
 use allthecodes_session::{fork, resume as session_resume, storage};
 use allthecodes_types::message::{ContentBlock, Message, MessageContent};
 
-use crate::handlers::ApiError;
 use crate::handlers::workspaces::resolve_workspace_root;
+use crate::handlers::ApiError;
 use crate::state::{SessionOwner, WebState};
 
 // ---------------------------------------------------------------------------

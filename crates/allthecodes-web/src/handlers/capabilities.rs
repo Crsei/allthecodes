@@ -63,7 +63,7 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps.insert("jobs".into(), false);
     caps.insert("group_chat".into(), false);
     caps.insert("files".into(), false);
-    caps.insert("logs".into(), false);
+    caps.insert("logs".into(), true);
     caps.insert("backend_services".into(), false);
     caps
 }

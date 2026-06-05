@@ -1,12 +1,15 @@
 //! Model registry handlers — list, update, set default.
 
-use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::handlers::admin::persist_setting;
+use crate::handlers::providers::{
+    configured_provider_models, provider_for_model, update_configured_model,
+};
 use crate::handlers::{ApiError, SettingsResponse};
 use crate::state::WebState;
 
@@ -66,23 +69,30 @@ pub async fn models_list_handler(State(state): State<WebState>) -> impl IntoResp
     let available = &app_state.settings.available_models;
     let current_model = &app_state.main_loop_model;
 
-    let models: Vec<ModelSummary> = available
-        .iter()
-        .map(|m| ModelSummary {
-            id: m.clone(),
-            provider_id: "default".to_string(),
-            provider_name: None,
-            display_name: Some(m.clone()),
-            alias: None,
-            visible: true,
-            default: Some(m == current_model),
-            context_window: None,
-            max_output_tokens: None,
-            supports_tools: None,
-            supports_vision: None,
-            updated_at: None,
-        })
-        .collect();
+    let mut models: Vec<ModelSummary> = configured_provider_models();
+    if models.is_empty() {
+        models = available
+            .iter()
+            .map(|m| ModelSummary {
+                id: m.clone(),
+                provider_id: "default".to_string(),
+                provider_name: None,
+                display_name: Some(m.clone()),
+                alias: None,
+                visible: true,
+                default: Some(m == current_model),
+                context_window: None,
+                max_output_tokens: None,
+                supports_tools: None,
+                supports_vision: None,
+                updated_at: None,
+            })
+            .collect();
+    } else {
+        for model in &mut models {
+            model.default = Some(model.id == *current_model);
+        }
+    }
 
     Json(ModelRegistryResponse {
         profile_id: None,
@@ -93,17 +103,22 @@ pub async fn models_list_handler(State(state): State<WebState>) -> impl IntoResp
 
 /// PATCH /api/models/{id} — Update a model's properties.
 pub async fn models_update_handler(
-    AxumPath(_id): AxumPath<String>,
-    Json(_req): Json<ModelUpdateRequest>,
+    AxumPath(id): AxumPath<String>,
+    State(state): State<WebState>,
+    Json(req): Json<ModelUpdateRequest>,
 ) -> Response {
-    // Model update is a no-op in this initial implementation
-    // The engine's available_models list is read-only from settings
-    Json(ModelRegistryResponse {
-        profile_id: None,
-        default_model_id: None,
-        models: Vec::new(),
-    })
-    .into_response()
+    if let Err(error) = update_configured_model(&id, req.alias, req.context_window, req.visible) {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("Failed to update model: {error}"),
+                code: "model_update_failed".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    models_list_handler(State(state)).await.into_response()
 }
 
 /// POST /api/models/default — Set the default model.
@@ -111,6 +126,22 @@ pub async fn models_set_default_handler(
     State(state): State<WebState>,
     Json(req): Json<SetDefaultModelRequest>,
 ) -> Response {
+    if let Some((provider_id, enabled)) = provider_for_model(&req.model_id) {
+        if !enabled {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!(
+                        "Provider '{}' must be enabled before model '{}' can run",
+                        provider_id, req.model_id
+                    ),
+                    code: "provider_disabled".into(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     if let Err(error) = persist_setting(&state, "model", json!(req.model_id.clone())) {
         return (
             axum::http::StatusCode::BAD_REQUEST,

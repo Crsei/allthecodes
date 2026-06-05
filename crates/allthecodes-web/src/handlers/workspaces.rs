@@ -4,18 +4,18 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{info, warn};
 
 use allthecodes_session::storage::{self, SessionInfo};
 
-use crate::handlers::ApiError;
 use crate::handlers::sessions::ownership_conflict_response;
+use crate::handlers::ApiError;
 use crate::state::WebState;
 use crate::workspace_metadata::{self, WorkspaceUiMetadata, WorkspaceUiMetadataPatch};
 
@@ -171,7 +171,7 @@ pub async fn workspace_open_handler(
         command.arg(&root);
         command
     } else {
-        let mut command = Command::new("xdg-open");
+        let mut command = Command::new("code");
         command.arg(&root);
         command
     };
@@ -188,7 +188,11 @@ pub async fn workspace_open_handler(
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
-                error: format!("Failed to open workspace: {error}"),
+                error: if cfg!(target_os = "linux") {
+                    format!("Failed to open workspace in VS Code with `code`: {error}")
+                } else {
+                    format!("Failed to open workspace: {error}")
+                },
                 code: "workspace_open_failed".into(),
             }),
         )
