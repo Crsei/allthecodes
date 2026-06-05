@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::info;
@@ -40,6 +40,8 @@ pub struct ChatRequest {
     pub message: String,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -82,6 +84,11 @@ pub async fn chat_handler(
             .into_response();
     }
 
+    let activation = match crate::handlers::resolve_mode_activation(&state, req.mode.as_deref()) {
+        Ok(activation) => activation,
+        Err((status, error)) => return (status, Json(error)).into_response(),
+    };
+
     let engine = state.engine();
     let active_session_id = req
         .session_id
@@ -111,13 +118,21 @@ pub async fn chat_handler(
     info!(
         message = %req.message,
         session_id = %requested_session,
+        mode = %req.mode.as_deref().unwrap_or("normal"),
         "POST /api/chat"
     );
 
     state.is_streaming.store(true, Ordering::SeqCst);
 
     // Get the stream from the engine
-    let stream = engine.submit_message(&req.message, QuerySource::Sdk);
+    let prompt = match activation {
+        Some(activation) => {
+            info!(mode = %activation.mode_id, "chat mode activation applied");
+            format!("{}{}", activation.prompt_prefix, req.message)
+        }
+        None => req.message.clone(),
+    };
+    let stream = engine.submit_message(&prompt, QuerySource::Sdk);
 
     // Wrap in a stream that clears is_streaming when done
     let is_streaming = state.is_streaming.clone();

@@ -1,11 +1,13 @@
 //! Model registry handlers — list, update, set default.
 
+use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
-use crate::handlers::SettingsResponse;
+use crate::handlers::admin::persist_setting;
+use crate::handlers::{ApiError, SettingsResponse};
 use crate::state::WebState;
 
 #[derive(Serialize)]
@@ -109,10 +111,16 @@ pub async fn models_set_default_handler(
     State(state): State<WebState>,
     Json(req): Json<SetDefaultModelRequest>,
 ) -> Response {
-    state.engine().update_app_state(|s| {
-        s.main_loop_model = req.model_id.clone();
-        s.settings.model = Some(req.model_id.clone());
-    });
+    if let Err(error) = persist_setting(&state, "model", json!(req.model_id.clone())) {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: format!("Failed to set default model: {error}"),
+                code: "model_default_failed".into(),
+            }),
+        )
+            .into_response();
+    }
 
     Json(SettingsResponse {
         ok: true,

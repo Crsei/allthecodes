@@ -957,6 +957,7 @@ dependencies = [
  "allthecodes-plugins",
  "allthecodes-services",
  "allthecodes-session",
+ "allthecodes-skills",
  "allthecodes-types",
  "allthecodes-utils",
  "anyhow",

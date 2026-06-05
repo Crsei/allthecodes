@@ -19,6 +19,7 @@ pub mod auth;
 pub mod capabilities;
 pub mod channels;
 pub mod chat;
+pub mod chat_modes;
 pub mod chrome_relay;
 pub mod computer_use;
 pub mod credentials;
@@ -34,6 +35,7 @@ pub mod providers;
 pub mod proxy;
 pub mod sessions;
 pub mod settings_phase1;
+pub mod workspaces;
 
 // Re-export all public items from each submodule so the router builder
 // and external callers can still use `handlers::*` paths.
@@ -45,6 +47,7 @@ pub use auth::*;
 pub use capabilities::*;
 pub use channels::*;
 pub use chat::*;
+pub use chat_modes::*;
 pub use chrome_relay::*;
 pub use computer_use::*;
 pub use credentials::*;
@@ -60,6 +63,7 @@ pub use providers::*;
 pub use proxy::*;
 pub use sessions::*;
 pub use settings_phase1::*;
+pub use workspaces::*;
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -120,16 +124,16 @@ mod tests {
     use allthecodes_ipc_protocol::subsystem_types::{
         AgentDefinitionEntry, AgentDefinitionSource, ConfigScope, McpServerConfigEntry,
     };
+    use axum::Json;
     use axum::body::to_bytes;
     use axum::extract::{Path as AxumPath, Query, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
-    use axum::Json;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use serial_test::serial;
     use std::path::Path;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use tempfile::TempDir;
 
     struct EnvGuard {
@@ -266,10 +270,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
         assert_eq!(body["ok"], json!(false));
-        assert!(body["message"]
-            .as_str()
-            .expect("message")
-            .contains("not in availableModels"));
+        assert!(
+            body["message"]
+                .as_str()
+                .expect("message")
+                .contains("not in availableModels")
+        );
         assert_ne!(
             state.engine().app_state().main_loop_model,
             "claude-opus-4-20250514"
@@ -329,10 +335,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
         assert_eq!(body["ok"], json!(false));
-        assert!(body["message"]
-            .as_str()
-            .expect("message")
-            .contains("permissions.enableAutoMode=false"));
+        assert!(
+            body["message"]
+                .as_str()
+                .expect("message")
+                .contains("permissions.enableAutoMode=false")
+        );
         assert_eq!(
             state.engine().app_state().tool_permission_context.mode,
             PermissionMode::Default
@@ -613,6 +621,143 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn workspaces_patch_persists_sidebar_metadata() {
+        let (home, _guard) = temp_home();
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+        let workspace_key = allthecodes_session::storage::workspace_key(project.path());
+
+        let response = workspace_patch_handler(
+            AxumPath(workspace_key.clone()),
+            State(state.clone()),
+            Json(WorkspacePatchRequest {
+                display_name: Some(Some("Frontend".to_string())),
+                pinned: Some(true),
+                hidden: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["key"], json!(workspace_key));
+        assert_eq!(body["display_name"], json!("Frontend"));
+        assert_eq!(body["pinned"], json!(true));
+
+        let metadata_path = home.path().join("web").join("workspaces.json");
+        let persisted: Value =
+            serde_json::from_str(&std::fs::read_to_string(metadata_path).expect("metadata file"))
+                .expect("metadata json");
+        assert_eq!(
+            persisted["workspaces"][workspace_key.as_str()]["display_name"],
+            json!("Frontend")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_new_handler_can_target_known_workspace_cwd() {
+        let (_home, _guard) = temp_home();
+        let current = tempfile::tempdir().expect("current");
+        let target = tempfile::tempdir().expect("target");
+        let state = make_web_state_with_cwd(current.path());
+        allthecodes_session::storage::save_session(
+            "target-session",
+            &[],
+            target.path().to_str().unwrap(),
+        )
+        .expect("seed target workspace");
+        let workspace_key = allthecodes_session::storage::workspace_key(target.path());
+
+        let response = session_new_handler(
+            State(state.clone()),
+            Some(Json(NewSessionRequest {
+                workspace_key: Some(workspace_key),
+                cwd: Some(target.path().to_string_lossy().to_string()),
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            allthecodes_session::storage::workspace_key(std::path::Path::new(state.engine().cwd())),
+            allthecodes_session::storage::workspace_key(target.path())
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn workspace_archive_skips_active_and_archives_inactive_sessions() {
+        let (_home, _guard) = temp_home();
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+        let inactive_id = "workspace-inactive-archive";
+        allthecodes_session::storage::save_session(
+            inactive_id,
+            &[],
+            project.path().to_str().unwrap(),
+        )
+        .expect("seed inactive session");
+        allthecodes_session::storage::save_session(
+            &state.engine().current_session_id().to_string(),
+            &[],
+            project.path().to_str().unwrap(),
+        )
+        .expect("seed active session");
+        let workspace_key = allthecodes_session::storage::workspace_key(project.path());
+
+        let response = workspace_sessions_archive_handler(
+            AxumPath(workspace_key),
+            State(state.clone()),
+            Json(WorkspaceArchiveRequest {
+                include_active: false,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["archived"], json!([inactive_id]));
+        assert_eq!(body["skipped"][0]["reason"], json!("active_session"));
+        assert!(!allthecodes_session::storage::get_session_file(inactive_id).exists());
+        assert!(allthecodes_session::storage::get_archived_session_file(inactive_id).exists());
+        assert!(
+            allthecodes_session::storage::get_session_file(
+                &state.engine().current_session_id().to_string()
+            )
+            .exists()
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn models_set_default_persists_model_setting() {
+        let (home, _guard) = temp_home();
+        let state = make_web_state();
+        state.engine().update_app_state(|s| {
+            s.settings.available_models = vec!["gpt-4o".to_string()];
+        });
+
+        let response = models_set_default_handler(
+            State(state.clone()),
+            Json(SetDefaultModelRequest {
+                model_id: "gpt-4o".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert_eq!(raw.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(state.engine().app_state().main_loop_model, "gpt-4o");
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn mcp_servers_crud_uses_editable_settings_scopes() {
         let (home, _guard) = temp_home();
         let project = tempfile::tempdir().expect("project");
@@ -761,15 +906,19 @@ mod tests {
         let response = plugins_list_handler().await.into_response();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert!(body["plugins"]
-            .as_array()
-            .expect("plugins")
-            .iter()
-            .any(|plugin| plugin["id"] == json!("local-plugin@local")));
-        assert!(body["diagnostics"]
-            .as_array()
-            .expect("diagnostics")
-            .is_empty());
+        assert!(
+            body["plugins"]
+                .as_array()
+                .expect("plugins")
+                .iter()
+                .any(|plugin| plugin["id"] == json!("local-plugin@local"))
+        );
+        assert!(
+            body["diagnostics"]
+                .as_array()
+                .expect("diagnostics")
+                .is_empty()
+        );
 
         let response = plugins_marketplace_handler().await.into_response();
         assert_eq!(response.status(), StatusCode::OK);
@@ -884,16 +1033,20 @@ mod tests {
             .into_response();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert!(body["agents"]
-            .as_array()
-            .expect("agents")
-            .iter()
-            .any(|agent| agent["name"] == json!("general-purpose")));
-        assert!(body["tools"]
-            .as_array()
-            .expect("tools")
-            .iter()
-            .any(|tool| tool["name"] == json!("Read")));
+        assert!(
+            body["agents"]
+                .as_array()
+                .expect("agents")
+                .iter()
+                .any(|agent| agent["name"] == json!("general-purpose"))
+        );
+        assert!(
+            body["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .any(|tool| tool["name"] == json!("Read"))
+        );
 
         let response = agents_create_handler(
             State(state.clone()),
@@ -915,10 +1068,12 @@ mod tests {
         .await
         .into_response();
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(project
-            .path()
-            .join(".allthecodes/agents/web-project.md")
-            .exists());
+        assert!(
+            project
+                .path()
+                .join(".allthecodes/agents/web-project.md")
+                .exists()
+        );
 
         let response = agents_update_handler(
             State(state.clone()),
@@ -964,14 +1119,16 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!home.path().join("agents/general-purpose.md").exists());
         let body = response_json(response).await;
-        assert!(body["agents"]
-            .as_array()
-            .expect("agents")
-            .iter()
-            .any(|agent| {
-                agent["name"] == json!("general-purpose")
-                    && agent["source"]["kind"] == json!("builtin")
-            }));
+        assert!(
+            body["agents"]
+                .as_array()
+                .expect("agents")
+                .iter()
+                .any(|agent| {
+                    agent["name"] == json!("general-purpose")
+                        && agent["source"]["kind"] == json!("builtin")
+                })
+        );
     }
 
     #[tokio::test]

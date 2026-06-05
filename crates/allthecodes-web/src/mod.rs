@@ -3,13 +3,14 @@
 pub mod handlers;
 pub mod state;
 pub mod static_files;
+pub mod workspace_metadata;
 pub mod ws;
 
 use std::net::SocketAddr;
 
 use axum::{
-    routing::{any, delete, get, patch, post},
     Router,
+    routing::{any, delete, get, patch, post, put},
 };
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -25,6 +26,15 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/abort", post(handlers::abort_handler))
         .route("/api/state", get(handlers::state_handler))
         .route("/api/capabilities", get(handlers::capabilities_handler))
+        .route("/api/chat-modes", get(handlers::chat_modes_list_handler))
+        .route(
+            "/api/chat-modes/resources",
+            get(handlers::chat_modes_resources_handler),
+        )
+        .route(
+            "/api/chat-modes/{id}",
+            put(handlers::chat_modes_upsert_handler).delete(handlers::chat_modes_delete_handler),
+        )
         .route(
             "/api/agents",
             get(handlers::agents_list_handler).post(handlers::agents_create_handler),
@@ -205,6 +215,47 @@ pub fn build_router(state: WebState) -> Router {
         .route(
             "/api/sessions/{id}/archive",
             post(handlers::session_archive_handler),
+        )
+        .route(
+            "/api/sessions/{id}/messages/{message_id}/branch",
+            post(handlers::session_message_branch_handler),
+        )
+        .route(
+            "/api/sessions/{id}/messages/{message_id}/feedback",
+            post(handlers::session_message_feedback_handler),
+        )
+        .route(
+            "/api/sessions/{id}/messages/{message_id}/delete",
+            post(handlers::session_message_delete_handler),
+        )
+        .route(
+            "/api/sessions/{id}/messages/{message_id}/regenerate/prepare",
+            post(handlers::session_message_regenerate_prepare_handler),
+        )
+        .route(
+            "/api/sessions/{id}/messages/{message_id}/edit/prepare",
+            post(handlers::session_message_edit_prepare_handler),
+        )
+        .route(
+            "/api/sessions/{id}/messages/{message_id}/rollback/preview",
+            post(handlers::session_message_rollback_preview_handler),
+        )
+        .route(
+            "/api/sessions/{id}/messages/{message_id}/rollback",
+            post(handlers::session_message_rollback_handler),
+        )
+        .route("/api/workspaces", get(handlers::workspaces_list_handler))
+        .route(
+            "/api/workspaces/{workspace_key}",
+            patch(handlers::workspace_patch_handler),
+        )
+        .route(
+            "/api/workspaces/{workspace_key}/open",
+            post(handlers::workspace_open_handler),
+        )
+        .route(
+            "/api/workspaces/{workspace_key}/sessions/archive",
+            post(handlers::workspace_sessions_archive_handler),
         )
         // Auth endpoints
         .route("/api/auth/status", get(handlers::auth_status_handler))

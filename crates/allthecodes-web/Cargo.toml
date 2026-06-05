@@ -29,6 +29,7 @@ allthecodes-permissions = { workspace = true }
 allthecodes-plugins = { workspace = true }
 allthecodes-services = { workspace = true }
 allthecodes-session = { workspace = true }
+allthecodes-skills = { workspace = true }
 allthecodes-types = { workspace = true }
 allthecodes-utils = { workspace = true }
 futures = { workspace = true }
