@@ -28,6 +28,7 @@ allthecodes-ipc-protocol = { workspace = true }
 allthecodes-mcp = { workspace = true }
 allthecodes-permissions = { workspace = true }
 allthecodes-plugins = { workspace = true }
+allthecodes-protocol = { workspace = true }
 allthecodes-services = { workspace = true }
 allthecodes-session = { workspace = true }
 allthecodes-skills = { workspace = true }

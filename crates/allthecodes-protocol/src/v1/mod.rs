@@ -1,6 +1,23 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub mod agents;
+pub mod capabilities;
+pub mod chat;
+pub mod chat_modes;
+pub mod files;
+pub mod gateways;
+pub mod hooks;
+pub mod kanban;
+pub mod models;
+pub mod people;
+pub mod plugins;
+pub mod profiles;
+pub mod prompts;
+pub mod providers;
+pub mod skills;
+pub mod workspaces;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionSummary {
     pub id: String,

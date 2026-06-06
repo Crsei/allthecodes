@@ -71,6 +71,41 @@ of truth; transports are pluggable.
 
 ## Migration Phases
 
+### Parallel Agent Execution Guide
+
+The migration is deliberately decomposed so multiple agents can work in parallel
+when their write scopes are disjoint. Assign each agent an explicit owner area,
+make every agent run the narrow tests for that area, and merge through one
+integrator agent that owns cross-cutting manifests, generated output, and final
+workspace validation.
+
+**General rules for parallel work:**
+
+- Use parallel agents for independent domain modules, DTO/schema expansion,
+  handler migration, transport adapters, and documentation/codegen checks.
+- Keep macro/runtime infrastructure in a single owner at a time. Do not let
+  multiple agents edit `src/macros.rs`, route registration core, processor
+  traits, or serialization middleware simultaneously.
+- Split handler work by domain file. For example, one agent owns sessions, one
+  owns files, one owns skills/plugins, and one owns jobs/kanban/memory.
+- Split protocol DTO work by `crates/allthecodes-protocol/src/v1/<domain>.rs`.
+  Agents may add endpoint entries only after the macro shape is stable.
+- Use one integrator for `Cargo.toml`, `Cargo.lock`, generated TypeScript files,
+  and any route registry table that aggregates all domains.
+- Each parallel agent must avoid reverting unrelated edits and should report
+  changed files plus tests run.
+
+**High-level parallelization map:**
+
+| Phase | Can run in parallel? | Safe parallel slices | Single-owner / sequencing points |
+|-------|----------------------|----------------------|----------------------------------|
+| 0 | Partially | `v1/<domain>.rs` DTO modules, error tests, docs inventory | Macro design, root workspace manifest, `request.rs` endpoint aggregation |
+| 1 | Partially | Handler registry entries by domain, route coverage tests by domain | Router registration core and compatibility shim |
+| 2 | Yes, after trait lands | One processor per domain: health/capabilities/session/files/skills/plugins/jobs | `Processor` trait, generic Axum adapter, shared middleware hooks |
+| 3 | Partially | Serialization annotations by endpoint domain, concurrency tests by domain | Serialization middleware implementation and `WebState` replacement |
+| 4 | Yes, after codegen contract lands | TS type snapshots, JSON schema export, route docs export, CI freshness test | Codegen binary contract and generated file ownership |
+| 5 | Yes | WebSocket, Unix socket, REST/OpenAPI adapter can be separate agents | Shared `Transport` trait and `MessageProcessor` dispatch contract |
+
 ### Phase 0: Foundation — Protocol Definitions Crate (2–3 sprints)
 
 Create `crates/allthecodes-protocol/` — a new crate that defines the entire API
@@ -162,6 +197,23 @@ surface using declarative macros, modeled on codex's `app-server-protocol`.
 **Test:** `cargo test -p allthecodes-protocol` — all macro-expanded types roundtrip
 through serde; error variants produce correct status codes.
 
+**Parallel agent opportunities:**
+
+- Agent A owns macro/runtime foundation:
+  `crates/allthecodes-protocol/src/macros.rs`, `request.rs`, `response.rs`,
+  `notification.rs`, and the first 5 endpoint sample.
+- Agent B owns structured errors:
+  `crates/allthecodes-protocol/src/error.rs` and error mapping tests.
+- Agent C owns protocol DTO expansion after Agent A stabilizes the macro:
+  create domain modules under `crates/allthecodes-protocol/src/v1/`.
+- Agent D owns documentation and endpoint inventory:
+  audit existing `allthecodes-web` routes and produce a domain-by-domain endpoint
+  checklist, without editing macro/runtime files.
+
+Agent A must land first if the macro syntax is still changing. Agents B and D can
+start immediately. Agent C should wait until the generated enum shape and
+serialization metadata format are stable.
+
 **Risk:** Macro design is iterative. Prototype `api_definitions!` with 5 endpoints
 first, then expand to cover the full surface.
 
@@ -228,6 +280,22 @@ the protocol definitions.
 **Test:** Compare the output of `build_router()` before and after migration for
 identical endpoint coverage. Route registration tests in `handlers/mod.rs`
 continue to pass.
+
+**Parallel agent opportunities:**
+
+- Agent A owns the generated route registration core:
+  `crates/allthecodes-web/src/mod.rs` route integration and
+  `crates/allthecodes-web/src/handler_registry.rs`.
+- Agent B owns session/capabilities registry wiring and route coverage tests.
+- Agent C owns files/skills/plugins registry wiring and route coverage tests.
+- Agent D owns jobs/kanban/memory/backend-services registry wiring and route
+  coverage tests.
+- Agent E owns the debug route inventory endpoint `GET /api/-/routes`.
+
+Only Agent A should change the router core and compatibility shim. Domain agents
+should limit edits to their handler modules and registry entries assigned by the
+integrator, then report any missing protocol definitions instead of changing the
+macro core.
 
 **Risk:** The route generation layer may make it harder to see what routes exist
 at a glance. Mitigate by adding a debug endpoint `GET /api/-/routes` that lists
@@ -337,6 +405,23 @@ impl SessionProcessor {
 | 6 | `SkillProcessor`, `PluginProcessor`, `HookProcessor` | Domain-specific logic |
 | 7 | `ChatProcessor` | Streaming, most complex — done last |
 
+**Parallel agent opportunities:**
+
+- Agent A owns processor infrastructure:
+  `Processor` trait, generic Axum adapter, shared error conversion, and tests for
+  the adapter with a fake processor.
+- Agent B owns `HealthProcessor` and `CapabilitiesProcessor`.
+- Agent C owns `SessionProcessor` and session-specific tests.
+- Agent D owns `AgentProcessor` and `PeopleProcessor`.
+- Agent E owns `FileProcessor`.
+- Agent F owns `SkillProcessor`, `PluginProcessor`, and `HookProcessor`.
+- Agent G owns `ChatProcessor` only after the non-streaming processor adapter is
+  stable.
+
+Agents B-F can work in parallel after Agent A lands the trait and adapter. Avoid
+parallel edits to shared handler exports by letting the integrator update
+`handlers/mod.rs` and any central registry after reviewing each domain patch.
+
 ---
 
 ### Phase 3: Serialization Scoping and Concurrency Control (1 sprint)
@@ -403,6 +488,19 @@ SessionList => "GET /api/sessions" {
    `WebState` is replaced by the generic serialization layer. Session-scoped
    requests automatically serialize per `session:{id}`.
 
+**Parallel agent opportunities:**
+
+- Agent A owns `crates/allthecodes-web/src/serialization.rs` and the generic
+  serialization middleware tests.
+- Agent B owns protocol annotations for session/chat endpoints and tests that
+  per-session keys are extracted correctly.
+- Agent C owns protocol annotations for file/job/kanban mutation endpoints.
+- Agent D owns the `WebState` replacement path and removal of `SessionOwnership`.
+
+Agent A should land the middleware API before Agents B-D integrate against it.
+Agents B and C can independently add endpoint metadata once the enum values are
+defined. Agent D should be last because it removes the old runtime lock.
+
 ---
 
 ### Phase 4: Code Generation Pipeline (2–3 sprints)
@@ -466,6 +564,18 @@ between Rust and TypeScript.
    cargo test --test check_ts_types_up_to_date
    ```
 
+**Parallel agent opportunities:**
+
+- Agent A owns the codegen contract and binary crate layout.
+- Agent B owns TypeScript type generation and frontend import migration.
+- Agent C owns JSON Schema export.
+- Agent D owns route markdown documentation export.
+- Agent E owns the CI freshness test and developer workflow docs.
+
+Agents B-D can proceed in parallel after Agent A defines the shared protocol
+introspection API. One integrator must own generated files to avoid merge
+conflicts, especially `allthecodes-web/src/lib/api-types.ts` and route docs.
+
 ---
 
 ### Phase 5: Transport Abstraction (optional, 2–3 sprints)
@@ -514,6 +624,19 @@ streaming chat) and add others on demand.
    // Auto-generate OpenAPI paths from protocol definitions
    let openapi = generate_openapi::<v1::Api>();
    ```
+
+**Parallel agent opportunities:**
+
+- Agent A owns the shared `Transport` trait and `MessageProcessor` dispatch
+  contract.
+- Agent B owns WebSocket transport migration.
+- Agent C owns Unix socket transport.
+- Agent D owns REST/OpenAPI compatibility output.
+- Agent E owns cross-transport protocol conformance tests.
+
+Agents B-D can work in parallel after Agent A lands the trait and framing
+contract. Agent E should run after at least two transports exist so it can verify
+that identical `ClientRequest` values produce compatible behavior.
 
 ---
 

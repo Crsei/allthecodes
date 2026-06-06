@@ -966,6 +966,7 @@ dependencies = [
  "allthecodes-mcp",
  "allthecodes-permissions",
  "allthecodes-plugins",
+ "allthecodes-protocol",
  "allthecodes-services",
  "allthecodes-session",
  "allthecodes-skills",

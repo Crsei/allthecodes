@@ -1,6 +1,7 @@
 //! Web server module — Axum-based HTTP server for the chat UI.
 
 pub mod handlers;
+pub mod handler_registry;
 pub mod state;
 pub mod static_files;
 pub mod workspace_metadata;
@@ -20,7 +21,12 @@ use crate::state::WebState;
 
 /// Build the Axum router with all routes.
 pub fn build_router(state: WebState) -> Router {
-    Router::new()
+    let router = handler_registry::register_protocol_routes(
+        Router::new(),
+        &handler_registry::session_handlers(),
+    );
+
+    router
         // API routes
         .route("/api/chat", post(handlers::chat_handler))
         .route("/api/abort", post(handlers::abort_handler))
@@ -221,18 +227,11 @@ pub fn build_router(state: WebState) -> Router {
             "/api/debug/actions/{*action}",
             post(handlers::debug_action_handler),
         )
+        .route(
+            "/api/-/routes",
+            get(handler_registry::protocol_routes_handler),
+        )
         // Phase 2 of the web UI overhaul: session management
-        .route("/api/sessions", get(handlers::sessions_list_handler))
-        .route("/api/sessions/new", post(handlers::session_new_handler))
-        .route("/api/sessions/{id}", get(handlers::session_detail_handler))
-        .route(
-            "/api/sessions/{id}/resume",
-            post(handlers::session_resume_handler),
-        )
-        .route(
-            "/api/sessions/{id}/archive",
-            post(handlers::session_archive_handler),
-        )
         .route(
             "/api/sessions/{id}/messages/{message_id}/branch",
             post(handlers::session_message_branch_handler),
