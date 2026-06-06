@@ -973,6 +973,7 @@ dependencies = [
  "allthecodes-types",
  "allthecodes-utils",
  "anyhow",
+ "async-trait",
  "axum",
  "base64",
  "chrono",

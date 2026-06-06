@@ -4,10 +4,11 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use serde::Serialize;
 
 use allthecodes_engine::lifecycle::QueryEngine;
 
+use crate::serialization::SerializationLayer;
+pub use crate::serialization::{SessionOwner, SessionOwnership};
 use crate::ws::terminal::{PtyDiagnostics, TerminalManager};
 
 /// Shared state passed to all Axum handlers via State extractor.
@@ -27,9 +28,8 @@ pub struct WebState {
     pub pty_diagnostics: PtyDiagnostics,
     /// Multi-session PTY manager used by the terminal panel.
     pub terminal_manager: TerminalManager,
-    /// Session writer ownership. Chat SSE and TUI PTY must not both write to
-    /// the same session at the same time.
-    pub ownership: Arc<RwLock<SessionOwnership>>,
+    /// Request serialization and cross-transport ownership coordination.
+    pub serialization: SerializationLayer,
 }
 
 impl WebState {
@@ -41,7 +41,7 @@ impl WebState {
             is_streaming,
             pty_diagnostics: PtyDiagnostics::new(terminal_manager.clone()),
             terminal_manager,
-            ownership: Arc::new(RwLock::new(SessionOwnership::default())),
+            serialization: SerializationLayer::new(),
         }
     }
 
@@ -56,7 +56,7 @@ impl WebState {
     }
 
     pub fn ownership_snapshot(&self) -> SessionOwnership {
-        self.ownership.read().clone()
+        self.serialization.ownership_snapshot()
     }
 
     pub fn try_claim_chat(&self, session_id: String) -> Result<(), SessionOwnership> {
@@ -72,38 +72,10 @@ impl WebState {
         owner: SessionOwner,
         session_id: String,
     ) -> Result<(), SessionOwnership> {
-        let mut current = self.ownership.write();
-        if current.owner != SessionOwner::None {
-            return Err(current.clone());
-        }
-        *current = SessionOwnership {
-            owner,
-            session_id: Some(session_id),
-        };
-        Ok(())
+        self.serialization.try_claim_owner(owner, session_id)
     }
 
     pub fn release_owner(&self, owner: SessionOwner) {
-        let mut current = self.ownership.write();
-        if current.owner == owner {
-            *current = SessionOwnership::default();
-        }
+        self.serialization.release_owner(owner);
     }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionOwner {
-    #[default]
-    None,
-    ChatStream,
-    TuiPty,
-    IpcWs,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct SessionOwnership {
-    pub owner: SessionOwner,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
 }

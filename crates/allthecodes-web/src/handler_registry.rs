@@ -1,11 +1,15 @@
+use std::collections::{BTreeMap, HashSet};
+
 use allthecodes_protocol::{ApiMethod, ALL_ENDPOINTS};
-use axum::routing::{get, post, MethodRouter};
+use axum::routing::{any, delete, get, patch, post, put, MethodRouter};
 use axum::{Json, Router};
 use serde::Serialize;
 use tracing::error;
 
 use crate::handlers;
+use crate::processors::{processor_no_params_handler, CapabilitiesProcessor};
 use crate::state::WebState;
+use crate::ws;
 
 #[derive(Clone)]
 pub struct HandlerEntry {
@@ -16,6 +20,7 @@ pub struct HandlerEntry {
 #[derive(Clone, Default)]
 pub struct HandlerRegistry {
     entries: Vec<HandlerEntry>,
+    unimplemented: Vec<ApiMethod>,
 }
 
 impl HandlerRegistry {
@@ -28,15 +33,58 @@ impl HandlerRegistry {
         self
     }
 
+    pub fn unimplemented(mut self, operation: ApiMethod) -> Self {
+        self.unimplemented.push(operation);
+        self
+    }
+
+    pub fn extend(mut self, other: HandlerRegistry) -> Self {
+        self.entries.extend(other.entries);
+        self.unimplemented.extend(other.unimplemented);
+        self
+    }
+
     pub fn entries(&self) -> &[HandlerEntry] {
         &self.entries
     }
 
-    pub fn validate_registered_endpoints(&self) -> Result<(), MissingEndpointDefinition> {
+    pub fn unimplemented_operations(&self) -> &[ApiMethod] {
+        &self.unimplemented
+    }
+
+    pub fn validate(&self) -> Result<(), RegistryValidationError> {
+        let mut operations = HashSet::new();
+
         for entry in &self.entries {
             if protocol_endpoint(entry.operation).is_none() {
-                return Err(MissingEndpointDefinition {
+                return Err(RegistryValidationError::MissingEndpointDefinition {
                     operation: entry.operation,
+                });
+            }
+            if !operations.insert(entry.operation) {
+                return Err(RegistryValidationError::DuplicateHandler {
+                    operation: entry.operation,
+                });
+            }
+        }
+
+        for operation in &self.unimplemented {
+            if protocol_endpoint(*operation).is_none() {
+                return Err(RegistryValidationError::MissingEndpointDefinition {
+                    operation: *operation,
+                });
+            }
+            if !operations.insert(*operation) {
+                return Err(RegistryValidationError::DuplicateHandler {
+                    operation: *operation,
+                });
+            }
+        }
+
+        for endpoint in ALL_ENDPOINTS {
+            if !operations.contains(&endpoint.operation) {
+                return Err(RegistryValidationError::MissingHandler {
+                    operation: endpoint.operation,
                 });
             }
         }
@@ -46,15 +94,71 @@ impl HandlerRegistry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MissingEndpointDefinition {
-    pub operation: ApiMethod,
+pub enum RegistryValidationError {
+    MissingEndpointDefinition { operation: ApiMethod },
+    MissingHandler { operation: ApiMethod },
+    DuplicateHandler { operation: ApiMethod },
+}
+
+pub fn all_api_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .extend(chat_handlers())
+        .extend(session_handlers())
+        .extend(capability_handlers())
+        .extend(chat_mode_handlers())
+        .extend(agent_handlers())
+        .extend(people_handlers())
+        .extend(hook_handlers())
+        .extend(prompt_handlers())
+        .extend(mcp_server_handlers())
+        .extend(plugin_handlers())
+        .extend(channel_handlers())
+        .extend(gateway_handlers())
+        .extend(integration_handlers())
+        .extend(settings_handlers())
+        .extend(workspace_handlers())
+        .extend(auth_handlers())
+        .extend(profile_handlers())
+        .extend(provider_handlers())
+        .extend(model_handlers())
+        .extend(credential_handlers())
+        .extend(log_handlers())
+        .extend(terminal_handlers())
+        .extend(sidebar_handlers())
+        .extend(file_handlers())
+        .extend(skill_handlers())
+        .extend(kanban_handlers())
+        .extend(job_handlers())
+        .extend(group_chat_handlers())
+        .extend(backend_service_handlers())
+}
+
+pub fn chat_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::Chat, post(handlers::chat_handler))
+        .handle(ApiMethod::Abort, post(handlers::abort_handler))
+        .handle(ApiMethod::State, get(handlers::state_handler))
+        .handle(
+            ApiMethod::SystemPrompt,
+            get(handlers::system_prompt_handler),
+        )
+        .handle(
+            ApiMethod::CodingAgentsStatus,
+            get(handlers::coding_agent_status_handler),
+        )
 }
 
 pub fn session_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
         .handle(ApiMethod::SessionList, get(handlers::sessions_list_handler))
-        .handle(ApiMethod::SessionCreate, post(handlers::session_new_handler))
-        .handle(ApiMethod::SessionDetail, get(handlers::session_detail_handler))
+        .handle(
+            ApiMethod::SessionCreate,
+            post(handlers::session_new_handler),
+        )
+        .handle(
+            ApiMethod::SessionDetail,
+            get(handlers::session_detail_handler),
+        )
         .handle(
             ApiMethod::SessionResume,
             post(handlers::session_resume_handler),
@@ -63,12 +167,652 @@ pub fn session_handlers() -> HandlerRegistry {
             ApiMethod::SessionArchive,
             post(handlers::session_archive_handler),
         )
+        .handle(
+            ApiMethod::SessionMessageBranch,
+            post(handlers::session_message_branch_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageFeedback,
+            post(handlers::session_message_feedback_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageDelete,
+            post(handlers::session_message_delete_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageRegeneratePrepare,
+            post(handlers::session_message_regenerate_prepare_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageEditPrepare,
+            post(handlers::session_message_edit_prepare_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageRollbackPreview,
+            post(handlers::session_message_rollback_preview_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageRollback,
+            post(handlers::session_message_rollback_handler),
+        )
+}
+
+pub fn capability_handlers() -> HandlerRegistry {
+    HandlerRegistry::new().handle(
+        ApiMethod::Capabilities,
+        get(processor_no_params_handler::<CapabilitiesProcessor>),
+    )
+}
+
+pub fn chat_mode_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::ChatModesList,
+            get(handlers::chat_modes_list_handler),
+        )
+        .handle(
+            ApiMethod::ChatModesResources,
+            get(handlers::chat_modes_resources_handler),
+        )
+        .handle(
+            ApiMethod::ChatModesUpsert,
+            put(handlers::chat_modes_upsert_handler),
+        )
+        .handle(
+            ApiMethod::ChatModesDelete,
+            delete(handlers::chat_modes_delete_handler),
+        )
+}
+
+pub fn agent_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::AgentsList, get(handlers::agents_list_handler))
+        .handle(
+            ApiMethod::AgentsCreate,
+            post(handlers::agents_create_handler),
+        )
+        .handle(
+            ApiMethod::AgentsDetail,
+            get(handlers::agents_detail_handler),
+        )
+        .handle(
+            ApiMethod::AgentsUpdate,
+            patch(handlers::agents_update_handler),
+        )
+        .handle(
+            ApiMethod::AgentsDelete,
+            delete(handlers::agents_delete_handler),
+        )
+        .handle(
+            ApiMethod::AgentsRestore,
+            post(handlers::agents_restore_handler),
+        )
+}
+
+pub fn people_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::PeopleList, get(handlers::people_list_handler))
+        .handle(
+            ApiMethod::PeopleCreate,
+            post(handlers::people_create_handler),
+        )
+        .handle(
+            ApiMethod::PeopleDetail,
+            get(handlers::people_detail_handler),
+        )
+        .handle(
+            ApiMethod::PeopleUpdate,
+            patch(handlers::people_update_handler),
+        )
+        .handle(
+            ApiMethod::PeopleDelete,
+            delete(handlers::people_delete_handler),
+        )
+}
+
+pub fn hook_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::HooksList, get(handlers::hooks_list_handler))
+        .handle(ApiMethod::HooksCreate, post(handlers::hooks_create_handler))
+        .handle(ApiMethod::HooksTest, post(handlers::hooks_test_handler))
+        .handle(ApiMethod::HooksDetail, get(handlers::hooks_detail_handler))
+        .handle(
+            ApiMethod::HooksUpdate,
+            patch(handlers::hooks_update_handler),
+        )
+        .handle(
+            ApiMethod::HooksDelete,
+            delete(handlers::hooks_delete_handler),
+        )
+}
+
+pub fn prompt_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::PromptsList, get(handlers::prompts_list_handler))
+        .handle(
+            ApiMethod::PromptsCreate,
+            post(handlers::prompts_create_handler),
+        )
+        .handle(
+            ApiMethod::PromptsDetail,
+            get(handlers::prompts_detail_handler),
+        )
+        .handle(
+            ApiMethod::PromptsUpdate,
+            patch(handlers::prompts_update_handler),
+        )
+        .handle(
+            ApiMethod::PromptsDelete,
+            delete(handlers::prompts_delete_handler),
+        )
+}
+
+pub fn mcp_server_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::McpServersList,
+            get(handlers::mcp_servers_list_handler),
+        )
+        .handle(
+            ApiMethod::McpServersCreate,
+            post(handlers::mcp_servers_create_handler),
+        )
+        .handle(
+            ApiMethod::McpServersMarketplace,
+            get(handlers::mcp_servers_marketplace_handler),
+        )
+        .handle(
+            ApiMethod::McpServersDetail,
+            get(handlers::mcp_servers_detail_handler),
+        )
+        .handle(
+            ApiMethod::McpServersUpdate,
+            patch(handlers::mcp_servers_update_handler),
+        )
+        .handle(
+            ApiMethod::McpServersDelete,
+            delete(handlers::mcp_servers_delete_handler),
+        )
+}
+
+pub fn plugin_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::PluginsList, get(handlers::plugins_list_handler))
+        .handle(
+            ApiMethod::PluginsMarketplace,
+            get(handlers::plugins_marketplace_handler),
+        )
+        .handle(
+            ApiMethod::PluginsInstall,
+            post(handlers::plugins_install_handler),
+        )
+        .handle(
+            ApiMethod::PluginsUninstall,
+            post(handlers::plugins_uninstall_handler),
+        )
+}
+
+pub fn channel_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::ChannelsList,
+            get(handlers::channels_list_handler),
+        )
+        .handle(
+            ApiMethod::ChannelsCapabilities,
+            get(handlers::channels_capabilities_handler),
+        )
+        .handle(
+            ApiMethod::ChannelsConnect,
+            post(handlers::channels_connect_handler),
+        )
+        .handle(
+            ApiMethod::ChannelsTest,
+            post(handlers::channels_test_handler),
+        )
+}
+
+pub fn gateway_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::GatewayStatus,
+            get(handlers::gateway_status_handler),
+        )
+        .handle(
+            ApiMethod::GatewaysList,
+            get(handlers::gateways_list_handler),
+        )
+        .handle(
+            ApiMethod::GatewayStart,
+            post(handlers::gateway_start_handler),
+        )
+        .handle(ApiMethod::GatewayStop, post(handlers::gateway_stop_handler))
+}
+
+pub fn integration_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::ComputerUseStatus,
+            get(handlers::computer_use_status_handler),
+        )
+        .handle(
+            ApiMethod::ComputerUsePermissionRequest,
+            post(handlers::computer_use_permission_request_handler),
+        )
+        .handle(
+            ApiMethod::ComputerUseTest,
+            post(handlers::computer_use_test_handler),
+        )
+        .handle(
+            ApiMethod::AppshotsStatus,
+            get(handlers::appshots_status_handler),
+        )
+        .handle(
+            ApiMethod::AppshotsCapture,
+            post(handlers::appshots_capture_handler),
+        )
+        .handle(
+            ApiMethod::ChromeRelayStatus,
+            get(handlers::chrome_relay_status_handler),
+        )
+        .handle(
+            ApiMethod::ChromeRelayLaunch,
+            post(handlers::chrome_relay_launch_handler),
+        )
+        .handle(
+            ApiMethod::ChromeRelayTokenRegenerate,
+            post(handlers::chrome_relay_token_regenerate_handler),
+        )
+        .handle(
+            ApiMethod::ActivityRecorderStatus,
+            get(handlers::activity_recorder_status_handler),
+        )
+        .handle(
+            ApiMethod::ActivityRecorderSessions,
+            get(handlers::activity_recorder_sessions_handler),
+        )
+        .handle(
+            ApiMethod::ActivityRecorderClear,
+            post(handlers::activity_recorder_clear_handler),
+        )
+}
+
+pub fn settings_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::SettingsApply, post(handlers::settings_handler))
+        .handle(ApiMethod::CommandRun, post(handlers::command_handler))
+        .handle(
+            ApiMethod::MemoryConfigGet,
+            get(handlers::memory_config_get_handler),
+        )
+        .handle(
+            ApiMethod::MemoryConfigPatch,
+            patch(handlers::memory_config_patch_handler),
+        )
+        .handle(ApiMethod::MemoryList, get(handlers::memory_list_handler))
+        .handle(
+            ApiMethod::MemoryUpdate,
+            patch(handlers::memory_update_handler),
+        )
+        .handle(
+            ApiMethod::SpeechModels,
+            get(handlers::speech_models_handler),
+        )
+        .handle(
+            ApiMethod::SpeechModelDownload,
+            post(handlers::speech_model_download_handler),
+        )
+        .handle(
+            ApiMethod::SpeechModelDelete,
+            delete(handlers::speech_model_delete_handler),
+        )
+        .handle(
+            ApiMethod::SearchCookiesExport,
+            post(handlers::search_cookies_export_handler),
+        )
+        .handle(
+            ApiMethod::SearchCookiesImport,
+            post(handlers::search_cookies_import_handler),
+        )
+        .handle(
+            ApiMethod::SearchCookiesClear,
+            post(handlers::search_cookies_clear_handler),
+        )
+        .handle(ApiMethod::DataExport, post(handlers::data_export_handler))
+        .handle(ApiMethod::DataImport, post(handlers::data_import_handler))
+        .handle(
+            ApiMethod::TokenSavings,
+            get(handlers::token_savings_handler),
+        )
+        .handle(ApiMethod::DebugState, get(handlers::debug_state_handler))
+        .handle(
+            ApiMethod::DebugSessionTrace,
+            get(handlers::debug_session_trace_handler),
+        )
+        .handle(ApiMethod::DebugAction, post(handlers::debug_action_handler))
+        .handle(ApiMethod::ProtocolRoutes, get(protocol_routes_handler))
+}
+
+pub fn workspace_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::WorkspacesList,
+            get(handlers::workspaces_list_handler),
+        )
+        .handle(
+            ApiMethod::WorkspacePatch,
+            patch(handlers::workspace_patch_handler),
+        )
+        .handle(
+            ApiMethod::WorkspaceOpen,
+            post(handlers::workspace_open_handler),
+        )
+        .handle(
+            ApiMethod::WorkspaceSessionsArchive,
+            post(handlers::workspace_sessions_archive_handler),
+        )
+}
+
+pub fn auth_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::AuthStatus, get(handlers::auth_status_handler))
+        .handle(ApiMethod::AuthLogin, post(handlers::auth_login_handler))
+        .handle(ApiMethod::AuthLogout, post(handlers::auth_logout_handler))
+        .handle(ApiMethod::AuthRefresh, post(handlers::auth_refresh_handler))
+}
+
+pub fn profile_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::ProfilesList,
+            get(handlers::profiles_list_handler),
+        )
+        .handle(
+            ApiMethod::ProfilesCreate,
+            post(handlers::profiles_create_handler),
+        )
+        .handle(
+            ApiMethod::ProfilesImport,
+            post(handlers::profiles_import_handler),
+        )
+        .handle(
+            ApiMethod::ProfilesDetail,
+            get(handlers::profiles_detail_handler),
+        )
+        .handle(
+            ApiMethod::ProfilesUpdate,
+            patch(handlers::profiles_update_handler),
+        )
+        .handle(
+            ApiMethod::ProfilesDelete,
+            delete(handlers::profiles_delete_handler),
+        )
+        .handle(
+            ApiMethod::ProfilesSwitch,
+            post(handlers::profiles_switch_handler),
+        )
+        .handle(
+            ApiMethod::ProfilesExport,
+            get(handlers::profiles_export_handler),
+        )
+}
+
+pub fn provider_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::ProvidersList,
+            get(handlers::providers_list_handler),
+        )
+        .handle(
+            ApiMethod::ProvidersCreate,
+            post(handlers::providers_create_handler),
+        )
+        .handle(
+            ApiMethod::ProvidersUpdate,
+            patch(handlers::providers_update_handler),
+        )
+        .handle(
+            ApiMethod::ProvidersDelete,
+            delete(handlers::providers_delete_handler),
+        )
+        .handle(
+            ApiMethod::ProvidersRefreshModels,
+            post(handlers::providers_refresh_models_handler),
+        )
+}
+
+pub fn model_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::ModelsList, get(handlers::models_list_handler))
+        .handle(
+            ApiMethod::ModelsUpdate,
+            patch(handlers::models_update_handler),
+        )
+        .handle(
+            ApiMethod::ModelsSetDefault,
+            post(handlers::models_set_default_handler),
+        )
+}
+
+pub fn credential_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::Credentials, get(handlers::credentials_handler))
+        .handle(ApiMethod::OAuthStart, post(handlers::oauth_start_handler))
+        .handle(ApiMethod::OAuthPoll, post(handlers::oauth_poll_handler))
+}
+
+pub fn log_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::Logs, get(handlers::logs_handler))
+        .handle(ApiMethod::LogsExport, get(handlers::logs_export_handler))
+        .handle(
+            ApiMethod::DiagnosticsSnapshot,
+            get(handlers::diagnostics_snapshot_handler),
+        )
+        .handle(
+            ApiMethod::DiagnosticsTraces,
+            get(handlers::diagnostics_traces_handler),
+        )
+}
+
+pub fn terminal_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::TerminalProfiles,
+            get(ws::terminal::profiles_handler),
+        )
+        .handle(
+            ApiMethod::TerminalSessionsList,
+            get(ws::terminal::list_sessions_handler),
+        )
+        .handle(
+            ApiMethod::TerminalSessionsCreate,
+            post(ws::terminal::create_session_handler),
+        )
+        .handle(
+            ApiMethod::TerminalSessionDetail,
+            get(ws::terminal::session_detail_handler),
+        )
+        .handle(
+            ApiMethod::TerminalSessionDelete,
+            delete(ws::terminal::delete_session_handler),
+        )
+        .handle(
+            ApiMethod::TerminalSessionWs,
+            any(ws::terminal::session_ws_handler),
+        )
+        .handle(ApiMethod::TuiWs, any(ws::tui::tui_ws_handler))
+        .handle(ApiMethod::IpcWs, any(ws::ipc::ipc_ws_handler))
+}
+
+pub fn sidebar_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::GitLog, get(handlers::git_log_handler))
+        .handle(ApiMethod::GitDiff, get(handlers::git_diff_handler))
+        .handle(ApiMethod::Proxy, get(handlers::proxy_handler))
+        .handle(ApiMethod::Usage, get(handlers::usage_handler))
+}
+
+pub fn file_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::FilesTree, get(handlers::files_tree_handler))
+        .handle(ApiMethod::FilesStat, get(handlers::files_stat_handler))
+        .handle(ApiMethod::FilesRead, get(handlers::files_read_handler))
+        .handle(ApiMethod::FilesWrite, put(handlers::files_write_handler))
+        .handle(ApiMethod::FilesUpload, post(handlers::files_upload_handler))
+        .handle(
+            ApiMethod::FilesDownload,
+            get(handlers::files_download_handler),
+        )
+        .handle(ApiMethod::FilesMkdir, post(handlers::files_mkdir_handler))
+        .handle(ApiMethod::FilesRename, post(handlers::files_rename_handler))
+        .handle(ApiMethod::FilesCopy, post(handlers::files_copy_handler))
+        .handle(ApiMethod::FilesMove, post(handlers::files_move_handler))
+        .handle(
+            ApiMethod::FilesDelete,
+            delete(handlers::files_delete_handler),
+        )
+}
+
+pub fn skill_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::SkillsList, get(handlers::skills_list_handler))
+        .handle(
+            ApiMethod::SkillsDetail,
+            get(handlers::skills_detail_handler),
+        )
+        .handle(
+            ApiMethod::SkillsPatch,
+            patch(handlers::skills_patch_handler),
+        )
+        .handle(ApiMethod::SkillsFiles, get(handlers::skills_files_handler))
+}
+
+pub fn kanban_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::KanbanBoards,
+            get(handlers::kanban_boards_handler),
+        )
+        .handle(
+            ApiMethod::KanbanBoardDetail,
+            get(handlers::kanban_board_detail_handler),
+        )
+        .handle(
+            ApiMethod::KanbanTaskCreate,
+            post(handlers::kanban_task_create_handler),
+        )
+        .handle(
+            ApiMethod::KanbanTaskUpdate,
+            patch(handlers::kanban_task_update_handler),
+        )
+        .handle(
+            ApiMethod::KanbanTaskComment,
+            post(handlers::kanban_task_comment_handler),
+        )
+}
+
+pub fn job_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::JobsList, get(handlers::jobs_list_handler))
+        .handle(ApiMethod::JobsCreate, post(handlers::jobs_create_handler))
+        .handle(ApiMethod::JobsUpdate, patch(handlers::jobs_update_handler))
+        .handle(ApiMethod::JobsDelete, delete(handlers::jobs_delete_handler))
+        .handle(ApiMethod::JobsPause, post(handlers::jobs_pause_handler))
+        .handle(ApiMethod::JobsResume, post(handlers::jobs_resume_handler))
+        .handle(ApiMethod::JobsRun, post(handlers::jobs_run_handler))
+        .handle(ApiMethod::CronHistory, get(handlers::cron_history_handler))
+}
+
+pub fn group_chat_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::GroupChatRoomsList,
+            get(handlers::group_chat_rooms_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatRoomCreate,
+            post(handlers::group_chat_room_create_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatRoomDetail,
+            get(handlers::group_chat_room_detail_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatRoomDelete,
+            delete(handlers::group_chat_room_delete_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatRoomClone,
+            post(handlers::group_chat_room_clone_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatInvite,
+            get(handlers::group_chat_invite_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatAgentAdd,
+            post(handlers::group_chat_agent_add_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatAgentUpdate,
+            patch(handlers::group_chat_agent_update_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatAgentDelete,
+            delete(handlers::group_chat_agent_delete_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatMessage,
+            post(handlers::group_chat_message_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatCompression,
+            post(handlers::group_chat_compression_handler),
+        )
+        .handle(
+            ApiMethod::GroupChatStream,
+            get(handlers::group_chat_stream_handler),
+        )
+}
+
+pub fn backend_service_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(
+            ApiMethod::BackendServices,
+            get(handlers::backend_services_handler),
+        )
+        .handle(
+            ApiMethod::BackendServicesSessionsSync,
+            post(handlers::backend_services_sessions_sync_handler),
+        )
+        .handle(
+            ApiMethod::BackendServicesContextCompressionRun,
+            post(handlers::backend_services_context_compression_run_handler),
+        )
+        .handle(
+            ApiMethod::BackendServicesAgentBridgeRetry,
+            post(handlers::backend_services_agent_bridge_retry_handler),
+        )
+        .handle(
+            ApiMethod::BackendServicesMigrationsRun,
+            post(handlers::backend_services_migrations_run_handler),
+        )
+        .handle(
+            ApiMethod::BackendServicesBackups,
+            post(handlers::backend_services_backup_handler),
+        )
 }
 
 pub fn register_protocol_routes(
     mut router: Router<WebState>,
     registry: &HandlerRegistry,
 ) -> Router<WebState> {
+    if let Err(error) = registry.validate() {
+        error!("protocol handler registry validation failed: {:?}", error);
+    }
+
+    let mut routes: BTreeMap<&'static str, MethodRouter<WebState>> = BTreeMap::new();
     for entry in registry.entries() {
         let Some(endpoint) = protocol_endpoint(entry.operation) else {
             error!(
@@ -78,13 +822,34 @@ pub fn register_protocol_routes(
             continue;
         };
 
-        router = router.route(endpoint.path, entry.router.clone());
+        routes
+            .entry(endpoint.path)
+            .and_modify(|router| {
+                *router = router.clone().merge(entry.router.clone());
+            })
+            .or_insert_with(|| entry.router.clone());
+    }
+
+    for (path, method_router) in routes {
+        router = router.route(path, method_router);
     }
 
     router
 }
 
 pub async fn protocol_routes_handler() -> Json<Vec<ProtocolRouteInfo>> {
+    let registry = all_api_handlers();
+    let registered: HashSet<ApiMethod> = registry
+        .entries()
+        .iter()
+        .map(|entry| entry.operation)
+        .collect();
+    let unimplemented: HashSet<ApiMethod> = registry
+        .unimplemented_operations()
+        .iter()
+        .copied()
+        .collect();
+
     Json(
         ALL_ENDPOINTS
             .iter()
@@ -92,6 +857,10 @@ pub async fn protocol_routes_handler() -> Json<Vec<ProtocolRouteInfo>> {
                 operation: format!("{:?}", endpoint.operation),
                 http_method: endpoint.http_method,
                 path: endpoint.path,
+                registered: registered.contains(&endpoint.operation),
+                unimplemented: unimplemented.contains(&endpoint.operation),
+                any_method: endpoint.http_method == "ANY",
+                websocket: endpoint.http_method == "ANY" || endpoint.path.ends_with("/ws"),
             })
             .collect(),
     )
@@ -108,6 +877,10 @@ pub struct ProtocolRouteInfo {
     pub operation: String,
     pub http_method: &'static str,
     pub path: &'static str,
+    pub registered: bool,
+    pub unimplemented: bool,
+    pub any_method: bool,
+    pub websocket: bool,
 }
 
 #[cfg(test)]
@@ -115,23 +888,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_registry_covers_current_protocol_endpoints() {
-        let registry = session_handlers();
+    fn all_handlers_cover_current_protocol_endpoints() {
+        all_api_handlers()
+            .validate()
+            .expect("all protocol endpoints should have handlers or explicit markers");
+    }
 
-        registry
-            .validate_registered_endpoints()
-            .expect("session registry should only reference protocol endpoints");
+    #[test]
+    fn protocol_endpoints_cover_all_registered_handlers() {
+        let registry = all_api_handlers();
+        for entry in registry.entries() {
+            assert!(
+                protocol_endpoint(entry.operation).is_some(),
+                "registered handler has no protocol endpoint: {:?}",
+                entry.operation
+            );
+        }
+    }
 
-        let registered: Vec<ApiMethod> = registry
+    #[test]
+    fn same_path_multiple_methods_are_aggregated() {
+        let registry = all_api_handlers();
+        let agents_entries: Vec<ApiMethod> = registry
             .entries()
             .iter()
-            .map(|entry| entry.operation)
-            .collect();
-        let declared: Vec<ApiMethod> = ALL_ENDPOINTS
-            .iter()
-            .map(|endpoint| endpoint.operation)
+            .filter_map(|entry| {
+                let endpoint = protocol_endpoint(entry.operation)?;
+                (endpoint.path == "/api/agents").then_some(entry.operation)
+            })
             .collect();
 
-        assert_eq!(registered, declared);
+        assert_eq!(
+            agents_entries,
+            vec![ApiMethod::AgentsList, ApiMethod::AgentsCreate]
+        );
+
+        let _router = register_protocol_routes(Router::new(), &registry);
     }
 }

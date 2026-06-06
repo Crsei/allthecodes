@@ -109,8 +109,9 @@ macro_rules! api_definitions {
 
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub enum SerializationScope {
-            None,
-            Global(&'static str),
+            Concurrent,
+            PerProcess,
+            PerConnection,
             PerKey {
                 field: &'static str,
                 key: String,
@@ -213,22 +214,40 @@ macro_rules! __api_response_type {
 #[macro_export]
 macro_rules! __api_serialization_scope {
     (; ) => {
-        SerializationScope::None
+        SerializationScope::Concurrent
     };
     ($params:ident; ) => {
-        SerializationScope::None
+        SerializationScope::Concurrent
     };
     (; None) => {
-        SerializationScope::None
+        SerializationScope::Concurrent
     };
     ($params:ident; None) => {
-        SerializationScope::None
+        SerializationScope::Concurrent
+    };
+    (; Concurrent) => {
+        SerializationScope::Concurrent
+    };
+    ($params:ident; Concurrent) => {
+        SerializationScope::Concurrent
+    };
+    (; PerProcess) => {
+        SerializationScope::PerProcess
+    };
+    ($params:ident; PerProcess) => {
+        SerializationScope::PerProcess
+    };
+    (; PerConnection) => {
+        SerializationScope::PerConnection
+    };
+    ($params:ident; PerConnection) => {
+        SerializationScope::PerConnection
     };
     (; Global($key:literal)) => {
-        SerializationScope::Global($key)
+        SerializationScope::PerProcess
     };
     ($params:ident; Global($key:literal)) => {
-        SerializationScope::Global($key)
+        SerializationScope::PerProcess
     };
     ($params:ident; PerKey($field:literal)) => {
         SerializationScope::per_key($params, $field)
