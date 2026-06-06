@@ -186,6 +186,8 @@ pub fn build_router(state: WebState) -> Router {
             "/api/memory/config",
             get(handlers::memory_config_get_handler).patch(handlers::memory_config_patch_handler),
         )
+        .route("/api/memory", get(handlers::memory_list_handler))
+        .route("/api/memory/{id}", patch(handlers::memory_update_handler))
         .route("/api/speech/models", get(handlers::speech_models_handler))
         .route(
             "/api/speech/models/download",
@@ -341,7 +343,24 @@ pub fn build_router(state: WebState) -> Router {
             "/api/diagnostics/traces",
             get(handlers::diagnostics_traces_handler),
         )
-        // Phase 4: xterm.js TUI WebSocket bridge
+        // Multi-session xterm.js PTY bridge
+        .route(
+            "/api/terminal/profiles",
+            get(ws::terminal::profiles_handler),
+        )
+        .route(
+            "/api/terminal/sessions",
+            get(ws::terminal::list_sessions_handler).post(ws::terminal::create_session_handler),
+        )
+        .route(
+            "/api/terminal/sessions/{id}",
+            get(ws::terminal::session_detail_handler).delete(ws::terminal::delete_session_handler),
+        )
+        .route(
+            "/api/terminal/sessions/{id}/ws",
+            any(ws::terminal::session_ws_handler),
+        )
+        // Phase 4: legacy xterm.js TUI WebSocket bridge
         .route("/api/tui/ws", any(ws::tui::tui_ws_handler))
         // Phase 5: IPC WebSocket bridge for FrontendMessage/BackendMessage
         .route("/api/ipc/ws", any(ws::ipc::ipc_ws_handler))
@@ -349,6 +368,125 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/git/log", get(handlers::git_log_handler))
         .route("/api/git/diff", get(handlers::git_diff_handler))
         .route("/api/proxy", get(handlers::proxy_handler))
+        // Usage dashboard
+        .route("/api/usage", get(handlers::usage_handler))
+        // Files API
+        .route("/api/files/tree", get(handlers::files_tree_handler))
+        .route("/api/files/stat", get(handlers::files_stat_handler))
+        .route("/api/files/read", get(handlers::files_read_handler))
+        .route("/api/files/write", put(handlers::files_write_handler))
+        .route("/api/files/upload", post(handlers::files_upload_handler))
+        .route("/api/files/download", get(handlers::files_download_handler))
+        .route("/api/files/mkdir", post(handlers::files_mkdir_handler))
+        .route("/api/files/rename", post(handlers::files_rename_handler))
+        .route("/api/files/copy", post(handlers::files_copy_handler))
+        .route("/api/files/move", post(handlers::files_move_handler))
+        .route("/api/files", delete(handlers::files_delete_handler))
+        // Skills API
+        .route("/api/skills", get(handlers::skills_list_handler))
+        .route(
+            "/api/skills/{id}",
+            get(handlers::skills_detail_handler).patch(handlers::skills_patch_handler),
+        )
+        .route(
+            "/api/skills/{id}/files",
+            get(handlers::skills_files_handler),
+        )
+        // Kanban API
+        .route("/api/kanban/boards", get(handlers::kanban_boards_handler))
+        .route(
+            "/api/kanban/boards/{id}",
+            get(handlers::kanban_board_detail_handler),
+        )
+        .route(
+            "/api/kanban/tasks",
+            post(handlers::kanban_task_create_handler),
+        )
+        .route(
+            "/api/kanban/tasks/{id}",
+            patch(handlers::kanban_task_update_handler),
+        )
+        .route(
+            "/api/kanban/tasks/{id}/comments",
+            post(handlers::kanban_task_comment_handler),
+        )
+        // Jobs and Cron API
+        .route(
+            "/api/jobs",
+            get(handlers::jobs_list_handler).post(handlers::jobs_create_handler),
+        )
+        .route(
+            "/api/jobs/{id}",
+            patch(handlers::jobs_update_handler).delete(handlers::jobs_delete_handler),
+        )
+        .route("/api/jobs/{id}/pause", post(handlers::jobs_pause_handler))
+        .route("/api/jobs/{id}/resume", post(handlers::jobs_resume_handler))
+        .route("/api/jobs/{id}/run", post(handlers::jobs_run_handler))
+        .route("/api/cron/history", get(handlers::cron_history_handler))
+        // Group Chat API
+        .route(
+            "/api/group-chat/rooms",
+            get(handlers::group_chat_rooms_handler).post(handlers::group_chat_room_create_handler),
+        )
+        .route(
+            "/api/group-chat/rooms/{id}",
+            get(handlers::group_chat_room_detail_handler)
+                .delete(handlers::group_chat_room_delete_handler),
+        )
+        .route(
+            "/api/group-chat/rooms/{id}/clone",
+            post(handlers::group_chat_room_clone_handler),
+        )
+        .route(
+            "/api/group-chat/rooms/{id}/invite",
+            get(handlers::group_chat_invite_handler),
+        )
+        .route(
+            "/api/group-chat/rooms/{id}/agents",
+            post(handlers::group_chat_agent_add_handler),
+        )
+        .route(
+            "/api/group-chat/rooms/{room_id}/agents/{agent_id}",
+            patch(handlers::group_chat_agent_update_handler)
+                .delete(handlers::group_chat_agent_delete_handler),
+        )
+        .route(
+            "/api/group-chat/rooms/{id}/messages",
+            post(handlers::group_chat_message_handler),
+        )
+        .route(
+            "/api/group-chat/rooms/{id}/context-compression",
+            post(handlers::group_chat_compression_handler),
+        )
+        .route(
+            "/api/group-chat/rooms/{id}/stream",
+            get(handlers::group_chat_stream_handler),
+        )
+        // Backend Services API
+        .route(
+            "/api/backend-services",
+            get(handlers::backend_services_handler),
+        )
+        .route(
+            "/api/backend-services/sessions/sync",
+            post(handlers::backend_services_sessions_sync_handler),
+        )
+        .route(
+            "/api/backend-services/context-compression/{id}/run",
+            post(handlers::backend_services_context_compression_run_handler),
+        )
+        .route(
+            "/api/backend-services/agent-bridge/events/{id}/retry",
+            post(handlers::backend_services_agent_bridge_retry_handler),
+        )
+        .route(
+            "/api/backend-services/migrations/run",
+            post(handlers::backend_services_migrations_run_handler),
+        )
+        .route(
+            "/api/backend-services/backups",
+            post(handlers::backend_services_backup_handler),
+        )
         // API catch-all: unregistered /api/* paths return JSON 501
         .route(
             "/api/{*path}",

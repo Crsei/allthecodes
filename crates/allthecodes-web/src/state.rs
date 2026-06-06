@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use allthecodes_engine::lifecycle::QueryEngine;
 
-use crate::ws::tui::PtyDiagnostics;
+use crate::ws::terminal::{PtyDiagnostics, TerminalManager};
 
 /// Shared state passed to all Axum handlers via State extractor.
 ///
@@ -25,6 +25,8 @@ pub struct WebState {
     pub is_streaming: Arc<AtomicBool>,
     /// PTY diagnostics for the active TUI WebSocket connection.
     pub pty_diagnostics: PtyDiagnostics,
+    /// Multi-session PTY manager used by the terminal panel.
+    pub terminal_manager: TerminalManager,
     /// Session writer ownership. Chat SSE and TUI PTY must not both write to
     /// the same session at the same time.
     pub ownership: Arc<RwLock<SessionOwnership>>,
@@ -33,10 +35,12 @@ pub struct WebState {
 impl WebState {
     /// Build a new `WebState` from an initial engine.
     pub fn new(engine: Arc<QueryEngine>, is_streaming: Arc<AtomicBool>) -> Self {
+        let terminal_manager = TerminalManager::default();
         Self {
             engine_slot: Arc::new(RwLock::new(engine)),
             is_streaming,
-            pty_diagnostics: PtyDiagnostics::default(),
+            pty_diagnostics: PtyDiagnostics::new(terminal_manager.clone()),
+            terminal_manager,
             ownership: Arc::new(RwLock::new(SessionOwnership::default())),
         }
     }

@@ -51,7 +51,7 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps.insert("providers".into(), true);
     caps.insert("credentials".into(), true);
     caps.insert("usage".into(), true);
-    caps.insert("skills".into(), false);
+    caps.insert("skills".into(), true);
     caps.insert("memory".into(), true);
     caps.insert("speech".into(), true);
     caps.insert("tts".into(), true);
@@ -59,12 +59,12 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps.insert("network".into(), true);
     caps.insert("data".into(), true);
     caps.insert("token_savings".into(), true);
-    caps.insert("kanban".into(), false);
-    caps.insert("jobs".into(), false);
-    caps.insert("group_chat".into(), false);
-    caps.insert("files".into(), false);
+    caps.insert("kanban".into(), true);
+    caps.insert("jobs".into(), true);
+    caps.insert("group_chat".into(), true);
+    caps.insert("files".into(), true);
     caps.insert("logs".into(), true);
-    caps.insert("backend_services".into(), false);
+    caps.insert("backend_services".into(), true);
     caps
 }
 

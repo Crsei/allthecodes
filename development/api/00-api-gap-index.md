@@ -14,21 +14,47 @@ backend worktree already contains uncommitted route/handler work for them:
 - `crates/allthecodes-web/src/handlers/logs.rs`
 - route registrations in `crates/allthecodes-web/src/mod.rs`
 
-The remaining frontend-called APIs that still need backend routes are grouped
-below.
+Usage, Memory, Files, Skills, Kanban, Jobs/Cron, Group Chat, and Backend
+Services APIs are no longer gaps in the current worktree:
+
+- `crates/allthecodes-web/src/handlers/usage.rs`
+- `crates/allthecodes-web/src/handlers/memory.rs`
+- `crates/allthecodes-web/src/handlers/files.rs`
+- `crates/allthecodes-web/src/handlers/skills.rs`
+- `crates/allthecodes-web/src/handlers/kanban.rs`
+- `crates/allthecodes-web/src/handlers/jobs.rs`
+- `crates/allthecodes-web/src/handlers/group_chat.rs`
+- `crates/allthecodes-web/src/handlers/backend_services.rs`
+- route registrations in `crates/allthecodes-web/src/mod.rs`
+- capability flags enabled in `crates/allthecodes-web/src/handlers/capabilities.rs`
+- tests in `crates/allthecodes-web/src/handlers/mod.rs`
+
+Skills remains intentionally integrated as a web handler backed by
+`allthecodes-skills`; do not split it into a standalone `skills-api` service or
+crate. Kanban, Jobs/Cron, Group Chat, and Backend Services use local MVP stores
+under `ALLTHECODES_HOME/web`.
+
+The frontend-called APIs are grouped below. Completed rows are kept for
+traceability; incomplete rows still need backend routes or service wiring.
 
 ## Plans
 
 | Priority | Plan | Capability status | Main user-visible risk |
 |---|---|---|---|
-| P0 | [Usage API](01-usage-api-plan.md) | `usage=true` | Usage route is visible but `GET /api/usage` falls through. |
-| P0 | [Memory API](02-memory-api-plan.md) | `memory=true` | Memory route is visible but list/update APIs are missing. |
-| P0 | [Files API](04-files-api-plan.md) | `files=false` | File upload, read, preview, and file workspace page need backend support. |
-| P1 | [Skills API](03-skills-api-plan.md) | `skills=false` | Skills page and composer skill management need listing/detail/file APIs. |
-| P1 | [Backend Services API](08-backend-services-api-plan.md) | `backend_services=false` | Services dashboard is fully frontend-wired but has no backend. |
-| P2 | [Jobs and Cron API](06-jobs-cron-api-plan.md) | `jobs=false` | Scheduled jobs page and cron history need persistence and runner wiring. |
-| P2 | [Kanban API](05-kanban-api-plan.md) | `kanban=false` | Kanban page needs persistent boards/tasks/comments. |
-| P3 | [Group Chat API](07-group-chat-api-plan.md) | `group_chat=false` | Highest scope: room state, agents, messages, stream, and compression. |
+| Done | [Usage API](01-usage-api-plan.md) | `usage=true` | Implemented as a zeroed/partial dashboard until runtime usage accumulation exists. |
+| Done | [Memory API](02-memory-api-plan.md) | `memory=true` | Implemented with list/update/config routes. |
+| Done | [Files API](04-files-api-plan.md) | `files=true` | Implemented with workspace tree/stat/read/write/upload/download/mutation routes. |
+| Done | [Skills API](03-skills-api-plan.md) | `skills=true` | Implemented in `allthecodes-web` and backed by `allthecodes-skills`; no separate `skills-api`. |
+| Done | [Backend Services API](08-backend-services-api-plan.md) | `backend_services=true` | Implemented as a complete MVP dashboard/action shape with local state and backups. |
+| Done | [Jobs and Cron API](06-jobs-cron-api-plan.md) | `jobs=true` | Implemented with local job/run persistence; execution backend remains diagnostic-only. |
+| Done | [Kanban API](05-kanban-api-plan.md) | `kanban=true` | Implemented with local board/task/comment persistence. |
+| Done | [Group Chat API](07-group-chat-api-plan.md) | `group_chat=true` | Implemented durable MVP with SSE snapshot; real agent runner is a follow-up. |
+
+## Cross-cutting Plans
+
+| Priority | Plan | Capability status | Main user-visible risk |
+|---|---|---|---|
+| Draft | [API Architecture Upgrade Plan](09-api-architecture-upgrade-plan.md) | N/A — infra change | No immediate user risk; all phases are additive with backward compatibility. |
 
 ## Shared Implementation Rules
 
@@ -46,4 +72,3 @@ below.
   local services.
 - Add route registration tests to prevent capabilities and router state from
   drifting again.
-
