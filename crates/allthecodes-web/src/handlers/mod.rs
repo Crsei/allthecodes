@@ -16,6 +16,7 @@ pub mod admin;
 pub mod agents;
 pub mod appshots;
 pub mod auth;
+pub mod backend_services;
 pub mod capabilities;
 pub mod channels;
 pub mod chat;
@@ -23,11 +24,16 @@ pub mod chat_modes;
 pub mod chrome_relay;
 pub mod computer_use;
 pub mod credentials;
+pub mod files;
 pub mod gateways;
 pub mod git;
+pub mod group_chat;
 pub mod hooks;
+pub mod jobs;
+pub mod kanban;
 pub mod logs;
 pub mod mcp_servers;
+pub mod memory;
 pub mod models;
 pub mod people;
 pub mod plugins;
@@ -37,6 +43,8 @@ pub mod providers;
 pub mod proxy;
 pub mod sessions;
 pub mod settings_phase1;
+pub mod skills;
+pub mod usage;
 pub mod workspaces;
 
 // Re-export all public items from each submodule so the router builder
@@ -46,6 +54,7 @@ pub use admin::*;
 pub use agents::*;
 pub use appshots::*;
 pub use auth::*;
+pub use backend_services::*;
 pub use capabilities::*;
 pub use channels::*;
 pub use chat::*;
@@ -53,11 +62,16 @@ pub use chat_modes::*;
 pub use chrome_relay::*;
 pub use computer_use::*;
 pub use credentials::*;
+pub use files::*;
 pub use gateways::*;
 pub use git::*;
+pub use group_chat::*;
 pub use hooks::*;
+pub use jobs::*;
+pub use kanban::*;
 pub use logs::*;
 pub use mcp_servers::*;
+pub use memory::*;
 pub use models::*;
 pub use people::*;
 pub use plugins::*;
@@ -67,13 +81,15 @@ pub use providers::*;
 pub use proxy::*;
 pub use sessions::*;
 pub use settings_phase1::*;
+pub use skills::*;
+pub use usage::*;
 pub use workspaces::*;
 
 // ---------------------------------------------------------------------------
 // Shared types
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ApiError {
     pub error: String,
     pub code: String,
@@ -128,9 +144,10 @@ mod tests {
     use allthecodes_ipc_protocol::subsystem_types::{
         AgentDefinitionEntry, AgentDefinitionSource, ConfigScope, McpServerConfigEntry,
     };
+    use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
     use axum::body::to_bytes;
     use axum::extract::{Path as AxumPath, Query, State};
-    use axum::http::StatusCode;
+    use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
     use axum::Json;
     use serde_json::{json, Value};
@@ -559,6 +576,7 @@ mod tests {
         assert_eq!(body["capabilities"]["appshots"], json!(true));
         assert_eq!(body["capabilities"]["activity_recorder"], json!(true));
         assert_eq!(body["capabilities"]["chrome_relay"], json!(true));
+        assert_eq!(body["capabilities"]["skills"], json!(true));
     }
 
     #[test]
@@ -1323,5 +1341,1388 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["prompts"], json!([]));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn usage_empty_store_returns_200_with_zero_totals() {
+        let state = make_web_state();
+        let query = crate::handlers::UsageQuery {
+            period: None,
+            profile_id: None,
+        };
+
+        let response = usage_handler(State(state), Query(query))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["period"], json!("7d"));
+        assert_eq!(body["totals"]["total_input_tokens"], json!(0));
+        assert_eq!(body["totals"]["total_output_tokens"], json!(0));
+        assert_eq!(body["totals"]["total_cache_read_tokens"], json!(0));
+        assert_eq!(body["totals"]["total_cache_creation_tokens"], json!(0));
+        assert_eq!(body["totals"]["total_cost_usd"], json!(0.0));
+        assert_eq!(body["totals"]["api_call_count"], json!(0));
+        assert_eq!(body["partial"], json!(true));
+        assert!(body["buckets"].as_array().unwrap().is_empty());
+        assert!(body["by_model"].as_array().unwrap().is_empty());
+        assert!(body["by_provider"].as_array().unwrap().is_empty());
+        assert!(body["generated_at"].as_u64().unwrap() > 0);
+        assert!(body["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("not yet implemented")));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn usage_invalid_period_returns_400() {
+        let state = make_web_state();
+        let query = crate::handlers::UsageQuery {
+            period: Some("forever".to_string()),
+            profile_id: None,
+        };
+
+        let response = usage_handler(State(state), Query(query))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("invalid_period"));
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid period 'forever'"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn usage_profile_id_is_echoed() {
+        let state = make_web_state();
+        let query = crate::handlers::UsageQuery {
+            period: Some("30d".to_string()),
+            profile_id: Some("test-profile-123".to_string()),
+        };
+
+        let response = usage_handler(State(state), Query(query))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["profile_id"], json!("test-profile-123"));
+        assert_eq!(body["period"], json!("30d"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn usage_period_24h_is_accepted() {
+        let state = make_web_state();
+        let query = crate::handlers::UsageQuery {
+            period: Some("24h".to_string()),
+            profile_id: None,
+        };
+
+        let response = usage_handler(State(state), Query(query))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["period"], json!("24h"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn usage_period_all_is_accepted() {
+        let state = make_web_state();
+        let query = crate::handlers::UsageQuery {
+            period: Some("all".to_string()),
+            profile_id: None,
+        };
+
+        let response = usage_handler(State(state), Query(query))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["period"], json!("all"));
+    }
+
+    // -------------------------------------------------------------------
+    // Memory API tests
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    #[serial]
+    async fn memory_list_empty_returns_200() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+
+        let response = memory_list_handler(
+            State(state),
+            Query(crate::handlers::MemoryListQuery { profile_id: None }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["entries"], json!([]));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn memory_list_with_profile_id_echoes_it() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+
+        let response = memory_list_handler(
+            State(state),
+            Query(crate::handlers::MemoryListQuery {
+                profile_id: Some("prof-42".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["profile_id"], json!("prof-42"));
+        assert_eq!(body["entries"], json!([]));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn memory_update_persists_changes() {
+        let (home, _guard) = temp_home();
+        let state = make_web_state();
+
+        // Seed an entry.
+        let entry = crate::handlers::MemoryEntry {
+            id: "mem-1".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            session_id: "sess-1".to_string(),
+            workspace: "ws-1".to_string(),
+            content: "original content".to_string(),
+            tags: vec!["initial".to_string()],
+            pinned: false,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let store = crate::handlers::MemoryStore {
+            entries: vec![entry],
+        };
+        crate::handlers::save_store(&store).expect("seed store");
+
+        let response = memory_update_handler(
+            AxumPath("mem-1".to_string()),
+            State(state),
+            Json(crate::handlers::MemoryUpdateRequest {
+                content: Some("updated content".to_string()),
+                tags: Some(vec!["  foo ".to_string(), "bar".to_string()]),
+                pinned: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["entry"]["content"], json!("updated content"));
+        assert_eq!(body["entry"]["pinned"], json!(true));
+        assert_eq!(body["entry"]["session_id"], json!("sess-1"));
+        assert_eq!(body["entry"]["workspace"], json!("ws-1"));
+        assert_eq!(body["entry"]["timestamp"], json!("2026-01-01T00:00:00Z"));
+        // Tags should be normalized.
+        let tags = body["entry"]["tags"].as_array().expect("tags");
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains(&json!("bar")));
+        assert!(tags.contains(&json!("foo")));
+        // updated_at should have changed.
+        assert_ne!(body["entry"]["updated_at"], json!("2026-01-01T00:00:00Z"));
+
+        // Verify persistence.
+        let path = home.path().join("memory").join("entries.json");
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn memory_update_unknown_id_returns_404() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+
+        let response = memory_update_handler(
+            AxumPath("nonexistent".to_string()),
+            State(state),
+            Json(crate::handlers::MemoryUpdateRequest {
+                content: Some("anything".to_string()),
+                tags: None,
+                pinned: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("memory_not_found"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn memory_update_content_too_long_returns_400() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+
+        let long_content = "x".repeat(100_001);
+
+        let response = memory_update_handler(
+            AxumPath("mem-1".to_string()),
+            State(state),
+            Json(crate::handlers::MemoryUpdateRequest {
+                content: Some(long_content),
+                tags: None,
+                pinned: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("content_too_long"));
+    }
+
+    // -------------------------------------------------------------------
+    // Files API tests
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    #[serial]
+    async fn files_tree_lists_workspace_root() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("hello.txt"), b"hello").expect("seed file");
+        std::fs::create_dir(project.path().join("sub")).expect("seed dir");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_tree_handler(
+            State(state),
+            Query(FileTreeQuery {
+                path: None,
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let entries = body["entries"].as_array().expect("entries");
+        assert!(entries.iter().any(|e| e["name"] == json!("hello.txt")));
+        assert!(entries.iter().any(|e| e["name"] == json!("sub")));
+        assert_eq!(body["truncated"], json!(false));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_tree_rejects_path_traversal() {
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_tree_handler(
+            State(state),
+            Query(FileTreeQuery {
+                path: Some("../etc".to_string()),
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("path_traversal"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_stat_returns_file_metadata() {
+        let project = tempfile::tempdir().expect("project");
+        let file_path = project.path().join("test.txt");
+        std::fs::write(&file_path, b"content").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_stat_handler(
+            State(state),
+            Query(FileStatQuery {
+                path: Some("test.txt".to_string()),
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["exists"], json!(true));
+        assert_eq!(body["is_file"], json!(true));
+        assert_eq!(body["size"], json!(7));
+        assert!(body["hash"].as_str().unwrap().len() >= 10);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_stat_with_profile_id_echoes_it() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("a.txt"), b"data").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_stat_handler(
+            State(state),
+            Query(FileStatQuery {
+                path: Some("a.txt".to_string()),
+                profile_id: Some("prof-99".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["profile_id"], json!("prof-99"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_read_returns_text_content() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("readme.md"), b"# Hello\n\nWorld!").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_read_handler(
+            State(state),
+            Query(FileReadQuery {
+                path: Some("readme.md".to_string()),
+                profile_id: None,
+                max_bytes: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["content"], json!("# Hello\n\nWorld!"));
+        assert_eq!(body["is_binary"], json!(false));
+        assert_eq!(body["lines"], json!(3));
+        assert_eq!(body["truncated"], json!(false));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_read_detects_binary() {
+        let project = tempfile::tempdir().expect("project");
+        let binary = vec![0x00, 0x01, 0x02, 0x03];
+        std::fs::write(project.path().join("binary.bin"), &binary).expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_read_handler(
+            State(state),
+            Query(FileReadQuery {
+                path: Some("binary.bin".to_string()),
+                profile_id: None,
+                max_bytes: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["is_binary"], json!(true));
+        assert_eq!(body["content"], json!(""));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_read_truncates_large_content() {
+        let project = tempfile::tempdir().expect("project");
+        let content = "x".repeat(2000);
+        std::fs::write(project.path().join("large.txt"), &content).expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_read_handler(
+            State(state),
+            Query(FileReadQuery {
+                path: Some("large.txt".to_string()),
+                profile_id: None,
+                max_bytes: Some(100),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["content"].as_str().unwrap().len(), 100);
+        assert_eq!(body["truncated"], json!(true));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_write_creates_new_file() {
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_write_handler(
+            State(state),
+            Json(FileWriteRequest {
+                path: "new.txt".to_string(),
+                content: "fresh content".to_string(),
+                hash: None,
+                overwrite: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true));
+        assert!(project.path().join("new.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("new.txt")).expect("read"),
+            "fresh content"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_write_rejects_overwrite_without_flag() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("existing.txt"), b"original").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_write_handler(
+            State(state),
+            Json(FileWriteRequest {
+                path: "existing.txt".to_string(),
+                content: "overwritten".to_string(),
+                hash: None,
+                overwrite: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("conflict"));
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("existing.txt")).expect("read"),
+            "original"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_write_with_overwrite_flag_succeeds() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("replace.txt"), b"old").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_write_handler(
+            State(state),
+            Json(FileWriteRequest {
+                path: "replace.txt".to_string(),
+                content: "new".to_string(),
+                hash: None,
+                overwrite: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("replace.txt")).expect("read"),
+            "new"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_write_enforces_hash() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("hash.txt"), b"original").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        // Get current hash.
+        let hash =
+            crate::handlers::files::file_hash(&project.path().join("hash.txt")).expect("hash");
+
+        // Write with wrong hash.
+        let response = files_write_handler(
+            State(state.clone()),
+            Json(FileWriteRequest {
+                path: "hash.txt".to_string(),
+                content: "modified".to_string(),
+                hash: Some("badbadbad".to_string()),
+                overwrite: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("conflict"));
+
+        // Write with correct hash.
+        let response = files_write_handler(
+            State(state),
+            Json(FileWriteRequest {
+                path: "hash.txt".to_string(),
+                content: "modified".to_string(),
+                hash: Some(hash),
+                overwrite: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_read_with_profile_id_echoes_it() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("echo.txt"), b"data").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_read_handler(
+            State(state),
+            Query(FileReadQuery {
+                path: Some("echo.txt".to_string()),
+                profile_id: Some("prof-read".to_string()),
+                max_bytes: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["profile_id"], json!("prof-read"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_mkdir_creates_directory() {
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_mkdir_handler(
+            State(state),
+            Json(FileMkdirRequest {
+                path: "newdir".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(project.path().join("newdir").is_dir());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_mkdir_creates_nested_directories() {
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_mkdir_handler(
+            State(state),
+            Json(FileMkdirRequest {
+                path: "a/b/c/d".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(project.path().join("a/b/c/d").is_dir());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_mkdir_idempotent_on_existing() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::create_dir(project.path().join("exists")).expect("seed dir");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_mkdir_handler(
+            State(state),
+            Json(FileMkdirRequest {
+                path: "exists".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_delete_removes_file() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("delete_me.txt"), b"bye").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_delete_handler(
+            State(state),
+            Json(FileDeleteRequest {
+                path: "delete_me.txt".to_string(),
+                recursive: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!project.path().join("delete_me.txt").exists());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_delete_rejects_non_empty_dir_without_recursive() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::create_dir(project.path().join("nonempty")).expect("seed dir");
+        std::fs::write(project.path().join("nonempty/file.txt"), b"x").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_delete_handler(
+            State(state),
+            Json(FileDeleteRequest {
+                path: "nonempty".to_string(),
+                recursive: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(project.path().join("nonempty/file.txt").exists());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_delete_recursive_removes_directory() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::create_dir_all(project.path().join("nested/a/b")).expect("seed dirs");
+        std::fs::write(project.path().join("nested/a/file.txt"), b"x").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_delete_handler(
+            State(state),
+            Json(FileDeleteRequest {
+                path: "nested".to_string(),
+                recursive: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!project.path().join("nested").exists());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_copy_duplicates_file() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("src.txt"), b"copy me").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_copy_handler(
+            State(state),
+            Json(FileCopyRequest {
+                source: "src.txt".to_string(),
+                destination: "dst.txt".to_string(),
+                overwrite: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(project.path().join("dst.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("dst.txt")).expect("read"),
+            "copy me"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_copy_rejects_overwrite_without_flag() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("src.txt"), b"source").expect("seed file");
+        std::fs::write(project.path().join("dst.txt"), b"dest").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_copy_handler(
+            State(state),
+            Json(FileCopyRequest {
+                source: "src.txt".to_string(),
+                destination: "dst.txt".to_string(),
+                overwrite: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_rename_moves_file() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("old.txt"), b"rename me").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_rename_handler(
+            State(state),
+            Json(FileRenameRequest {
+                source: "old.txt".to_string(),
+                destination: "new.txt".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!project.path().join("old.txt").exists());
+        assert!(project.path().join("new.txt").exists());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_move_with_overwrite_replaces_destination() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("source.txt"), b"move me").expect("seed file");
+        std::fs::write(project.path().join("dest.txt"), b"old dest").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_move_handler(
+            State(state),
+            Json(FileMoveRequest {
+                source: "source.txt".to_string(),
+                destination: "dest.txt".to_string(),
+                overwrite: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!project.path().join("source.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("dest.txt")).expect("read"),
+            "move me"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_upload_accepts_multiple_files() {
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_upload_handler(
+            State(state),
+            Json(FileUploadRequest {
+                path: ".".to_string(),
+                files: vec![
+                    FileUploadItem {
+                        name: "a.txt".to_string(),
+                        content: "file a".to_string(),
+                        encoding: None,
+                    },
+                    FileUploadItem {
+                        name: "b.txt".to_string(),
+                        content: "file b".to_string(),
+                        encoding: None,
+                    },
+                ],
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["files"].as_array().unwrap().len(), 2);
+        assert!(project.path().join("a.txt").exists());
+        assert!(project.path().join("b.txt").exists());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_download_streams_bytes() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("dl.txt"), b"download content").expect("seed file");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_download_handler(
+            State(state),
+            Query(FileDownloadQuery {
+                path: Some("dl.txt".to_string()),
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert!(response
+            .headers()
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("dl.txt"));
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        assert_eq!(&body[..], b"download content");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_endpoints_reject_path_traversal() {
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+
+        // stat
+        let response = files_stat_handler(
+            State(state.clone()),
+            Query(FileStatQuery {
+                path: Some("../../etc/passwd".to_string()),
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // read
+        let response = files_read_handler(
+            State(state.clone()),
+            Query(FileReadQuery {
+                path: Some("../../etc/passwd".to_string()),
+                profile_id: None,
+                max_bytes: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // write
+        let response = files_write_handler(
+            State(state.clone()),
+            Json(FileWriteRequest {
+                path: "../../etc/evil.txt".to_string(),
+                content: "evil".to_string(),
+                hash: None,
+                overwrite: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn files_tree_with_profile_id_echoes_it() {
+        let project = tempfile::tempdir().expect("project");
+        let state = make_web_state_with_cwd(project.path());
+
+        let response = files_tree_handler(
+            State(state),
+            Query(FileTreeQuery {
+                path: None,
+                profile_id: Some("prof-tree".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["profile_id"], json!("prof-tree"));
+    }
+
+    // -------------------------------------------------------------------
+    // Skills API tests
+    // -------------------------------------------------------------------
+
+    fn make_test_skill(name: &str) -> SkillDefinition {
+        SkillDefinition {
+            name: name.to_string(),
+            source: SkillSource::Bundled,
+            base_dir: None,
+            frontmatter: SkillFrontmatter {
+                description: format!("Skill {} description", name),
+                version: Some("1.0.0".to_string()),
+                user_invocable: true,
+                ..Default::default()
+            },
+            prompt_body: format!("Do the {} thing.", name),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_list_returns_all_registered_skills() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+        allthecodes_skills::register_skill(make_test_skill("alpha"));
+        allthecodes_skills::register_skill(make_test_skill("beta"));
+
+        let response = skills_list_handler(Query(SkillsListQuery { profile_id: None }))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let names: Vec<&str> = body["skills"]
+            .as_array()
+            .expect("skills")
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"alpha"));
+        assert!(names.contains(&"beta"));
+        assert!(body["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == json!("alpha")));
+        assert!(body["revision"].as_u64().unwrap() > 0);
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_list_with_profile_id_echoes_it() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+
+        let response = skills_list_handler(Query(SkillsListQuery {
+            profile_id: Some("prof-skills".to_string()),
+        }))
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["profile_id"], json!("prof-skills"));
+        assert_eq!(body["skills"], json!([]));
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_detail_returns_skill_info() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+        allthecodes_skills::register_skill(make_test_skill("detail-test"));
+
+        let response = skills_detail_handler(AxumPath("detail-test".to_string()))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["skill"]["id"], json!("detail-test"));
+        assert_eq!(body["skill"]["name"], json!("detail-test"));
+        assert!(body["prompt_body"]
+            .as_str()
+            .unwrap()
+            .contains("Do the detail-test thing"));
+        assert_eq!(body["skill"]["source"], json!("Bundled"));
+        assert_eq!(body["skill"]["enabled"], json!(false));
+        assert_eq!(body["skill"]["pinned"], json!(false));
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_detail_missing_returns_404() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+
+        let response = skills_detail_handler(AxumPath("nonexistent".to_string()))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("not_found"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_files_missing_skill_returns_404() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+
+        let response = skills_files_handler(
+            AxumPath("nosuch".to_string()),
+            Query(SkillFileQuery {
+                path: "SKILL.md".to_string(),
+                max_bytes: None,
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("not_found"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_files_bundled_skill_has_no_files() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+        allthecodes_skills::register_skill(make_test_skill("bundled-only"));
+
+        let response = skills_files_handler(
+            AxumPath("bundled-only".to_string()),
+            Query(SkillFileQuery {
+                path: "SKILL.md".to_string(),
+                max_bytes: None,
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("bad_request"));
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_files_reads_file_from_user_skill() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+
+        let skill_dir = tempfile::tempdir().expect("skill dir");
+        std::fs::write(skill_dir.path().join("hello.txt"), b"Hello, World!").expect("seed file");
+
+        let skill = SkillDefinition {
+            name: "file-skill".to_string(),
+            source: SkillSource::User,
+            base_dir: Some(skill_dir.path().to_path_buf()),
+            frontmatter: SkillFrontmatter {
+                description: "File skill".to_string(),
+                ..Default::default()
+            },
+            prompt_body: String::new(),
+        };
+        allthecodes_skills::register_skill(skill);
+
+        let response = skills_files_handler(
+            AxumPath("file-skill".to_string()),
+            Query(SkillFileQuery {
+                path: "hello.txt".to_string(),
+                max_bytes: None,
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["skill_id"], json!("file-skill"));
+        assert_eq!(body["path"], json!("hello.txt"));
+        assert_eq!(body["content"], json!("Hello, World!"));
+        assert_eq!(body["truncated"], json!(false));
+        assert_eq!(body["is_binary"], json!(false));
+        assert_eq!(body["size"], json!(13));
+        assert_eq!(body["media_type"], json!("text/plain"));
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_files_rejects_path_traversal() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+
+        let skill_dir = tempfile::tempdir().expect("skill dir");
+        let skill = SkillDefinition {
+            name: "traverse-test".to_string(),
+            source: SkillSource::User,
+            base_dir: Some(skill_dir.path().to_path_buf()),
+            frontmatter: SkillFrontmatter {
+                description: "test".to_string(),
+                ..Default::default()
+            },
+            prompt_body: String::new(),
+        };
+        allthecodes_skills::register_skill(skill);
+
+        let response = skills_files_handler(
+            AxumPath("traverse-test".to_string()),
+            Query(SkillFileQuery {
+                path: "../../etc/passwd".to_string(),
+                max_bytes: None,
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        // Either forbidden or not_found (the canonicalize might resolve then
+        // the starts_with check catches it, or the existence check catches it first)
+        let status = response.status();
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+            "expected 403 or 404, got {}",
+            status
+        );
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_files_rejects_hidden_files() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+
+        let skill_dir = tempfile::tempdir().expect("skill dir");
+        std::fs::write(skill_dir.path().join(".secret"), b"secret data").expect("seed hidden file");
+
+        let skill = SkillDefinition {
+            name: "hidden-test".to_string(),
+            source: SkillSource::User,
+            base_dir: Some(skill_dir.path().to_path_buf()),
+            frontmatter: SkillFrontmatter {
+                description: "test".to_string(),
+                ..Default::default()
+            },
+            prompt_body: String::new(),
+        };
+        allthecodes_skills::register_skill(skill);
+
+        let response = skills_files_handler(
+            AxumPath("hidden-test".to_string()),
+            Query(SkillFileQuery {
+                path: ".secret".to_string(),
+                max_bytes: None,
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("path_traversal"));
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_files_rejects_directory() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+
+        let skill_dir = tempfile::tempdir().expect("skill dir");
+
+        let skill = SkillDefinition {
+            name: "dir-test".to_string(),
+            source: SkillSource::User,
+            base_dir: Some(skill_dir.path().to_path_buf()),
+            frontmatter: SkillFrontmatter {
+                description: "test".to_string(),
+                ..Default::default()
+            },
+            prompt_body: String::new(),
+        };
+        allthecodes_skills::register_skill(skill);
+
+        // Passing the skill dir itself as a path should be rejected because
+        // it's a directory.
+        let response = skills_files_handler(
+            AxumPath("dir-test".to_string()),
+            Query(SkillFileQuery {
+                path: ".".to_string(),
+                max_bytes: None,
+                profile_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("bad_request"));
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_files_echoes_profile_id() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+
+        let skill_dir = tempfile::tempdir().expect("skill dir");
+        std::fs::write(skill_dir.path().join("readme.md"), b"content").expect("seed file");
+
+        let skill = SkillDefinition {
+            name: "profile-echo".to_string(),
+            source: SkillSource::User,
+            base_dir: Some(skill_dir.path().to_path_buf()),
+            frontmatter: SkillFrontmatter {
+                description: "test".to_string(),
+                ..Default::default()
+            },
+            prompt_body: String::new(),
+        };
+        allthecodes_skills::register_skill(skill);
+
+        let response = skills_files_handler(
+            AxumPath("profile-echo".to_string()),
+            Query(SkillFileQuery {
+                path: "readme.md".to_string(),
+                max_bytes: None,
+                profile_id: Some("prof-file".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["profile_id"], json!("prof-file"));
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_patch_persists_enabled_and_pinned() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+        allthecodes_skills::register_skill(make_test_skill("patchable"));
+
+        let response = skills_patch_handler(
+            AxumPath("patchable".to_string()),
+            Json(SkillPatchRequest {
+                enabled: Some(true),
+                pinned: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["skill"]["id"], json!("patchable"));
+        assert_eq!(body["skill"]["enabled"], json!(true));
+        assert_eq!(body["skill"]["pinned"], json!(true));
+
+        // Verify it persisted by checking detail
+        let response = skills_detail_handler(AxumPath("patchable".to_string()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["skill"]["enabled"], json!(true));
+        assert_eq!(body["skill"]["pinned"], json!(true));
+        allthecodes_skills::clear_skills();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_patch_missing_skill_returns_404() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+
+        let response = skills_patch_handler(
+            AxumPath("does-not-exist".to_string()),
+            Json(SkillPatchRequest {
+                enabled: Some(true),
+                pinned: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("not_found"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn skills_patch_partial_update_only_changes_provided_fields() {
+        let (_home, _guard) = temp_home();
+        allthecodes_skills::clear_skills();
+        allthecodes_skills::register_skill(make_test_skill("partial"));
+
+        // First enable the skill
+        let response = skills_patch_handler(
+            AxumPath("partial".to_string()),
+            Json(SkillPatchRequest {
+                enabled: Some(true),
+                pinned: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Now only change pinned to false, enabled should remain true
+        let response = skills_patch_handler(
+            AxumPath("partial".to_string()),
+            Json(SkillPatchRequest {
+                enabled: None,
+                pinned: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["skill"]["enabled"], json!(true));
+        assert_eq!(body["skill"]["pinned"], json!(false));
+        allthecodes_skills::clear_skills();
     }
 }
