@@ -98,6 +98,36 @@ mod tests {
     }
 
     #[test]
+    fn parses_legacy_submit_permission_and_question_messages() {
+        let submit = parse_frontend_line(r#"{"type":"submit_prompt","text":"hello","id":"ui-1"}"#);
+        assert!(matches!(
+            submit,
+            ParsedFrontendLine::Message(FrontendMessage::SubmitPrompt { text, id })
+                if text == "hello" && id == "ui-1"
+        ));
+
+        let permission = parse_frontend_line(
+            r#"{"type":"permission_response","tool_use_id":"tool-1","decision":"allow"}"#,
+        );
+        assert!(matches!(
+            permission,
+            ParsedFrontendLine::Message(FrontendMessage::PermissionResponse {
+                tool_use_id,
+                decision,
+                ..
+            }) if tool_use_id == "tool-1" && decision == "allow"
+        ));
+
+        let question =
+            parse_frontend_line(r#"{"type":"question_response","id":"q-1","text":"yes"}"#);
+        assert!(matches!(
+            question,
+            ParsedFrontendLine::Message(FrontendMessage::QuestionResponse { id, text, .. })
+                if id == "q-1" && text == "yes"
+        ));
+    }
+
+    #[test]
     fn parse_failure_is_debuggable_diagnostic() {
         let parsed = parse_frontend_line("{bad json");
         let ParsedFrontendLine::Diagnostic(diagnostic) = parsed else {

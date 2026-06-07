@@ -142,6 +142,7 @@ Lint policy (`clippy.toml` + `[workspace.lints]`):
 
 ## Development Conventions
 
+- Architecture principles: see `development/THOUGHT.md`.
 - CI: `.github/workflows/ci.yml` → clippy on push/PR
 - Release: `.github/workflows/release.yml` — triggered by `v*.*.*` tag, cross-platform builds (linux x64/arm64, darwin x64/arm64, win x64/arm64), npm package distribution
 - NPM packaging: `package.json` for optional native binaries; `scripts/stage_npm_packages.py` for staging

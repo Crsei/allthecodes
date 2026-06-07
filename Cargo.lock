@@ -430,6 +430,7 @@ dependencies = [
  "allthecodes-ipc-client",
  "allthecodes-ipc-protocol",
  "allthecodes-ipc-transport",
+ "allthecodes-protocol",
  "allthecodes-types",
  "anyhow",
  "chrono",
@@ -471,6 +472,7 @@ dependencies = [
 name = "allthecodes-ipc-protocol"
 version = "0.1.0"
 dependencies = [
+ "allthecodes-protocol",
  "allthecodes-types",
  "serde",
  "serde_json",
@@ -964,6 +966,7 @@ dependencies = [
  "allthecodes-daemon",
  "allthecodes-engine",
  "allthecodes-gateway",
+ "allthecodes-ipc",
  "allthecodes-ipc-protocol",
  "allthecodes-mcp",
  "allthecodes-permissions",

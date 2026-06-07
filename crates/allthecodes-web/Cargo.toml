@@ -25,6 +25,7 @@ allthecodes-computer-use = { workspace = true }
 allthecodes-daemon = { workspace = true }
 allthecodes-engine = { workspace = true }
 allthecodes-gateway = { workspace = true }
+allthecodes-ipc = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
 allthecodes-mcp = { workspace = true }
 allthecodes-permissions = { workspace = true }

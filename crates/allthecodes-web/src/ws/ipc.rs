@@ -26,18 +26,16 @@
 //! {"type":"error","message":"...","recoverable":false}
 //! ```
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
-use parking_lot::Mutex;
 use serde::Deserialize;
-use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
+use allthecodes_ipc::runtime::IpcRuntime;
 use allthecodes_ipc_protocol::{BackendMessage, FrontendMessage};
 use allthecodes_types::callbacks::{
     AskUserRequestPayload, PermissionRequestPayload, PermissionResponsePayload,
@@ -53,47 +51,11 @@ pub struct IpcWsParams {
     pub session_id: Option<String>,
 }
 
-/// Per-connection pending interactions for permission and question callbacks.
-struct PendingInteractions {
-    permissions: Arc<Mutex<HashMap<String, oneshot::Sender<PermissionResponsePayload>>>>,
-    questions: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
-}
-
-impl PendingInteractions {
-    fn new() -> Self {
-        Self {
-            permissions: Arc::new(Mutex::new(HashMap::new())),
-            questions: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    fn insert_permission(
-        &self,
-        tool_use_id: String,
-        sender: oneshot::Sender<PermissionResponsePayload>,
-    ) {
-        self.permissions.lock().insert(tool_use_id, sender);
-    }
-
-    fn complete_permission(&self, tool_use_id: &str, response: PermissionResponsePayload) -> bool {
-        self.permissions
-            .lock()
-            .remove(tool_use_id)
-            .map(|sender| sender.send(response).is_ok())
-            .unwrap_or(false)
-    }
-
-    fn insert_question(&self, id: String, sender: oneshot::Sender<String>) {
-        self.questions.lock().insert(id, sender);
-    }
-
-    fn complete_question(&self, id: &str, text: String) -> bool {
-        self.questions
-            .lock()
-            .remove(id)
-            .map(|sender| sender.send(text).is_ok())
-            .unwrap_or(false)
-    }
+fn parse_legacy_frontend_text(text: &str) -> Result<FrontendMessage, BackendMessage> {
+    serde_json::from_str::<FrontendMessage>(text).map_err(|error| BackendMessage::Error {
+        message: format!("Invalid FrontendMessage: {error}"),
+        recoverable: true,
+    })
 }
 
 /// GET /api/ipc/ws — Upgrade to WebSocket IPC bridge.
@@ -152,66 +114,27 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
     // Split WebSocket into sender/receiver
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    // Channel for outgoing BackendMessages
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(256);
-
-    // Pending interactions for callbacks
-    let pending = Arc::new(PendingInteractions::new());
-    // Session ID for the pending interactions (used by callbacks)
+    let (ipc_runtime, mut outbound_rx) = IpcRuntime::new(actual_session_id.clone(), 256);
     // ── Install permission callback ───────────────────────────────
-    let pi_permissions = pending.clone();
-    let outbound_permissions = outbound_tx.clone();
+    let runtime_permissions = ipc_runtime.clone();
     let permission_cb: allthecodes_types::callbacks::PermissionCallback =
         Arc::new(move |req: PermissionRequestPayload| {
-            let pi = pi_permissions.clone();
-            let outbound = outbound_permissions.clone();
+            let runtime = runtime_permissions.clone();
             Box::pin(async move {
-                let (tx, rx) = oneshot::channel();
-                pi.insert_permission(req.tool_use_id.clone(), tx);
-
-                let msg = BackendMessage::PermissionRequest {
-                    tool_use_id: req.tool_use_id.clone(),
-                    tool: req.tool_name.clone(),
-                    command: req.legacy_command(),
-                    input: req.tool_input.clone(),
-                    options: req.options.clone(),
-                };
-                let json = serde_json::to_string(&msg).unwrap_or_default();
-                let _ = outbound.send(json).await;
-
-                match rx.await {
-                    Ok(response) => response,
-                    Err(_) => PermissionResponsePayload::deny(),
-                }
+                runtime
+                    .request_permission(req)
+                    .await
+                    .unwrap_or_else(|_| PermissionResponsePayload::deny())
             })
         });
     engine.set_permission_callback(permission_cb);
 
     // ── Install ask_user callback ─────────────────────────────────
-    let pi_questions = pending.clone();
-    let outbound_questions = outbound_tx.clone();
+    let runtime_questions = ipc_runtime.clone();
     let ask_user_cb: allthecodes_types::callbacks::AskUserCallback =
         Arc::new(move |req: AskUserRequestPayload| {
-            let pi = pi_questions.clone();
-            let outbound = outbound_questions.clone();
-            Box::pin(async move {
-                let (tx, rx) = oneshot::channel();
-                pi.insert_question(req.question.clone(), tx);
-
-                let msg = BackendMessage::QuestionRequest {
-                    id: req.question.clone(),
-                    text: req.question.clone(),
-                    choices: req.choices.clone(),
-                    allow_free_text: req.allow_free_text,
-                };
-                let json = serde_json::to_string(&msg).unwrap_or_default();
-                let _ = outbound.send(json).await;
-
-                match rx.await {
-                    Ok(text) => text,
-                    Err(_) => String::new(),
-                }
-            })
+            let runtime = runtime_questions.clone();
+            Box::pin(async move { runtime.request_question(req).await.unwrap_or_default() })
         });
     engine.set_ask_user_callback(ask_user_cb);
 
@@ -228,12 +151,12 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
         view_mode: None,
         keybindings: None,
     };
-    let ready_json = serde_json::to_string(&ready).unwrap_or_default();
-    let _ = outbound_tx.send(ready_json).await;
+    let _ = ipc_runtime.send_backend(ready).await;
 
     // ── Task: forward outbound messages to WebSocket ──────────────
     let outbound_handle = tokio::spawn(async move {
-        while let Some(json) = outbound_rx.recv().await {
+        while let Some(message) = outbound_rx.recv().await {
+            let json = serde_json::to_string(&message).unwrap_or_default();
             if ws_sender.send(Message::Text(json.into())).await.is_err() {
                 break;
             }
@@ -242,8 +165,7 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
 
     // ── Task: handle incoming FrontendMessages ────────────────────
     let engine_for_tasks = state.clone();
-    let pending_inner = pending.clone();
-    let outbound_inner = outbound_tx.clone();
+    let runtime_inner = ipc_runtime.clone();
     let sid = actual_session_id.clone();
 
     let inbound_handle = tokio::spawn(async move {
@@ -252,15 +174,10 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
                 msg = ws_receiver.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            let frontend: FrontendMessage = match serde_json::from_str(&text) {
+                            let frontend: FrontendMessage = match parse_legacy_frontend_text(&text) {
                                 Ok(msg) => msg,
-                                Err(e) => {
-                                    let err = BackendMessage::Error {
-                                        message: format!("Invalid FrontendMessage: {e}"),
-                                        recoverable: true,
-                                    };
-                                    let json = serde_json::to_string(&err).unwrap_or_default();
-                                    let _ = outbound_inner.send(json).await;
+                                Err(err) => {
+                                    let _ = runtime_inner.send_backend(err).await;
                                     continue;
                                 }
                             };
@@ -268,8 +185,7 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
                             if !handle_frontend_message(
                                 frontend,
                                 &engine_for_tasks,
-                                &pending_inner,
-                                &outbound_inner,
+                                &runtime_inner,
                                 &sid,
                             ).await {
                                 break;
@@ -308,6 +224,14 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
     }
 
     // ── Cleanup ───────────────────────────────────────────────────
+    let cleanup = ipc_runtime.cleanup_pending();
+    if cleanup.permissions > 0 || cleanup.questions > 0 {
+        info!(
+            permissions = cleanup.permissions,
+            questions = cleanup.questions,
+            "IPC WebSocket cleaned up pending interactions"
+        );
+    }
     engine.clear_permission_callback();
     engine.clear_ask_user_callback();
     state
@@ -321,13 +245,12 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
 async fn handle_frontend_message(
     msg: FrontendMessage,
     state: &WebState,
-    pending: &PendingInteractions,
-    outbound: &mpsc::Sender<String>,
+    runtime: &IpcRuntime,
     session_id: &str,
 ) -> bool {
     match msg {
         FrontendMessage::SubmitPrompt { text, id } => {
-            submit_prompt_via_ipc(text, id, state, outbound, session_id).await;
+            submit_prompt_via_ipc(text, id, state, runtime, session_id).await;
             true
         }
         FrontendMessage::AbortQuery => {
@@ -339,28 +262,19 @@ async fn handle_frontend_message(
                 text: "Query aborted".to_string(),
                 level: "info".to_string(),
             };
-            let json = serde_json::to_string(&msg).unwrap_or_default();
-            let _ = outbound.send(json).await;
+            let _ = runtime.send_backend(msg).await;
             true
         }
-        FrontendMessage::PermissionResponse {
-            tool_use_id,
-            decision,
-            feedback,
-            ..
-        } => {
-            pending.complete_permission(
-                &tool_use_id,
-                PermissionResponsePayload::new(decision, feedback),
-            );
+        FrontendMessage::PermissionResponse { .. } => {
+            runtime.resolve_legacy_client_response(&msg);
             true
         }
-        FrontendMessage::QuestionResponse { id, text, .. } => {
-            pending.complete_question(&id, text);
+        FrontendMessage::QuestionResponse { .. } => {
+            runtime.resolve_legacy_client_response(&msg);
             true
         }
         FrontendMessage::SlashCommand { raw } => {
-            let result = execute_slash_command(raw, state, outbound, session_id).await;
+            let result = execute_slash_command(raw, state, runtime, session_id).await;
             result
         }
         FrontendMessage::Resize { cols: _, rows: _ } => {
@@ -377,8 +291,7 @@ async fn handle_frontend_message(
                 text: "Subsystem status query not yet implemented".to_string(),
                 level: "info".to_string(),
             };
-            let json = serde_json::to_string(&msg).unwrap_or_default();
-            let _ = outbound.send(json).await;
+            let _ = runtime.send_backend(msg).await;
             true
         }
         FrontendMessage::RequestCompletions {
@@ -391,8 +304,7 @@ async fn handle_frontend_message(
                 items: vec![],
                 request_id,
             };
-            let json = serde_json::to_string(&msg).unwrap_or_default();
-            let _ = outbound.send(json).await;
+            let _ = runtime.send_backend(msg).await;
             true
         }
         // Agent/team commands — forward to engine
@@ -402,8 +314,7 @@ async fn handle_frontend_message(
                 text: format!("Agent command: {command:?}"),
                 level: "info".to_string(),
             };
-            let json = serde_json::to_string(&msg).unwrap_or_default();
-            let _ = outbound.send(json).await;
+            let _ = runtime.send_backend(msg).await;
             true
         }
         FrontendMessage::TeamCommand { command } => {
@@ -411,8 +322,7 @@ async fn handle_frontend_message(
                 text: format!("Team command: {command:?}"),
                 level: "info".to_string(),
             };
-            let json = serde_json::to_string(&msg).unwrap_or_default();
-            let _ = outbound.send(json).await;
+            let _ = runtime.send_backend(msg).await;
             true
         }
         // Subsystem commands — TODO
@@ -426,8 +336,7 @@ async fn handle_frontend_message(
                 text: "Subsystem commands not yet implemented via IPC WebSocket".to_string(),
                 level: "info".to_string(),
             };
-            let json = serde_json::to_string(&msg).unwrap_or_default();
-            let _ = outbound.send(json).await;
+            let _ = runtime.send_backend(msg).await;
             true
         }
         // File search — TODO
@@ -438,8 +347,7 @@ async fn handle_frontend_message(
                 truncated: false,
                 error: Some("File search not yet implemented via IPC WebSocket".to_string()),
             };
-            let json = serde_json::to_string(&msg).unwrap_or_default();
-            let _ = outbound.send(json).await;
+            let _ = runtime.send_backend(msg).await;
             true
         }
         // Completions acceptance — no-op for now
@@ -456,7 +364,7 @@ async fn submit_prompt_via_ipc(
     text: String,
     _id: String,
     state: &WebState,
-    outbound: &mpsc::Sender<String>,
+    runtime: &IpcRuntime,
     _session_id: &str,
 ) {
     state
@@ -476,8 +384,7 @@ async fn submit_prompt_via_ipc(
             Some(sdk_msg) => {
                 let backend_msgs = sdk_to_backend_messages(sdk_msg, &mut draft_id);
                 for backend_msg in backend_msgs {
-                    let json = serde_json::to_string(&backend_msg).unwrap_or_default();
-                    if outbound.send(json).await.is_err() {
+                    if runtime.send_backend(backend_msg).await.is_err() {
                         state
                             .is_streaming
                             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -708,7 +615,7 @@ fn tool_result_content_to_string(content: &ToolResultContent) -> String {
 async fn execute_slash_command(
     raw: String,
     _state: &WebState,
-    outbound: &mpsc::Sender<String>,
+    runtime: &IpcRuntime,
     _session_id: &str,
 ) -> bool {
     let trimmed = raw.trim().trim_start_matches('/');
@@ -723,10 +630,95 @@ async fn execute_slash_command(
         text: format!("Slash command /{cmd_name} {args}"),
         level: "info".to_string(),
     };
-    let json = serde_json::to_string(&msg).unwrap_or_default();
-    let _ = outbound.send(json).await;
+    let _ = runtime.send_backend(msg).await;
 
     // Note: Full slash command execution via IPC is a future enhancement.
     // For now, clients should use the POST /api/command REST endpoint.
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_ipc_parse_error_stays_bare_backend_message() {
+        let error = parse_legacy_frontend_text("{bad json").unwrap_err();
+
+        let encoded = serde_json::to_string(&error).unwrap();
+        assert!(matches!(
+            error,
+            BackendMessage::Error {
+                recoverable: true,
+                ..
+            }
+        ));
+        assert!(encoded.starts_with(r#"{"type":"error""#));
+        assert!(!encoded.contains("payload"));
+        assert!(!encoded.contains("kind"));
+    }
+
+    #[test]
+    fn legacy_ipc_ready_message_stays_bare_backend_message() {
+        let ready = BackendMessage::Ready {
+            session_id: "session-1".to_string(),
+            model: "test-model".to_string(),
+            cwd: "/repo".to_string(),
+            permission_mode: "default".to_string(),
+            available_models: vec!["test-model".to_string()],
+            plan_workflow: None,
+            editor_mode: None,
+            view_mode: None,
+            keybindings: None,
+        };
+
+        let encoded = serde_json::to_string(&ready).unwrap();
+
+        assert!(encoded.starts_with(r#"{"type":"ready""#));
+        assert!(encoded.contains(r#""session_id":"session-1""#));
+        assert!(!encoded.contains("payload"));
+        assert!(!encoded.contains("kind"));
+    }
+
+    #[test]
+    fn legacy_ipc_submit_prompt_stays_bare_frontend_message() {
+        let parsed =
+            parse_legacy_frontend_text(r#"{"type":"submit_prompt","text":"hello","id":"ui-1"}"#)
+                .unwrap();
+
+        assert!(matches!(
+            parsed,
+            FrontendMessage::SubmitPrompt { text, id } if text == "hello" && id == "ui-1"
+        ));
+    }
+
+    #[test]
+    fn legacy_ipc_permission_response_stays_bare_frontend_message() {
+        let parsed = parse_legacy_frontend_text(
+            r#"{"type":"permission_response","tool_use_id":"tool-1","decision":"allow","feedback":"ok"}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            parsed,
+            FrontendMessage::PermissionResponse {
+                tool_use_id,
+                decision,
+                feedback: Some(feedback),
+                ..
+            } if tool_use_id == "tool-1" && decision == "allow" && feedback == "ok"
+        ));
+    }
+
+    #[test]
+    fn legacy_ipc_question_response_stays_bare_frontend_message() {
+        let parsed =
+            parse_legacy_frontend_text(r#"{"type":"question_response","id":"q-1","text":"yes"}"#)
+                .unwrap();
+
+        assert!(matches!(
+            parsed,
+            FrontendMessage::QuestionResponse { id, text, .. } if id == "q-1" && text == "yes"
+        ));
+    }
 }

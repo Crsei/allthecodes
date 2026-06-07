@@ -162,6 +162,26 @@ mod tests {
     }
 
     #[test]
+    fn permission_and_question_requests_are_lossless() {
+        let permission = BackendMessage::PermissionRequest {
+            tool_use_id: "tool-1".to_string(),
+            tool: "Bash".to_string(),
+            command: "ls".to_string(),
+            input: serde_json::json!({ "command": "ls" }),
+            options: vec!["allow".to_string(), "deny".to_string()],
+        };
+        let question = BackendMessage::QuestionRequest {
+            id: "question-1".to_string(),
+            text: "Continue?".to_string(),
+            choices: vec!["yes".to_string(), "no".to_string()],
+            allow_free_text: false,
+        };
+
+        assert_eq!(classify_event(&permission), EventClass::Lossless);
+        assert_eq!(classify_event(&question), EventClass::Lossless);
+    }
+
+    #[test]
     fn full_queue_rejects_lossless_without_drop() {
         let mut queue = ClientEventQueue::new(1);
         queue.push(info("first")).unwrap();

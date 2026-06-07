@@ -3,7 +3,7 @@
 > 基于 Codex app-server/client 实现对照，以及本项目当前 `/api/ipc/ws`、JSONL stdio、IPC protocol/envelope/event-class 的现状。
 > 目标：把 IPC 从“某个 WebSocket handler 的前后端消息枚举”升级为“协议级 request/event/server-request envelope”，同时保留 legacy frontend contract。
 
-状态：规划草案，尚未实现。除“当前资产”中列出的现有文件和 legacy `/api/ipc/ws`、JSONL stdio 外，本文提到的 `IpcPayload`、`IpcRuntime`、`ServerRequestEnvelope`、`/api/v2/ipc/ws`、envelope opt-in、dispatcher 接入均为未来目标。
+状态：滚动实施中。`IpcPayload`、`IpcRuntime`、`ServerRequestEnvelope`、legacy `/api/ipc/ws` runtime 接入、server-request 超时、outbound lossless/best-effort 分类投递已经实现；`/api/v2/ipc/ws`、JSONL envelope opt-in、`ApiDispatcher` 全量接入仍为未来目标。
 
 ---
 
@@ -508,3 +508,194 @@ cargo test -p allthecodes-ipc-transport
 - 可映射 API 命令通过 `ApiDispatcher`，不再散落在 WebSocket handler。
 - outbound queue 有 lossless/best-effort 测试和 `Lagged`/diagnostic 行为。
 - JSONL stdio 可继续 legacy，并在未来支持 envelope opt-in。
+
+---
+
+## 实现回顾 (2026-06-07)
+
+> 对照当前代码库检查计划与实际实现的差距。
+
+### 文档状态已同步
+
+文档头部已从"规划草案，尚未实现"更新为滚动实施状态。当前代码已实现 IPC v2 payload、shared runtime、server request pending store、legacy `/api/ipc/ws` runtime 接入、server-request 超时和 outbound 分类投递；尚未实现的是 `/api/v2/ipc/ws`、JSONL envelope opt-in、以及完整 `ApiDispatcher` 接入。
+
+### 各阶段实际完成状态速览
+
+| 阶段 | 文档状态 | 实际状态 | 核心差异 |
+|---|---|---|---|
+| 0: 冻结 legacy 行为 | 待做 | ⚠️ 大部分 | `IpcEnvelope` roundtrip、JSONL legacy parse、`event_class`、`ws/ipc.rs` focused tests 已存在；仍需 broader integration 覆盖 |
+| 1: 定义 IPC v2 payload | 待做 | ✅ **已完成** | `payload.rs` 含完整 `IpcPayload` 枚举、所有 envelope 类型、legacy adapter 函数、12 个测试 |
+| 2: 抽 shared IPC runtime | 待做 | ✅ **当前拆分 crate 下已完成** | `runtime.rs` 含 `IpcRuntime`、`PendingInteractions`、`SessionRuntime`、分类 `IpcOutboundQueue`；`ws/ipc.rs` 已集成 runtime |
+| 3: permission/question → server request | 待做 | ✅ **当前阶段已完成** | `request_permission()`、`request_question()` 使用 `ServerRequestEnvelope` + oneshot channel + 30s timeout；cleanup 会 deny/empty pending |
+| 4: 接入 ApiDispatcher | 待做 | ❌ 未开始 | `dispatch_client_request()` 方法存在但需外部传入 dispatch 函数 |
+| 5: `/api/v2/ipc/ws` | 待做 | ❌ 未开始 | `ws/ipc_v2.rs` 不存在 |
+| 6: JSONL/headless opt-in | 待做 | ❌ 未开始 | 无 envelope mode |
+| 7: 前端迁移窗口 | 待做 | ❌ 未开始 | |
+
+### 1. Phase 1 实际上已完成
+
+`crates/allthecodes-ipc-protocol/src/payload.rs` 实现了计划要求的所有 IPC v2 payload 类型：
+
+计划要求的枚举与实现完全一致：
+
+```
+IpcPayload::Hello(ClientHello)            ✅
+IpcPayload::Ready(ServerReady)            ✅
+IpcPayload::ClientRequest(ClientRequestEnvelope)       ✅
+IpcPayload::ClientNotification(ClientNotificationEnvelope)  ✅
+IpcPayload::ClientResponse(ClientResponseEnvelope)     ✅
+IpcPayload::ClientError(ClientErrorEnvelope)           ✅
+IpcPayload::ServerNotification(ServerNotificationEnvelope)  ✅
+IpcPayload::ServerRequest(ServerRequestEnvelope)       ✅
+IpcPayload::ServerError(ServerErrorEnvelope)           ✅
+IpcPayload::Lagged(LaggedEvent)           ✅
+```
+
+Legacy adapter 函数已完整实现：
+
+| 函数 | 位置 | 映射覆盖 |
+|---|---|---|
+| `legacy_frontend_to_payload()` | `payload.rs:214` | `SubmitPrompt`/`AbortQuery`/`SlashCommand`/`Quit` → ClientNotification；`PermissionResponse`/`QuestionResponse` → ClientResponse；`Resize` → 返回 `UnsupportedLegacyFrontend` 错误 |
+| `legacy_backend_to_payload()` | `payload.rs:285` | `Ready` → Ready；`PermissionRequest`/`QuestionRequest` → ServerRequest；`Error` → ServerError；其余 fallback 到 `normalized.rs` 分类 → ServerNotification |
+| `payload_to_legacy_backend()` | `payload.rs:372` | Ready/ServerRequest/ServerError/Lagged → BackendMessage；其余返回 UnsupportedPayload 错误 |
+
+测试覆盖（`payload.rs:507-720`）：12 个测试覆盖 hello roundtrip、permission→ServerRequest roundtrip、question→ClientResponse、submit→notification、unsupported message 分类、lagged→legacy error、client request/response 序列化。
+
+**状态**：文档头部和 Phase 1 状态已更新为"已完成"。
+
+### 2. Phase 2 当前阶段已完成——`IpcRuntime` 已集成到 `ws/ipc.rs`
+
+`crates/allthecodes-ipc/src/runtime.rs` 实现了 `IpcRuntime`（第 304-585 行），包含：
+
+- `IpcRuntime` 结构体（session、outbound queue、seq counter、inbound seq validator）
+- `SessionRuntime`（session_id、run_id、current turn tracking）
+- `PendingInteractions`（scoped + legacy permission pending store、question pending store、server request store、cleanup）
+- `IpcOutboundQueue`（mpsc channel wrapper，使用 `classify_event()` 区分 lossless/best-effort）
+- `request_permission()` / `request_question()` — 通过 ServerRequestEnvelope + oneshot channel 交互
+- `dispatch_client_request()` — 接受通用 dispatch 回调的函数
+- `resolve_legacy_client_response()` — 将 FrontendMessage 映射到 pending interaction
+- 17 个单元测试（scoped permission matching、legacy fallback、session turn tracking、cleanup、outbound queue pressure、permission/question lifecycle、timeout、seq 验证、hello 版本检查、ready payload、client request dispatch）
+
+**最关键的是**：`crates/allthecodes-web/src/ws/ipc.rs` 第 38 行已导入并使用 `IpcRuntime`：
+
+```
+ws/ipc.rs:117  →  let (ipc_runtime, mut outbound_rx) = IpcRuntime::new(actual_session_id.clone(), 256);
+ws/ipc.rs:120-139  →  安装 permission/ask_user callback（使用 runtime.request_permission/question）
+ws/ipc.rs:154  →  runtime.send_backend(ready).await 发送 Ready
+ws/ipc.rs:157-163  →  runtime outbound 转发到 WebSocket
+ws/ipc.rs:171-218  →  runtime.resolve_legacy_client_response() 处理 PermissionResponse/QuestionResponse
+```
+
+目前 permission/question 交互已走"ServerRequest → oneshot channel → 前端回复/超时/cleanup → resolve"路径，与计划第 3 章"Server request 模板"描述一致。outbound queue 已接入 lossless/best-effort 分类分派（详见下方第 4 点）。
+
+### 3. 文档 Phase 3（permission→server request）已完成当前阶段
+
+计划 Phase 3 的要求与当前实现对照：
+
+| 要求 | 实际 | 状态 |
+|---|---|---|
+| 3.1 runtime 内部用 `ServerRequestEnvelope` 创建 pending request | `request_permission()` 第 393 行创建 `ServerRequestEnvelope`，第 408 行 `insert_server_request` | ✅ |
+| 3.2 legacy adapter 渲染为 `BackendMessage::PermissionRequest` / `QuestionRequest` | `payload_to_legacy_backend` 第 406 行 `server_request_to_legacy_backend` | ✅ |
+| 3.3 `PermissionResponse` / `QuestionResponse` 映射为 `ClientResponseEnvelope` | `resolve_legacy_client_response()` 第 464 行 + `legacy_frontend_to_payload` 第 249 行（PermissionResponse/QuestionResponse → ClientResponse） | ✅ |
+| 3.4 连接关闭时统一 reject/deny pending requests | `PendingInteractions::cleanup()` 第 178 行 drain 所有 pending store，permission 发 deny、question 发空字符串 | ✅ |
+| 3.5 正常连接但用户不响应时超时 | `request_permission()`/`request_question()` 设置 `timeout_ms=30000` 并通过 `tokio::time::timeout` 回落到 deny/empty | ✅ |
+
+剩余注意点：当前超时值为 runtime 默认 30s，尚未暴露为配置项；前端断连仍通过 socket task 退出时的 cleanup 统一处理。
+
+### 4. `IpcOutboundQueue` 已接入 lossless/best-effort 分派
+
+`crates/allthecodes-ipc-transport/src/event_class.rs` 定义的 `classify_event()` 已接入 `crates/allthecodes-ipc/src/runtime.rs` 的 `IpcOutboundQueue`：
+
+```rust
+pub struct IpcOutboundQueue {
+    sender: mpsc::Sender<BackendMessage>,
+    dropped_best_effort: Arc<Mutex<DroppedBestEffort>>,
+}
+```
+
+| 计划要求的行为 | 实际 | 状态 |
+|---|---|---|
+| best-effort 满队列时可替换/丢弃旧 best-effort，累计 drop count | `send_best_effort()` 使用 `try_send`；满队列时丢弃 incoming best-effort，累计 skipped 和 last dropped type | ✅ |
+| lossless 满队列时等待容量或触发 overload/close | `send_lossless()` 使用 `sender.send(...).await`，不会静默丢弃 lossless；sender 关闭时返回 `OutboundClosed` | ✅ |
+| 从 best-effort 恢复到 lossless 前发送 `Lagged { skipped, last_dropped_type }` | `send_lossless()` 发送下一条 lossless 前注入 legacy `BackendMessage::Error` 形式的 `IpcPayload::Lagged` | ✅ |
+
+当前实现没有维护独立 `VecDeque` 或替换已排队的 best-effort 事件，而是在 bounded mpsc 已满时丢弃 incoming best-effort。这个策略满足“不阻塞 best-effort、不丢 lossless、恢复时通知 lagged”的核心要求，且不改变 legacy `/api/ipc/ws` wire format。
+
+### 5. `ServerRequest` 已有超时机制
+
+`ServerRequestEnvelope` 定义的 `timeout_ms: Option<u64>` 已在 `request_permission()` 和 `request_question()` 中写入默认 30000ms。pending request 等待使用 `tokio::time::timeout`：
+
+- permission 超时、sender dropped、连接 cleanup 时默认返回 `PermissionResponsePayload::deny()`。
+- question 超时、sender dropped、连接 cleanup 时默认返回空字符串。
+- 超时发生后会移除 pending permission/question 和对应 `ServerRequestEnvelope`。
+
+测试覆盖：`permission_request_times_out_with_deny_and_cleans_pending`、`question_request_times_out_with_empty_answer_and_cleans_pending`。
+
+### 6. `dispatch_client_request()` 存在但未接 `ApiDispatcher`
+
+`runtime.rs:555-584` 实现了 `dispatch_client_request<F, Fut>()`：
+
+```rust
+pub async fn dispatch_client_request<F, Fut>(
+    &self,
+    request: ClientRequestEnvelope,
+    dispatch: F,
+) -> Result<ClientResponseEnvelope, ServerErrorEnvelope>
+where
+    F: FnOnce(ClientRequest) -> Fut,
+    Fut: Future<Output = Result<ClientResponse, ApiError>>,
+```
+
+但：
+1. `ws/ipc.rs` 的 inbound handler 中未调用此方法
+2. 没有与 `allthecodes_protocol::ApiDispatcher` 连接
+3. `SubmitPrompt` 仍然直接调 `engine.submit_query()`（legacy 路径）
+
+这与计划一致——Phase 4 明确说"等待 `02-transport-unification-plan.zh.md` 的 `ApiDispatcher` 阶段完成"。当前 `ApiDispatcher` 只覆盖了 5 个 endpoint，Chat/SubmitPrompt 尚无 `ClientRequest` DTO 稳定可用。
+
+### 7. `try_claim(SessionOwner::IpcWs)` 仍然阻塞
+
+`ws/ipc.rs` 第 125 行仍然使用 `state.try_claim(SessionOwner::IpcWs, active_session_id)`。计划文档 Phase 5 第 9 条说移除 `try_claim` 的前提是：
+- Phase 4 typed serialization queue 完成
+- permission/question server request 不依赖全局 owner
+
+两个前提都未满足（Phase 4 在 02 计划中也未开始）。
+
+### 8. 文件分布跨 4 个 crate
+
+文档计划的目标文件布局（单 crate `allthecodes-ipc/src/{protocol,runtime,transport,client}/`）与实际分布对比：
+
+| 目标模块 | 计划位置 | 实际位置 | 状态 |
+|---|---|---|---|
+| protocol/envelope.rs | `allthecodes-ipc/src/protocol/` | `allthecodes-ipc-protocol/src/envelope.rs` | 独立 crate |
+| protocol/payload.rs | `allthecodes-ipc/src/protocol/` | `allthecodes-ipc-protocol/src/payload.rs` | 独立 crate |
+| protocol/legacy.rs | `allthecodes-ipc/src/protocol/` | 无专用文件；存在于 `payload.rs` + `normalized.rs` | 未拆分 |
+| protocol/normalized.rs | `allthecodes-ipc/src/protocol/` | `allthecodes-ipc-protocol/src/normalized.rs` | 独立 crate |
+| runtime/mod.rs | `allthecodes-ipc/src/runtime/` | `allthecodes-ipc/src/runtime.rs` | 单文件非目录 |
+| runtime/pending.rs | `allthecodes-ipc/src/runtime/` | 与 runtime.rs 合并 | 未拆分 |
+| transport/jsonl.rs | `allthecodes-ipc/src/transport/` | `allthecodes-ipc-transport/src/jsonl.rs` | 独立 crate |
+| transport/event_class.rs | `allthecodes-ipc/src/transport/` | `allthecodes-ipc-transport/src/event_class.rs` | 独立 crate；且 `allthecodes-ipc-client` 也有同名 `event_class.rs` |
+| client/callbacks.rs | `allthecodes-ipc/src/client/` | `allthecodes-ipc-client/src/callbacks.rs` | 独立 crate |
+
+Crate 合并（01）尚未执行。两个 `event_class.rs` 文件（client 和 transport）增加了混淆——它们的功能相似但属于不同模块。
+
+### 9. 文档与实际保持一致的部分
+
+| 计划要求 | 实际 | 状态 |
+|---|---|---|
+| `/api/ipc/ws` 保留为 legacy bridge，不作为新模板扩张 | 仍使用 `FrontendMessage`/`BackendMessage` wire format；未增加新 wire format | ✅ |
+| `IpcEnvelope<T>` 已有版本/seq/correlation metadata | `envelope.rs` 结构体完全符合计划定义 | ✅ |
+| 可映射为 API 的命令未来进入 `ApiDispatcher` | 当前 SubmitPrompt 仍走 legacy engine path；`dispatch_client_request()` 等待 | ✅ |
+| PTY/MCP/browser 不进入此系统 | 未受影响 | ✅ |
+
+### 建议的下一步
+
+| 优先级 | 动作 | 风险 | 依赖 |
+|---|---|---|---|
+| **Done** | 更新文档头部和阶段状态表（标注 Phase 1 完成、Phase 2/3 当前阶段完成） | — | — |
+| **Done** | 在 `IpcOutboundQueue` 中实现 `send_lossless()` / `send_best_effort()`，使用 `event_class::classify_event()` + legacy `Lagged` | — | — |
+| **Done** | 在 `request_permission()/request_question()` 中添加 `tokio::time::timeout` | — | — |
+| **P1** | `dispatch_client_request()` 接 `ApiDispatcher`（当 ApiDispatcher 覆盖足够 endpoint 后） | 中 | 02 计划 Phase 1-2 |
+| **P2** | `/api/v2/ipc/ws` 路由（`ws/ipc_v2.rs`） | 中——需 handshake + envelope frame | Phase 1-3 完成 |
+| **P3** | JSONL envelope opt-in | 低 | — |
+| **P3** | 把 30s server-request timeout 暴露为配置项或 session 参数 | 低 | runtime policy 定稿 |
