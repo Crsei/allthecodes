@@ -4,14 +4,16 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use allthecodes_protocol::v1::{SessionArchiveParams, SessionDetailParams, SessionResumeParams};
+use allthecodes_protocol::v1::{
+    SessionArchiveParams, SessionDetailParams, SessionModePatchParams, SessionResumeParams,
+};
 use allthecodes_protocol::ApiMethod;
 use allthecodes_protocol::{ApiError as ProtocolApiError, NoParams, SerializationScope};
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -26,6 +28,10 @@ use crate::api_dispatcher::rest_processor_response;
 use crate::handler_registry::HandlerRegistry;
 use crate::handlers::workspaces::resolve_workspace_root;
 use crate::handlers::ApiError;
+use crate::handlers::{
+    chat_mode_preference_for_cwd_session, chat_mode_preference_for_session_info,
+    normalize_optional_mode,
+};
 use crate::processors::Processor;
 use crate::state::{SessionOwner, WebState};
 
@@ -36,6 +42,10 @@ pub(crate) fn handlers() -> HandlerRegistry {
         .handle(ApiMethod::SessionDetail, get(session_detail_handler))
         .handle(ApiMethod::SessionResume, post(session_resume_handler))
         .handle(ApiMethod::SessionArchive, post(session_archive_handler))
+        .handle(
+            ApiMethod::SessionModePatch,
+            patch(session_mode_patch_handler),
+        )
         .handle(
             ApiMethod::SessionMessageBranch,
             post(session_message_branch_handler),
@@ -76,6 +86,7 @@ pub struct WorkspaceInfo {
     pub key: String,
     pub root: String,
     pub name: String,
+    pub default_chat_mode: String,
 }
 
 /// Response shape for `GET /api/sessions`.
@@ -101,10 +112,14 @@ pub struct SessionSummary {
     pub workspace_key: String,
     pub workspace_root: String,
     pub workspace_name: String,
+    pub default_chat_mode: String,
+    pub chat_mode_override: Option<String>,
+    pub effective_chat_mode: String,
 }
 
 impl From<storage::SessionInfo> for SessionSummary {
     fn from(s: storage::SessionInfo) -> Self {
+        let preference = chat_mode_preference_for_session_info(&s);
         Self {
             session_id: s.session_id,
             created_at: s.created_at,
@@ -115,6 +130,9 @@ impl From<storage::SessionInfo> for SessionSummary {
             workspace_key: s.workspace_key,
             workspace_root: s.workspace_root,
             workspace_name: s.workspace_name,
+            default_chat_mode: preference.default_chat_mode,
+            chat_mode_override: preference.chat_mode_override,
+            effective_chat_mode: preference.effective_chat_mode,
         }
     }
 }
@@ -138,6 +156,10 @@ pub struct SessionDetailResponse {
     pub cwd: String,
     pub title: String,
     pub workspace_name: String,
+    pub workspace_key: String,
+    pub default_chat_mode: String,
+    pub chat_mode_override: Option<String>,
+    pub effective_chat_mode: String,
     pub messages: Vec<StoredMessage>,
 }
 
@@ -158,6 +180,21 @@ pub struct NewSessionRequest {
 pub struct SessionMutationResponse {
     pub ok: bool,
     pub message: String,
+}
+
+#[derive(Deserialize)]
+pub struct SessionModePatchRequest {
+    #[serde(default)]
+    pub chat_mode_override: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SessionModeResponse {
+    pub session_id: String,
+    pub workspace_key: String,
+    pub default_chat_mode: String,
+    pub chat_mode_override: Option<String>,
+    pub effective_chat_mode: String,
 }
 
 #[derive(Serialize)]
@@ -370,6 +407,40 @@ impl Processor for SessionArchiveProcessor {
     }
 }
 
+#[derive(Clone)]
+pub struct SessionModePatchProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionModePatchProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionModePatchProcessor {
+    type Request = SessionModePatchParams;
+    type Response = SessionModeResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.mode_patch"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "id")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        update_session_mode_preference(&self.state, params.id, params.chat_mode_override)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handler implementations
 // ---------------------------------------------------------------------------
@@ -424,22 +495,20 @@ pub async fn session_new_handler(
             }
             (None, Some(cwd)) => {
                 let cwd_path = Path::new(cwd);
-                if !cwd_path.exists() || !cwd_path.is_dir() {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ApiError {
-                            error: "cwd must be an existing directory".into(),
-                            code: "cwd_invalid".into(),
+                match cwd_path.canonicalize() {
+                    Ok(root) if root.is_dir() => Some(root.to_string_lossy().to_string()),
+                    _ => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ApiError {
+                                error: "cwd must be an existing directory".into(),
+                                code: "cwd_invalid".into(),
 
-                            details: serde_json::json!({}),
-                        }),
-                    )
-                        .into_response();
-                }
-                let workspace_key = storage::workspace_key(cwd_path);
-                match resolve_workspace_root(&state, &workspace_key, Some(cwd)) {
-                    Ok(root) => Some(root.to_string_lossy().to_string()),
-                    Err(response) => return response,
+                                details: serde_json::json!({}),
+                            }),
+                        )
+                            .into_response();
+                    }
                 }
             }
             (None, None) => None,
@@ -479,6 +548,57 @@ pub async fn session_archive_handler(
         SessionArchiveParams { id },
     )
     .await
+}
+
+/// PATCH /api/sessions/:id/mode -- Set or clear the session chat mode override.
+pub async fn session_mode_patch_handler(
+    AxumPath(id): AxumPath<String>,
+    State(state): State<WebState>,
+    Json(req): Json<SessionModePatchRequest>,
+) -> Response {
+    rest_processor_response::<SessionModePatchProcessor>(
+        state,
+        ApiMethod::SessionModePatch,
+        SessionModePatchParams {
+            id,
+            chat_mode_override: req.chat_mode_override,
+        },
+    )
+    .await
+}
+
+fn update_session_mode_preference(
+    state: &WebState,
+    id: String,
+    chat_mode_override: Option<String>,
+) -> Result<SessionModeResponse, ProtocolApiError> {
+    let cwd = match storage::load_session_info(&id) {
+        Ok(info) => info.cwd,
+        Err(_) if state.engine().current_session_id().to_string() == id => {
+            state.engine().cwd().to_string()
+        }
+        Err(_) => {
+            return Err(ProtocolApiError::NotFound {
+                entity: "session",
+                id,
+            })
+        }
+    };
+    let normalized = normalize_optional_mode(chat_mode_override.as_deref());
+
+    storage::set_session_chat_mode_override(&id, normalized.as_deref(), &cwd).map_err(|error| {
+        ProtocolApiError::Internal {
+            message: format!("Failed to update session mode: {error}"),
+        }
+    })?;
+    let preference = chat_mode_preference_for_cwd_session(&cwd, &id);
+    Ok(SessionModeResponse {
+        session_id: id,
+        workspace_key: preference.workspace_key,
+        default_chat_mode: preference.default_chat_mode,
+        chat_mode_override: preference.chat_mode_override,
+        effective_chat_mode: preference.effective_chat_mode,
+    })
 }
 
 /// POST /api/sessions/:id/messages/:message_id/branch
@@ -760,6 +880,7 @@ fn build_session_list_response(state: &WebState) -> SessionListResponse {
 
     SessionListResponse {
         current_workspace: WorkspaceInfo {
+            default_chat_mode: crate::handlers::workspace_default_chat_mode(&ws_key),
             key: ws_key,
             root: ws_root.to_string_lossy().to_string(),
             name: ws_name,
@@ -783,20 +904,35 @@ fn load_session_messages(session_id: &str) -> Result<Vec<Message>, ProtocolApiEr
 }
 
 fn session_detail_from_messages(id: String, messages: &[Message]) -> SessionDetailResponse {
-    let info = storage::list_sessions()
-        .ok()
-        .and_then(|list| list.into_iter().find(|s| s.session_id == id));
+    let info = storage::load_session_info(&id).ok();
 
-    let (title, cwd, created_at, last_modified, workspace_name) = match info {
-        Some(i) => (
-            i.title,
-            i.cwd,
-            i.created_at,
-            i.last_modified,
-            i.workspace_name,
-        ),
-        None => (String::new(), String::new(), 0, 0, String::new()),
-    };
+    let (title, cwd, created_at, last_modified, workspace_name, workspace_key, preference) =
+        match info {
+            Some(i) => {
+                let preference = chat_mode_preference_for_session_info(&i);
+                (
+                    i.title,
+                    i.cwd,
+                    i.created_at,
+                    i.last_modified,
+                    i.workspace_name,
+                    i.workspace_key,
+                    preference,
+                )
+            }
+            None => {
+                let preference = chat_mode_preference_for_cwd_session("", &id);
+                (
+                    String::new(),
+                    String::new(),
+                    0,
+                    0,
+                    String::new(),
+                    preference.workspace_key.clone(),
+                    preference,
+                )
+            }
+        };
 
     let rendered: Vec<StoredMessage> = messages.iter().map(stored_message_from).collect();
 
@@ -807,6 +943,10 @@ fn session_detail_from_messages(id: String, messages: &[Message]) -> SessionDeta
         cwd,
         title,
         workspace_name,
+        workspace_key,
+        default_chat_mode: preference.default_chat_mode,
+        chat_mode_override: preference.chat_mode_override,
+        effective_chat_mode: preference.effective_chat_mode,
         messages: rendered,
     }
 }

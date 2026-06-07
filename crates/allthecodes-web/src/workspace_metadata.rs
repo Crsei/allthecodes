@@ -16,6 +16,8 @@ pub struct WorkspaceUiMetadata {
     pub pinned: bool,
     #[serde(default)]
     pub hidden: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_chat_mode: Option<String>,
     #[serde(default)]
     pub updated_at: i64,
 }
@@ -28,6 +30,8 @@ pub struct WorkspaceUiMetadataPatch {
     pub pinned: Option<bool>,
     #[serde(default)]
     pub hidden: Option<bool>,
+    #[serde(default)]
+    pub default_chat_mode: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -86,6 +90,16 @@ pub fn update_metadata(
     }
     if let Some(hidden) = patch.hidden {
         entry.hidden = hidden;
+    }
+    if let Some(default_chat_mode) = patch.default_chat_mode {
+        entry.default_chat_mode = default_chat_mode.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
     }
     entry.updated_at = Utc::now().timestamp();
 

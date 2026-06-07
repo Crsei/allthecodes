@@ -50,6 +50,11 @@ pub struct CommandInfo {
 pub struct StateResponse {
     pub model: String,
     pub session_id: String,
+    pub workspace_key: String,
+    pub default_chat_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_mode_override: Option<String>,
+    pub effective_chat_mode: String,
     pub tools: Vec<String>,
     pub permission_mode: String,
 

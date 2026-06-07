@@ -572,8 +572,8 @@ mod tests {
         assert_eq!(body["capabilities"]["skills"], json!(true));
     }
 
-    #[test]
-    fn build_router_accepts_phase3_routes() {
+    #[tokio::test]
+    async fn build_router_accepts_phase3_routes() {
         let _router = crate::build_router(make_web_state());
     }
 
@@ -648,6 +648,7 @@ mod tests {
                 display_name: Some(Some("Frontend".to_string())),
                 pinned: Some(true),
                 hidden: Some(false),
+                default_chat_mode: None,
             }),
         )
         .await
@@ -688,6 +689,31 @@ mod tests {
             State(state.clone()),
             Some(Json(NewSessionRequest {
                 workspace_key: Some(workspace_key),
+                cwd: Some(target.path().to_string_lossy().to_string()),
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            allthecodes_session::storage::workspace_key(std::path::Path::new(state.engine().cwd())),
+            allthecodes_session::storage::workspace_key(target.path())
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_new_handler_can_target_existing_local_cwd() {
+        let (_home, _guard) = temp_home();
+        let current = tempfile::tempdir().expect("current");
+        let target = tempfile::tempdir().expect("target");
+        let state = make_web_state_with_cwd(current.path());
+
+        let response = session_new_handler(
+            State(state.clone()),
+            Some(Json(NewSessionRequest {
+                workspace_key: None,
                 cwd: Some(target.path().to_string_lossy().to_string()),
             })),
         )

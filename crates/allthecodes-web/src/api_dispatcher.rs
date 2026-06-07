@@ -67,6 +67,7 @@ pub(crate) const DISPATCHED_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::SessionDetail,
     ApiMethod::SessionResume,
     ApiMethod::SessionArchive,
+    ApiMethod::SessionModePatch,
 ];
 
 const DEDICATED_TRANSPORT_OPERATIONS: &[ApiMethod] = &[
@@ -193,6 +194,16 @@ pub async fn dispatch(
                 archived: true,
             }))
         }
+        ClientRequest::SessionModePatch(params) => {
+            let response = dispatch_tracked_processor::<handlers::SessionModePatchProcessor>(
+                state,
+                context,
+                ApiMethod::SessionModePatch,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::SessionModePatch(map_session_mode(response)))
+        }
         other => Err(ApiError::NotImplemented {
             capability: format!("{:?}", other.method()),
         }),
@@ -282,6 +293,8 @@ fn map_session_list(response: handlers::SessionListResponse) -> v1::SessionListR
                 id: session.session_id,
                 title: Some(session.title),
                 archived: false,
+                chat_mode_override: session.chat_mode_override,
+                effective_chat_mode: session.effective_chat_mode,
             })
             .collect(),
     }
@@ -293,7 +306,19 @@ fn map_session_detail(response: handlers::SessionDetailResponse) -> v1::SessionD
             id: response.session_id,
             title: Some(response.title),
             archived: false,
+            chat_mode_override: response.chat_mode_override,
+            effective_chat_mode: response.effective_chat_mode,
         },
+    }
+}
+
+fn map_session_mode(response: handlers::SessionModeResponse) -> v1::SessionModePatchResponse {
+    v1::SessionModePatchResponse {
+        session_id: response.session_id,
+        workspace_key: response.workspace_key,
+        default_chat_mode: response.default_chat_mode,
+        chat_mode_override: response.chat_mode_override,
+        effective_chat_mode: response.effective_chat_mode,
     }
 }
 
@@ -365,7 +390,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 5);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 6);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

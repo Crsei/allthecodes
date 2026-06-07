@@ -42,6 +42,8 @@ pub struct ChatRequest {
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
     pub mode: Option<String>,
 }
 
@@ -55,6 +57,10 @@ pub struct AbortRequest {
 pub struct StateResponse {
     pub model: String,
     pub session_id: String,
+    pub workspace_key: String,
+    pub default_chat_mode: String,
+    pub chat_mode_override: Option<String>,
+    pub effective_chat_mode: String,
     pub tools: Vec<String>,
     pub permission_mode: String,
     pub thinking_enabled: Option<bool>,
@@ -102,11 +108,6 @@ pub async fn chat_handler(
             .into_response();
     }
 
-    let activation = match crate::handlers::resolve_mode_activation(&state, req.mode.as_deref()) {
-        Ok(activation) => activation,
-        Err((status, error)) => return (status, Json(error)).into_response(),
-    };
-
     let engine = state.engine();
     let active_session_id = req
         .session_id
@@ -134,11 +135,63 @@ pub async fn chat_handler(
             .into_response();
     }
 
+    let mode_id = req
+        .mode
+        .as_deref()
+        .map(|mode| crate::handlers::normalize_mode_or_normal(Some(mode)))
+        .unwrap_or_else(|| {
+            crate::handlers::chat_mode_preference_for_cwd_session(engine.cwd(), &active_session_id)
+                .effective_chat_mode
+        });
+    let activation = match crate::handlers::resolve_mode_activation(&state, Some(&mode_id)) {
+        Ok(activation) => activation,
+        Err((status, error)) => {
+            state.release_owner(SessionOwner::ChatStream);
+            return (status, Json(error)).into_response();
+        }
+    };
+    if req.mode.is_some() {
+        if let Err(error) = allthecodes_session::storage::set_session_chat_mode_override(
+            &active_session_id,
+            Some(&mode_id),
+            engine.cwd(),
+        ) {
+            state.release_owner(SessionOwner::ChatStream);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("Failed to persist session mode: {error}"),
+                    code: "session_mode_update_failed".into(),
+
+                    details: serde_json::json!({}),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     let requested_session = active_session_id.as_str();
+    let requested_model = req
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string);
+    if let Some(model) = requested_model.as_ref() {
+        engine.update_app_state(|app_state| {
+            app_state.main_loop_model = model.clone();
+            app_state.settings.model = Some(model.clone());
+            app_state.settings.sources.insert(
+                "model".to_string(),
+                allthecodes_config::settings::SettingsSource::User,
+            );
+        });
+    }
     info!(
         message = %req.message,
         session_id = %requested_session,
-        mode = %req.mode.as_deref().unwrap_or("normal"),
+        model = requested_model.as_deref().unwrap_or(""),
+        mode = %mode_id,
         "POST /api/chat"
     );
 
@@ -221,10 +274,17 @@ pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
 
     let settings_map = app_state.settings.settings_map();
     let effective_system_prompt = effective_system_prompt_from_map(&settings_map);
+    let session_id = state.engine().current_session_id().to_string();
+    let chat_mode_preference =
+        crate::handlers::chat_mode_preference_for_cwd_session(state.engine().cwd(), &session_id);
 
     Json(StateResponse {
         model: app_state.main_loop_model.clone(),
-        session_id: state.engine().current_session_id().to_string(),
+        session_id,
+        workspace_key: chat_mode_preference.workspace_key,
+        default_chat_mode: chat_mode_preference.default_chat_mode,
+        chat_mode_override: chat_mode_preference.chat_mode_override,
+        effective_chat_mode: chat_mode_preference.effective_chat_mode,
         tools: tool_names,
         permission_mode: permission_mode.to_string(),
         thinking_enabled: app_state.thinking_enabled,

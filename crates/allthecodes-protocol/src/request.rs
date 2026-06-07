@@ -93,6 +93,13 @@ crate::api_definitions! {
         errors: [NotFound, Conflict],
         serialization: PerKey("id"),
     },
+    /// Set or clear a session chat mode override.
+    SessionModePatch => "PATCH /api/sessions/{id}/mode" {
+        params: v1::SessionModePatchParams,
+        response: v1::SessionModePatchResponse,
+        errors: [NotFound, Conflict],
+        serialization: PerKey("id"),
+    },
 
     /// Branch a session from a message.
     SessionMessageBranch => "POST /api/sessions/{id}/messages/{message_id}/branch" {
@@ -840,6 +847,8 @@ mod tests {
                 id: "session-1".to_string(),
                 title: Some("Planning".to_string()),
                 archived: false,
+                chat_mode_override: None,
+                effective_chat_mode: "normal".to_string(),
             }],
         });
 

@@ -16,6 +16,7 @@ pub struct WorkspaceSummary {
     pub display_name: Option<String>,
     pub pinned: bool,
     pub hidden: bool,
+    pub default_chat_mode: String,
     pub session_count: usize,
     pub last_modified: i64,
 }
@@ -28,6 +29,8 @@ pub struct WorkspacePatchRequest {
     pub pinned: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hidden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_chat_mode: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

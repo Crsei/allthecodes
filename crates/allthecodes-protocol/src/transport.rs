@@ -174,6 +174,8 @@ mod tests {
                             id: "session-1".to_string(),
                             title: Some("Test".to_string()),
                             archived: false,
+                            chat_mode_override: None,
+                            effective_chat_mode: "normal".to_string(),
                         }],
                     }))
                 }

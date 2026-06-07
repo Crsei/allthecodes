@@ -12,11 +12,14 @@ use serde::{Deserialize, Serialize};
 use allthecodes_config::settings::{user_settings_path, write_settings_file, RawSettings};
 use allthecodes_mcp::discovery::discover_mcp_servers_scoped;
 use allthecodes_plugins::{get_enabled_plugins, PluginStatus};
+use allthecodes_session::storage;
 
 use crate::handlers::ApiError;
 use crate::state::WebState;
+use crate::workspace_metadata;
 
 const CHAT_MODES_KEY: &str = "chatModes";
+pub const NORMAL_CHAT_MODE_ID: &str = "normal";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +61,15 @@ pub struct ChatModeResolved {
 #[serde(rename_all = "camelCase")]
 pub struct ChatModesResponse {
     pub modes: Vec<ChatModeResolved>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatModePreference {
+    pub workspace_key: String,
+    pub default_chat_mode: String,
+    pub chat_mode_override: Option<String>,
+    pub effective_chat_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -177,8 +189,8 @@ pub fn resolve_mode_activation(
     state: &WebState,
     mode: Option<&str>,
 ) -> Result<Option<ModeActivation>, (StatusCode, ApiError)> {
-    let mode_id = normalize_mode_id(mode.unwrap_or("normal"));
-    if mode_id.is_empty() || mode_id == "normal" {
+    let mode_id = normalize_mode_or_normal(mode);
+    if mode_id == NORMAL_CHAT_MODE_ID {
         return Ok(None);
     }
 
@@ -219,6 +231,53 @@ pub fn resolve_mode_activation(
         mode_id: resolved.bundle.id.clone(),
         prompt_prefix: build_mode_prompt(&resolved.bundle),
     }))
+}
+
+pub fn chat_mode_preference_for_cwd_session(cwd: &str, session_id: &str) -> ChatModePreference {
+    if let Ok(info) = storage::load_session_info(session_id) {
+        return chat_mode_preference_for_session_info(&info);
+    }
+
+    let workspace_key = storage::workspace_key(Path::new(cwd));
+    let default_chat_mode = workspace_default_chat_mode(&workspace_key);
+    ChatModePreference {
+        workspace_key,
+        effective_chat_mode: default_chat_mode.clone(),
+        default_chat_mode,
+        chat_mode_override: None,
+    }
+}
+
+pub fn chat_mode_preference_for_session_info(info: &storage::SessionInfo) -> ChatModePreference {
+    let workspace_key = info.workspace_key.clone();
+    let default_chat_mode = workspace_default_chat_mode(&workspace_key);
+    let chat_mode_override = normalize_optional_mode(info.chat_mode_override.as_deref());
+    let effective_chat_mode = chat_mode_override
+        .clone()
+        .unwrap_or_else(|| default_chat_mode.clone());
+    ChatModePreference {
+        workspace_key,
+        default_chat_mode,
+        chat_mode_override,
+        effective_chat_mode,
+    }
+}
+
+pub fn workspace_default_chat_mode(workspace_key: &str) -> String {
+    workspace_metadata::load_metadata()
+        .ok()
+        .and_then(|metadata| metadata.get(workspace_key).cloned())
+        .and_then(|metadata| normalize_optional_mode(metadata.default_chat_mode.as_deref()))
+        .unwrap_or_else(|| NORMAL_CHAT_MODE_ID.to_string())
+}
+
+pub fn normalize_mode_or_normal(mode: Option<&str>) -> String {
+    normalize_optional_mode(mode).unwrap_or_else(|| NORMAL_CHAT_MODE_ID.to_string())
+}
+
+pub fn normalize_optional_mode(mode: Option<&str>) -> Option<String> {
+    mode.map(normalize_mode_id)
+        .and_then(|mode| (!mode.is_empty()).then_some(mode))
 }
 
 fn build_mode_prompt(bundle: &ChatModeBundle) -> String {
@@ -506,7 +565,7 @@ fn skill_source_label(source: &allthecodes_skills::SkillSource) -> String {
     }
 }
 
-fn normalize_mode_id(value: &str) -> String {
+pub fn normalize_mode_id(value: &str) -> String {
     value
         .trim()
         .to_lowercase()

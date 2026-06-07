@@ -33,6 +33,7 @@ pub struct WorkspaceSummary {
     pub display_name: Option<String>,
     pub pinned: bool,
     pub hidden: bool,
+    pub default_chat_mode: String,
     pub session_count: usize,
     pub last_modified: i64,
 }
@@ -45,6 +46,8 @@ pub struct WorkspacePatchRequest {
     pub pinned: Option<bool>,
     #[serde(default)]
     pub hidden: Option<bool>,
+    #[serde(default)]
+    pub default_chat_mode: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -132,6 +135,9 @@ pub async fn workspace_patch_handler(
         display_name: req.display_name,
         pinned: req.pinned,
         hidden: req.hidden,
+        default_chat_mode: req.default_chat_mode.map(|mode| {
+            mode.and_then(|value| crate::handlers::normalize_optional_mode(Some(&value)))
+        }),
     };
     let metadata = match workspace_metadata::update_metadata(&workspace_key, patch) {
         Ok(metadata) => metadata,
@@ -417,6 +423,10 @@ fn workspace_summary(
     workspace: &KnownWorkspace,
     metadata: Option<&WorkspaceUiMetadata>,
 ) -> WorkspaceSummary {
+    let default_chat_mode = metadata
+        .and_then(|m| crate::handlers::normalize_optional_mode(m.default_chat_mode.as_deref()))
+        .unwrap_or_else(|| crate::handlers::workspace_default_chat_mode(&workspace.key));
+
     WorkspaceSummary {
         key: workspace.key.clone(),
         root: workspace.root.to_string_lossy().to_string(),
@@ -424,6 +434,7 @@ fn workspace_summary(
         display_name: metadata.and_then(|m| m.display_name.clone()),
         pinned: metadata.map(|m| m.pinned).unwrap_or(false),
         hidden: metadata.map(|m| m.hidden).unwrap_or(false),
+        default_chat_mode,
         session_count: workspace.session_count,
         last_modified: workspace.last_modified,
     }
