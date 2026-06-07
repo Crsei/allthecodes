@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderSummary {
@@ -27,6 +28,12 @@ pub struct ProviderSummary {
     pub last_refreshed_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_options: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -74,6 +81,8 @@ pub struct ProviderCreateRequest {
     pub env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub models: Option<Vec<String>>,
+    #[serde(default)]
+    pub provider_options: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -94,4 +103,6 @@ pub struct ProviderUpdateRequest {
     pub env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub models: Option<Vec<String>>,
+    #[serde(default)]
+    pub provider_options: Option<Value>,
 }

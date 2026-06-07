@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelSummary {
@@ -23,6 +24,14 @@ pub struct ModelSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_vision: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_image_output: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_embedding: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<i64>,
 }
 
@@ -43,6 +52,20 @@ pub struct ModelUpdateRequest {
     pub alias: Option<String>,
     #[serde(default)]
     pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub supports_tools: Option<bool>,
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
+    #[serde(default)]
+    pub supports_reasoning: Option<bool>,
+    #[serde(default)]
+    pub supports_image_output: Option<bool>,
+    #[serde(default)]
+    pub supports_embedding: Option<bool>,
+    #[serde(default)]
+    pub provider_options: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

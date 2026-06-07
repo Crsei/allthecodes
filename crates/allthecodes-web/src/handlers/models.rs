@@ -4,7 +4,7 @@ use axum::extract::{Path as AxumPath, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::handlers::admin::persist_setting;
 use crate::handlers::providers::{
@@ -35,6 +35,14 @@ pub struct ModelSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_vision: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_image_output: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_embedding: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<i64>,
 }
 
@@ -55,6 +63,20 @@ pub struct ModelUpdateRequest {
     pub alias: Option<String>,
     #[serde(default)]
     pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub supports_tools: Option<bool>,
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
+    #[serde(default)]
+    pub supports_reasoning: Option<bool>,
+    #[serde(default)]
+    pub supports_image_output: Option<bool>,
+    #[serde(default)]
+    pub supports_embedding: Option<bool>,
+    #[serde(default)]
+    pub provider_options: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +107,10 @@ pub async fn models_list_handler(State(state): State<WebState>) -> impl IntoResp
                 max_output_tokens: None,
                 supports_tools: None,
                 supports_vision: None,
+                supports_reasoning: None,
+                supports_image_output: None,
+                supports_embedding: None,
+                provider_options: None,
                 updated_at: None,
             })
             .collect();
@@ -107,7 +133,7 @@ pub async fn models_update_handler(
     State(state): State<WebState>,
     Json(req): Json<ModelUpdateRequest>,
 ) -> Response {
-    if let Err(error) = update_configured_model(&id, req.alias, req.context_window, req.visible) {
+    if let Err(error) = update_configured_model(&id, req) {
         return (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {

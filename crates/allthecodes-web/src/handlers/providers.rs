@@ -14,7 +14,7 @@ use allthecodes_config::settings::{
     load_global_config, write_user_settings, ModelCapabilitySettings, ProviderProfileSettings,
 };
 
-use crate::handlers::models::ModelSummary;
+use crate::handlers::models::{ModelSummary, ModelUpdateRequest};
 use crate::handlers::ApiError;
 use crate::state::WebState;
 
@@ -42,6 +42,12 @@ pub struct ProviderSummary {
     pub last_refreshed_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_options: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -89,6 +95,8 @@ pub struct ProviderCreateRequest {
     pub env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub models: Option<Vec<String>>,
+    #[serde(default)]
+    pub provider_options: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -109,6 +117,8 @@ pub struct ProviderUpdateRequest {
     pub env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub models: Option<Vec<String>>,
+    #[serde(default)]
+    pub provider_options: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -145,6 +155,9 @@ fn provider_summaries_from_settings() -> Vec<ProviderSummary> {
                 models_count: profile.available_models.as_ref().map(|m| m.len()),
                 last_refreshed_at: None,
                 diagnostics: provider_diagnostics(&profile),
+                command: profile_command(&profile),
+                arguments: profile_arguments(&profile),
+                provider_options: profile_provider_options(&profile),
             });
         }
     }
@@ -193,6 +206,9 @@ pub async fn providers_create_handler(Json(req): Json<ProviderCreateRequest>) ->
     }
     if let Some(arguments) = req.arguments.clone() {
         extra.insert("arguments".to_string(), json!(arguments));
+    }
+    if let Some(provider_options) = normalized_json_object(req.provider_options.clone()) {
+        extra.insert("providerOptions".to_string(), provider_options);
     }
 
     let kind = provider_kind_from_request(&req.kind, req.preset_id.as_deref());
@@ -315,6 +331,11 @@ pub async fn providers_update_handler(
     if let Some(models) = req.models {
         profile.available_models = Some(normalize_models(models));
     }
+    if let Some(provider_options) = normalized_json_object(req.provider_options) {
+        profile
+            .extra
+            .insert("providerOptions".to_string(), provider_options);
+    }
 
     settings.auth_profiles = Some(profiles);
 
@@ -415,6 +436,10 @@ pub async fn providers_refresh_models_handler(
             max_output_tokens: None,
             supports_tools: None,
             supports_vision: None,
+            supports_reasoning: None,
+            supports_image_output: None,
+            supports_embedding: None,
+            provider_options: None,
             updated_at: Some(Utc::now().timestamp()),
         })
         .collect();
@@ -468,7 +493,9 @@ pub(crate) fn configured_provider_models() -> Vec<ModelSummary> {
                     context_window: capability
                         .and_then(|capability| capability.context_window)
                         .and_then(|value| u32::try_from(value).ok()),
-                    max_output_tokens: None,
+                    max_output_tokens: capability
+                        .and_then(|capability| capability.max_output_tokens)
+                        .and_then(|value| u32::try_from(value).ok()),
                     supports_tools: capability
                         .map(|capability| capability.supports_parallel_tool_calls),
                     supports_vision: capability.map(|capability| {
@@ -476,6 +503,17 @@ pub(crate) fn configured_provider_models() -> Vec<ModelSummary> {
                             .input_modalities
                             .iter()
                             .any(|modality| modality == "image")
+                    }),
+                    supports_reasoning: capability.map(capability_supports_reasoning),
+                    supports_image_output: capability
+                        .and_then(|capability| capability.supports_image_output),
+                    supports_embedding: capability
+                        .and_then(|capability| capability.supports_embedding),
+                    provider_options: capability.and_then(|capability| {
+                        capability
+                            .provider_options
+                            .clone()
+                            .and_then(normalized_json_object)
                     }),
                     updated_at: None,
                 });
@@ -504,9 +542,7 @@ pub(crate) fn provider_for_model(model_id: &str) -> Option<(String, bool)> {
 
 pub(crate) fn update_configured_model(
     model_id: &str,
-    alias: Option<String>,
-    context_window: Option<u32>,
-    visible: Option<bool>,
+    req: ModelUpdateRequest,
 ) -> anyhow::Result<()> {
     let mut settings = load_global_config().unwrap_or_default();
     let Some(profiles) = settings.auth_profiles.as_mut() else {
@@ -522,18 +558,52 @@ pub(crate) fn update_configured_model(
         if !matches {
             continue;
         }
-        if let Some(visible) = visible {
+        if let Some(visible) = req.visible {
             profile.extra.insert("enabled".to_string(), json!(visible));
         }
         let capabilities = profile.model_capabilities.get_or_insert_with(HashMap::new);
         let entry = capabilities
             .entry(model_id.to_string())
             .or_insert_with(ModelCapabilitySettings::default);
-        if let Some(alias) = alias.clone() {
+        if let Some(alias) = req.alias.clone() {
             entry.description = normalized_non_empty(Some(alias.as_str()));
         }
-        if let Some(context_window) = context_window {
+        if let Some(context_window) = req.context_window {
             entry.context_window = Some(u64::from(context_window));
+        }
+        if let Some(max_output_tokens) = req.max_output_tokens {
+            entry.max_output_tokens = Some(u64::from(max_output_tokens));
+        }
+        if let Some(supports_tools) = req.supports_tools {
+            entry.supports_parallel_tool_calls = supports_tools;
+        }
+        if let Some(supports_vision) = req.supports_vision {
+            set_input_modality(&mut entry.input_modalities, "image", supports_vision);
+        }
+        if let Some(supports_reasoning) = req.supports_reasoning {
+            entry.supports_reasoning = Some(supports_reasoning);
+            entry.supports_reasoning_summaries = supports_reasoning;
+            if supports_reasoning {
+                if entry.supported_reasoning_levels.is_empty() {
+                    entry.supported_reasoning_levels =
+                        vec!["low".to_string(), "medium".to_string(), "high".to_string()];
+                }
+                if entry.default_reasoning_level.is_none() {
+                    entry.default_reasoning_level = Some("medium".to_string());
+                }
+            } else {
+                entry.supported_reasoning_levels.clear();
+                entry.default_reasoning_level = None;
+            }
+        }
+        if let Some(supports_image_output) = req.supports_image_output {
+            entry.supports_image_output = Some(supports_image_output);
+        }
+        if let Some(supports_embedding) = req.supports_embedding {
+            entry.supports_embedding = Some(supports_embedding);
+        }
+        if let Some(provider_options) = normalized_json_object(req.provider_options.clone()) {
+            entry.provider_options = Some(provider_options);
         }
     }
 
@@ -600,6 +670,38 @@ fn provider_kind_from_request(kind: &str, preset_id: Option<&str>) -> String {
         "openai_compatible" => "openai".to_string(),
         other => other.to_string(),
     }
+}
+
+fn profile_command(profile: &ProviderProfileSettings) -> Option<String> {
+    profile
+        .extra
+        .get("command")
+        .and_then(Value::as_str)
+        .and_then(|value| normalized_non_empty(Some(value)))
+}
+
+fn profile_arguments(profile: &ProviderProfileSettings) -> Option<Vec<String>> {
+    let arguments = profile
+        .extra
+        .get("arguments")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_str)
+        .filter_map(|value| normalized_non_empty(Some(value)))
+        .collect::<Vec<_>>();
+    if arguments.is_empty() {
+        None
+    } else {
+        Some(arguments)
+    }
+}
+
+fn profile_provider_options(profile: &ProviderProfileSettings) -> Option<Value> {
+    profile
+        .extra
+        .get("providerOptions")
+        .cloned()
+        .and_then(normalized_json_object)
 }
 
 fn profile_enabled(profile: &ProviderProfileSettings) -> bool {
@@ -681,11 +783,37 @@ fn normalize_models(models: Vec<String>) -> Vec<String> {
     normalized
 }
 
+fn normalized_json_object(value: Option<Value>) -> Option<Value> {
+    match value {
+        Some(Value::Object(map)) if !map.is_empty() => Some(Value::Object(map)),
+        Some(Value::Object(map)) => Some(Value::Object(map)),
+        _ => None,
+    }
+}
+
 fn normalized_non_empty(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn capability_supports_reasoning(capability: &ModelCapabilitySettings) -> bool {
+    capability.supports_reasoning.unwrap_or_else(|| {
+        capability.default_reasoning_level.is_some()
+            || !capability.supported_reasoning_levels.is_empty()
+            || capability.supports_reasoning_summaries
+    })
+}
+
+fn set_input_modality(modalities: &mut Vec<String>, modality: &str, enabled: bool) {
+    if enabled {
+        if !modalities.iter().any(|item| item == modality) {
+            modalities.push(modality.to_string());
+        }
+    } else {
+        modalities.retain(|item| item != modality);
+    }
 }
 
 fn protocol_label(protocol: allthecodes_api::api::providers::ProviderProtocol) -> &'static str {
