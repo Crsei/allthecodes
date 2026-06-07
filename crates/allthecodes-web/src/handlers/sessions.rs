@@ -4,6 +4,9 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use allthecodes_protocol::v1::{SessionArchiveParams, SessionDetailParams, SessionResumeParams};
+use allthecodes_protocol::{ApiError as ProtocolApiError, NoParams, SerializationScope};
+use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -19,6 +22,7 @@ use allthecodes_types::message::{ContentBlock, Message, MessageContent};
 
 use crate::handlers::workspaces::resolve_workspace_root;
 use crate::handlers::ApiError;
+use crate::processors::{process_processor, Processor};
 use crate::state::{SessionOwner, WebState};
 
 // ---------------------------------------------------------------------------
@@ -147,89 +151,203 @@ pub struct RollbackPreviewResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Processor implementations
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct SessionListProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionListProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionListProcessor {
+    type Request = NoParams;
+    type Response = SessionListResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.list"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
+        Ok(build_session_list_response(&self.state))
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionDetailProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionDetailProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionDetailProcessor {
+    type Request = SessionDetailParams;
+    type Response = SessionDetailResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.detail"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "id")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        load_session_detail(params.id)
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionResumeProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionResumeProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionResumeProcessor {
+    type Request = SessionResumeParams;
+    type Response = SessionDetailResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.resume"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "id")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        if self.state.is_streaming.load(Ordering::SeqCst) {
+            return Err(ProtocolApiError::EngineBusy);
+        }
+        if let Some(error) = ownership_conflict_error(&self.state) {
+            return Err(error);
+        }
+
+        info!(session_id = %params.id, "POST /api/sessions/:id/resume");
+
+        let messages = load_session_messages(&params.id)?;
+        let response = session_detail_from_messages(params.id.clone(), &messages);
+        let engine = rebuild_engine_with_session_id(&self.state, Some(messages), Some(&params.id));
+        self.state.replace_engine(engine);
+
+        Ok(response)
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionArchiveProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionArchiveProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionArchiveProcessor {
+    type Request = SessionArchiveParams;
+    type Response = SessionMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.archive"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "id")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        if self.state.is_streaming.load(Ordering::SeqCst) {
+            return Err(ProtocolApiError::EngineBusy);
+        }
+        if let Some(error) = ownership_conflict_error(&self.state) {
+            return Err(error);
+        }
+        if self.state.engine().current_session_id().to_string() == params.id {
+            return Err(ProtocolApiError::Conflict {
+                reason: "Cannot archive the active session".to_string(),
+            });
+        }
+
+        info!(session_id = %params.id, "POST /api/sessions/:id/archive");
+
+        storage::load_session_info(&params.id).map_err(|_| ProtocolApiError::NotFound {
+            entity: "session",
+            id: params.id.clone(),
+        })?;
+
+        storage::archive_session(&params.id).map_err(|error| {
+            warn!(session_id = %params.id, error = %error, "failed to archive session");
+            ProtocolApiError::Internal {
+                message: format!("Failed to archive session: {error}"),
+            }
+        })?;
+
+        Ok(SessionMutationResponse {
+            ok: true,
+            message: "Session archived".into(),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Handler implementations
 // ---------------------------------------------------------------------------
 
 /// GET /api/sessions -- List all sessions with workspace grouping metadata.
-pub async fn sessions_list_handler(State(state): State<WebState>) -> impl IntoResponse {
-    let engine = state.engine();
-    let cwd_str = engine.cwd().to_string();
-    let cwd_path = Path::new(&cwd_str);
-
-    let ws_key = storage::workspace_key(cwd_path);
-    let ws_root = storage::workspace_root(cwd_path);
-    let ws_name = storage::workspace_name(&ws_root);
-
-    let sessions = match storage::list_sessions() {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(error = %e, "failed to list sessions");
-            Vec::new()
-        }
-    };
-
-    let summaries: Vec<SessionSummary> = sessions.into_iter().map(SessionSummary::from).collect();
-
-    Json(SessionListResponse {
-        current_workspace: WorkspaceInfo {
-            key: ws_key,
-            root: ws_root.to_string_lossy().to_string(),
-            name: ws_name,
-        },
-        active_session_id: engine.current_session_id().to_string(),
-        sessions: summaries,
-    })
+pub async fn sessions_list_handler(State(state): State<WebState>) -> Response {
+    process_processor(SessionListProcessor::from(state), NoParams {}).await
 }
 
 /// GET /api/sessions/:id -- Load a session's message history for preview.
 pub async fn session_detail_handler(
     AxumPath(id): AxumPath<String>,
-    State(_state): State<WebState>,
-) -> impl IntoResponse {
-    info!(session_id = %id, "GET /api/sessions/:id");
-
-    let messages = match session_resume::resume_session(&id) {
-        Ok(m) => m,
-        Err(e) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: format!("Session not found: {}", e),
-                    code: "session_not_found".into(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    // Look up disk metadata for title / cwd / timestamps.
-    let info = storage::list_sessions()
-        .ok()
-        .and_then(|list| list.into_iter().find(|s| s.session_id == id));
-
-    let (title, cwd, created_at, last_modified, workspace_name) = match info {
-        Some(i) => (
-            i.title,
-            i.cwd,
-            i.created_at,
-            i.last_modified,
-            i.workspace_name,
-        ),
-        None => (String::new(), String::new(), 0, 0, String::new()),
-    };
-
-    let rendered: Vec<StoredMessage> = messages.iter().map(stored_message_from).collect();
-
-    Json(SessionDetailResponse {
-        session_id: id,
-        created_at,
-        last_modified,
-        cwd,
-        title,
-        workspace_name,
-        messages: rendered,
-    })
-    .into_response()
+    State(state): State<WebState>,
+) -> Response {
+    process_processor(
+        SessionDetailProcessor::from(state),
+        SessionDetailParams { id },
+    )
+    .await
 }
 
 /// POST /api/sessions/new -- Start a fresh session in the current workspace.
@@ -294,128 +412,24 @@ pub async fn session_new_handler(
 pub async fn session_resume_handler(
     AxumPath(id): AxumPath<String>,
     State(state): State<WebState>,
-) -> impl IntoResponse {
-    if state.is_streaming.load(Ordering::SeqCst) {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "A query is in progress — abort it before switching sessions".into(),
-                code: "engine_busy".into(),
-            }),
-        )
-            .into_response();
-    }
-    if let Some(response) = ownership_conflict_response(&state) {
-        return response;
-    }
-
-    info!(session_id = %id, "POST /api/sessions/:id/resume");
-
-    let messages = match session_resume::resume_session(&id) {
-        Ok(m) => m,
-        Err(e) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: format!("Session not found: {}", e),
-                    code: "session_not_found".into(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    let engine = rebuild_engine_with_session_id(&state, Some(messages.clone()), Some(&id));
-    state.replace_engine(engine);
-
-    let rendered: Vec<StoredMessage> = messages.iter().map(stored_message_from).collect();
-
-    let info = storage::list_sessions()
-        .ok()
-        .and_then(|list| list.into_iter().find(|s| s.session_id == id));
-
-    let (title, cwd, created_at, last_modified, workspace_name) = match info {
-        Some(i) => (
-            i.title,
-            i.cwd,
-            i.created_at,
-            i.last_modified,
-            i.workspace_name,
-        ),
-        None => (String::new(), String::new(), 0, 0, String::new()),
-    };
-
-    Json(SessionDetailResponse {
-        session_id: id,
-        created_at,
-        last_modified,
-        cwd,
-        title,
-        workspace_name,
-        messages: rendered,
-    })
-    .into_response()
+) -> Response {
+    process_processor(
+        SessionResumeProcessor::from(state),
+        SessionResumeParams { id },
+    )
+    .await
 }
 
 /// POST /api/sessions/:id/archive -- Hide a saved session from the default list.
 pub async fn session_archive_handler(
     AxumPath(id): AxumPath<String>,
     State(state): State<WebState>,
-) -> impl IntoResponse {
-    if state.is_streaming.load(Ordering::SeqCst) {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "A query is in progress — abort it before archiving sessions".into(),
-                code: "engine_busy".into(),
-            }),
-        )
-            .into_response();
-    }
-    if let Some(response) = ownership_conflict_response(&state) {
-        return response;
-    }
-    if state.engine().current_session_id().to_string() == id {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "Cannot archive the active session".into(),
-                code: "session_active".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    info!(session_id = %id, "POST /api/sessions/:id/archive");
-
-    if let Err(e) = storage::load_session_info(&id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: format!("Session not found: {}", e),
-                code: "session_not_found".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    if let Err(e) = storage::archive_session(&id) {
-        warn!(session_id = %id, error = %e, "failed to archive session");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Failed to archive session: {}", e),
-                code: "session_archive_failed".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    Json(SessionMutationResponse {
-        ok: true,
-        message: "Session archived".into(),
-    })
-    .into_response()
+) -> Response {
+    process_processor(
+        SessionArchiveProcessor::from(state),
+        SessionArchiveParams { id },
+    )
+    .await
 }
 
 /// POST /api/sessions/:id/messages/:message_id/branch
@@ -666,6 +680,101 @@ pub async fn session_message_rollback_handler(
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn build_session_list_response(state: &WebState) -> SessionListResponse {
+    let engine = state.engine();
+    let cwd_str = engine.cwd().to_string();
+    let cwd_path = Path::new(&cwd_str);
+
+    let ws_key = storage::workspace_key(cwd_path);
+    let ws_root = storage::workspace_root(cwd_path);
+    let ws_name = storage::workspace_name(&ws_root);
+
+    let sessions = match storage::list_sessions() {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "failed to list sessions");
+            Vec::new()
+        }
+    };
+
+    let summaries: Vec<SessionSummary> = sessions.into_iter().map(SessionSummary::from).collect();
+
+    SessionListResponse {
+        current_workspace: WorkspaceInfo {
+            key: ws_key,
+            root: ws_root.to_string_lossy().to_string(),
+            name: ws_name,
+        },
+        active_session_id: engine.current_session_id().to_string(),
+        sessions: summaries,
+    }
+}
+
+fn load_session_detail(id: String) -> Result<SessionDetailResponse, ProtocolApiError> {
+    info!(session_id = %id, "GET /api/sessions/:id");
+    let messages = load_session_messages(&id)?;
+    Ok(session_detail_from_messages(id, &messages))
+}
+
+fn load_session_messages(session_id: &str) -> Result<Vec<Message>, ProtocolApiError> {
+    session_resume::resume_session(session_id).map_err(|_| ProtocolApiError::NotFound {
+        entity: "session",
+        id: session_id.to_string(),
+    })
+}
+
+fn session_detail_from_messages(id: String, messages: &[Message]) -> SessionDetailResponse {
+    let info = storage::list_sessions()
+        .ok()
+        .and_then(|list| list.into_iter().find(|s| s.session_id == id));
+
+    let (title, cwd, created_at, last_modified, workspace_name) = match info {
+        Some(i) => (
+            i.title,
+            i.cwd,
+            i.created_at,
+            i.last_modified,
+            i.workspace_name,
+        ),
+        None => (String::new(), String::new(), 0, 0, String::new()),
+    };
+
+    let rendered: Vec<StoredMessage> = messages.iter().map(stored_message_from).collect();
+
+    SessionDetailResponse {
+        session_id: id,
+        created_at,
+        last_modified,
+        cwd,
+        title,
+        workspace_name,
+        messages: rendered,
+    }
+}
+
+fn ownership_conflict_error(state: &WebState) -> Option<ProtocolApiError> {
+    let owner = state.ownership_snapshot();
+    if owner.owner == SessionOwner::None {
+        return None;
+    }
+
+    Some(ProtocolApiError::Conflict {
+        reason: ownership_conflict_message(&owner),
+    })
+}
+
+fn ownership_conflict_message(owner: &crate::state::SessionOwnership) -> String {
+    format!(
+        "Session is currently owned by {:?}{}",
+        owner.owner,
+        owner
+            .session_id
+            .as_deref()
+            .map(|id| format!(" ({id})"))
+            .unwrap_or_default()
+    )
+}
+
 async fn mutation_guard(state: &WebState, session_id: &str, action: &str) -> Option<Response> {
     if state.is_streaming.load(Ordering::SeqCst) {
         return Some(
@@ -775,15 +884,7 @@ pub(crate) fn ownership_conflict_response(state: &WebState) -> Option<Response> 
         (
             StatusCode::CONFLICT,
             Json(ApiError {
-                error: format!(
-                    "Session is currently owned by {:?}{}",
-                    owner.owner,
-                    owner
-                        .session_id
-                        .as_deref()
-                        .map(|id| format!(" ({id})"))
-                        .unwrap_or_default()
-                ),
+                error: ownership_conflict_message(&owner),
                 code: "session_owned".into(),
             }),
         )

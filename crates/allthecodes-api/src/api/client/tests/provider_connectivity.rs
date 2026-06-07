@@ -23,8 +23,8 @@ use super::*;
 #[tokio::test]
 #[ignore = "requires DEEPSEEK_API_KEY env var set"]
 async fn test_deepseek_openai_compat_chat() {
-    let api_key = std::env::var("DEEPSEEK_API_KEY")
-        .expect("set DEEPSEEK_API_KEY=sk-... to run this test");
+    let api_key =
+        std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY=sk-... to run this test");
 
     let provider = ApiProvider::OpenAiCompat {
         name: "deepseek".to_string(),
@@ -42,7 +42,9 @@ async fn test_deepseek_openai_compat_chat() {
 
     let request = MessagesRequest {
         model: "deepseek-v4-pro".to_string(),
-        messages: vec![serde_json::json!({"role": "user", "content": "Reply with only the word OK."})],
+        messages: vec![
+            serde_json::json!({"role": "user", "content": "Reply with only the word OK."}),
+        ],
         system: None,
         max_tokens: 256,
         tools: None,
@@ -115,8 +117,8 @@ async fn test_deepseek_openai_compat_chat() {
 #[tokio::test]
 #[ignore = "requires DEEPSEEK_API_KEY env var set"]
 async fn test_deepseek_model_list() {
-    let api_key = std::env::var("DEEPSEEK_API_KEY")
-        .expect("set DEEPSEEK_API_KEY=sk-... to run this test");
+    let api_key =
+        std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY=sk-... to run this test");
 
     let client = reqwest::Client::new();
     let resp = client
@@ -128,10 +130,7 @@ async fn test_deepseek_model_list() {
 
     assert_eq!(resp.status(), 200, "expected 200 OK, got {}", resp.status());
 
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .expect("response should be valid JSON");
+    let body: serde_json::Value = resp.json().await.expect("response should be valid JSON");
 
     let models = body["data"]
         .as_array()
@@ -139,10 +138,7 @@ async fn test_deepseek_model_list() {
 
     assert!(!models.is_empty(), "expected at least one model");
 
-    let model_ids: Vec<&str> = models
-        .iter()
-        .filter_map(|m| m["id"].as_str())
-        .collect();
+    let model_ids: Vec<&str> = models.iter().filter_map(|m| m["id"].as_str()).collect();
 
     assert!(
         model_ids.contains(&"deepseek-chat") || model_ids.contains(&"deepseek-v4-pro"),

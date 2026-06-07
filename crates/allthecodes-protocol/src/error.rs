@@ -6,27 +6,19 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ApiError {
     #[error("{entity} not found: {id}")]
-    NotFound {
-        entity: &'static str,
-        id: String,
-    },
+    NotFound { entity: &'static str, id: String },
     #[error("conflict: {reason}")]
-    Conflict {
-        reason: String,
-    },
+    Conflict { reason: String },
     #[error("validation failed for {field}: {message}")]
-    Validation {
-        field: String,
-        message: String,
-    },
+    Validation { field: String, message: String },
     #[error("engine is busy")]
     EngineBusy,
     #[error("experimental API is not enabled: {0}")]
     Experimental(String),
+    #[error("API endpoint is not implemented: {capability}")]
+    NotImplemented { capability: String },
     #[error("internal error: {message}")]
-    Internal {
-        message: String,
-    },
+    Internal { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -44,6 +36,7 @@ impl ApiError {
             Self::Validation { .. } => 422,
             Self::EngineBusy => 503,
             Self::Experimental(_) => 403,
+            Self::NotImplemented { .. } => 501,
             Self::Internal { .. } => 500,
         }
     }
@@ -55,6 +48,7 @@ impl ApiError {
             Self::Validation { .. } => "validation",
             Self::EngineBusy => "engine_busy",
             Self::Experimental(_) => "experimental",
+            Self::NotImplemented { .. } => "capability_not_implemented",
             Self::Internal { .. } => "internal",
         }
     }
@@ -95,6 +89,9 @@ impl ApiError {
             Self::EngineBusy => json!({}),
             Self::Experimental(reason) => json!({
                 "reason": reason,
+            }),
+            Self::NotImplemented { capability } => json!({
+                "capability": capability,
             }),
             Self::Internal { message } => json!({
                 "message": message,

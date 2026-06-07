@@ -629,10 +629,12 @@ dependencies = [
 name = "allthecodes-protocol"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

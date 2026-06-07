@@ -2,6 +2,13 @@ use serde_json::Value;
 
 use crate::v1;
 
+pub fn schema_for<T>() -> schemars::schema::RootSchema
+where
+    T: schemars::JsonSchema,
+{
+    schemars::schema_for!(T)
+}
+
 pub const fn split_route(route: &'static str) -> (&'static str, &'static str) {
     let bytes = route.as_bytes();
     let mut index = 0;

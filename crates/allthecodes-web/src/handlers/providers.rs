@@ -207,7 +207,11 @@ pub async fn providers_create_handler(Json(req): Json<ProviderCreateRequest>) ->
     if let Some(arguments) = req.arguments.clone() {
         extra.insert("arguments".to_string(), json!(arguments));
     }
-    if let Some(provider_options) = normalized_json_object(req.provider_options.clone()) {
+    if let Some(provider_options) = req
+        .provider_options
+        .clone()
+        .and_then(normalized_json_object)
+    {
         extra.insert("providerOptions".to_string(), provider_options);
     }
 
@@ -331,7 +335,7 @@ pub async fn providers_update_handler(
     if let Some(models) = req.models {
         profile.available_models = Some(normalize_models(models));
     }
-    if let Some(provider_options) = normalized_json_object(req.provider_options) {
+    if let Some(provider_options) = req.provider_options.and_then(normalized_json_object) {
         profile
             .extra
             .insert("providerOptions".to_string(), provider_options);
@@ -602,7 +606,11 @@ pub(crate) fn update_configured_model(
         if let Some(supports_embedding) = req.supports_embedding {
             entry.supports_embedding = Some(supports_embedding);
         }
-        if let Some(provider_options) = normalized_json_object(req.provider_options.clone()) {
+        if let Some(provider_options) = req
+            .provider_options
+            .clone()
+            .and_then(normalized_json_object)
+        {
             entry.provider_options = Some(provider_options);
         }
     }
@@ -783,10 +791,9 @@ fn normalize_models(models: Vec<String>) -> Vec<String> {
     normalized
 }
 
-fn normalized_json_object(value: Option<Value>) -> Option<Value> {
+fn normalized_json_object(value: Value) -> Option<Value> {
     match value {
-        Some(Value::Object(map)) if !map.is_empty() => Some(Value::Object(map)),
-        Some(Value::Object(map)) => Some(Value::Object(map)),
+        Value::Object(map) => Some(Value::Object(map)),
         _ => None,
     }
 }

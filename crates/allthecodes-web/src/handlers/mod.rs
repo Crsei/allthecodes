@@ -7,7 +7,9 @@
 
 use std::sync::{OnceLock, RwLock};
 
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
+use serde_json::json;
 
 use allthecodes_commands::Command;
 
@@ -89,10 +91,23 @@ pub use workspaces::*;
 // Shared types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct ApiError {
     pub error: String,
     pub code: String,
+}
+
+impl Serialize for ApiError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut body = serializer.serialize_struct("ApiErrorBody", 3)?;
+        body.serialize_field("error", &self.error)?;
+        body.serialize_field("code", &self.code)?;
+        body.serialize_field("details", &json!({}))?;
+        body.end()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -597,7 +612,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = response_json(response).await;
-        assert_eq!(body["code"], json!("session_not_found"));
+        assert_eq!(body["code"], json!("not_found"));
     }
 
     #[tokio::test]
@@ -613,7 +628,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = response_json(response).await;
-        assert_eq!(body["code"], json!("session_active"));
+        assert_eq!(body["code"], json!("conflict"));
     }
 
     #[tokio::test]

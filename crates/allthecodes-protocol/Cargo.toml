@@ -3,9 +3,20 @@ name = "allthecodes-protocol"
 version = "0.1.0"
 edition = "2021"
 description = "Shared API protocol definitions for allthecodes transports."
+build = "build.rs"
 
 [dependencies]
+async-trait = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[build-dependencies]
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

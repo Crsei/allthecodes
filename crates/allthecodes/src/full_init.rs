@@ -213,7 +213,10 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
                 let span = self
                     .handle
                     .start_interaction(session_id.to_string(), submit_id.to_string());
-                self.active_spans.lock().expect("active_spans lock poisoned").insert(id, span);
+                self.active_spans
+                    .lock()
+                    .expect("active_spans lock poisoned")
+                    .insert(id, span);
                 id
             }
 
@@ -224,7 +227,12 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
                 input_tokens: u64,
                 output_tokens: u64,
             ) {
-                if let Some(mut span) = self.active_spans.lock().expect("active_spans lock poisoned").remove(&span_id) {
+                if let Some(mut span) = self
+                    .active_spans
+                    .lock()
+                    .expect("active_spans lock poisoned")
+                    .remove(&span_id)
+                {
                     span.finish(model, input_tokens as u32, output_tokens as u32);
                 }
             }
@@ -235,12 +243,20 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
                     hook_name.to_string(),
                     self.handle.clone(),
                 );
-                self.active_hooks.lock().expect("active_hooks lock poisoned").insert(id, span);
+                self.active_hooks
+                    .lock()
+                    .expect("active_hooks lock poisoned")
+                    .insert(id, span);
                 id
             }
 
             fn end_hook(&self, span_id: SpanId, _result: &str) {
-                if let Some(mut span) = self.active_hooks.lock().expect("active_hooks lock poisoned").remove(&span_id) {
+                if let Some(mut span) = self
+                    .active_hooks
+                    .lock()
+                    .expect("active_hooks lock poisoned")
+                    .remove(&span_id)
+                {
                     if _result == "error" {
                         span.record_error("hook returned error");
                     } else {

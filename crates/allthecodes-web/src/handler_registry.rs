@@ -1,13 +1,19 @@
 use std::collections::{BTreeMap, HashSet};
 
-use allthecodes_protocol::{ApiMethod, ALL_ENDPOINTS};
+use allthecodes_protocol::{ApiError as ProtocolApiError, ApiMethod, ALL_ENDPOINTS, API_METADATA};
+use axum::extract::Request;
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, patch, post, put, MethodRouter};
 use axum::{Json, Router};
 use serde::Serialize;
 use tracing::error;
 
 use crate::handlers;
-use crate::processors::{processor_no_params_handler, CapabilitiesProcessor};
+use crate::processors::{
+    processor_no_params_handler, processor_path_handler, CapabilitiesProcessor,
+};
 use crate::state::WebState;
 use crate::ws;
 
@@ -150,22 +156,25 @@ pub fn chat_handlers() -> HandlerRegistry {
 
 pub fn session_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
-        .handle(ApiMethod::SessionList, get(handlers::sessions_list_handler))
+        .handle(
+            ApiMethod::SessionList,
+            get(processor_no_params_handler::<handlers::SessionListProcessor>),
+        )
         .handle(
             ApiMethod::SessionCreate,
             post(handlers::session_new_handler),
         )
         .handle(
             ApiMethod::SessionDetail,
-            get(handlers::session_detail_handler),
+            get(processor_path_handler::<handlers::SessionDetailProcessor>),
         )
         .handle(
             ApiMethod::SessionResume,
-            post(handlers::session_resume_handler),
+            post(processor_path_handler::<handlers::SessionResumeProcessor>),
         )
         .handle(
             ApiMethod::SessionArchive,
-            post(handlers::session_archive_handler),
+            post(processor_path_handler::<handlers::SessionArchiveProcessor>),
         )
         .handle(
             ApiMethod::SessionMessageBranch,
@@ -812,7 +821,7 @@ pub fn register_protocol_routes(
         error!("protocol handler registry validation failed: {:?}", error);
     }
 
-    let mut routes: BTreeMap<&'static str, MethodRouter<WebState>> = BTreeMap::new();
+    let mut routes: BTreeMap<String, MethodRouter<WebState>> = BTreeMap::new();
     for entry in registry.entries() {
         let Some(endpoint) = protocol_endpoint(entry.operation) else {
             error!(
@@ -822,16 +831,28 @@ pub fn register_protocol_routes(
             continue;
         };
 
+        let method_router = match experimental_reason(entry.operation) {
+            Some(reason) => experimental_gate(entry.router.clone(), reason),
+            None => entry.router.clone(),
+        };
+
         routes
-            .entry(endpoint.path)
+            .entry(endpoint.path.to_string())
             .and_modify(|router| {
-                *router = router.clone().merge(entry.router.clone());
+                *router = router.clone().merge(method_router.clone());
             })
-            .or_insert_with(|| entry.router.clone());
+            .or_insert_with(|| method_router.clone());
+
+        routes
+            .entry(versioned_api_path(endpoint.path))
+            .and_modify(|router| {
+                *router = router.clone().merge(method_router.clone());
+            })
+            .or_insert(method_router);
     }
 
     for (path, method_router) in routes {
-        router = router.route(path, method_router);
+        router = router.route(&path, method_router);
     }
 
     router
@@ -857,8 +878,10 @@ pub async fn protocol_routes_handler() -> Json<Vec<ProtocolRouteInfo>> {
                 operation: format!("{:?}", endpoint.operation),
                 http_method: endpoint.http_method,
                 path: endpoint.path,
+                v2_path: versioned_api_path(endpoint.path),
                 registered: registered.contains(&endpoint.operation),
                 unimplemented: unimplemented.contains(&endpoint.operation),
+                experimental: experimental_reason(endpoint.operation),
                 any_method: endpoint.http_method == "ANY",
                 websocket: endpoint.http_method == "ANY" || endpoint.path.ends_with("/ws"),
             })
@@ -872,13 +895,55 @@ fn protocol_endpoint(operation: ApiMethod) -> Option<&'static allthecodes_protoc
         .find(|endpoint| endpoint.operation == operation)
 }
 
+fn experimental_reason(operation: ApiMethod) -> Option<&'static str> {
+    API_METADATA
+        .iter()
+        .find(|metadata| metadata.endpoint.operation == operation)
+        .and_then(|metadata| metadata.experimental)
+}
+
+fn experimental_gate(
+    router: MethodRouter<WebState>,
+    reason: &'static str,
+) -> MethodRouter<WebState> {
+    router.route_layer(middleware::from_fn(
+        move |request: Request, next: Next| async move {
+            if experimental_apis_enabled() {
+                next.run(request).await
+            } else {
+                protocol_error_response(ProtocolApiError::Experimental(reason.to_string()))
+            }
+        },
+    ))
+}
+
+fn experimental_apis_enabled() -> bool {
+    std::env::var("ALLTHECODES_ENABLE_EXPERIMENTAL_API")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+}
+
+fn protocol_error_response(error: ProtocolApiError) -> Response {
+    let status =
+        StatusCode::from_u16(error.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, Json(error.into_body())).into_response()
+}
+
+fn versioned_api_path(path: &str) -> String {
+    path.strip_prefix("/api")
+        .map(|suffix| format!("/api/v2{suffix}"))
+        .unwrap_or_else(|| path.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProtocolRouteInfo {
     pub operation: String,
     pub http_method: &'static str,
     pub path: &'static str,
+    pub v2_path: String,
     pub registered: bool,
     pub unimplemented: bool,
+    pub experimental: Option<&'static str>,
     pub any_method: bool,
     pub websocket: bool,
 }
@@ -924,5 +989,11 @@ mod tests {
         );
 
         let _router = register_protocol_routes(Router::new(), &registry);
+    }
+
+    #[test]
+    fn versioned_api_path_adds_v2_prefix() {
+        assert_eq!(versioned_api_path("/api/sessions"), "/api/v2/sessions");
+        assert_eq!(versioned_api_path("/api/-/routes"), "/api/v2/-/routes");
     }
 }

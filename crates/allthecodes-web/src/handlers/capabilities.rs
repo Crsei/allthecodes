@@ -2,25 +2,11 @@
 
 use std::collections::HashMap;
 
+use allthecodes_protocol::ApiError as ProtocolApiError;
 use axum::extract::Path as AxumPath;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use serde::Serialize;
-
-use crate::handlers::ApiError;
-
-#[derive(Serialize)]
-pub struct CapabilityDiscoveryResponse {
-    pub capabilities: HashMap<String, bool>,
-}
-
-/// GET /api/capabilities -- Return capability discovery map.
-pub async fn capabilities_handler() -> impl IntoResponse {
-    Json(CapabilityDiscoveryResponse {
-        capabilities: capabilities_map(),
-    })
-}
 
 pub fn capabilities_map() -> HashMap<String, bool> {
     let mut caps = HashMap::new();
@@ -71,16 +57,8 @@ pub fn capabilities_map() -> HashMap<String, bool> {
 /// Catch-all handler for unregistered /api/* paths.
 /// Returns 501 JSON instead of falling through to static file serving.
 pub async fn api_fallback_handler(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
-    let status = if path.starts_with("api/") {
-        StatusCode::NOT_IMPLEMENTED
-    } else {
-        StatusCode::NOT_FOUND
-    };
-    (
-        status,
-        Json(ApiError {
-            error: "API endpoint not implemented".into(),
-            code: "capability_not_implemented".into(),
-        }),
-    )
+    let error = ProtocolApiError::NotImplemented { capability: path };
+    let status =
+        StatusCode::from_u16(error.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, Json(error.into_body()))
 }

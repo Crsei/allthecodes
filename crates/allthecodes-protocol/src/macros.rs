@@ -107,6 +107,32 @@ macro_rules! api_definitions {
             }
         }
 
+        #[derive(Debug, Clone, Copy)]
+        pub struct ApiTypeMetadata {
+            pub rust_type: &'static str,
+            pub schema: fn() -> ::schemars::schema::RootSchema,
+        }
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum SerializationPolicy {
+            Concurrent,
+            PerProcess,
+            PerConnection,
+            PerKey {
+                field: &'static str,
+            },
+        }
+
+        #[derive(Debug, Clone, Copy)]
+        pub struct ApiOperationMetadata {
+            pub endpoint: ApiEndpoint,
+            pub params: Option<ApiTypeMetadata>,
+            pub response: ApiTypeMetadata,
+            pub errors: &'static [&'static str],
+            pub serialization: SerializationPolicy,
+            pub experimental: Option<&'static str>,
+        }
+
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub enum SerializationScope {
             Concurrent,
@@ -185,6 +211,21 @@ macro_rules! api_definitions {
                 ApiEndpoint::from_route(ApiMethod::$variant, $route),
             )*
         ];
+
+        pub const API_METADATA: &[ApiOperationMetadata] = &[
+            $(
+                ApiOperationMetadata {
+                    endpoint: ApiEndpoint::from_route(ApiMethod::$variant, $route),
+                    params: $crate::__api_params_metadata!($($params)?),
+                    response: $crate::__api_response_metadata!($($response)?),
+                    errors: &[$($(stringify!($errors)),*)?],
+                    serialization: $crate::__api_serialization_policy!(
+                        $($serialization $(($serialization_arg))?)?
+                    ),
+                    experimental: $crate::__api_experimental_reason!($($experimental)?),
+                },
+            )*
+        ];
     };
 }
 
@@ -257,6 +298,63 @@ macro_rules! __api_serialization_scope {
             field: $field,
             key: String::new(),
         }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __api_params_metadata {
+    () => {
+        None
+    };
+    ($params:ty) => {
+        Some(ApiTypeMetadata {
+            rust_type: stringify!($params),
+            schema: $crate::request::schema_for::<$params>,
+        })
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __api_response_metadata {
+    () => {
+        ApiTypeMetadata {
+            rust_type: stringify!(EmptyResponse),
+            schema: $crate::request::schema_for::<EmptyResponse>,
+        }
+    };
+    ($response:ty) => {
+        ApiTypeMetadata {
+            rust_type: stringify!($response),
+            schema: $crate::request::schema_for::<$response>,
+        }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __api_serialization_policy {
+    () => {
+        SerializationPolicy::Concurrent
+    };
+    (None) => {
+        SerializationPolicy::Concurrent
+    };
+    (Concurrent) => {
+        SerializationPolicy::Concurrent
+    };
+    (PerProcess) => {
+        SerializationPolicy::PerProcess
+    };
+    (PerConnection) => {
+        SerializationPolicy::PerConnection
+    };
+    (Global($key:literal)) => {
+        SerializationPolicy::PerProcess
+    };
+    (PerKey($field:literal)) => {
+        SerializationPolicy::PerKey { field: $field }
     };
 }
 

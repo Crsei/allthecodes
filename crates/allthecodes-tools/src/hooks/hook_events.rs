@@ -106,7 +106,10 @@ pub fn set_all_hook_events_enabled(enabled: bool) {
 /// Clear all hook event state.
 pub fn clear_hook_event_state() {
     *EVENT_HANDLER.lock().expect("EVENT_HANDLER lock poisoned") = None;
-    PENDING_EVENTS.lock().expect("PENDING_EVENTS lock poisoned").clear();
+    PENDING_EVENTS
+        .lock()
+        .expect("PENDING_EVENTS lock poisoned")
+        .clear();
     ALL_HOOK_EVENTS_ENABLED.store(false, Ordering::Relaxed);
 }
 

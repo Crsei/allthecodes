@@ -2,7 +2,7 @@
 
 use allthecodes_protocol::{ApiError as ProtocolApiError, NoParams, SerializationScope};
 use async_trait::async_trait;
-use axum::extract::State;
+use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -52,6 +52,17 @@ where
     P: Processor<Request = NoParams> + From<WebState>,
 {
     process_processor(P::from(state), NoParams {}).await
+}
+
+pub async fn processor_path_handler<P>(
+    AxumPath(params): AxumPath<P::Request>,
+    State(state): State<WebState>,
+) -> Response
+where
+    P: Processor + From<WebState>,
+    P::Request: DeserializeOwned,
+{
+    process_processor(P::from(state), params).await
 }
 
 pub async fn process_processor<P>(processor: P, params: P::Request) -> Response

@@ -136,7 +136,12 @@ pub async fn skills_list_handler(Query(query): Query<SkillsListQuery>) -> Respon
 
     let summaries: Vec<SkillSummary> = skills
         .into_iter()
-        .map(|skill| skill_summary(&skill, metadata.get(&skill.name).cloned().unwrap_or_default()))
+        .map(|skill| {
+            skill_summary(
+                &skill,
+                metadata.get(&skill.name).cloned().unwrap_or_default(),
+            )
+        })
         .collect();
 
     Json(SkillsListResponse {
@@ -334,7 +339,11 @@ fn skill_file_summaries(base_dir: Option<&Path>) -> Vec<SkillFileSummary> {
             if path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md") {
                 continue;
             }
-            if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with('.')) {
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+            {
                 continue;
             }
             let Ok(relative) = path.strip_prefix(base_dir) else {
@@ -365,7 +374,9 @@ fn file_summary(base_dir: &Path, relative_path: &str) -> SkillFileSummary {
         } else {
             "asset".to_string()
         },
-        size_bytes: metadata.filter(|meta| meta.is_file()).map(|meta| meta.len()),
+        size_bytes: metadata
+            .filter(|meta| meta.is_file())
+            .map(|meta| meta.len()),
     }
 }
 
