@@ -8,6 +8,7 @@ pub mod processors;
 pub mod serialization;
 pub mod state;
 pub mod static_files;
+pub mod web_state_routes;
 pub mod workspace_metadata;
 pub mod ws;
 
@@ -23,7 +24,8 @@ use crate::state::WebState;
 /// Build the Axum router with all routes.
 pub fn build_router(state: WebState) -> Router {
     let registry = handler_registry::all_api_handlers();
-    let router = handler_registry::register_protocol_routes(Router::new(), &registry);
+    let router = handler_registry::register_protocol_routes(Router::new(), &registry)
+        .merge(web_state_routes::routes());
 
     router
         // API catch-all: unregistered /api/* paths return JSON 501

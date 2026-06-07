@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use allthecodes_config::paths;
 use allthecodes_engine::lifecycle::QueryEngine;
+use allthecodes_web_state::WebUiStore;
 
 use crate::serialization::SerializationLayer;
 pub use crate::serialization::{SessionOwner, SessionOwnership};
@@ -30,6 +32,8 @@ pub struct WebState {
     pub terminal_manager: TerminalManager,
     /// Request serialization and cross-transport ownership coordination.
     pub serialization: SerializationLayer,
+    /// Profile-scoped persistence for browser-only UI state.
+    pub web_ui_store: WebUiStore,
 }
 
 impl WebState {
@@ -42,6 +46,7 @@ impl WebState {
             pty_diagnostics: PtyDiagnostics::new(terminal_manager.clone()),
             terminal_manager,
             serialization: SerializationLayer::new(),
+            web_ui_store: WebUiStore::new(paths::data_root().join("web").join("state.db")),
         }
     }
 

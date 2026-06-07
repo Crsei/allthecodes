@@ -1,0 +1,20 @@
+[package]
+name = "allthecodes-web-state"
+version = "0.1.0"
+edition = "2021"
+description = "Profile-scoped SQLite persistence for allthecodes web UI state."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["fs", "sync"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

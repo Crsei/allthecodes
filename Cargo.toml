@@ -163,6 +163,7 @@ allthecodes-ipc-client = { path = "crates/allthecodes-ipc-client" }
 allthecodes-startup = { path = "crates/allthecodes-startup" }
 allthecodes-voice = { path = "crates/allthecodes-voice" }
 allthecodes-web = { path = "crates/allthecodes-web" }
+allthecodes-web-state = { path = "crates/allthecodes-web-state" }
 allthecodes-worktree = { path = "crates/allthecodes-worktree" }
 
 # Daemon HTTP server
@@ -171,6 +172,12 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 hmac = "0.12"
 notify-rust = "4"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "chrono",
+    "uuid",
+] }
 
 # Web UI
 rust-embed = "8"
