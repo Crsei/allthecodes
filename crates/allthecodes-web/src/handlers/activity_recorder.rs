@@ -154,6 +154,8 @@ fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "internal_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

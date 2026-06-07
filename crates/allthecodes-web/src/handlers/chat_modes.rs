@@ -210,7 +210,8 @@ pub fn resolve_mode_activation(
                     resolved.missing_mcp_servers.join(", ")
                 ),
                 code: "mode_bundle_incomplete".into(),
-            },
+
+                details: serde_json::json!({}),},
         ));
     }
 
@@ -538,6 +539,8 @@ fn validation_error(message: impl Into<String>) -> (StatusCode, Json<ApiError>) 
         Json(ApiError {
             error: message.into(),
             code: "invalid_chat_mode".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -548,6 +551,8 @@ fn internal_error(message: impl Into<String>) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error: message.into(),
             code: "chat_modes_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -561,6 +566,8 @@ fn validation_api_error(
         ApiError {
             error: message.into(),
             code: code.into(),
+
+            details: serde_json::json!({}),
         },
     )
 }
@@ -571,6 +578,8 @@ fn internal_api_error(message: String) -> (StatusCode, ApiError) {
         ApiError {
             error: message,
             code: "chat_modes_error".into(),
+
+            details: serde_json::json!({}),
         },
     )
 }

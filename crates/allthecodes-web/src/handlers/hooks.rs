@@ -168,6 +168,8 @@ pub async fn hooks_test_handler(Json(req): Json<HookEventRequest>) -> Response {
         Json(ApiError {
             error: "Hook test execution is not implemented".to_string(),
             code: "hook_test_not_implemented".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -256,6 +258,8 @@ fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "validation_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -266,6 +270,8 @@ fn conflict(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "conflict".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -276,6 +282,8 @@ fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "not_found".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -286,6 +294,8 @@ fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "internal_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

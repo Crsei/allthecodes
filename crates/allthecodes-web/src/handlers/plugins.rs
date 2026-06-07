@@ -160,6 +160,8 @@ fn install_error(error: InstallError) -> (StatusCode, Json<ApiError>) {
             Json(ApiError {
                 error: format!("Plugin '{}' is already installed", plugin),
                 code: "plugin_already_installed".into(),
+
+                details: serde_json::json!({}),
             }),
         ),
         InstallError::SourceNotFound(message)
@@ -184,6 +186,8 @@ fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "validation_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -194,6 +198,8 @@ fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "not_found".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -204,6 +210,8 @@ fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "internal_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

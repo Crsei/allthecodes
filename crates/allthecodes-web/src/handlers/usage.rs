@@ -116,6 +116,8 @@ pub fn normalize_period(raw: &str) -> Result<String, (StatusCode, Json<ApiError>
             Json(ApiError {
                 error: format!("invalid period '{}'. Must be one of: {}", raw, valid),
                 code: "invalid_period".into(),
+
+                details: serde_json::json!({}),
             }),
         ))
     }

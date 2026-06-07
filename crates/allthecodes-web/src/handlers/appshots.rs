@@ -34,6 +34,8 @@ pub async fn appshots_capture_handler() -> impl IntoResponse {
         Json(ApiError {
             error: "Appshot capture is not implemented by this backend".into(),
             code: "appshots_capture_not_implemented".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

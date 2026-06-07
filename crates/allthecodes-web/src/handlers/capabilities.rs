@@ -1,12 +1,29 @@
-//! Capabilities discovery and API fallback handlers.
+//! Capabilities discovery handlers.
 
 use std::collections::HashMap;
 
 use allthecodes_protocol::ApiError as ProtocolApiError;
-use axum::extract::Path as AxumPath;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::Json;
+use allthecodes_protocol::ApiMethod;
+use allthecodes_protocol::NoParams;
+use async_trait::async_trait;
+use axum::extract::State;
+use axum::response::Response;
+use axum::routing::get;
+
+use crate::api_dispatcher::rest_processor_response;
+use crate::handler_registry::HandlerRegistry;
+use crate::processors::Processor;
+use crate::serialization::SerializationLayer;
+use crate::state::WebState;
+
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new().handle(ApiMethod::Capabilities, get(capabilities_handler))
+}
+
+pub async fn capabilities_handler(State(state): State<WebState>) -> Response {
+    rest_processor_response::<CapabilitiesProcessor>(state, ApiMethod::Capabilities, NoParams {})
+        .await
+}
 
 pub fn capabilities_map() -> HashMap<String, bool> {
     let mut caps = HashMap::new();
@@ -54,11 +71,34 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps
 }
 
-/// Catch-all handler for unregistered /api/* paths.
-/// Returns 501 JSON instead of falling through to static file serving.
-pub async fn api_fallback_handler(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
-    let error = ProtocolApiError::NotImplemented { capability: path };
-    let status =
-        StatusCode::from_u16(error.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (status, Json(error.into_body()))
+#[derive(Clone)]
+pub struct CapabilitiesProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for CapabilitiesProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for CapabilitiesProcessor {
+    type Request = NoParams;
+    type Response = allthecodes_protocol::v1::capabilities::CapabilityDiscoveryResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "capabilities"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
+        Ok(Self::Response {
+            capabilities: capabilities_map(),
+        })
+    }
 }

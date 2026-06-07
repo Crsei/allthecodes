@@ -55,6 +55,7 @@ traceability; incomplete rows still need backend routes or service wiring.
 | Priority | Plan | Capability status | Main user-visible risk |
 |---|---|---|---|
 | Draft | [API Architecture Upgrade Plan](09-api-architecture-upgrade-plan.md) | N/A — infra change | No immediate user risk; all phases are additive with backward compatibility. |
+| Draft | [API File Consolidation Plan](11-api-file-consolidation-plan.md) | N/A — cleanup/refactor | Keeps upgraded API features grouped by domain after the architecture migration. |
 
 ## Shared Implementation Rules
 

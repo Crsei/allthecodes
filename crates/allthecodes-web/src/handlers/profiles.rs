@@ -122,6 +122,8 @@ pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> i
             Json(ApiError {
                 error: "Profile name cannot be empty".into(),
                 code: "validation_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -136,6 +138,8 @@ pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> i
             Json(ApiError {
                 error: format!("Profile '{}' already exists", req.name),
                 code: "conflict".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -161,6 +165,8 @@ pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> i
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),
@@ -178,6 +184,8 @@ pub async fn profiles_detail_handler(AxumPath(id): AxumPath<String>) -> impl Int
             Json(ApiError {
                 error: format!("Profile '{}' not found", id),
                 code: "not_found".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response()
@@ -199,6 +207,8 @@ pub async fn profiles_update_handler(
                 Json(ApiError {
                     error: format!("Profile '{}' not found", id),
                     code: "not_found".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();
@@ -213,6 +223,8 @@ pub async fn profiles_update_handler(
                 Json(ApiError {
                     error: "Profile name cannot be empty".into(),
                     code: "validation_error".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();
@@ -233,6 +245,8 @@ pub async fn profiles_update_handler(
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),
@@ -251,6 +265,8 @@ pub async fn profiles_delete_handler(AxumPath(id): AxumPath<String>) -> impl Int
                 Json(ApiError {
                     error: format!("Profile '{}' not found", id),
                     code: "not_found".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();
@@ -276,6 +292,8 @@ pub async fn profiles_delete_handler(AxumPath(id): AxumPath<String>) -> impl Int
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),
@@ -292,6 +310,8 @@ pub async fn profiles_switch_handler(AxumPath(id): AxumPath<String>) -> impl Int
             Json(ApiError {
                 error: format!("Profile '{}' not found", id),
                 code: "not_found".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -314,6 +334,8 @@ pub async fn profiles_switch_handler(AxumPath(id): AxumPath<String>) -> impl Int
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),
@@ -330,6 +352,8 @@ pub async fn profiles_import_handler(Json(req): Json<ProfileImportRequest>) -> i
                 Json(ApiError {
                     error: "Missing 'payload' field".into(),
                     code: "validation_error".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();
@@ -363,6 +387,8 @@ pub async fn profiles_import_handler(Json(req): Json<ProfileImportRequest>) -> i
             Json(ApiError {
                 error: e,
                 code: "internal_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),
@@ -380,6 +406,8 @@ pub async fn profiles_export_handler(AxumPath(id): AxumPath<String>) -> Response
                 Json(ApiError {
                     error: format!("Profile '{}' not found", id),
                     code: "not_found".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();

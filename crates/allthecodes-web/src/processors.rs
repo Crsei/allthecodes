@@ -69,66 +69,43 @@ pub async fn process_processor<P>(processor: P, params: P::Request) -> Response
 where
     P: Processor,
 {
+    match dispatch_processor(processor, params).await {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => protocol_error_response(error),
+    }
+}
+
+pub async fn dispatch_processor<P>(
+    processor: P,
+    params: P::Request,
+) -> Result<P::Response, ProtocolApiError>
+where
+    P: Processor,
+{
     let span = tracing::info_span!("api.processor", handler = P::handler_name());
     async move {
         let scope = P::serialization_scope(&params);
         let key = P::serialization_key(&params);
-        let result = if let Some(layer) = processor.serialization_layer() {
+        if let Some(layer) = processor.serialization_layer() {
             layer
                 .run_scoped(&scope, key, || {
                     let processor = processor.clone();
                     async move { processor.handle(params).await }
                 })
                 .await
+                .map_err(Into::into)
         } else {
-            processor.handle(params).await
-        };
-
-        match result {
-            Ok(response) => Json(response).into_response(),
-            Err(error) => protocol_error_response(error.into()),
+            processor.handle(params).await.map_err(Into::into)
         }
     }
     .instrument(span)
     .await
 }
 
-fn protocol_error_response(error: ProtocolApiError) -> Response {
+pub(crate) fn protocol_error_response(error: ProtocolApiError) -> Response {
     let status =
         StatusCode::from_u16(error.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json(error.into_body())).into_response()
-}
-
-#[derive(Clone)]
-pub struct CapabilitiesProcessor {
-    state: WebState,
-}
-
-impl From<WebState> for CapabilitiesProcessor {
-    fn from(state: WebState) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait]
-impl Processor for CapabilitiesProcessor {
-    type Request = NoParams;
-    type Response = allthecodes_protocol::v1::capabilities::CapabilityDiscoveryResponse;
-    type Error = ProtocolApiError;
-
-    fn handler_name() -> &'static str {
-        "capabilities"
-    }
-
-    fn serialization_layer(&self) -> Option<SerializationLayer> {
-        Some(self.state.serialization.clone())
-    }
-
-    async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
-        Ok(Self::Response {
-            capabilities: crate::handlers::capabilities_map(),
-        })
-    }
 }
 
 #[cfg(test)]

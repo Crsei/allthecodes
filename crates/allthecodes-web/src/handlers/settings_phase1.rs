@@ -199,6 +199,8 @@ pub async fn speech_model_download_handler(
                 req.model_id
             ),
             code: "speech_download_not_implemented".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -209,6 +211,8 @@ pub async fn speech_model_delete_handler(AxumPath(id): AxumPath<String>) -> impl
         Json(ApiError {
             error: format!("Speech model deletion is not implemented by this backend yet: {id}"),
             code: "speech_delete_not_implemented".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -416,6 +420,8 @@ fn bad_request(message: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error: message,
             code: "bad_request".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -426,6 +432,8 @@ fn internal_error(message: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error: message,
             code: "internal_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

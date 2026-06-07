@@ -43,6 +43,8 @@ pub async fn chrome_relay_launch_handler() -> impl IntoResponse {
         Json(ApiError {
             error: "Chrome Relay launch is not implemented by this backend".into(),
             code: "chrome_relay_launch_not_implemented".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -54,6 +56,8 @@ pub async fn chrome_relay_token_regenerate_handler() -> impl IntoResponse {
         Json(ApiError {
             error: "Chrome Relay token regeneration is not implemented by this backend".into(),
             code: "chrome_relay_token_regenerate_not_implemented".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

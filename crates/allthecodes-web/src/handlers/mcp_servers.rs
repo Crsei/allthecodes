@@ -354,6 +354,8 @@ fn validation_api(error: String) -> (StatusCode, ApiError) {
         ApiError {
             error,
             code: "validation_error".into(),
+
+            details: serde_json::json!({}),
         },
     )
 }
@@ -364,6 +366,8 @@ fn internal_api(error: String) -> (StatusCode, ApiError) {
         ApiError {
             error,
             code: "internal_error".into(),
+
+            details: serde_json::json!({}),
         },
     )
 }
@@ -379,6 +383,8 @@ fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "not_found".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

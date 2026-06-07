@@ -1197,6 +1197,8 @@ fn debug_disabled_response() -> Response {
         Json(ApiError {
             error: "Debug API is disabled".into(),
             code: "debug_disabled".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()

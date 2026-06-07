@@ -191,6 +191,8 @@ pub async fn providers_create_handler(Json(req): Json<ProviderCreateRequest>) ->
             Json(ApiError {
                 error: format!("Provider '{}' already exists", req.name),
                 code: "conflict".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -247,6 +249,8 @@ pub async fn providers_create_handler(Json(req): Json<ProviderCreateRequest>) ->
             Json(ApiError {
                 error: e.to_string(),
                 code: "internal_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),
@@ -269,6 +273,8 @@ pub async fn providers_update_handler(
                 Json(ApiError {
                     error: format!("Provider '{}' already exists", name),
                     code: "conflict".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();
@@ -281,6 +287,8 @@ pub async fn providers_update_handler(
             Json(ApiError {
                 error: format!("Provider '{}' not found", id),
                 code: "not_found".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -303,6 +311,8 @@ pub async fn providers_update_handler(
                 Json(ApiError {
                     error: format!("Provider '{}' not found", target_id),
                     code: "not_found".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();
@@ -358,6 +368,8 @@ pub async fn providers_update_handler(
             Json(ApiError {
                 error: e.to_string(),
                 code: "internal_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),
@@ -375,6 +387,8 @@ pub async fn providers_delete_handler(AxumPath(id): AxumPath<String>) -> Respons
             Json(ApiError {
                 error: format!("Provider '{}' not found", id),
                 code: "not_found".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -397,6 +411,8 @@ pub async fn providers_delete_handler(AxumPath(id): AxumPath<String>) -> Respons
             Json(ApiError {
                 error: e.to_string(),
                 code: "internal_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),

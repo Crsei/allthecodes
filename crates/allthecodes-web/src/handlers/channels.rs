@@ -175,6 +175,8 @@ fn diagnostic_response(diagnostic: GatewayDiagnostic) -> (StatusCode, Json<ApiEr
         Json(ApiError {
             error: diagnostic.message,
             code: diagnostic.code,
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -202,6 +204,8 @@ fn error_response(
         Json(ApiError {
             error: error.into(),
             code: code.into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

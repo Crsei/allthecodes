@@ -87,6 +87,8 @@ pub async fn computer_use_permission_request_handler(
                 permission
             ),
             code: "computer_use_permission_request_not_implemented".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -98,6 +100,8 @@ pub async fn computer_use_test_handler() -> impl IntoResponse {
         Json(ApiError {
             error: "Computer Use web test is not implemented by this backend".into(),
             code: "computer_use_test_not_implemented".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

@@ -748,6 +748,8 @@ fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "validation_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -758,6 +760,8 @@ fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "not_found".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -768,6 +772,8 @@ fn revision_conflict(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "revision_conflict".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }
@@ -778,6 +784,8 @@ fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
         Json(ApiError {
             error,
             code: "internal_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
 }

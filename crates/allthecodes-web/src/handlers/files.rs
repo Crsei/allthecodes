@@ -397,6 +397,8 @@ fn bad_request(msg: impl Into<String>) -> Response {
         Json(ApiError {
             error: msg.into(),
             code: "bad_request".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -408,6 +410,8 @@ fn not_found(msg: impl Into<String>) -> Response {
         Json(ApiError {
             error: msg.into(),
             code: "not_found".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -419,6 +423,8 @@ fn conflict(msg: impl Into<String>) -> Response {
         Json(ApiError {
             error: msg.into(),
             code: "conflict".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -430,6 +436,8 @@ fn internal_error(msg: impl Into<String>) -> Response {
         Json(ApiError {
             error: msg.into(),
             code: "internal_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -441,6 +449,8 @@ fn path_traversal() -> Response {
         Json(ApiError {
             error: "Path escapes workspace root".into(),
             code: "path_traversal".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()

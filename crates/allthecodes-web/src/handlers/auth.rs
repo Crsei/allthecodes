@@ -101,6 +101,8 @@ pub async fn auth_login_handler(Json(req): Json<LoginRequest>) -> Response {
                         Json(ApiError {
                             error: format!("Failed to store API key: {}", e),
                             code: "internal_error".into(),
+
+                            details: serde_json::json!({}),
                         }),
                     )
                         .into_response();
@@ -132,6 +134,8 @@ pub async fn auth_login_handler(Json(req): Json<LoginRequest>) -> Response {
                         Json(ApiError {
                             error: format!("Failed to store API key: {}", e),
                             code: "internal_error".into(),
+
+                            details: serde_json::json!({}),
                         }),
                     )
                         .into_response();
@@ -145,6 +149,8 @@ pub async fn auth_login_handler(Json(req): Json<LoginRequest>) -> Response {
         Json(ApiError {
             error: "Invalid API key format".into(),
             code: "validation_error".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()

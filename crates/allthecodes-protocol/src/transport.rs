@@ -215,6 +215,49 @@ mod tests {
     }
 
     #[test]
+    fn json_rpc_error_frame_roundtrips() {
+        let frame = JsonRpcFrame::error(
+            9,
+            ApiError::Validation {
+                field: "method".to_string(),
+                message: "unsupported".to_string(),
+            },
+        );
+        let encoded = serde_json::to_string(&frame).expect("frame should serialize");
+        let decoded: JsonRpcFrame =
+            serde_json::from_str(&encoded).expect("frame should deserialize");
+
+        assert_eq!(decoded, frame);
+        match decoded {
+            JsonRpcFrame::Error { id, error, .. } => {
+                assert_eq!(id, 9);
+                assert_eq!(error.code, "validation");
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_rpc_invalid_frame_is_rejected() {
+        let invalid = serde_json::json!({
+            "type": "request",
+            "jsonrpc": "1.0",
+            "id": 3,
+            "request": {
+                "method": "SessionList",
+                "params": {}
+            }
+        });
+
+        let error = serde_json::from_value::<JsonRpcFrame>(invalid)
+            .expect_err("invalid jsonrpc version should not deserialize");
+        assert!(
+            error.to_string().contains("2.0"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn frame_preserves_request_serialization_metadata() {
         let request = ClientRequest::SessionResume(v1::SessionResumeParams {
             id: "session-2".to_string(),

@@ -181,6 +181,8 @@ pub async fn memory_update_handler(
                         "Content exceeds maximum length of {MAX_CONTENT_LENGTH} characters"
                     ),
                     code: "content_too_long".into(),
+
+                    details: serde_json::json!({}),
                 }),
             ));
         }
@@ -201,6 +203,8 @@ pub async fn memory_update_handler(
                 Json(ApiError {
                     error: format!("Memory entry '{}' not found", id),
                     code: "memory_not_found".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
         })?;
@@ -226,6 +230,8 @@ pub async fn memory_update_handler(
             Json(ApiError {
                 error: format!("Failed to persist memory store: {e}"),
                 code: "io_error".into(),
+
+                details: serde_json::json!({}),
             }),
         )
     })?;

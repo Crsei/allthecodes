@@ -139,6 +139,8 @@ pub async fn models_update_handler(
             Json(ApiError {
                 error: format!("Failed to update model: {error}"),
                 code: "model_update_failed".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -162,6 +164,8 @@ pub async fn models_set_default_handler(
                         provider_id, req.model_id
                     ),
                     code: "provider_disabled".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();
@@ -174,6 +178,8 @@ pub async fn models_set_default_handler(
             Json(ApiError {
                 error: format!("Failed to set default model: {error}"),
                 code: "model_default_failed".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();

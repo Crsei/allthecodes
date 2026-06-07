@@ -5,11 +5,13 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use allthecodes_protocol::v1::{SessionArchiveParams, SessionDetailParams, SessionResumeParams};
+use allthecodes_protocol::ApiMethod;
 use allthecodes_protocol::{ApiError as ProtocolApiError, NoParams, SerializationScope};
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -20,10 +22,49 @@ use allthecodes_engine::types::config::QueryEngineConfig;
 use allthecodes_session::{fork, resume as session_resume, storage};
 use allthecodes_types::message::{ContentBlock, Message, MessageContent};
 
+use crate::api_dispatcher::rest_processor_response;
+use crate::handler_registry::HandlerRegistry;
 use crate::handlers::workspaces::resolve_workspace_root;
 use crate::handlers::ApiError;
-use crate::processors::{process_processor, Processor};
+use crate::processors::Processor;
 use crate::state::{SessionOwner, WebState};
+
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::SessionList, get(sessions_list_handler))
+        .handle(ApiMethod::SessionCreate, post(session_new_handler))
+        .handle(ApiMethod::SessionDetail, get(session_detail_handler))
+        .handle(ApiMethod::SessionResume, post(session_resume_handler))
+        .handle(ApiMethod::SessionArchive, post(session_archive_handler))
+        .handle(
+            ApiMethod::SessionMessageBranch,
+            post(session_message_branch_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageFeedback,
+            post(session_message_feedback_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageDelete,
+            post(session_message_delete_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageRegeneratePrepare,
+            post(session_message_regenerate_prepare_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageEditPrepare,
+            post(session_message_edit_prepare_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageRollbackPreview,
+            post(session_message_rollback_preview_handler),
+        )
+        .handle(
+            ApiMethod::SessionMessageRollback,
+            post(session_message_rollback_handler),
+        )
+}
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -335,7 +376,8 @@ impl Processor for SessionArchiveProcessor {
 
 /// GET /api/sessions -- List all sessions with workspace grouping metadata.
 pub async fn sessions_list_handler(State(state): State<WebState>) -> Response {
-    process_processor(SessionListProcessor::from(state), NoParams {}).await
+    rest_processor_response::<SessionListProcessor>(state, ApiMethod::SessionList, NoParams {})
+        .await
 }
 
 /// GET /api/sessions/:id -- Load a session's message history for preview.
@@ -343,8 +385,9 @@ pub async fn session_detail_handler(
     AxumPath(id): AxumPath<String>,
     State(state): State<WebState>,
 ) -> Response {
-    process_processor(
-        SessionDetailProcessor::from(state),
+    rest_processor_response::<SessionDetailProcessor>(
+        state,
+        ApiMethod::SessionDetail,
         SessionDetailParams { id },
     )
     .await
@@ -361,6 +404,8 @@ pub async fn session_new_handler(
             Json(ApiError {
                 error: "A query is in progress — abort it before starting a new session".into(),
                 code: "engine_busy".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -385,6 +430,8 @@ pub async fn session_new_handler(
                         Json(ApiError {
                             error: "cwd must be an existing directory".into(),
                             code: "cwd_invalid".into(),
+
+                            details: serde_json::json!({}),
                         }),
                     )
                         .into_response();
@@ -413,8 +460,9 @@ pub async fn session_resume_handler(
     AxumPath(id): AxumPath<String>,
     State(state): State<WebState>,
 ) -> Response {
-    process_processor(
-        SessionResumeProcessor::from(state),
+    rest_processor_response::<SessionResumeProcessor>(
+        state,
+        ApiMethod::SessionResume,
         SessionResumeParams { id },
     )
     .await
@@ -425,8 +473,9 @@ pub async fn session_archive_handler(
     AxumPath(id): AxumPath<String>,
     State(state): State<WebState>,
 ) -> Response {
-    process_processor(
-        SessionArchiveProcessor::from(state),
+    rest_processor_response::<SessionArchiveProcessor>(
+        state,
+        ApiMethod::SessionArchive,
         SessionArchiveParams { id },
     )
     .await
@@ -471,6 +520,8 @@ pub async fn session_message_branch_handler(
             Json(ApiError {
                 error: format!("Failed to branch session: {}", e),
                 code: "session_branch_failed".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),
@@ -562,6 +613,8 @@ pub async fn session_message_regenerate_prepare_handler(
             Json(ApiError {
                 error: "No preceding user message found for regeneration".into(),
                 code: "message_regenerate_unavailable".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -601,6 +654,8 @@ pub async fn session_message_edit_prepare_handler(
             Json(ApiError {
                 error: "Edited message text is required".into(),
                 code: "message_edit_empty".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -618,6 +673,8 @@ pub async fn session_message_edit_prepare_handler(
             Json(ApiError {
                 error: "Only user messages can be edited".into(),
                 code: "message_edit_role_invalid".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -671,6 +728,8 @@ pub async fn session_message_rollback_handler(
         Json(ApiError {
             error: "Rollback checkpoint storage is not implemented yet".into(),
             code: "rollback_checkpoint_unavailable".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -783,6 +842,8 @@ async fn mutation_guard(state: &WebState, session_id: &str, action: &str) -> Opt
                 Json(ApiError {
                     error: format!("A query is in progress — abort it before {action}"),
                     code: "engine_busy".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response(),
@@ -804,6 +865,8 @@ fn load_session_messages_response(session_id: &str) -> Result<Vec<Message>, Resp
             Json(ApiError {
                 error: format!("Session not found: {}", e),
                 code: "session_not_found".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response()
@@ -848,6 +911,8 @@ fn session_not_found_response() -> Response {
         Json(ApiError {
             error: "Session not found".into(),
             code: "session_not_found".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -859,6 +924,8 @@ fn message_not_found_response() -> Response {
         Json(ApiError {
             error: "Message not found".into(),
             code: "message_not_found".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -870,6 +937,8 @@ fn storage_error_response(prefix: &str, code: &str, error: impl std::fmt::Displa
         Json(ApiError {
             error: format!("{prefix}: {error}"),
             code: code.into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -886,6 +955,8 @@ pub(crate) fn ownership_conflict_response(state: &WebState) -> Option<Response> 
             Json(ApiError {
                 error: ownership_conflict_message(&owner),
                 code: "session_owned".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),

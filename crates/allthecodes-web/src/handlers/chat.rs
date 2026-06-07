@@ -95,6 +95,8 @@ pub async fn chat_handler(
             Json(ApiError {
                 error: "A query is already in progress".into(),
                 code: "engine_busy".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -125,6 +127,8 @@ pub async fn chat_handler(
                         .unwrap_or_default()
                 ),
                 code: "session_owned".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();

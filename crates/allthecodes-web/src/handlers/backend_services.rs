@@ -545,6 +545,8 @@ fn not_found(error: String) -> Response {
         Json(ApiError {
             error,
             code: "not_found".to_string(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -556,6 +558,8 @@ fn internal_error(error: String) -> Response {
         Json(ApiError {
             error,
             code: "internal_error".to_string(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()

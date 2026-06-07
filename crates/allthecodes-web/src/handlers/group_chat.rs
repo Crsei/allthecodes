@@ -772,6 +772,8 @@ pub async fn group_chat_stream_handler(
                     Json(ApiError {
                         error: format!("Failed to serialize room snapshot: {error}"),
                         code: "serialization_failed".into(),
+
+                        details: serde_json::json!({}),
                     }),
                 )
                     .into_response();
@@ -1011,6 +1013,8 @@ fn bad_request(message: impl Into<String>) -> Response {
         Json(ApiError {
             error: message.into(),
             code: "bad_request".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -1022,6 +1026,8 @@ fn not_found(message: impl Into<String>) -> Response {
         Json(ApiError {
             error: message.into(),
             code: "not_found".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
@@ -1034,6 +1040,8 @@ fn internal_error(message: String) -> Response {
         Json(ApiError {
             error: message,
             code: "group_chat_store_failed".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()

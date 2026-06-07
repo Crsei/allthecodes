@@ -142,6 +142,8 @@ pub async fn workspace_patch_handler(
                 Json(ApiError {
                     error: format!("Failed to update workspace metadata: {error}"),
                     code: "workspace_metadata_failed".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();
@@ -194,6 +196,8 @@ pub async fn workspace_open_handler(
                     format!("Failed to open workspace: {error}")
                 },
                 code: "workspace_open_failed".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response(),
@@ -212,6 +216,8 @@ pub async fn workspace_sessions_archive_handler(
             Json(ApiError {
                 error: "A query is in progress — abort it before archiving sessions".into(),
                 code: "engine_busy".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response();
@@ -229,6 +235,8 @@ pub async fn workspace_sessions_archive_handler(
                 Json(ApiError {
                     error: format!("Failed to list sessions: {error}"),
                     code: "session_list_failed".into(),
+
+                    details: serde_json::json!({}),
                 }),
             )
                 .into_response();
@@ -344,6 +352,8 @@ pub(crate) fn resolve_workspace_root(
                     Json(ApiError {
                         error: "Workspace root does not match workspace key".into(),
                         code: "workspace_root_mismatch".into(),
+
+                        details: serde_json::json!({}),
                     }),
                 )
                     .into_response());
@@ -364,6 +374,8 @@ fn validate_local_dir(raw: &str) -> Result<PathBuf, Response> {
             Json(ApiError {
                 error: "Workspace root must be a local directory path".into(),
                 code: "workspace_root_invalid".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response());
@@ -378,6 +390,8 @@ fn validate_local_dir_path(path: &Path) -> Result<PathBuf, Response> {
             Json(ApiError {
                 error: format!("Workspace root is not accessible: {error}"),
                 code: "workspace_root_invalid".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response()
@@ -389,6 +403,8 @@ fn validate_local_dir_path(path: &Path) -> Result<PathBuf, Response> {
             Json(ApiError {
                 error: "Workspace root must be a directory".into(),
                 code: "workspace_root_invalid".into(),
+
+                details: serde_json::json!({}),
             }),
         )
             .into_response());
@@ -419,6 +435,8 @@ fn workspace_not_found() -> Response {
         Json(ApiError {
             error: "Workspace not found".into(),
             code: "workspace_not_found".into(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()

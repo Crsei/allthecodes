@@ -11,9 +11,6 @@ use serde::Serialize;
 use tracing::error;
 
 use crate::handlers;
-use crate::processors::{
-    processor_no_params_handler, processor_path_handler, CapabilitiesProcessor,
-};
 use crate::state::WebState;
 use crate::ws;
 
@@ -109,8 +106,8 @@ pub enum RegistryValidationError {
 pub fn all_api_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
         .extend(chat_handlers())
-        .extend(session_handlers())
-        .extend(capability_handlers())
+        .extend(handlers::sessions::handlers())
+        .extend(handlers::capabilities::handlers())
         .extend(chat_mode_handlers())
         .extend(agent_handlers())
         .extend(people_handlers())
@@ -152,65 +149,6 @@ pub fn chat_handlers() -> HandlerRegistry {
             ApiMethod::CodingAgentsStatus,
             get(handlers::coding_agent_status_handler),
         )
-}
-
-pub fn session_handlers() -> HandlerRegistry {
-    HandlerRegistry::new()
-        .handle(
-            ApiMethod::SessionList,
-            get(processor_no_params_handler::<handlers::SessionListProcessor>),
-        )
-        .handle(
-            ApiMethod::SessionCreate,
-            post(handlers::session_new_handler),
-        )
-        .handle(
-            ApiMethod::SessionDetail,
-            get(processor_path_handler::<handlers::SessionDetailProcessor>),
-        )
-        .handle(
-            ApiMethod::SessionResume,
-            post(processor_path_handler::<handlers::SessionResumeProcessor>),
-        )
-        .handle(
-            ApiMethod::SessionArchive,
-            post(processor_path_handler::<handlers::SessionArchiveProcessor>),
-        )
-        .handle(
-            ApiMethod::SessionMessageBranch,
-            post(handlers::session_message_branch_handler),
-        )
-        .handle(
-            ApiMethod::SessionMessageFeedback,
-            post(handlers::session_message_feedback_handler),
-        )
-        .handle(
-            ApiMethod::SessionMessageDelete,
-            post(handlers::session_message_delete_handler),
-        )
-        .handle(
-            ApiMethod::SessionMessageRegeneratePrepare,
-            post(handlers::session_message_regenerate_prepare_handler),
-        )
-        .handle(
-            ApiMethod::SessionMessageEditPrepare,
-            post(handlers::session_message_edit_prepare_handler),
-        )
-        .handle(
-            ApiMethod::SessionMessageRollbackPreview,
-            post(handlers::session_message_rollback_preview_handler),
-        )
-        .handle(
-            ApiMethod::SessionMessageRollback,
-            post(handlers::session_message_rollback_handler),
-        )
-}
-
-pub fn capability_handlers() -> HandlerRegistry {
-    HandlerRegistry::new().handle(
-        ApiMethod::Capabilities,
-        get(processor_no_params_handler::<CapabilitiesProcessor>),
-    )
 }
 
 pub fn chat_mode_handlers() -> HandlerRegistry {
@@ -995,5 +933,70 @@ mod tests {
     fn versioned_api_path_adds_v2_prefix() {
         assert_eq!(versioned_api_path("/api/sessions"), "/api/v2/sessions");
         assert_eq!(versioned_api_path("/api/-/routes"), "/api/v2/-/routes");
+    }
+
+    #[test]
+    fn transport_inventory_keeps_public_web_entries_visible() {
+        let registry = all_api_handlers();
+        let registered: HashSet<ApiMethod> = registry
+            .entries()
+            .iter()
+            .map(|entry| entry.operation)
+            .collect();
+
+        for method in [
+            ApiMethod::ProtocolRoutes,
+            ApiMethod::SessionList,
+            ApiMethod::Capabilities,
+            ApiMethod::TerminalProfiles,
+            ApiMethod::TerminalSessionsList,
+            ApiMethod::TerminalSessionWs,
+            ApiMethod::TuiWs,
+            ApiMethod::IpcWs,
+        ] {
+            assert!(registered.contains(&method), "{method:?} is not registered");
+        }
+    }
+
+    #[test]
+    fn rest_routes_have_v2_mirror_paths() {
+        for endpoint in ALL_ENDPOINTS {
+            if endpoint.path.starts_with("/api/") {
+                assert!(
+                    versioned_api_path(endpoint.path).starts_with("/api/v2/"),
+                    "missing v2 mirror for {}",
+                    endpoint.path
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dedicated_transports_are_marked_as_websocket_routes() {
+        let routes = protocol_routes_handler().await.0;
+
+        for operation in ["TerminalSessionWs", "TuiWs", "IpcWs"] {
+            let route = routes
+                .iter()
+                .find(|route| route.operation == operation)
+                .unwrap_or_else(|| panic!("missing route inventory entry for {operation}"));
+            assert!(route.websocket, "{operation} must remain websocket-marked");
+            assert!(
+                route.any_method,
+                "{operation} must accept websocket upgrade"
+            );
+        }
+    }
+
+    #[test]
+    fn non_web_transports_are_not_registered_as_web_api_routes() {
+        let paths: HashSet<&str> = ALL_ENDPOINTS.iter().map(|endpoint| endpoint.path).collect();
+
+        for path in ["/events", "/api/mcp", "/chrome/native-host"] {
+            assert!(
+                !paths.contains(path),
+                "{path} belongs to daemon, MCP, or browser transport boundaries"
+            );
+        }
     }
 }

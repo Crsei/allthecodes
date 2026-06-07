@@ -1,5 +1,7 @@
 //! Web server module — Axum-based HTTP server for the chat UI.
 
+pub mod api_dispatcher;
+pub mod api_errors;
 pub mod handler_registry;
 pub mod handlers;
 pub mod processors;
@@ -27,7 +29,7 @@ pub fn build_router(state: WebState) -> Router {
         // API catch-all: unregistered /api/* paths return JSON 501
         .route(
             "/api/{*path}",
-            get(handlers::api_fallback_handler).post(handlers::api_fallback_handler),
+            get(api_errors::api_fallback_handler).post(api_errors::api_fallback_handler),
         )
         // Static files (SPA)
         .fallback(static_files::static_handler)

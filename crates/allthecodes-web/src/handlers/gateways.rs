@@ -208,6 +208,8 @@ fn api_error(status: StatusCode, code: &str, error: impl Into<String>) -> Respon
         Json(ApiError {
             error: error.into(),
             code: code.to_string(),
+
+            details: serde_json::json!({}),
         }),
     )
         .into_response()
