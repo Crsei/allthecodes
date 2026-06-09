@@ -106,6 +106,7 @@ pub enum RegistryValidationError {
 pub fn all_api_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
         .extend(chat_handlers())
+        .extend(launchpad_handlers())
         .extend(handlers::sessions::handlers())
         .extend(handlers::capabilities::handlers())
         .extend(chat_mode_handlers())
@@ -149,6 +150,13 @@ pub fn chat_handlers() -> HandlerRegistry {
             ApiMethod::CodingAgentsStatus,
             get(handlers::coding_agent_status_handler),
         )
+}
+
+pub fn launchpad_handlers() -> HandlerRegistry {
+    HandlerRegistry::new().handle(
+        ApiMethod::LaunchpadSnapshotCreate,
+        post(handlers::launchpad_snapshot_create_handler),
+    )
 }
 
 pub fn chat_mode_handlers() -> HandlerRegistry {

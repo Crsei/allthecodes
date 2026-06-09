@@ -6,6 +6,7 @@ pub mod files;
 pub mod gateways;
 pub mod hooks;
 pub mod kanban;
+pub mod launchpad;
 pub mod models;
 pub mod people;
 pub mod plugins;

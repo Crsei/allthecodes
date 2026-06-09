@@ -62,6 +62,13 @@ crate::api_definitions! {
         response: Vec<v1::chat::CodingAgentStatus>,
     },
 
+    /// Persist a Launch Pad snapshot under the global data root.
+    LaunchpadSnapshotCreate => "POST /api/launchpad/snapshots" {
+        params: v1::launchpad::LaunchpadSnapshotCreateRequest,
+        response: v1::launchpad::LaunchpadSnapshotCreateResponse,
+        serialization: PerProcess,
+    },
+
     /// List active and archived sessions.
     SessionList => "GET /api/sessions" {
         response: v1::SessionListResponse,
