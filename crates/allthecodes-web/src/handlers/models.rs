@@ -1,6 +1,7 @@
 //! Model registry handlers — list, update, set default.
 
 use axum::extract::{Path as AxumPath, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -10,8 +11,112 @@ use crate::handlers::admin::persist_setting;
 use crate::handlers::providers::{
     configured_provider_models, provider_for_model, update_configured_model,
 };
-use crate::handlers::{ApiError, SettingsResponse};
+use allthecodes_protocol::v1::models::ModelRegistryResponse as ProtocolModelRegistryResponse;
+use allthecodes_protocol::ApiError as ProtocolApiError;
+use allthecodes_protocol::ApiMethod;
+use allthecodes_protocol::NoParams;
+use async_trait::async_trait;
+use axum::routing::get;
+
+use crate::api_dispatcher::rest_processor_response;
+use crate::handler_registry::HandlerRegistry;
+use crate::handlers::SettingsResponse;
+use crate::processors::Processor;
+use crate::serialization::SerializationLayer;
 use crate::state::WebState;
+
+// ---------------------------------------------------------------------------
+// Processors
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct ModelsListProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for ModelsListProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for ModelsListProcessor {
+    type Request = NoParams;
+    type Response = ProtocolModelRegistryResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "models.list"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _request: NoParams) -> Result<Self::Response, Self::Error> {
+        let engine = self.state.engine();
+        let app_state = engine.app_state();
+        let available = &app_state.settings.available_models;
+        let current_model = &app_state.main_loop_model;
+
+        let mut models: Vec<ModelSummary> = configured_provider_models();
+        if models.is_empty() {
+            models = available
+                .iter()
+                .map(|m| ModelSummary {
+                    id: m.clone(),
+                    provider_id: "default".to_string(),
+                    provider_name: None,
+                    display_name: Some(m.clone()),
+                    alias: None,
+                    visible: true,
+                    default: Some(m == current_model),
+                    context_window: None,
+                    max_output_tokens: None,
+                    supports_tools: None,
+                    supports_vision: None,
+                    supports_reasoning: None,
+                    supports_image_output: None,
+                    supports_embedding: None,
+                    provider_options: None,
+                    updated_at: None,
+                })
+                .collect();
+        } else {
+            for model in &mut models {
+                model.default = Some(model.id == *current_model);
+            }
+        }
+
+        // Build handler response then bridge to protocol type
+        let handler_resp = ModelRegistryResponse {
+            profile_id: None,
+            default_model_id: Some(current_model.clone()).filter(|m| !m.is_empty()),
+            models,
+        };
+        serde_json::from_value(serde_json::to_value(&handler_resp).map_err(|e| {
+            ProtocolApiError::Internal {
+                message: e.to_string(),
+            }
+        })?)
+        .map_err(|e| ProtocolApiError::Internal {
+            message: e.to_string(),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler registry
+// ---------------------------------------------------------------------------
+
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new().handle(ApiMethod::ModelsList, get(models_list_handler))
+}
+
+// ---------------------------------------------------------------------------
+// Handler types
+// ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 pub struct ModelSummary {
@@ -85,46 +190,8 @@ pub struct SetDefaultModelRequest {
 }
 
 /// GET /api/models — List the model registry.
-pub async fn models_list_handler(State(state): State<WebState>) -> impl IntoResponse {
-    let engine = state.engine();
-    let app_state = engine.app_state();
-    let available = &app_state.settings.available_models;
-    let current_model = &app_state.main_loop_model;
-
-    let mut models: Vec<ModelSummary> = configured_provider_models();
-    if models.is_empty() {
-        models = available
-            .iter()
-            .map(|m| ModelSummary {
-                id: m.clone(),
-                provider_id: "default".to_string(),
-                provider_name: None,
-                display_name: Some(m.clone()),
-                alias: None,
-                visible: true,
-                default: Some(m == current_model),
-                context_window: None,
-                max_output_tokens: None,
-                supports_tools: None,
-                supports_vision: None,
-                supports_reasoning: None,
-                supports_image_output: None,
-                supports_embedding: None,
-                provider_options: None,
-                updated_at: None,
-            })
-            .collect();
-    } else {
-        for model in &mut models {
-            model.default = Some(model.id == *current_model);
-        }
-    }
-
-    Json(ModelRegistryResponse {
-        profile_id: None,
-        default_model_id: Some(current_model.clone()).filter(|m| !m.is_empty()),
-        models,
-    })
+pub async fn models_list_handler(State(state): State<WebState>) -> Response {
+    rest_processor_response::<ModelsListProcessor>(state, ApiMethod::ModelsList, NoParams {}).await
 }
 
 /// PATCH /api/models/{id} — Update a model's properties.
@@ -135,13 +202,14 @@ pub async fn models_update_handler(
 ) -> Response {
     if let Err(error) = update_configured_model(&id, req) {
         return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Failed to update model: {error}"),
-                code: "model_update_failed".into(),
-
-                details: serde_json::json!({}),
-            }),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(
+                ProtocolApiError::BadRequest {
+                    code: "model_update_failed",
+                    message: format!("Failed to update model: {error}"),
+                }
+                .into_body(),
+            ),
         )
             .into_response();
     }
@@ -157,16 +225,17 @@ pub async fn models_set_default_handler(
     if let Some((provider_id, enabled)) = provider_for_model(&req.model_id) {
         if !enabled {
             return (
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: format!(
-                        "Provider '{}' must be enabled before model '{}' can run",
-                        provider_id, req.model_id
-                    ),
-                    code: "provider_disabled".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                StatusCode::BAD_REQUEST,
+                Json(
+                    ProtocolApiError::BadRequest {
+                        code: "provider_disabled",
+                        message: format!(
+                            "Provider '{}' must be enabled before model '{}' can run",
+                            provider_id, req.model_id
+                        ),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -174,13 +243,14 @@ pub async fn models_set_default_handler(
 
     if let Err(error) = persist_setting(&state, "model", json!(req.model_id.clone())) {
         return (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: format!("Failed to set default model: {error}"),
-                code: "model_default_failed".into(),
-
-                details: serde_json::json!({}),
-            }),
+            StatusCode::BAD_REQUEST,
+            Json(
+                ProtocolApiError::BadRequest {
+                    code: "model_default_failed",
+                    message: format!("Failed to set default model: {error}"),
+                }
+                .into_body(),
+            ),
         )
             .into_response();
     }

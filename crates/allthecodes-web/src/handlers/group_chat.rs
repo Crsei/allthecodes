@@ -18,7 +18,7 @@ use tracing::warn;
 
 use allthecodes_config::paths::data_root;
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 static STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -769,12 +769,13 @@ pub async fn group_chat_stream_handler(
             Err(error) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError {
-                        error: format!("Failed to serialize room snapshot: {error}"),
-                        code: "serialization_failed".into(),
-
-                        details: serde_json::json!({}),
-                    }),
+                    Json(
+                        ProtocolApiError::BadRequest {
+                            code: "serialization_failed",
+                            message: format!("Failed to serialize room snapshot: {error}"),
+                        }
+                        .into_body(),
+                    ),
                 )
                     .into_response();
             }
@@ -1008,43 +1009,27 @@ fn compression_summary(room: &RoomRecord) -> String {
 }
 
 fn bad_request(message: impl Into<String>) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error: message.into(),
-            code: "bad_request".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+    let body = ProtocolApiError::BadRequest {
+        code: "bad_request",
+        message: message.into(),
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
 fn not_found(message: impl Into<String>) -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error: message.into(),
-            code: "not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+    let body = ProtocolApiError::NotFound {
+        entity: "group_chat_resource",
+        id: message.into(),
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
 fn internal_error(message: String) -> Response {
     warn!(error = %message, "group chat handler failed");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error: message,
-            code: "group_chat_store_failed".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+    let body = ProtocolApiError::Internal { message }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
 
 #[cfg(test)]

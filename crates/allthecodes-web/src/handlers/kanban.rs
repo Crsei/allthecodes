@@ -14,7 +14,144 @@ use serde::{Deserialize, Serialize};
 
 use allthecodes_config::paths;
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::ApiError as ProtocolApiError;
+
+use allthecodes_protocol::v1::kanban::KanbanBoardsResponse as ProtocolKanbanBoardsResponse;
+use allthecodes_protocol::v1::kanban::KanbanTaskMutationResponse as ProtocolKanbanTaskMutationResponse;
+use allthecodes_protocol::ApiMethod;
+use async_trait::async_trait;
+use axum::extract::State;
+use axum::routing::{get, post};
+
+use crate::api_dispatcher::rest_processor_response;
+use crate::handler_registry::HandlerRegistry;
+use crate::processors::Processor;
+use crate::serialization::SerializationLayer;
+use crate::state::WebState;
+
+// ---------------------------------------------------------------------------
+// Processors
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct KanbanBoardsProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for KanbanBoardsProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for KanbanBoardsProcessor {
+    type Request = allthecodes_protocol::v1::kanban::KanbanQuery;
+    type Response = ProtocolKanbanBoardsResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "kanban.boards"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, query: Self::Request) -> Result<Self::Response, Self::Error> {
+        let store = read_store().map_err(|e| ProtocolApiError::Internal { message: e })?;
+        let boards: Vec<allthecodes_protocol::v1::kanban::KanbanBoardSummary> = store
+            .boards
+            .iter()
+            .map(|b| {
+                serde_json::from_value(serde_json::to_value(&board_summary(b)).unwrap()).unwrap()
+            })
+            .collect();
+        Ok(ProtocolKanbanBoardsResponse {
+            profile_id: query.profile_id,
+            active_board_id: store.active_board_id,
+            boards,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct KanbanTaskCreateProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for KanbanTaskCreateProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for KanbanTaskCreateProcessor {
+    type Request = allthecodes_protocol::v1::kanban::KanbanTaskCreateRequest;
+    type Response = ProtocolKanbanTaskMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "kanban.task_create"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, request: Self::Request) -> Result<Self::Response, Self::Error> {
+        // Bridge protocol request to handler request for the existing logic
+        let handler_req: KanbanTaskCreateRequest =
+            serde_json::from_value(serde_json::to_value(&request).map_err(|e| {
+                ProtocolApiError::Internal {
+                    message: e.to_string(),
+                }
+            })?)
+            .map_err(|e| ProtocolApiError::Internal {
+                message: e.to_string(),
+            })?;
+
+        match mutate_store(|store| create_task(store, handler_req)) {
+            Ok(response) => {
+                // Bridge handler response to protocol response
+                Ok(
+                    serde_json::from_value(serde_json::to_value(&response).map_err(|e| {
+                        ProtocolApiError::Internal {
+                            message: e.to_string(),
+                        }
+                    })?)
+                    .map_err(|e| ProtocolApiError::Internal {
+                        message: e.to_string(),
+                    })?,
+                )
+            }
+            Err(response) => {
+                let status = response.status();
+                Err(ProtocolApiError::Internal {
+                    message: format!("Kanban operation failed (HTTP {})", status.as_u16()),
+                })
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler registry
+// ---------------------------------------------------------------------------
+
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::KanbanBoards, get(kanban_boards_handler))
+        .handle(
+            ApiMethod::KanbanTaskCreate,
+            post(kanban_task_create_handler),
+        )
+}
+
+// ---------------------------------------------------------------------------
+// Handler types
+// ---------------------------------------------------------------------------
 
 static STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -203,16 +340,11 @@ pub struct KanbanCommentCreateRequest {
 }
 
 /// GET /api/kanban/boards?profile_id=
-pub async fn kanban_boards_handler(Query(query): Query<KanbanQuery>) -> Response {
-    match read_store() {
-        Ok(store) => Json(KanbanBoardsResponse {
-            profile_id: query.profile_id,
-            active_board_id: store.active_board_id,
-            boards: store.boards.iter().map(board_summary).collect(),
-        })
-        .into_response(),
-        Err(error) => internal_error(error).into_response(),
-    }
+pub async fn kanban_boards_handler(
+    State(state): State<WebState>,
+    Query(query): Query<allthecodes_protocol::v1::kanban::KanbanQuery>,
+) -> Response {
+    rest_processor_response::<KanbanBoardsProcessor>(state, ApiMethod::KanbanBoards, query).await
 }
 
 /// GET /api/kanban/boards/{id}?profile_id=
@@ -229,18 +361,19 @@ pub async fn kanban_board_detail_handler(
                 tasks: board.tasks.clone(),
             })
             .into_response(),
-            None => not_found(format!("Kanban board '{}' not found", id)).into_response(),
+            None => not_found(format!("Kanban board '{}' not found", id)),
         },
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
 /// POST /api/kanban/tasks
-pub async fn kanban_task_create_handler(Json(req): Json<KanbanTaskCreateRequest>) -> Response {
-    match mutate_store(|store| create_task(store, req)) {
-        Ok(response) => Json(response).into_response(),
-        Err(error) => error.into_response(),
-    }
+pub async fn kanban_task_create_handler(
+    State(state): State<WebState>,
+    Json(req): Json<allthecodes_protocol::v1::kanban::KanbanTaskCreateRequest>,
+) -> Response {
+    rest_processor_response::<KanbanTaskCreateProcessor>(state, ApiMethod::KanbanTaskCreate, req)
+        .await
 }
 
 /// PATCH /api/kanban/tasks/{id}
@@ -271,12 +404,12 @@ fn read_store() -> Result<KanbanStore, String> {
 }
 
 fn mutate_store<T>(
-    mutate: impl FnOnce(&mut KanbanStore) -> Result<T, (StatusCode, Json<ApiError>)>,
-) -> Result<T, (StatusCode, Json<ApiError>)> {
-    let _guard = lock_store().map_err(internal_error)?;
-    let mut store = load_store_locked().map_err(internal_error)?;
+    mutate: impl FnOnce(&mut KanbanStore) -> Result<T, Response>,
+) -> Result<T, Response> {
+    let _guard = lock_store().map_err(|e| internal_error(e))?;
+    let mut store = load_store_locked().map_err(|e| internal_error(e))?;
     let result = mutate(&mut store)?;
-    write_store_locked(&store).map_err(internal_error)?;
+    write_store_locked(&store).map_err(|e| internal_error(e))?;
     Ok(result)
 }
 
@@ -409,7 +542,7 @@ fn default_columns() -> Vec<KanbanColumn> {
 fn create_task(
     store: &mut KanbanStore,
     req: KanbanTaskCreateRequest,
-) -> Result<KanbanTaskMutationResponse, (StatusCode, Json<ApiError>)> {
+) -> Result<KanbanTaskMutationResponse, Response> {
     let board = store
         .boards
         .iter_mut()
@@ -449,7 +582,7 @@ fn update_task(
     store: &mut KanbanStore,
     id: &str,
     req: KanbanTaskUpdateRequest,
-) -> Result<KanbanTaskMutationResponse, (StatusCode, Json<ApiError>)> {
+) -> Result<KanbanTaskMutationResponse, Response> {
     let (board, task_index) = find_task_mut(store, id)?;
     if board.tasks[task_index].revision != req.revision {
         return Err(revision_conflict(
@@ -499,7 +632,7 @@ fn add_comment(
     store: &mut KanbanStore,
     id: &str,
     req: KanbanCommentCreateRequest,
-) -> Result<KanbanTaskMutationResponse, (StatusCode, Json<ApiError>)> {
+) -> Result<KanbanTaskMutationResponse, Response> {
     let body = clean_required(req.body, "Comment body")?;
     let (board, task_index) = find_task_mut(store, id)?;
     if board.tasks[task_index].revision != req.revision {
@@ -530,7 +663,7 @@ fn add_comment(
 fn find_task_mut<'a>(
     store: &'a mut KanbanStore,
     id: &str,
-) -> Result<(&'a mut KanbanBoard, usize), (StatusCode, Json<ApiError>)> {
+) -> Result<(&'a mut KanbanBoard, usize), Response> {
     for board in &mut store.boards {
         if let Some(index) = board.tasks.iter().position(|task| task.id == id) {
             return Ok((board, index));
@@ -557,7 +690,7 @@ fn sorted_columns(mut columns: Vec<KanbanColumn>) -> Vec<KanbanColumn> {
     columns
 }
 
-fn clean_required(value: String, label: &str) -> Result<String, (StatusCode, Json<ApiError>)> {
+fn clean_required(value: String, label: &str) -> Result<String, Response> {
     let value = value.trim();
     if value.is_empty() {
         Err(validation_error(format!("{} cannot be empty", label)))
@@ -604,52 +737,32 @@ fn now_timestamp() -> i64 {
     Utc::now().timestamp()
 }
 
-fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error,
-            code: "validation_error".to_string(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn validation_error(error: String) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code: "validation_error",
+        message: error,
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-fn revision_conflict(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::CONFLICT,
-        Json(ApiError {
-            error,
-            code: "revision_conflict".to_string(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn revision_conflict(error: String) -> Response {
+    let body = ProtocolApiError::Conflict { reason: error }.into_body();
+    (StatusCode::CONFLICT, Json(body)).into_response()
 }
 
-fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error,
-            code: "not_found".to_string(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn not_found(error: String) -> Response {
+    let body = ProtocolApiError::NotFound {
+        entity: "kanban_item",
+        id: error,
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
-fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error,
-            code: "internal_error".to_string(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn internal_error(error: String) -> Response {
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
 
 #[cfg(test)]
@@ -717,8 +830,7 @@ mod tests {
         )
         .expect_err("stale revision is rejected");
 
-        assert_eq!(err.0, StatusCode::CONFLICT);
-        assert_eq!(err.1 .0.code, "revision_conflict");
+        assert_eq!(err.status(), StatusCode::CONFLICT);
     }
 
     #[test]

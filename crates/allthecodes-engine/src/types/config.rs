@@ -103,6 +103,34 @@ pub struct QueryParams {
     pub gates: QueryGates,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubmitMessageOverrides {
+    pub model: Option<String>,
+    pub thinking_enabled: Option<bool>,
+    pub effort: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub skill_ids: Option<Vec<String>>,
+    pub context_mode: Option<SubmitContextMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitContextMode {
+    Inherit,
+    Compact,
+    Isolated,
+}
+
+impl SubmitContextMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "inherit" => Some(Self::Inherit),
+            "compact" => Some(Self::Compact),
+            "isolated" => Some(Self::Isolated),
+            _ => None,
+        }
+    }
+}
+
 /// 查询来源
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuerySource {

@@ -7,12 +7,18 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use axum::extract::{Path as AxumPath, Query};
+use allthecodes_protocol::v1::skills::SkillsListResponse as ProtocolSkillsListResponse;
+use allthecodes_protocol::ApiError as ProtocolApiError;
+use allthecodes_protocol::ApiMethod;
+use async_trait::async_trait;
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use allthecodes_config::paths;
 use allthecodes_skills::{
@@ -20,7 +26,92 @@ use allthecodes_skills::{
     SkillDefinition, SkillDiagnostic, SkillSource,
 };
 
-use crate::handlers::ApiError;
+use crate::api_dispatcher::rest_processor_response;
+use crate::handler_registry::HandlerRegistry;
+use crate::processors::Processor;
+use crate::serialization::SerializationLayer;
+use crate::state::WebState;
+
+// ---------------------------------------------------------------------------
+// Processor
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct SkillsListProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SkillsListProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SkillsListProcessor {
+    type Request = allthecodes_protocol::v1::skills::SkillsListQuery;
+    type Response = ProtocolSkillsListResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "skills.list"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let skills = get_all_skills();
+        let diagnostics: Vec<Value> = get_skill_diagnostics()
+            .into_iter()
+            .map(|d| serde_json::to_value(&d).unwrap_or(Value::String(format!("{d:?}"))))
+            .collect();
+        let revision = registry_revision();
+        let metadata = load_metadata();
+
+        let summaries: Vec<allthecodes_protocol::v1::skills::SkillSummary> = skills
+            .into_iter()
+            .map(|skill| {
+                let meta = metadata.get(&skill.name).cloned().unwrap_or_default();
+                allthecodes_protocol::v1::skills::SkillSummary {
+                    id: skill.name.clone(),
+                    name: skill.name.clone(),
+                    display_name: skill.display_name().to_string(),
+                    description: skill.frontmatter.description.clone(),
+                    when_to_use: skill.frontmatter.when_to_use.clone(),
+                    source: format!("{:?}", skill.source),
+                    user_invocable: skill.is_user_invocable(),
+                    model_invocable: skill.is_model_invocable(),
+                    context: format!("{:?}", skill.frontmatter.context),
+                    allowed_tools: skill.frontmatter.allowed_tools.clone(),
+                    files: skill_file_summaries(skill.base_dir.as_deref())
+                        .into_iter()
+                        .map(|f| allthecodes_protocol::v1::skills::SkillFileSummary {
+                            path: f.path,
+                            kind: f.kind,
+                            size_bytes: f.size_bytes,
+                        })
+                        .collect(),
+                    version: skill.frontmatter.version.clone(),
+                    enabled: meta.enabled,
+                    pinned: meta.pinned,
+                }
+            })
+            .collect();
+
+        Ok(ProtocolSkillsListResponse {
+            skills: summaries,
+            diagnostics,
+            revision,
+            profile_id: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler types
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -124,39 +215,37 @@ pub struct SkillPatchResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Handler registry
+// ---------------------------------------------------------------------------
+
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new().handle(ApiMethod::SkillsList, get(skills_list_handler))
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
 /// `GET /api/skills` -- list summaries for all discovered skills.
-pub async fn skills_list_handler(Query(query): Query<SkillsListQuery>) -> Response {
-    let skills = get_all_skills();
-    let diagnostics = get_skill_diagnostics();
-    let revision = registry_revision();
-    let metadata = load_metadata();
-
-    let summaries: Vec<SkillSummary> = skills
-        .into_iter()
-        .map(|skill| {
-            skill_summary(
-                &skill,
-                metadata.get(&skill.name).cloned().unwrap_or_default(),
-            )
-        })
-        .collect();
-
-    Json(SkillsListResponse {
-        skills: summaries,
-        diagnostics,
-        revision,
-        profile_id: query.profile_id,
-    })
-    .into_response()
+pub async fn skills_list_handler(
+    State(state): State<WebState>,
+    Query(_query): Query<SkillsListQuery>,
+) -> Response {
+    rest_processor_response::<SkillsListProcessor>(
+        state,
+        ApiMethod::SkillsList,
+        allthecodes_protocol::v1::skills::SkillsListQuery {
+            filter: None,
+            refresh: None,
+        },
+    )
+    .await
 }
 
 /// `GET /api/skills/{id}` -- detail with prompt body, frontmatter, metadata.
 pub async fn skills_detail_handler(AxumPath(id): AxumPath<String>) -> Response {
     let Some(skill) = find_skill(&id) else {
-        return not_found(format!("Skill '{}' not found", id)).into_response();
+        return not_found(format!("Skill '{}' not found", id));
     };
     let metadata = load_metadata();
     let meta = metadata.get(&id).cloned().unwrap_or_default();
@@ -181,7 +270,7 @@ pub async fn skills_files_handler(
     Query(query): Query<SkillFileQuery>,
 ) -> Response {
     let Some(skill) = find_skill(&id) else {
-        return not_found(format!("Skill '{}' not found", id)).into_response();
+        return not_found(format!("Skill '{}' not found", id));
     };
 
     let Some(base_dir) = skill.base_dir else {
@@ -199,12 +288,12 @@ pub async fn skills_files_handler(
 
     // Reject directories
     if resolved.is_dir() {
-        return bad_request(format!("'{}' is a directory, not a file", query.path)).into_response();
+        return bad_request(format!("'{}' is a directory, not a file", query.path));
     }
 
     // Do not expose hidden / credential files
     if is_hidden_file(&resolved) {
-        return forbidden("Access to hidden files is not allowed".to_string()).into_response();
+        return forbidden("Access to hidden files is not allowed".to_string());
     }
 
     let max_bytes = query.max_bytes.unwrap_or(10 * 1024 * 1024);
@@ -223,7 +312,7 @@ pub async fn skills_patch_handler(
 ) -> Response {
     // Verify the skill exists
     let Some(skill) = find_skill(&id) else {
-        return not_found(format!("Skill '{}' not found", id)).into_response();
+        return not_found(format!("Skill '{}' not found", id));
     };
 
     let mut metadata = load_metadata();
@@ -244,7 +333,7 @@ pub async fn skills_patch_handler(
             skill: skill_summary(&skill, updated_meta),
         })
         .into_response(),
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
@@ -385,10 +474,7 @@ fn file_summary(base_dir: &Path, relative_path: &str) -> SkillFileSummary {
 // ---------------------------------------------------------------------------
 
 /// Resolve `request_path` relative to `base_dir`, rejecting traversal.
-fn resolve_skill_path(
-    base_dir: &Path,
-    request_path: &str,
-) -> Result<PathBuf, (StatusCode, Json<ApiError>)> {
+fn resolve_skill_path(base_dir: &Path, request_path: &str) -> Result<PathBuf, Response> {
     let base = base_dir
         .canonicalize()
         .map_err(|_| internal_error("Failed to resolve skill base directory".to_string()))?;
@@ -430,7 +516,7 @@ fn read_skill_file(
     request_path: &str,
     path: &Path,
     max_bytes: u64,
-) -> Result<SkillFileResponse, (StatusCode, Json<ApiError>)> {
+) -> Result<SkillFileResponse, Response> {
     let meta = std::fs::metadata(path)
         .map_err(|e| internal_error(format!("Failed to read file metadata: {}", e)))?;
 
@@ -506,50 +592,34 @@ fn detect_media_type(path: &Path) -> &'static str {
 // Error helpers
 // ---------------------------------------------------------------------------
 
-fn bad_request(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error,
-            code: "bad_request".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn bad_request(error: String) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code: "bad_request",
+        message: error,
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-fn forbidden(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::FORBIDDEN,
-        Json(ApiError {
-            error,
-            code: "path_traversal".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn forbidden(error: String) -> Response {
+    let body = ProtocolApiError::Forbidden {
+        code: "path_traversal",
+        message: error,
+    }
+    .into_body();
+    (StatusCode::FORBIDDEN, Json(body)).into_response()
 }
 
-fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error,
-            code: "not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn not_found(error: String) -> Response {
+    let body = ProtocolApiError::NotFound {
+        entity: "skill",
+        id: error,
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
-fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error,
-            code: "internal_error".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn internal_error(error: String) -> Response {
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }

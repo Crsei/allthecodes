@@ -12,7 +12,7 @@ use allthecodes_daemon::gateway_client::{
 };
 use allthecodes_gateway::{AdapterProvider, AdapterStatus, GatewayDiagnostic};
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::{ApiError as ProtocolApiError, ApiErrorBody};
 
 #[derive(Serialize)]
 pub struct ChannelsResponse {
@@ -59,7 +59,7 @@ pub async fn channels_list_handler() -> Response {
     };
     match client.adapters().await {
         Ok(adapters) => Json(ChannelsResponse { daemon, adapters }).into_response(),
-        Err(diagnostic) => diagnostic_response(diagnostic).into_response(),
+        Err(diagnostic) => diagnostic_response(diagnostic),
     }
 }
 
@@ -75,7 +75,7 @@ pub async fn channels_capabilities_handler() -> Response {
             gateway: capabilities_from_snapshot(snapshot),
         })
         .into_response(),
-        Err(diagnostic) => diagnostic_response(diagnostic).into_response(),
+        Err(diagnostic) => diagnostic_response(diagnostic),
     }
 }
 
@@ -83,7 +83,7 @@ pub async fn channels_capabilities_handler() -> Response {
 pub async fn channels_connect_handler(AxumPath(provider): AxumPath<String>) -> Response {
     let provider = match parse_provider(&provider) {
         Ok(provider) => provider,
-        Err(diagnostic) => return diagnostic_response(diagnostic).into_response(),
+        Err(diagnostic) => return diagnostic_response(diagnostic),
     };
     let (_daemon, client) = match running_gateway_client() {
         Ok(pair) => pair,
@@ -91,7 +91,7 @@ pub async fn channels_connect_handler(AxumPath(provider): AxumPath<String>) -> R
     };
     match client.connect_adapter(provider).await {
         Ok(status) => Json(status).into_response(),
-        Err(diagnostic) => diagnostic_response(diagnostic).into_response(),
+        Err(diagnostic) => diagnostic_response(diagnostic),
     }
 }
 
@@ -102,7 +102,7 @@ pub async fn channels_test_handler(
 ) -> Response {
     let provider = match parse_provider(&provider) {
         Ok(provider) => provider,
-        Err(diagnostic) => return diagnostic_response(diagnostic).into_response(),
+        Err(diagnostic) => return diagnostic_response(diagnostic),
     };
     let (_daemon, client) = match running_gateway_client() {
         Ok(pair) => pair,
@@ -113,7 +113,7 @@ pub async fn channels_test_handler(
         .await
     {
         Ok(status) => Json(status).into_response(),
-        Err(diagnostic) => diagnostic_response(diagnostic).into_response(),
+        Err(diagnostic) => diagnostic_response(diagnostic),
     }
 }
 
@@ -124,7 +124,6 @@ fn running_gateway_client() -> Result<(ChannelDaemonInfo, LocalGatewayClient), R
             "daemon_state_unavailable",
             format!("The daemon state could not be read: {}", error),
         )
-        .into_response()
     })?;
 
     match status {
@@ -135,21 +134,19 @@ fn running_gateway_client() -> Result<(ChannelDaemonInfo, LocalGatewayClient), R
                 pid: Some(pid),
             };
             let client = LocalGatewayClient::from_running_daemon()
-                .map_err(|diagnostic| diagnostic_response(diagnostic).into_response())?;
+                .map_err(|diagnostic| diagnostic_response(diagnostic))?;
             Ok((daemon, client))
         }
         LocalGatewayDaemonStatus::Stale { pid } => Err(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "daemon_stale",
             format!("The daemon state is stale for pid {}", pid),
-        )
-        .into_response()),
+        )),
         LocalGatewayDaemonStatus::Stopped => Err(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "daemon_stopped",
             "The daemon is not running".to_string(),
-        )
-        .into_response()),
+        )),
     }
 }
 
@@ -168,17 +165,17 @@ fn capabilities_from_snapshot(snapshot: GatewayCapabilitiesSnapshot) -> ChannelG
     }
 }
 
-fn diagnostic_response(diagnostic: GatewayDiagnostic) -> (StatusCode, Json<ApiError>) {
+fn diagnostic_response(diagnostic: GatewayDiagnostic) -> Response {
     let status = status_for_diagnostic(&diagnostic.code);
     (
         status,
-        Json(ApiError {
+        Json(ApiErrorBody {
             error: diagnostic.message,
             code: diagnostic.code,
-
             details: serde_json::json!({}),
         }),
     )
+        .into_response()
 }
 
 fn status_for_diagnostic(code: &str) -> StatusCode {
@@ -194,18 +191,11 @@ fn status_for_diagnostic(code: &str) -> StatusCode {
     }
 }
 
-fn error_response(
-    status: StatusCode,
-    code: impl Into<String>,
-    error: impl Into<String>,
-) -> (StatusCode, Json<ApiError>) {
-    (
-        status,
-        Json(ApiError {
-            error: error.into(),
-            code: code.into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn error_response(status: StatusCode, code: &'static str, error: impl Into<String>) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code,
+        message: error.into(),
+    }
+    .into_body();
+    (status, Json(body)).into_response()
 }

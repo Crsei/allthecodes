@@ -15,7 +15,17 @@ allthecodes 是一个高性能、全平台的 AI 编程助手（coding agent har
 | **allthecodes** (本仓库) | `allthecodes/` | Rust workspace, ~40 crates |
 | **allthecodes-web** (前端) | `../allthecodes-web/` | Next.js 15, React 19, TS strict |
 
-## Build & Test
+## Cargo / Build
+
+Do not assume `cargo` is available from the default shell `PATH` on this
+machine. The Rust toolchain for this project is installed under the workspace
+parent directory:
+
+```bash
+export CARGO_HOME=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.rust/cargo
+export RUSTUP_HOME=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.rust/rustup
+export PATH="$CARGO_HOME/bin:$PATH"
+```
 
 ```bash
 # Build everything (workspace)

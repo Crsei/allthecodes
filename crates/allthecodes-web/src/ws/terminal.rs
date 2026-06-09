@@ -22,6 +22,7 @@ use tracing::warn;
 use crate::state::WebState;
 
 const OUTPUT_BUFFER_LIMIT: usize = 256 * 1024;
+const DETACHED_IDLE_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 const BRIDGE_CLI_PLUGIN_NAME: &str = "allthecodes-bridge-cli";
 const BRIDGE_CLI_MCP_SERVER: &str = "allthecodes-bridge";
 static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
@@ -37,10 +38,12 @@ impl TerminalManager {
         workspace_cwd: &Path,
         request: TerminalCreateRequest,
     ) -> Result<TerminalSessionSnapshot, String> {
+        self.prune_idle_sessions();
         let profile = TerminalProfile::from_id(&request.profile)?;
         let cwd = resolve_cwd(workspace_cwd, request.cwd.as_deref())?;
         let resolved = resolve_profile_command(profile, request.session_id.as_deref())?;
         let size = request.initial_size.unwrap_or_default().to_pty_size();
+        let persist = request.persist.unwrap_or(true);
         let id = format!(
             "terminal-{}-{}",
             now_millis(),
@@ -50,13 +53,15 @@ impl TerminalManager {
             .label
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| profile.default_label().to_string());
-        let session = TerminalSession::spawn(id.clone(), label, profile, cwd, resolved, size)?;
+        let session =
+            TerminalSession::spawn(id.clone(), label, profile, cwd, resolved, size, persist)?;
         let snapshot = session.snapshot();
         self.sessions.write().insert(id, Arc::new(session));
         Ok(snapshot)
     }
 
     pub fn list_sessions(&self) -> Vec<TerminalSessionSnapshot> {
+        self.prune_idle_sessions();
         self.sessions
             .read()
             .values()
@@ -65,6 +70,7 @@ impl TerminalManager {
     }
 
     pub fn get_session(&self, id: &str) -> Option<Arc<TerminalSession>> {
+        self.prune_idle_sessions();
         self.sessions.read().get(id).cloned()
     }
 
@@ -81,6 +87,26 @@ impl TerminalManager {
             .map(PtyDiagnosticsSnapshot::from)
             .unwrap_or_default()
     }
+
+    fn prune_idle_sessions(&self) {
+        let now = now_millis() as u64;
+        let stale_ids = self
+            .sessions
+            .read()
+            .iter()
+            .filter_map(|(id, session)| session.should_prune(now).then(|| id.clone()))
+            .collect::<Vec<_>>();
+        if stale_ids.is_empty() {
+            return;
+        }
+
+        let mut sessions = self.sessions.write();
+        for id in stale_ids {
+            if let Some(session) = sessions.remove(&id) {
+                session.terminate();
+            }
+        }
+    }
 }
 
 pub struct TerminalSession {
@@ -89,6 +115,8 @@ pub struct TerminalSession {
     profile: TerminalProfile,
     cwd: PathBuf,
     command: String,
+    persist: bool,
+    pid: u64,
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     child: Arc<Mutex<Option<Box<dyn Child + Send>>>>,
@@ -102,6 +130,8 @@ pub struct TerminalSession {
     exit_code: Arc<Mutex<Option<i32>>>,
     error: Arc<Mutex<Option<String>>>,
     output_buffer: Arc<Mutex<String>>,
+    attached_count: Arc<AtomicU64>,
+    last_detached_at: Arc<AtomicU64>,
     output_tx: broadcast::Sender<TerminalOutputEvent>,
 }
 
@@ -113,6 +143,7 @@ impl TerminalSession {
         cwd: PathBuf,
         resolved: ResolvedCommand,
         size: PtySize,
+        persist: bool,
     ) -> Result<Self, String> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system
@@ -129,6 +160,7 @@ impl TerminalSession {
             .slave
             .spawn_command(cmd)
             .map_err(|error| format!("failed to spawn {}: {error}", resolved.display))?;
+        let pid = child.process_id().unwrap_or_default() as u64;
         let reader = pair
             .master
             .try_clone_reader()
@@ -146,6 +178,8 @@ impl TerminalSession {
             profile,
             cwd,
             command: resolved.display,
+            persist,
+            pid,
             writer: Arc::new(Mutex::new(Some(writer))),
             master: Arc::new(Mutex::new(Some(pair.master))),
             child: Arc::new(Mutex::new(Some(child))),
@@ -159,6 +193,8 @@ impl TerminalSession {
             exit_code: Arc::new(Mutex::new(None)),
             error: Arc::new(Mutex::new(None)),
             output_buffer: Arc::new(Mutex::new(String::new())),
+            attached_count: Arc::new(AtomicU64::new(0)),
+            last_detached_at: Arc::new(AtomicU64::new(0)),
             output_tx,
         };
 
@@ -229,7 +265,7 @@ impl TerminalSession {
             cwd: self.cwd.display().to_string(),
             command: self.command.clone(),
             status: self.status.read().clone(),
-            pid: 0,
+            pid: self.pid,
             cols: self.cols.load(Ordering::SeqCst) as u16,
             rows: self.rows.load(Ordering::SeqCst) as u16,
             bytes_in: self.bytes_in.load(Ordering::SeqCst),
@@ -247,6 +283,38 @@ impl TerminalSession {
 
     pub fn subscribe(&self) -> broadcast::Receiver<TerminalOutputEvent> {
         self.output_tx.subscribe()
+    }
+
+    pub fn mark_attached(&self) {
+        self.attached_count.fetch_add(1, Ordering::SeqCst);
+        self.last_detached_at.store(0, Ordering::SeqCst);
+        self.updated_at.store(now_millis() as u64, Ordering::SeqCst);
+    }
+
+    pub fn mark_detached(&self) {
+        let remaining = decrement_atomic_counter(&self.attached_count);
+        if remaining == 0 {
+            self.last_detached_at
+                .store(now_millis() as u64, Ordering::SeqCst);
+        }
+        self.updated_at.store(now_millis() as u64, Ordering::SeqCst);
+    }
+
+    pub fn should_prune(&self, now: u64) -> bool {
+        if *self.status.read() == TerminalStatus::Exited {
+            return !self.persist;
+        }
+        if self.attached_count.load(Ordering::SeqCst) > 0 {
+            return false;
+        }
+        let detached_at = self.last_detached_at.load(Ordering::SeqCst);
+        if detached_at == 0 {
+            return false;
+        }
+        if !self.persist {
+            return true;
+        }
+        now.saturating_sub(detached_at) >= DETACHED_IDLE_TIMEOUT_MS
     }
 
     pub fn write_input(&self, data: &str) -> Result<(), String> {
@@ -588,7 +656,8 @@ pub async fn session_ws_handler(
             "terminal session not found",
         );
     };
-    ws.on_upgrade(move |socket| attach_socket(socket, session))
+    let manager = state.terminal_manager.clone();
+    ws.on_upgrade(move |socket| attach_socket(socket, manager, session))
         .into_response()
 }
 
@@ -630,11 +699,13 @@ pub async fn legacy_tui_ws_handler(
             "terminal session was not stored",
         );
     };
-    ws.on_upgrade(move |socket| attach_socket(socket, session))
+    let manager = state.terminal_manager.clone();
+    ws.on_upgrade(move |socket| attach_socket(socket, manager, session))
         .into_response()
 }
 
-async fn attach_socket(socket: WebSocket, session: Arc<TerminalSession>) {
+async fn attach_socket(socket: WebSocket, manager: TerminalManager, session: Arc<TerminalSession>) {
+    session.mark_attached();
     let mut output_rx = session.subscribe();
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let snapshot = session.snapshot();
@@ -694,6 +765,11 @@ async fn attach_socket(socket: WebSocket, session: Arc<TerminalSession>) {
             }
             else => break,
         }
+    }
+
+    session.mark_detached();
+    if session.should_prune(now_millis() as u64) {
+        let _ = manager.remove_session(&session.id);
     }
 
     let snapshot = session.snapshot();
@@ -973,6 +1049,22 @@ fn find_on_path(command: &str) -> Option<PathBuf> {
             }
         })
     })
+}
+
+fn decrement_atomic_counter(counter: &AtomicU64) -> u64 {
+    loop {
+        let current = counter.load(Ordering::SeqCst);
+        if current == 0 {
+            return 0;
+        }
+        let next = current - 1;
+        if counter
+            .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return next;
+        }
+    }
 }
 
 fn now_millis() -> i64 {

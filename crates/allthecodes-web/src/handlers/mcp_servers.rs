@@ -14,8 +14,8 @@ use allthecodes_ipc_protocol::subsystem_types::{ConfigScope, McpServerConfigEntr
 use allthecodes_mcp::discovery::{discover_mcp_servers_scoped, DiscoveryScope};
 use allthecodes_mcp::McpServerConfig;
 
-use crate::handlers::ApiError;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct McpServersListResponse {
@@ -59,7 +59,7 @@ pub async fn mcp_servers_list_handler(State(state): State<WebState>) -> Response
     let cwd = engine_cwd(&state);
     match list_entries(&cwd) {
         Ok(servers) => Json(McpServersListResponse { servers }).into_response(),
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
@@ -76,10 +76,8 @@ pub async fn mcp_servers_detail_handler(
             .find(|server| server.name == name)
             .map(Json)
             .map(IntoResponse::into_response)
-            .unwrap_or_else(|| {
-                not_found(format!("MCP server '{}' not found", name)).into_response()
-            }),
-        Err(error) => internal_error(error).into_response(),
+            .unwrap_or_else(|| not_found(format!("MCP server '{}' not found", name))),
+        Err(error) => internal_error(error),
     }
 }
 
@@ -91,7 +89,7 @@ pub async fn mcp_servers_create_handler(
     let entry = req.into_entry();
     match upsert_entry(&state, entry) {
         Ok(entry) => Json(entry).into_response(),
-        Err((status, error)) => (status, Json(error)).into_response(),
+        Err(error) => crate::api_errors::protocol_error_response(error).into_response(),
     }
 }
 
@@ -106,12 +104,11 @@ pub async fn mcp_servers_update_handler(
         return validation_error(format!(
             "MCP server name '{}' does not match path '{}'",
             entry.name, name
-        ))
-        .into_response();
+        ));
     }
     match upsert_entry(&state, entry) {
         Ok(entry) => Json(entry).into_response(),
-        Err((status, error)) => (status, Json(error)).into_response(),
+        Err(error) => crate::api_errors::protocol_error_response(error).into_response(),
     }
 }
 
@@ -123,25 +120,24 @@ pub async fn mcp_servers_delete_handler(
 ) -> Response {
     let scope = match parse_scope(&query.scope) {
         Ok(scope) => scope,
-        Err(error) => return validation_error(error).into_response(),
+        Err(error) => return validation_error(error),
     };
     if !scope.is_editable() {
         return validation_error(format!(
             "scope `{}` is read-only; only user and project MCP servers can be deleted",
             scope.label()
-        ))
-        .into_response();
+        ));
     }
 
     let cwd = engine_cwd(&state);
     match remove_entry(&cwd, &name, &scope) {
         Ok(()) => match list_entries(&cwd) {
             Ok(servers) => Json(McpServersListResponse { servers }).into_response(),
-            Err(error) => internal_error(error).into_response(),
+            Err(error) => internal_error(error),
         },
-        Err(RemoveError::NotFound(error)) => not_found(error).into_response(),
-        Err(RemoveError::Invalid(error)) => validation_error(error).into_response(),
-        Err(RemoveError::Internal(error)) => internal_error(error).into_response(),
+        Err(RemoveError::NotFound(error)) => not_found(error),
+        Err(RemoveError::Invalid(error)) => validation_error(error),
+        Err(RemoveError::Internal(error)) => internal_error(error),
     }
 }
 
@@ -159,7 +155,7 @@ pub async fn mcp_servers_marketplace_handler() -> impl IntoResponse {
 fn upsert_entry(
     state: &WebState,
     entry: McpServerConfigEntry,
-) -> Result<McpServerConfigEntry, (StatusCode, ApiError)> {
+) -> Result<McpServerConfigEntry, ProtocolApiError> {
     validate_entry(&entry).map_err(|error| validation_api(error))?;
     let cwd = engine_cwd(state);
     let path =
@@ -348,48 +344,36 @@ fn engine_cwd(state: &WebState) -> PathBuf {
     PathBuf::from(state.engine().cwd())
 }
 
-fn validation_api(error: String) -> (StatusCode, ApiError) {
-    (
-        StatusCode::BAD_REQUEST,
-        ApiError {
-            error,
-            code: "validation_error".into(),
-
-            details: serde_json::json!({}),
-        },
-    )
+fn validation_api(error: String) -> ProtocolApiError {
+    ProtocolApiError::BadRequest {
+        code: "validation_error",
+        message: error,
+    }
 }
 
-fn internal_api(error: String) -> (StatusCode, ApiError) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        ApiError {
-            error,
-            code: "internal_error".into(),
-
-            details: serde_json::json!({}),
-        },
-    )
+fn internal_api(error: String) -> ProtocolApiError {
+    ProtocolApiError::Internal { message: error }
 }
 
-fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
-    let (status, error) = validation_api(error);
-    (status, Json(error))
+fn validation_error(error: String) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code: "validation_error",
+        message: error,
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error,
-            code: "not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn not_found(error: String) -> Response {
+    let body = ProtocolApiError::NotFound {
+        entity: "mcp_server",
+        id: error,
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
-fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
-    let (status, error) = internal_api(error);
-    (status, Json(error))
+fn internal_error(error: String) -> Response {
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }

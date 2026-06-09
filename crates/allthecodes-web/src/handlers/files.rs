@@ -8,14 +8,22 @@
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+pub use allthecodes_protocol::v1::files::{
+    FileCopyRequest, FileDeleteRequest, FileDownloadQuery, FileEntry, FileMkdirRequest,
+    FileMoveRequest, FileMutationResponse, FileReadQuery, FileReadResponse, FileRenameRequest,
+    FileStat, FileStatQuery, FileTreeQuery, FileTreeResponse, FileUploadItem, FileUploadRequest,
+    FileUploadResponse, FileUploadResult, FileWriteRequest,
+};
+use allthecodes_protocol::{ApiError as ProtocolApiError, ApiMethod, SerializationScope};
+use async_trait::async_trait;
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::handlers::ApiError;
+use crate::api_dispatcher::rest_processor_response;
+use crate::processors::{protocol_error_response, Processor};
 use crate::state::WebState;
 
 // ---------------------------------------------------------------------------
@@ -30,175 +38,11 @@ const MAX_READ_MAX_BYTES: u64 = 50_000_000; // 50 MiB
 const MAX_TREE_CHILDREN: usize = 10_000;
 
 // ---------------------------------------------------------------------------
-// Response types
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-pub struct FileTreeResponse {
-    pub entries: Vec<FileEntry>,
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub profile_id: Option<String>,
-    pub truncated: bool,
-}
-
-#[derive(Serialize)]
-pub struct FileEntry {
-    pub name: String,
-    pub path: String,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub size: u64,
-    pub modified: String,
-}
-
-#[derive(Serialize)]
-pub struct FileStat {
-    pub exists: bool,
-    pub path: String,
-    pub is_dir: bool,
-    pub is_file: bool,
-    pub is_symlink: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub size: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub modified: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub profile_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct FileReadResponse {
-    pub content: String,
-    pub truncated: bool,
-    pub is_binary: bool,
-    pub hash: String,
-    pub size: u64,
-    pub lines: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub profile_id: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct FileMutationResponse {
-    pub ok: bool,
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hash: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct FileUploadResponse {
-    pub ok: bool,
-    pub path: String,
-    pub files: Vec<FileUploadResult>,
-}
-
-#[derive(Serialize)]
-pub struct FileUploadResult {
-    pub name: String,
-    pub path: String,
-    pub size: u64,
-    pub hash: String,
-}
-
-// ---------------------------------------------------------------------------
-// Request types
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-pub struct FileTreeQuery {
-    pub path: Option<String>,
-    pub profile_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct FileStatQuery {
-    pub path: Option<String>,
-    pub profile_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct FileReadQuery {
-    pub path: Option<String>,
-    pub profile_id: Option<String>,
-    pub max_bytes: Option<u64>,
-}
-
-#[derive(Deserialize)]
-pub struct FileDownloadQuery {
-    pub path: Option<String>,
-    pub profile_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct FileWriteRequest {
-    pub path: String,
-    pub content: String,
-    #[serde(default)]
-    pub hash: Option<String>,
-    #[serde(default)]
-    pub overwrite: Option<bool>,
-}
-
-#[derive(Deserialize)]
-pub struct FileUploadRequest {
-    pub path: String,
-    pub files: Vec<FileUploadItem>,
-}
-
-#[derive(Deserialize)]
-pub struct FileUploadItem {
-    pub name: String,
-    pub content: String,
-    #[serde(default)]
-    pub encoding: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct FileMkdirRequest {
-    pub path: String,
-}
-
-#[derive(Deserialize)]
-pub struct FileRenameRequest {
-    pub source: String,
-    pub destination: String,
-}
-
-#[derive(Deserialize)]
-pub struct FileCopyRequest {
-    pub source: String,
-    pub destination: String,
-    #[serde(default)]
-    pub overwrite: Option<bool>,
-}
-
-#[derive(Deserialize)]
-pub struct FileMoveRequest {
-    pub source: String,
-    pub destination: String,
-    #[serde(default)]
-    pub overwrite: Option<bool>,
-}
-
-#[derive(Deserialize)]
-pub struct FileDeleteRequest {
-    pub path: String,
-    #[serde(default)]
-    pub recursive: Option<bool>,
-}
-
-// ---------------------------------------------------------------------------
 // Path resolution helpers
 // ---------------------------------------------------------------------------
 
 /// Canonicalize the workspace root so we can use it as an anchor.
-fn workspace_root(state: &WebState) -> Result<PathBuf, Response> {
+fn workspace_root(state: &WebState) -> Result<PathBuf, ProtocolApiError> {
     let cwd = PathBuf::from(state.engine().cwd());
     cwd.canonicalize()
         .map_err(|err| internal_error(format!("Cannot resolve workspace root: {err}")))
@@ -216,7 +60,7 @@ fn resolve_raw(
     raw_path: &str,
     must_exist: bool,
     allow_missing_parent: bool,
-) -> Result<PathBuf, Response> {
+) -> Result<PathBuf, ProtocolApiError> {
     let raw_path = raw_path.trim();
     if raw_path.is_empty() || raw_path == "." || raw_path == "./" {
         return Ok(root.to_path_buf());
@@ -301,17 +145,17 @@ fn resolve_raw(
 }
 
 /// Resolve a path, canonicalize if it exists, and verify it is under `root`.
-fn resolve_existing(root: &Path, raw_path: &str) -> Result<PathBuf, Response> {
+fn resolve_existing(root: &Path, raw_path: &str) -> Result<PathBuf, ProtocolApiError> {
     resolve_raw(root, raw_path, true, false)
 }
 
 /// Resolve a path that may or may not exist yet.
-fn resolve_any(root: &Path, raw_path: &str) -> Result<PathBuf, Response> {
+fn resolve_any(root: &Path, raw_path: &str) -> Result<PathBuf, ProtocolApiError> {
     resolve_raw(root, raw_path, false, false)
 }
 
 /// Resolve a path whose parent may also not exist (mkdir -p).
-fn resolve_any_deep(root: &Path, raw_path: &str) -> Result<PathBuf, Response> {
+fn resolve_any_deep(root: &Path, raw_path: &str) -> Result<PathBuf, ProtocolApiError> {
     resolve_raw(root, raw_path, false, true)
 }
 
@@ -391,69 +235,367 @@ fn line_count(s: &str) -> usize {
 // Error helpers
 // ---------------------------------------------------------------------------
 
-fn bad_request(msg: impl Into<String>) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error: msg.into(),
-            code: "bad_request".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+fn bad_request(msg: impl Into<String>) -> ProtocolApiError {
+    ProtocolApiError::BadRequest {
+        code: "bad_request",
+        message: msg.into(),
+    }
 }
 
-fn not_found(msg: impl Into<String>) -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error: msg.into(),
-            code: "not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+fn not_found(msg: impl Into<String>) -> ProtocolApiError {
+    ProtocolApiError::NotFound {
+        entity: "path",
+        id: msg.into(),
+    }
 }
 
-fn conflict(msg: impl Into<String>) -> Response {
-    (
-        StatusCode::CONFLICT,
-        Json(ApiError {
-            error: msg.into(),
-            code: "conflict".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+fn conflict(msg: impl Into<String>) -> ProtocolApiError {
+    ProtocolApiError::Conflict { reason: msg.into() }
 }
 
-fn internal_error(msg: impl Into<String>) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error: msg.into(),
-            code: "internal_error".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+fn internal_error(msg: impl Into<String>) -> ProtocolApiError {
+    ProtocolApiError::Internal {
+        message: msg.into(),
+    }
 }
 
-fn path_traversal() -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(ApiError {
-            error: "Path escapes workspace root".into(),
-            code: "path_traversal".into(),
+fn path_traversal() -> ProtocolApiError {
+    ProtocolApiError::Forbidden {
+        code: "path_traversal",
+        message: "Path escapes workspace root".to_string(),
+    }
+}
 
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+// ---------------------------------------------------------------------------
+// Processor implementations
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct FilesTreeProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesTreeProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesTreeProcessor {
+    type Request = FileTreeQuery;
+    type Response = FileTreeResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.tree"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_tree(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesStatProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesStatProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesStatProcessor {
+    type Request = FileStatQuery;
+    type Response = FileStat;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.stat"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_stat(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesReadProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesReadProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesReadProcessor {
+    type Request = FileReadQuery;
+    type Response = FileReadResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.read"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_read(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesWriteProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesWriteProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesWriteProcessor {
+    type Request = FileWriteRequest;
+    type Response = FileMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.write"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "path")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_write(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesUploadProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesUploadProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesUploadProcessor {
+    type Request = FileUploadRequest;
+    type Response = FileUploadResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.upload"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "path")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_upload(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesMkdirProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesMkdirProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesMkdirProcessor {
+    type Request = FileMkdirRequest;
+    type Response = FileMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.mkdir"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "path")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_mkdir(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesRenameProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesRenameProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesRenameProcessor {
+    type Request = FileRenameRequest;
+    type Response = FileMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.rename"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "source")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_rename(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesCopyProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesCopyProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesCopyProcessor {
+    type Request = FileCopyRequest;
+    type Response = FileMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.copy"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "destination")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_copy(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesMoveProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesMoveProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesMoveProcessor {
+    type Request = FileMoveRequest;
+    type Response = FileMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.move"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "source")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_move(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesDeleteProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesDeleteProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesDeleteProcessor {
+    type Request = FileDeleteRequest;
+    type Response = FileMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.delete"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "path")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_delete(&self.state, params)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -465,16 +607,17 @@ pub async fn files_tree_handler(
     State(state): State<WebState>,
     Query(query): Query<FileTreeQuery>,
 ) -> Response {
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    rest_processor_response::<FilesTreeProcessor>(state, ApiMethod::FilesTree, query).await
+}
+
+fn files_tree(
+    state: &WebState,
+    query: FileTreeQuery,
+) -> Result<FileTreeResponse, ProtocolApiError> {
+    let root = workspace_root(state)?;
 
     let dir_path = match query.path.as_deref() {
-        Some(p) if !p.is_empty() => match resolve_existing(&root, p) {
-            Ok(r) => r,
-            Err(e) => return e,
-        },
+        Some(p) if !p.is_empty() => resolve_existing(&root, p)?,
         _ => root.clone(),
     };
 
@@ -488,21 +631,20 @@ pub async fn files_tree_handler(
             .unwrap_or_default();
         let meta = match std::fs::symlink_metadata(&dir_path) {
             Ok(m) => m,
-            Err(err) => return internal_error(format!("Cannot read metadata: {err}")),
+            Err(err) => return Err(internal_error(format!("Cannot read metadata: {err}"))),
         };
-        return Json(FileTreeResponse {
+        return Ok(FileTreeResponse {
             entries: vec![entry_from_path(&name, &dir_path, &meta)],
             path: dir_path.to_string_lossy().to_string(),
             profile_id,
             truncated: false,
-        })
-        .into_response();
+        });
     }
 
     // Read directory contents.
     let mut read_dir = match std::fs::read_dir(&dir_path) {
         Ok(r) => r,
-        Err(err) => return not_found(format!("Cannot read directory: {err}")),
+        Err(err) => return Err(not_found(format!("Cannot read directory: {err}"))),
     };
 
     let mut entries: Vec<FileEntry> = Vec::new();
@@ -523,13 +665,12 @@ pub async fn files_tree_handler(
         truncated = true;
     }
 
-    Json(FileTreeResponse {
+    Ok(FileTreeResponse {
         entries,
         path: dir_path.to_string_lossy().to_string(),
         profile_id,
         truncated,
     })
-    .into_response()
 }
 
 /// GET /api/files/stat — File metadata + hash.
@@ -537,10 +678,11 @@ pub async fn files_stat_handler(
     State(state): State<WebState>,
     Query(query): Query<FileStatQuery>,
 ) -> Response {
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    rest_processor_response::<FilesStatProcessor>(state, ApiMethod::FilesStat, query).await
+}
+
+fn files_stat(state: &WebState, query: FileStatQuery) -> Result<FileStat, ProtocolApiError> {
+    let root = workspace_root(state)?;
 
     let path_str = query.path.as_deref().unwrap_or("");
     let profile_id = query.profile_id;
@@ -550,7 +692,7 @@ pub async fn files_stat_handler(
         let meta = match std::fs::symlink_metadata(&root) {
             Ok(m) => m,
             Err(err) => {
-                return Json(FileStat {
+                return Ok(FileStat {
                     exists: false,
                     path: root.to_string_lossy().to_string(),
                     is_dir: false,
@@ -561,12 +703,11 @@ pub async fn files_stat_handler(
                     hash: None,
                     profile_id,
                     error: Some(err.to_string()),
-                })
-                .into_response();
+                });
             }
         };
         let hash = file_hash(&root).ok();
-        return Json(FileStat {
+        return Ok(FileStat {
             exists: true,
             path: root.to_string_lossy().to_string(),
             is_dir: meta.is_dir(),
@@ -577,19 +718,15 @@ pub async fn files_stat_handler(
             hash,
             profile_id,
             error: None,
-        })
-        .into_response();
+        });
     }
 
-    let resolved = match resolve_existing(&root, path_str) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    let resolved = resolve_existing(&root, path_str)?;
 
     let meta = match std::fs::symlink_metadata(&resolved) {
         Ok(m) => m,
         Err(err) => {
-            return Json(FileStat {
+            return Ok(FileStat {
                 exists: false,
                 path: resolved.to_string_lossy().to_string(),
                 is_dir: false,
@@ -600,14 +737,13 @@ pub async fn files_stat_handler(
                 hash: None,
                 profile_id,
                 error: Some(err.to_string()),
-            })
-            .into_response();
+            });
         }
     };
 
     let hash = file_hash(&resolved).ok();
 
-    Json(FileStat {
+    Ok(FileStat {
         exists: true,
         path: resolved.to_string_lossy().to_string(),
         is_dir: meta.is_dir(),
@@ -619,7 +755,6 @@ pub async fn files_stat_handler(
         profile_id,
         error: None,
     })
-    .into_response()
 }
 
 /// GET /api/files/read — Read text content from a file.
@@ -627,14 +762,18 @@ pub async fn files_read_handler(
     State(state): State<WebState>,
     Query(query): Query<FileReadQuery>,
 ) -> Response {
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    rest_processor_response::<FilesReadProcessor>(state, ApiMethod::FilesRead, query).await
+}
+
+fn files_read(
+    state: &WebState,
+    query: FileReadQuery,
+) -> Result<FileReadResponse, ProtocolApiError> {
+    let root = workspace_root(state)?;
 
     let path_str = match query.path.as_deref() {
         Some(p) if !p.is_empty() => p,
-        _ => return bad_request("path query parameter is required"),
+        _ => return Err(bad_request("path query parameter is required")),
     };
 
     let profile_id = query.profile_id;
@@ -643,23 +782,20 @@ pub async fn files_read_handler(
         .unwrap_or(DEFAULT_READ_MAX_BYTES)
         .min(MAX_READ_MAX_BYTES);
 
-    let resolved = match resolve_existing(&root, path_str) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    let resolved = resolve_existing(&root, path_str)?;
 
     if resolved.is_dir() {
-        return bad_request("Cannot read a directory as text");
+        return Err(bad_request("Cannot read a directory as text"));
     }
 
     let meta = match std::fs::metadata(&resolved) {
         Ok(m) => m,
-        Err(err) => return internal_error(format!("Cannot read metadata: {err}")),
+        Err(err) => return Err(internal_error(format!("Cannot read metadata: {err}"))),
     };
 
     let hash = match file_hash(&resolved) {
         Ok(h) => h,
-        Err(err) => return internal_error(format!("Cannot compute hash: {err}")),
+        Err(err) => return Err(internal_error(format!("Cannot compute hash: {err}"))),
     };
 
     let file_size = meta.len();
@@ -668,17 +804,17 @@ pub async fn files_read_handler(
     let mut data = Vec::with_capacity(max_bytes as usize);
     let file = match std::fs::File::open(&resolved) {
         Ok(f) => f,
-        Err(err) => return internal_error(format!("Cannot open file: {err}")),
+        Err(err) => return Err(internal_error(format!("Cannot open file: {err}"))),
     };
     if let Err(err) = file.take(max_bytes).read_to_end(&mut data) {
-        return internal_error(format!("Cannot read file: {err}"));
+        return Err(internal_error(format!("Cannot read file: {err}")));
     }
 
     let truncated = (data.len() as u64) < file_size;
 
     // Detect binary content.
     if is_binary_content(&data) {
-        return Json(FileReadResponse {
+        return Ok(FileReadResponse {
             content: String::new(),
             truncated: false,
             is_binary: true,
@@ -686,15 +822,14 @@ pub async fn files_read_handler(
             size: file_size,
             lines: 0,
             profile_id,
-        })
-        .into_response();
+        });
     }
 
     let content = match String::from_utf8(data) {
         Ok(s) => s,
         Err(_) => {
             // If UTF-8 decoding fails, treat as binary.
-            return Json(FileReadResponse {
+            return Ok(FileReadResponse {
                 content: String::new(),
                 truncated: false,
                 is_binary: true,
@@ -702,14 +837,13 @@ pub async fn files_read_handler(
                 size: file_size,
                 lines: 0,
                 profile_id,
-            })
-            .into_response();
+            });
         }
     };
 
     let lines = line_count(&content);
 
-    Json(FileReadResponse {
+    Ok(FileReadResponse {
         content,
         truncated,
         is_binary: false,
@@ -718,7 +852,6 @@ pub async fn files_read_handler(
         lines,
         profile_id,
     })
-    .into_response()
 }
 
 /// PUT /api/files/write — Write content to a file with optional hash/revision
@@ -727,27 +860,27 @@ pub async fn files_write_handler(
     State(state): State<WebState>,
     Json(req): Json<FileWriteRequest>,
 ) -> Response {
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    rest_processor_response::<FilesWriteProcessor>(state, ApiMethod::FilesWrite, req).await
+}
 
-    let resolved = match resolve_any(&root, &req.path) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+fn files_write(
+    state: &WebState,
+    req: FileWriteRequest,
+) -> Result<FileMutationResponse, ProtocolApiError> {
+    let root = workspace_root(state)?;
+    let resolved = resolve_any(&root, &req.path)?;
 
     if resolved.is_dir() {
-        return bad_request("Cannot write to a directory");
+        return Err(bad_request("Cannot write to a directory"));
     }
 
     // Overwrite protection.
     let overwrite = req.overwrite.unwrap_or(false);
     if resolved.exists() && !overwrite {
-        return conflict(format!(
+        return Err(conflict(format!(
             "File already exists: {}. Set overwrite=true to replace.",
             resolved.display()
-        ));
+        )));
     }
 
     // Hash/revision enforcement: if the client provides the expected hash,
@@ -756,13 +889,13 @@ pub async fn files_write_handler(
         if resolved.exists() {
             let current_hash = match file_hash(&resolved) {
                 Ok(h) => h,
-                Err(err) => return internal_error(format!("Cannot compute hash: {err}")),
+                Err(err) => return Err(internal_error(format!("Cannot compute hash: {err}"))),
             };
             if &current_hash != expected_hash {
-                return conflict(format!(
+                return Err(conflict(format!(
                     "Hash mismatch: expected {}, got {}. File was modified since last read.",
                     expected_hash, current_hash
-                ));
+                )));
             }
         }
     }
@@ -771,7 +904,9 @@ pub async fn files_write_handler(
     if let Some(parent) = resolved.parent() {
         if !parent.exists() {
             if let Err(err) = std::fs::create_dir_all(parent) {
-                return internal_error(format!("Cannot create parent directory: {err}"));
+                return Err(internal_error(format!(
+                    "Cannot create parent directory: {err}"
+                )));
             }
         }
     }
@@ -779,7 +914,7 @@ pub async fn files_write_handler(
     // Atomic write.
     let content_bytes = req.content.as_bytes();
     if let Err(err) = atomic_write(&resolved, content_bytes) {
-        return internal_error(format!("Cannot write file: {err}"));
+        return Err(internal_error(format!("Cannot write file: {err}")));
     }
 
     let hash = match file_hash(&resolved) {
@@ -787,12 +922,11 @@ pub async fn files_write_handler(
         Err(_) => None,
     };
 
-    Json(FileMutationResponse {
+    Ok(FileMutationResponse {
         ok: true,
         path: resolved.to_string_lossy().to_string(),
         hash,
     })
-    .into_response()
 }
 
 /// POST /api/files/upload — Upload one or more files to a directory.
@@ -800,25 +934,27 @@ pub async fn files_upload_handler(
     State(state): State<WebState>,
     Json(req): Json<FileUploadRequest>,
 ) -> Response {
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    rest_processor_response::<FilesUploadProcessor>(state, ApiMethod::FilesUpload, req).await
+}
 
-    let target_dir = match resolve_any(&root, &req.path) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+fn files_upload(
+    state: &WebState,
+    req: FileUploadRequest,
+) -> Result<FileUploadResponse, ProtocolApiError> {
+    let root = workspace_root(state)?;
+    let target_dir = resolve_any(&root, &req.path)?;
 
     // If the target doesn't exist, try to create it.
     if !target_dir.exists() {
         if let Err(err) = std::fs::create_dir_all(&target_dir) {
-            return internal_error(format!("Cannot create target directory: {err}"));
+            return Err(internal_error(format!(
+                "Cannot create target directory: {err}"
+            )));
         }
     }
 
     if !target_dir.is_dir() {
-        return bad_request("Upload path must be a directory");
+        return Err(bad_request("Upload path must be a directory"));
     }
 
     let mut results = Vec::new();
@@ -834,7 +970,7 @@ pub async fn files_upload_handler(
                     | Component::Prefix(_)
             )
         }) {
-            return bad_request(format!("Invalid file name: {}", item.name));
+            return Err(bad_request(format!("Invalid file name: {}", item.name)));
         }
 
         let dest = target_dir.join(&item.name);
@@ -844,7 +980,10 @@ pub async fn files_upload_handler(
             Some("base64") | Some("b64") => match base64_decode(&item.content) {
                 Ok(b) => b,
                 Err(err) => {
-                    return bad_request(format!("Base64 decode error for '{}': {err}", item.name))
+                    return Err(bad_request(format!(
+                        "Base64 decode error for '{}': {err}",
+                        item.name
+                    )));
                 }
             },
             _ => item.content.as_bytes().to_vec(),
@@ -852,7 +991,10 @@ pub async fn files_upload_handler(
 
         // Atomic write.
         if let Err(err) = atomic_write(&dest, &content_bytes) {
-            return internal_error(format!("Cannot write '{}': {err}", item.name));
+            return Err(internal_error(format!(
+                "Cannot write '{}': {err}",
+                item.name
+            )));
         }
 
         let hash = file_hash(&dest).unwrap_or_default();
@@ -864,12 +1006,11 @@ pub async fn files_upload_handler(
         });
     }
 
-    Json(FileUploadResponse {
+    Ok(FileUploadResponse {
         ok: true,
         path: target_dir.to_string_lossy().to_string(),
         files: results,
     })
-    .into_response()
 }
 
 /// GET /api/files/download — Stream a file as a binary download.
@@ -879,26 +1020,28 @@ pub async fn files_download_handler(
 ) -> Response {
     let root = match workspace_root(&state) {
         Ok(r) => r,
-        Err(e) => return e,
+        Err(e) => return protocol_error_response(e),
     };
 
     let path_str = match query.path.as_deref() {
         Some(p) if !p.is_empty() => p,
-        _ => return bad_request("path query parameter is required"),
+        _ => return protocol_error_response(bad_request("path query parameter is required")),
     };
 
     let resolved = match resolve_existing(&root, path_str) {
         Ok(r) => r,
-        Err(e) => return e,
+        Err(e) => return protocol_error_response(e),
     };
 
     if resolved.is_dir() {
-        return bad_request("Cannot download a directory");
+        return protocol_error_response(bad_request("Cannot download a directory"));
     }
 
     let data = match std::fs::read(&resolved) {
         Ok(d) => d,
-        Err(err) => return internal_error(format!("Cannot read file: {err}")),
+        Err(err) => {
+            return protocol_error_response(internal_error(format!("Cannot read file: {err}")))
+        }
     };
 
     let file_name = resolved
@@ -928,42 +1071,40 @@ pub async fn files_mkdir_handler(
     State(state): State<WebState>,
     Json(req): Json<FileMkdirRequest>,
 ) -> Response {
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    rest_processor_response::<FilesMkdirProcessor>(state, ApiMethod::FilesMkdir, req).await
+}
 
-    let resolved = match resolve_any_deep(&root, &req.path) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+fn files_mkdir(
+    state: &WebState,
+    req: FileMkdirRequest,
+) -> Result<FileMutationResponse, ProtocolApiError> {
+    let root = workspace_root(state)?;
+    let resolved = resolve_any_deep(&root, &req.path)?;
 
     if resolved.exists() {
         if resolved.is_dir() {
             // Idempotent: directory already exists.
-            return Json(FileMutationResponse {
+            return Ok(FileMutationResponse {
                 ok: true,
                 path: resolved.to_string_lossy().to_string(),
                 hash: None,
-            })
-            .into_response();
+            });
         }
-        return bad_request(format!(
+        return Err(bad_request(format!(
             "Path already exists and is not a directory: {}",
             resolved.display()
-        ));
+        )));
     }
 
     if let Err(err) = std::fs::create_dir_all(&resolved) {
-        return internal_error(format!("Cannot create directory: {err}"));
+        return Err(internal_error(format!("Cannot create directory: {err}")));
     }
 
-    Json(FileMutationResponse {
+    Ok(FileMutationResponse {
         ok: true,
         path: resolved.to_string_lossy().to_string(),
         hash: None,
     })
-    .into_response()
 }
 
 /// POST /api/files/rename — Rename a file or directory.
@@ -971,47 +1112,44 @@ pub async fn files_rename_handler(
     State(state): State<WebState>,
     Json(req): Json<FileRenameRequest>,
 ) -> Response {
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    rest_processor_response::<FilesRenameProcessor>(state, ApiMethod::FilesRename, req).await
+}
 
-    let source = match resolve_existing(&root, &req.source) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-
-    let destination = match resolve_any(&root, &req.destination) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+fn files_rename(
+    state: &WebState,
+    req: FileRenameRequest,
+) -> Result<FileMutationResponse, ProtocolApiError> {
+    let root = workspace_root(state)?;
+    let source = resolve_existing(&root, &req.source)?;
+    let destination = resolve_any(&root, &req.destination)?;
 
     if destination.exists() {
-        return conflict(format!(
+        return Err(conflict(format!(
             "Destination already exists: {}",
             destination.display()
-        ));
+        )));
     }
 
     // Ensure parent of destination exists.
     if let Some(parent) = destination.parent() {
         if !parent.exists() {
             if let Err(err) = std::fs::create_dir_all(parent) {
-                return internal_error(format!("Cannot create parent directory: {err}"));
+                return Err(internal_error(format!(
+                    "Cannot create parent directory: {err}"
+                )));
             }
         }
     }
 
     if let Err(err) = std::fs::rename(&source, &destination) {
-        return internal_error(format!("Cannot rename: {err}"));
+        return Err(internal_error(format!("Cannot rename: {err}")));
     }
 
-    Json(FileMutationResponse {
+    Ok(FileMutationResponse {
         ok: true,
         path: destination.to_string_lossy().to_string(),
         hash: None,
     })
-    .into_response()
 }
 
 /// POST /api/files/copy — Copy a file or directory.
@@ -1019,54 +1157,51 @@ pub async fn files_copy_handler(
     State(state): State<WebState>,
     Json(req): Json<FileCopyRequest>,
 ) -> Response {
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    rest_processor_response::<FilesCopyProcessor>(state, ApiMethod::FilesCopy, req).await
+}
 
-    let source = match resolve_existing(&root, &req.source) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-
-    let destination = match resolve_any(&root, &req.destination) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+fn files_copy(
+    state: &WebState,
+    req: FileCopyRequest,
+) -> Result<FileMutationResponse, ProtocolApiError> {
+    let root = workspace_root(state)?;
+    let source = resolve_existing(&root, &req.source)?;
+    let destination = resolve_any(&root, &req.destination)?;
 
     let overwrite = req.overwrite.unwrap_or(false);
     if destination.exists() && !overwrite {
-        return conflict(format!(
+        return Err(conflict(format!(
             "Destination already exists: {}. Set overwrite=true to replace.",
             destination.display()
-        ));
+        )));
     }
 
     // Ensure parent of destination exists.
     if let Some(parent) = destination.parent() {
         if !parent.exists() {
             if let Err(err) = std::fs::create_dir_all(parent) {
-                return internal_error(format!("Cannot create parent directory: {err}"));
+                return Err(internal_error(format!(
+                    "Cannot create parent directory: {err}"
+                )));
             }
         }
     }
 
     if source.is_dir() {
         if let Err(err) = copy_dir_recursive(&source, &destination, overwrite) {
-            return internal_error(format!("Cannot copy directory: {err}"));
+            return Err(internal_error(format!("Cannot copy directory: {err}")));
         }
     } else {
         if let Err(err) = std::fs::copy(&source, &destination) {
-            return internal_error(format!("Cannot copy file: {err}"));
+            return Err(internal_error(format!("Cannot copy file: {err}")));
         }
     }
 
-    Json(FileMutationResponse {
+    Ok(FileMutationResponse {
         ok: true,
         path: destination.to_string_lossy().to_string(),
         hash: None,
     })
-    .into_response()
 }
 
 /// POST /api/files/move — Move a file or directory.
@@ -1074,40 +1209,40 @@ pub async fn files_move_handler(
     State(state): State<WebState>,
     Json(req): Json<FileMoveRequest>,
 ) -> Response {
+    rest_processor_response::<FilesMoveProcessor>(state, ApiMethod::FilesMove, req).await
+}
+
+fn files_move(
+    state: &WebState,
+    req: FileMoveRequest,
+) -> Result<FileMutationResponse, ProtocolApiError> {
     // Move is atomic rename when source and dest are on the same filesystem,
     // falling back to copy + delete.
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-
-    let source = match resolve_existing(&root, &req.source) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-
-    let destination = match resolve_any(&root, &req.destination) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    let root = workspace_root(state)?;
+    let source = resolve_existing(&root, &req.source)?;
+    let destination = resolve_any(&root, &req.destination)?;
 
     let overwrite = req.overwrite.unwrap_or(false);
     if destination.exists() && !overwrite {
-        return conflict(format!(
+        return Err(conflict(format!(
             "Destination already exists: {}. Set overwrite=true to replace.",
             destination.display()
-        ));
+        )));
     }
 
     // If destination exists and overwrite is true, remove it first.
     if destination.exists() {
         if destination.is_dir() {
             if let Err(err) = std::fs::remove_dir_all(&destination) {
-                return internal_error(format!("Cannot remove existing destination: {err}"));
+                return Err(internal_error(format!(
+                    "Cannot remove existing destination: {err}"
+                )));
             }
         } else {
             if let Err(err) = std::fs::remove_file(&destination) {
-                return internal_error(format!("Cannot remove existing destination: {err}"));
+                return Err(internal_error(format!(
+                    "Cannot remove existing destination: {err}"
+                )));
             }
         }
     }
@@ -1116,7 +1251,9 @@ pub async fn files_move_handler(
     if let Some(parent) = destination.parent() {
         if !parent.exists() {
             if let Err(err) = std::fs::create_dir_all(parent) {
-                return internal_error(format!("Cannot create parent directory: {err}"));
+                return Err(internal_error(format!(
+                    "Cannot create parent directory: {err}"
+                )));
             }
         }
     }
@@ -1125,29 +1262,34 @@ pub async fn files_move_handler(
         // Fallback: copy + delete.
         if source.is_dir() {
             if let Err(copy_err) = copy_dir_recursive(&source, &destination, false) {
-                return internal_error(format!("Cannot move directory (copy failed): {copy_err}"));
+                return Err(internal_error(format!(
+                    "Cannot move directory (copy failed): {copy_err}"
+                )));
             }
             if let Err(del_err) = std::fs::remove_dir_all(&source) {
-                return internal_error(format!(
+                return Err(internal_error(format!(
                     "Cannot move directory (cleanup failed): {del_err}"
-                ));
+                )));
             }
         } else {
             if let Err(copy_err) = std::fs::copy(&source, &destination) {
-                return internal_error(format!("Cannot move file (copy failed): {copy_err}"));
+                return Err(internal_error(format!(
+                    "Cannot move file (copy failed): {copy_err}"
+                )));
             }
             if let Err(del_err) = std::fs::remove_file(&source) {
-                return internal_error(format!("Cannot move file (cleanup failed): {del_err}"));
+                return Err(internal_error(format!(
+                    "Cannot move file (cleanup failed): {del_err}"
+                )));
             }
         }
     }
 
-    Json(FileMutationResponse {
+    Ok(FileMutationResponse {
         ok: true,
         path: destination.to_string_lossy().to_string(),
         hash: None,
     })
-    .into_response()
 }
 
 /// DELETE /api/files — Delete a file or directory.
@@ -1155,22 +1297,22 @@ pub async fn files_delete_handler(
     State(state): State<WebState>,
     Json(req): Json<FileDeleteRequest>,
 ) -> Response {
-    let root = match workspace_root(&state) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    rest_processor_response::<FilesDeleteProcessor>(state, ApiMethod::FilesDelete, req).await
+}
 
-    let resolved = match resolve_existing(&root, &req.path) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+fn files_delete(
+    state: &WebState,
+    req: FileDeleteRequest,
+) -> Result<FileMutationResponse, ProtocolApiError> {
+    let root = workspace_root(state)?;
+    let resolved = resolve_existing(&root, &req.path)?;
 
     let recursive = req.recursive.unwrap_or(false);
 
     if resolved.is_dir() {
         if recursive {
             if let Err(err) = std::fs::remove_dir_all(&resolved) {
-                return internal_error(format!("Cannot remove directory: {err}"));
+                return Err(internal_error(format!("Cannot remove directory: {err}")));
             }
         } else {
             // Remove only if directory is empty.
@@ -1179,27 +1321,26 @@ pub async fn files_delete_handler(
                 Err(_) => false,
             };
             if !is_empty {
-                return bad_request(format!(
+                return Err(bad_request(format!(
                     "Directory is not empty: {}. Use recursive=true to delete non-empty directories.",
                     resolved.display()
-                ));
+                )));
             }
             if let Err(err) = std::fs::remove_dir(&resolved) {
-                return internal_error(format!("Cannot remove directory: {err}"));
+                return Err(internal_error(format!("Cannot remove directory: {err}")));
             }
         }
     } else {
         if let Err(err) = std::fs::remove_file(&resolved) {
-            return internal_error(format!("Cannot remove file: {err}"));
+            return Err(internal_error(format!("Cannot remove file: {err}")));
         }
     }
 
-    Json(FileMutationResponse {
+    Ok(FileMutationResponse {
         ok: true,
         path: resolved.to_string_lossy().to_string(),
         hash: None,
     })
-    .into_response()
 }
 
 // ---------------------------------------------------------------------------

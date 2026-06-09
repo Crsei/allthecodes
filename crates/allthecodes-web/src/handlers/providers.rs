@@ -15,8 +15,8 @@ use allthecodes_config::settings::{
 };
 
 use crate::handlers::models::{ModelSummary, ModelUpdateRequest};
-use crate::handlers::ApiError;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct ProviderSummary {
@@ -188,12 +188,12 @@ pub async fn providers_create_handler(Json(req): Json<ProviderCreateRequest>) ->
     if profiles.contains_key(&req.name) {
         return (
             StatusCode::CONFLICT,
-            Json(ApiError {
-                error: format!("Provider '{}' already exists", req.name),
-                code: "conflict".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::Conflict {
+                    reason: format!("Provider '{}' already exists", req.name),
+                }
+                .into_body(),
+            ),
         )
             .into_response();
     }
@@ -246,12 +246,12 @@ pub async fn providers_create_handler(Json(req): Json<ProviderCreateRequest>) ->
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e.to_string(),
-                code: "internal_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::Internal {
+                    message: e.to_string(),
+                }
+                .into_body(),
+            ),
         )
             .into_response(),
     }
@@ -270,12 +270,12 @@ pub async fn providers_update_handler(
         if name != &id && profiles.contains_key(name) {
             return (
                 StatusCode::CONFLICT,
-                Json(ApiError {
-                    error: format!("Provider '{}' already exists", name),
-                    code: "conflict".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::Conflict {
+                        reason: format!("Provider '{}' already exists", name),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -284,12 +284,13 @@ pub async fn providers_update_handler(
     if !profiles.contains_key(&id) {
         return (
             StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: format!("Provider '{}' not found", id),
-                code: "not_found".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::NotFound {
+                    entity: "provider",
+                    id: format!("Provider '{}' not found", id),
+                }
+                .into_body(),
+            ),
         )
             .into_response();
     }
@@ -308,12 +309,13 @@ pub async fn providers_update_handler(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: format!("Provider '{}' not found", target_id),
-                    code: "not_found".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::NotFound {
+                        entity: "provider",
+                        id: format!("Provider '{}' not found", target_id),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -365,12 +367,12 @@ pub async fn providers_update_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e.to_string(),
-                code: "internal_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::Internal {
+                    message: e.to_string(),
+                }
+                .into_body(),
+            ),
         )
             .into_response(),
     }
@@ -384,12 +386,13 @@ pub async fn providers_delete_handler(AxumPath(id): AxumPath<String>) -> Respons
     if profiles.remove(&id).is_none() {
         return (
             StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: format!("Provider '{}' not found", id),
-                code: "not_found".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::NotFound {
+                    entity: "provider",
+                    id: format!("Provider '{}' not found", id),
+                }
+                .into_body(),
+            ),
         )
             .into_response();
     }
@@ -408,12 +411,12 @@ pub async fn providers_delete_handler(AxumPath(id): AxumPath<String>) -> Respons
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e.to_string(),
-                code: "internal_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::Internal {
+                    message: e.to_string(),
+                }
+                .into_body(),
+            ),
         )
             .into_response(),
     }

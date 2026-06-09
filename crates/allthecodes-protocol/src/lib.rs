@@ -12,8 +12,8 @@ pub mod v1;
 pub use error::{ApiError, ApiErrorBody};
 pub use notification::ServerNotification;
 pub use request::{
-    ApiEndpoint, ApiMethod, ApiOperationMetadata, ApiTypeMetadata, ClientRequest, EmptyResponse,
-    NoParams, SerializationPolicy, SerializationScope, ALL_ENDPOINTS, API_METADATA,
+    AccessMode, ApiEndpoint, ApiMethod, ApiOperationMetadata, ApiTypeMetadata, ClientRequest,
+    EmptyResponse, NoParams, SerializationPolicy, SerializationScope, ALL_ENDPOINTS, API_METADATA,
 };
 pub use response::ClientResponse;
 pub use transport::{

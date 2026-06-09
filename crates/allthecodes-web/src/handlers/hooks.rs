@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use allthecodes_config::settings::{load_global_config, write_user_settings, RawSettings};
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 const KNOWN_EVENTS: &[&str] = &[
     "PreToolUse",
@@ -56,14 +56,14 @@ pub async fn hooks_list_handler() -> Response {
             known_events: known_events(),
         })
         .into_response(),
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
 /// GET /api/hooks/{event}
 pub async fn hooks_detail_handler(AxumPath(event): AxumPath<String>) -> Response {
     if let Err(error) = validate_event(&event) {
-        return validation_error(error).into_response();
+        return validation_error(error);
     }
     match load_user_hooks() {
         Ok(hooks) => match hooks.get(&event) {
@@ -72,16 +72,16 @@ pub async fn hooks_detail_handler(AxumPath(event): AxumPath<String>) -> Response
                 configs: configs.clone(),
             })
             .into_response(),
-            None => not_found(format!("Hook event '{}' not found", event)).into_response(),
+            None => not_found(format!("Hook event '{}' not found", event)),
         },
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
 /// POST /api/hooks
 pub async fn hooks_create_handler(Json(req): Json<HookEventRequest>) -> Response {
     if let Err(error) = validate_event(&req.event).and_then(|_| validate_configs(&req.configs)) {
-        return validation_error(error).into_response();
+        return validation_error(error);
     }
     match mutate_user_hooks(|raw| {
         let hooks = raw.hooks.get_or_insert_with(HashMap::new);
@@ -109,7 +109,7 @@ pub async fn hooks_update_handler(
     Json(req): Json<HookEventUpdateRequest>,
 ) -> Response {
     if let Err(error) = validate_event(&event).and_then(|_| validate_configs(&req.configs)) {
-        return validation_error(error).into_response();
+        return validation_error(error);
     }
     match mutate_user_hooks(|raw| {
         let hooks = raw.hooks.get_or_insert_with(HashMap::new);
@@ -134,7 +134,7 @@ pub async fn hooks_update_handler(
 /// DELETE /api/hooks/{event}
 pub async fn hooks_delete_handler(AxumPath(event): AxumPath<String>) -> Response {
     if let Err(error) = validate_event(&event) {
-        return validation_error(error).into_response();
+        return validation_error(error);
     }
     match mutate_user_hooks(|raw| {
         let hooks = raw.hooks.get_or_insert_with(HashMap::new);
@@ -152,7 +152,7 @@ pub async fn hooks_delete_handler(AxumPath(event): AxumPath<String>) -> Response
                 known_events: known_events(),
             })
             .into_response(),
-            Err(error) => internal_error(error).into_response(),
+            Err(error) => internal_error(error),
         },
         Err(error) => error.into_response(),
     }
@@ -161,16 +161,17 @@ pub async fn hooks_delete_handler(AxumPath(event): AxumPath<String>) -> Response
 /// POST /api/hooks/test
 pub async fn hooks_test_handler(Json(req): Json<HookEventRequest>) -> Response {
     if let Err(error) = validate_event(&req.event).and_then(|_| validate_configs(&req.configs)) {
-        return validation_error(error).into_response();
+        return validation_error(error);
     }
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            error: "Hook test execution is not implemented".to_string(),
-            code: "hook_test_not_implemented".into(),
-
-            details: serde_json::json!({}),
-        }),
+        Json(
+            ProtocolApiError::BadRequest {
+                code: "hook_test_not_implemented",
+                message: "Hook test execution is not implemented".to_string(),
+            }
+            .into_body(),
+        ),
     )
         .into_response()
 }
@@ -245,57 +246,37 @@ enum MutationError {
 impl MutationError {
     fn into_response(self) -> Response {
         match self {
-            MutationError::Conflict(error) => conflict(error).into_response(),
-            MutationError::NotFound(error) => not_found(error).into_response(),
-            MutationError::Internal(error) => internal_error(error).into_response(),
+            MutationError::Conflict(error) => conflict(error),
+            MutationError::NotFound(error) => not_found(error),
+            MutationError::Internal(error) => internal_error(error),
         }
     }
 }
 
-fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error,
-            code: "validation_error".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn validation_error(error: String) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code: "validation_error",
+        message: error,
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-fn conflict(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::CONFLICT,
-        Json(ApiError {
-            error,
-            code: "conflict".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn conflict(error: String) -> Response {
+    let body = ProtocolApiError::Conflict { reason: error }.into_body();
+    (StatusCode::CONFLICT, Json(body)).into_response()
 }
 
-fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error,
-            code: "not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn not_found(error: String) -> Response {
+    let body = ProtocolApiError::NotFound {
+        entity: "hook",
+        id: error,
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
-fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error,
-            code: "internal_error".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn internal_error(error: String) -> Response {
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }

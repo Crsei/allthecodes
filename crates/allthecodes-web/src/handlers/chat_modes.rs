@@ -3,9 +3,15 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use allthecodes_protocol::v1::chat_modes::ChatModeResourcesResponse as ProtocolChatModeResourcesResponse;
+use allthecodes_protocol::v1::chat_modes::ChatModesResponse as ProtocolChatModesResponse;
+use allthecodes_protocol::ApiMethod;
+use allthecodes_protocol::{ApiError as ProtocolApiError, NoParams};
+use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
@@ -14,9 +20,126 @@ use allthecodes_mcp::discovery::discover_mcp_servers_scoped;
 use allthecodes_plugins::{get_enabled_plugins, PluginStatus};
 use allthecodes_session::storage;
 
-use crate::handlers::ApiError;
+use crate::api_dispatcher::rest_processor_response;
+use crate::api_errors::protocol_error_response;
+use crate::handler_registry::HandlerRegistry;
+use crate::processors::Processor;
+use crate::serialization::SerializationLayer;
 use crate::state::WebState;
 use crate::workspace_metadata;
+
+// ---------------------------------------------------------------------------
+// Handler registry
+// ---------------------------------------------------------------------------
+
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::ChatModesList, get(chat_modes_list_handler))
+        .handle(
+            ApiMethod::ChatModesResources,
+            get(chat_modes_resources_handler),
+        )
+}
+
+// ---------------------------------------------------------------------------
+// Processors
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct ChatModesListProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for ChatModesListProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for ChatModesListProcessor {
+    type Request = NoParams;
+    type Response = ProtocolChatModesResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "chat_modes.list"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let bundles = load_mode_bundles().map_err(|e| ProtocolApiError::Internal { message: e })?;
+        let resources = resource_index(&self.state);
+        let modes: Vec<allthecodes_protocol::v1::chat_modes::ChatModeResolved> = bundles
+            .into_iter()
+            .map(|bundle| resolve_bundle(bundle, &resources))
+            .map(|r| allthecodes_protocol::v1::chat_modes::ChatModeResolved {
+                bundle: allthecodes_protocol::v1::chat_modes::ChatModeBundle {
+                    id: r.bundle.id,
+                    display_name: r.bundle.display_name,
+                    prompt: r.bundle.prompt,
+                    plugin_ids: r.bundle.plugin_ids,
+                    skill_ids: r.bundle.skill_ids,
+                    mcp_server_names: r.bundle.mcp_server_names,
+                    enabled: r.bundle.enabled,
+                    built_in: r.bundle.built_in,
+                },
+                status: r.status,
+                missing_plugins: r.missing_plugins,
+                missing_skills: r.missing_skills,
+                missing_mcp_servers: r.missing_mcp_servers,
+            })
+            .collect();
+        Ok(ProtocolChatModesResponse { modes })
+    }
+}
+
+#[derive(Clone)]
+pub struct ChatModesResourcesProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for ChatModesResourcesProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for ChatModesResourcesProcessor {
+    type Request = NoParams;
+    type Response = ProtocolChatModeResourcesResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "chat_modes.resources"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let engine = self.state.engine();
+        let cwd = engine.cwd();
+        let resources = list_resources(std::path::Path::new(&cwd))
+            .map_err(|e| ProtocolApiError::Internal { message: e })?;
+        // Types are structurally identical; bridge via serialization
+        let proto = serde_json::to_value(&resources)
+            .and_then(|v| serde_json::from_value::<ProtocolChatModeResourcesResponse>(v))
+            .map_err(|e| ProtocolApiError::Internal {
+                message: format!("failed to convert ChatModeResourcesResponse: {e}"),
+            })?;
+        Ok(proto)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 const CHAT_MODES_KEY: &str = "chatModes";
 pub const NORMAL_CHAT_MODE_ID: &str = "normal";
@@ -124,26 +247,17 @@ pub struct ModeActivation {
 }
 
 pub async fn chat_modes_list_handler(State(state): State<WebState>) -> Response {
-    match load_mode_bundles() {
-        Ok(bundles) => {
-            let resources = resource_index(&state);
-            let modes = bundles
-                .into_iter()
-                .map(|bundle| resolve_bundle(bundle, &resources))
-                .collect();
-            Json(ChatModesResponse { modes }).into_response()
-        }
-        Err(error) => internal_error(error).into_response(),
-    }
+    rest_processor_response::<ChatModesListProcessor>(state, ApiMethod::ChatModesList, NoParams {})
+        .await
 }
 
 pub async fn chat_modes_resources_handler(State(state): State<WebState>) -> Response {
-    let engine = state.engine();
-    let cwd = engine.cwd();
-    match list_resources(Path::new(&cwd)) {
-        Ok(resources) => Json(resources).into_response(),
-        Err(error) => internal_error(error).into_response(),
-    }
+    rest_processor_response::<ChatModesResourcesProcessor>(
+        state,
+        ApiMethod::ChatModesResources,
+        NoParams {},
+    )
+    .await
 }
 
 pub async fn chat_modes_upsert_handler(
@@ -153,10 +267,10 @@ pub async fn chat_modes_upsert_handler(
     let mut bundle = req.bundle;
     let normalized_id = normalize_mode_id(&id);
     if normalized_id.is_empty() {
-        return validation_error("mode id is required").into_response();
+        return validation_error("mode id is required");
     }
     if normalize_mode_id(&bundle.id) != normalized_id {
-        return validation_error("mode id does not match path").into_response();
+        return validation_error("mode id does not match path");
     }
     bundle.id = normalized_id;
     bundle.display_name = bundle.display_name.trim().to_string();
@@ -170,25 +284,25 @@ pub async fn chat_modes_upsert_handler(
 
     match save_mode_bundle(bundle.clone()) {
         Ok(()) => Json(bundle).into_response(),
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
 pub async fn chat_modes_delete_handler(AxumPath(id): AxumPath<String>) -> Response {
     let id = normalize_mode_id(&id);
     if is_builtin_mode(&id) {
-        return validation_error("built-in modes cannot be deleted").into_response();
+        return validation_error("built-in modes cannot be deleted");
     }
     match delete_mode_bundle(&id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
 pub fn resolve_mode_activation(
     state: &WebState,
     mode: Option<&str>,
-) -> Result<Option<ModeActivation>, (StatusCode, ApiError)> {
+) -> Result<Option<ModeActivation>, ProtocolApiError> {
     let mode_id = normalize_mode_or_normal(mode);
     if mode_id == NORMAL_CHAT_MODE_ID {
         return Ok(None);
@@ -211,20 +325,16 @@ pub fn resolve_mode_activation(
     let resources = resource_index(state);
     let resolved = resolve_bundle(bundle, &resources);
     if resolved.status != "ready" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            ApiError {
-                error: format!(
-                    "Chat mode '{}' is incomplete: missing plugins [{}], skills [{}], MCP servers [{}]",
-                    resolved.bundle.id,
-                    resolved.missing_plugins.join(", "),
-                    resolved.missing_skills.join(", "),
-                    resolved.missing_mcp_servers.join(", ")
-                ),
-                code: "mode_bundle_incomplete".into(),
-
-                details: serde_json::json!({}),},
-        ));
+        return Err(ProtocolApiError::BadRequest {
+            code: "mode_bundle_incomplete",
+            message: format!(
+                "Chat mode '{}' is incomplete: missing plugins [{}], skills [{}], MCP servers [{}]",
+                resolved.bundle.id,
+                resolved.missing_plugins.join(", "),
+                resolved.missing_skills.join(", "),
+                resolved.missing_mcp_servers.join(", ")
+            ),
+        });
     }
 
     Ok(Some(ModeActivation {
@@ -612,53 +722,28 @@ fn default_enabled() -> bool {
     true
 }
 
-fn validation_error(message: impl Into<String>) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error: message.into(),
-            code: "invalid_chat_mode".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn validation_error(message: impl Into<String>) -> Response {
+    protocol_error_response(ProtocolApiError::BadRequest {
+        code: "invalid_chat_mode",
+        message: message.into(),
+    })
+    .into_response()
 }
 
-fn internal_error(message: impl Into<String>) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error: message.into(),
-            code: "chat_modes_error".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn internal_error(message: impl Into<String>) -> Response {
+    protocol_error_response(ProtocolApiError::Internal {
+        message: message.into(),
+    })
+    .into_response()
 }
 
-fn validation_api_error(
-    code: impl Into<String>,
-    message: impl Into<String>,
-) -> (StatusCode, ApiError) {
-    (
-        StatusCode::BAD_REQUEST,
-        ApiError {
-            error: message.into(),
-            code: code.into(),
-
-            details: serde_json::json!({}),
-        },
-    )
+fn validation_api_error(code: &'static str, message: impl Into<String>) -> ProtocolApiError {
+    ProtocolApiError::BadRequest {
+        code,
+        message: message.into(),
+    }
 }
 
-fn internal_api_error(message: String) -> (StatusCode, ApiError) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        ApiError {
-            error: message,
-            code: "chat_modes_error".into(),
-
-            details: serde_json::json!({}),
-        },
-    )
+fn internal_api_error(message: String) -> ProtocolApiError {
+    ProtocolApiError::Internal { message }
 }

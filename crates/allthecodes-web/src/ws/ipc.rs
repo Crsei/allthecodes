@@ -43,7 +43,7 @@ use allthecodes_types::callbacks::{
 use allthecodes_types::message::{ContentBlock, StreamEvent, ToolResultContent};
 use allthecodes_types::sdk::{SdkMessage, SdkStreamEvent};
 
-use crate::state::{SessionOwner, WebState};
+use crate::state::WebState;
 
 /// Query parameters for the IPC WebSocket endpoint.
 #[derive(Deserialize, Default)]
@@ -69,33 +69,21 @@ pub async fn ipc_ws_handler(
         "GET /api/ipc/ws — WebSocket upgrade"
     );
 
-    if state.is_streaming.load(std::sync::atomic::Ordering::SeqCst) {
-        return (
-            axum::http::StatusCode::CONFLICT,
-            "A query is already in progress",
-        )
-            .into_response();
-    }
-
-    let engine = state.engine();
-    let active_session_id = params
+    let engine = params
+        .session_id
+        .as_deref()
+        .and_then(|session_id| state.engine_for_session(session_id))
+        .unwrap_or_else(|| state.engine());
+    let _active_session_id = params
         .session_id
         .clone()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| engine.current_session_id().to_string());
 
-    if let Err(owner) = state.try_claim(SessionOwner::IpcWs, active_session_id) {
+    if state.is_session_streaming(&_active_session_id) {
         return (
             axum::http::StatusCode::CONFLICT,
-            format!(
-                "Session is currently owned by {:?}{}",
-                owner.owner,
-                owner
-                    .session_id
-                    .as_deref()
-                    .map(|id| format!(" ({id})"))
-                    .unwrap_or_default()
-            ),
+            "A query is already in progress",
         )
             .into_response();
     }
@@ -212,9 +200,7 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
 
         // Cleanup: abort any running query
         engine_for_tasks.engine().abort();
-        engine_for_tasks
-            .is_streaming
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        engine_for_tasks.set_session_streaming(&sid, false);
     });
 
     // Wait for either task to complete (connection closed)
@@ -234,10 +220,7 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
     }
     engine.clear_permission_callback();
     engine.clear_ask_user_callback();
-    state
-        .is_streaming
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    state.release_owner(SessionOwner::IpcWs);
+    state.set_session_streaming(&actual_session_id, false);
     info!("IPC WebSocket connection closed");
 }
 
@@ -255,9 +238,7 @@ async fn handle_frontend_message(
         }
         FrontendMessage::AbortQuery => {
             state.engine().abort();
-            state
-                .is_streaming
-                .store(false, std::sync::atomic::Ordering::SeqCst);
+            state.set_session_streaming(session_id, false);
             let msg = BackendMessage::SystemInfo {
                 text: "Query aborted".to_string(),
                 level: "info".to_string(),
@@ -367,9 +348,7 @@ async fn submit_prompt_via_ipc(
     runtime: &IpcRuntime,
     _session_id: &str,
 ) {
-    state
-        .is_streaming
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    state.set_session_streaming(_session_id, true);
 
     let engine = state.engine();
     let stream = engine.submit_message(&text, allthecodes_engine::types::config::QuerySource::Sdk);
@@ -385,10 +364,7 @@ async fn submit_prompt_via_ipc(
                 let backend_msgs = sdk_to_backend_messages(sdk_msg, &mut draft_id);
                 for backend_msg in backend_msgs {
                     if runtime.send_backend(backend_msg).await.is_err() {
-                        state
-                            .is_streaming
-                            .store(false, std::sync::atomic::Ordering::SeqCst);
-                        state.release_owner(SessionOwner::IpcWs);
+                        state.set_session_streaming(_session_id, false);
                         return;
                     }
                 }
@@ -397,9 +373,7 @@ async fn submit_prompt_via_ipc(
         }
     }
 
-    state
-        .is_streaming
-        .store(false, std::sync::atomic::Ordering::SeqCst);
+    state.set_session_streaming(_session_id, false);
 }
 
 /// Convert an SdkMessage to zero or more BackendMessage events.

@@ -9,14 +9,15 @@ use std::path::PathBuf;
 
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use allthecodes_config::paths;
 
-use crate::handlers::ApiError;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -170,21 +171,23 @@ pub async fn memory_update_handler(
     AxumPath(id): AxumPath<String>,
     State(_state): State<WebState>,
     Json(req): Json<MemoryUpdateRequest>,
-) -> Result<Json<MemoryUpdateResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<MemoryUpdateResponse>, Response> {
     // Validate content length if provided.
     if let Some(ref content) = req.content {
         if content.len() > MAX_CONTENT_LENGTH {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: format!(
-                        "Content exceeds maximum length of {MAX_CONTENT_LENGTH} characters"
-                    ),
-                    code: "content_too_long".into(),
-
-                    details: serde_json::json!({}),
-                }),
-            ));
+                Json(
+                    ProtocolApiError::Validation {
+                        field: "content".to_string(),
+                        message: format!(
+                            "Content exceeds maximum length of {MAX_CONTENT_LENGTH} characters"
+                        ),
+                    }
+                    .into_body(),
+                ),
+            )
+                .into_response());
         }
     }
 
@@ -200,13 +203,15 @@ pub async fn memory_update_handler(
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: format!("Memory entry '{}' not found", id),
-                    code: "memory_not_found".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::NotFound {
+                        entity: "memory",
+                        id: format!("Memory entry '{}' not found", id),
+                    }
+                    .into_body(),
+                ),
             )
+                .into_response()
         })?;
 
     // Update fields, preserving timestamp/session_id/workspace.
@@ -227,13 +232,14 @@ pub async fn memory_update_handler(
     save_store(&store).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Failed to persist memory store: {e}"),
-                code: "io_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::Internal {
+                    message: format!("Failed to persist memory store: {e}"),
+                }
+                .into_body(),
+            ),
         )
+            .into_response()
     })?;
 
     Ok(Json(MemoryUpdateResponse { entry: updated }))

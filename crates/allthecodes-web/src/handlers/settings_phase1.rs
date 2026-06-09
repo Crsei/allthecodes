@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -15,8 +15,8 @@ use allthecodes_config::settings::{write_user_settings, RawSettings};
 use allthecodes_session::memdir::{self, MemoryScope};
 
 use crate::handlers::admin::{normalize_settings_path, persist_setting};
-use crate::handlers::ApiError;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct MemoryConfigResponse {
@@ -125,10 +125,10 @@ pub async fn memory_config_patch_handler(
             format!("memory.{key}")
         };
         let Some(setting_key) = normalize_settings_path(&path) else {
-            return bad_request(format!("Unknown memory setting: {path}")).into_response();
+            return bad_request(format!("Unknown memory setting: {path}"));
         };
         if let Err(err) = persist_setting(&state, setting_key, value) {
-            return bad_request(err.to_string()).into_response();
+            return bad_request(err.to_string());
         }
     }
 
@@ -193,27 +193,31 @@ pub async fn speech_model_download_handler(
 ) -> impl IntoResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            error: format!(
-                "Speech model download is not implemented by this backend yet: {}",
-                req.model_id
-            ),
-            code: "speech_download_not_implemented".into(),
-
-            details: serde_json::json!({}),
-        }),
+        Json(
+            ProtocolApiError::BadRequest {
+                code: "speech_download_not_implemented",
+                message: format!(
+                    "Speech model download is not implemented by this backend yet: {}",
+                    req.model_id
+                ),
+            }
+            .into_body(),
+        ),
     )
 }
 
 pub async fn speech_model_delete_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            error: format!("Speech model deletion is not implemented by this backend yet: {id}"),
-            code: "speech_delete_not_implemented".into(),
-
-            details: serde_json::json!({}),
-        }),
+        Json(
+            ProtocolApiError::BadRequest {
+                code: "speech_delete_not_implemented",
+                message: format!(
+                    "Speech model deletion is not implemented by this backend yet: {id}"
+                ),
+            }
+            .into_body(),
+        ),
     )
 }
 
@@ -238,7 +242,7 @@ pub async fn search_cookies_import_handler(
             cookies: None,
         })
         .into_response(),
-        Err(err) => internal_error(err.to_string()).into_response(),
+        Err(err) => internal_error(err.to_string()),
     }
 }
 
@@ -246,7 +250,7 @@ pub async fn search_cookies_clear_handler() -> impl IntoResponse {
     let path = search_cookies_path();
     if let Err(err) = std::fs::remove_file(&path) {
         if err.kind() != std::io::ErrorKind::NotFound {
-            return internal_error(err.to_string()).into_response();
+            return internal_error(err.to_string());
         }
     }
     Json(SearchCookiesResponse {
@@ -268,17 +272,17 @@ pub async fn data_export_handler(State(state): State<WebState>) -> impl IntoResp
     });
     let dir = paths::exports_dir();
     if let Err(err) = std::fs::create_dir_all(&dir) {
-        return internal_error(err.to_string()).into_response();
+        return internal_error(err.to_string());
     }
     let path = dir.join(format!(
         "settings-export-{}.json",
         chrono::Utc::now().format("%Y%m%d-%H%M%S")
     ));
     let Ok(bytes) = serde_json::to_vec_pretty(&export) else {
-        return internal_error("failed to serialize export".into()).into_response();
+        return internal_error("failed to serialize export".into());
     };
     if let Err(err) = std::fs::write(&path, &bytes) {
-        return internal_error(err.to_string()).into_response();
+        return internal_error(err.to_string());
     }
 
     Json(DataExportResponse {
@@ -293,15 +297,14 @@ pub async fn data_import_handler(Json(req): Json<DataImportRequest>) -> impl Int
     let mut imported_settings = false;
     if let Some(settings) = req.settings {
         if contains_sensitive_key(&settings) {
-            return bad_request("settings import refuses sensitive key material".into())
-                .into_response();
+            return bad_request("settings import refuses sensitive key material".into());
         }
         let raw: RawSettings = match serde_json::from_value(settings) {
             Ok(raw) => raw,
-            Err(err) => return bad_request(err.to_string()).into_response(),
+            Err(err) => return bad_request(err.to_string()),
         };
         if let Err(err) = write_user_settings(&raw) {
-            return internal_error(err.to_string()).into_response();
+            return internal_error(err.to_string());
         }
         imported_settings = true;
     }
@@ -414,26 +417,303 @@ fn contains_sensitive_key(value: &Value) -> bool {
     }
 }
 
-fn bad_request(message: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error: message,
-            code: "bad_request".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn bad_request(message: String) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code: "bad_request",
+        message,
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-fn internal_error(message: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error: message,
-            code: "internal_error".into(),
+fn internal_error(message: String) -> Response {
+    let body = ProtocolApiError::Internal { message }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+}
 
-            details: serde_json::json!({}),
-        }),
-    )
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handlers::test_support::*;
+    use crate::handlers::{settings_handler, SettingsRequest};
+    use allthecodes_engine::types::tool::PermissionMode;
+    use serial_test::serial;
+
+    #[tokio::test]
+    #[serial]
+    async fn set_model_rejects_values_outside_available_models() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+        state.engine().update_app_state(|s| {
+            s.settings.available_models = vec!["gpt-4o".to_string()];
+        });
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_model".to_string(),
+                value: json!("SOTA"),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(false));
+        assert!(body["message"]
+            .as_str()
+            .expect("message")
+            .contains("not in availableModels"));
+        assert_ne!(
+            state.engine().app_state().main_loop_model,
+            "claude-opus-4-20250514"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn set_model_accepts_alias_when_full_id_is_allowlisted() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+        let expected_model = allthecodes_commands::model::resolve_model_alias("SOTA");
+        state.engine().update_app_state(|s| {
+            s.settings.sota_model = Some(expected_model.clone());
+            s.settings.available_models = vec![expected_model.clone()];
+        });
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_model".to_string(),
+                value: json!("SOTA"),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(state.engine().app_state().main_loop_model, expected_model);
+        assert_eq!(
+            state.engine().app_state().settings.model.as_deref(),
+            Some(expected_model.as_str())
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn set_permission_mode_auto_respects_disabled_policy() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+        state.engine().update_app_state(|s| {
+            s.tool_permission_context.is_auto_mode_available = Some(false);
+        });
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_permission_mode".to_string(),
+                value: json!("auto"),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(false));
+        assert!(body["message"]
+            .as_str()
+            .expect("message")
+            .contains("permissions.enableAutoMode=false"));
+        assert_eq!(
+            state.engine().app_state().tool_permission_context.mode,
+            PermissionMode::Default
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn compatibility_settings_actions_persist_user_settings() {
+        let (home, _guard) = temp_home();
+        let state = make_web_state();
+        state.engine().update_app_state(|s| {
+            s.settings.available_models = vec!["gpt-4o".to_string()];
+        });
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_model".to_string(),
+                value: json!("gpt-4o"),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert_eq!(raw.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(state.engine().app_state().main_loop_model, "gpt-4o");
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_permission_mode".to_string(),
+                value: json!("plan"),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert_eq!(raw.permission_mode.as_deref(), Some("plan"));
+        assert_eq!(
+            state.engine().app_state().tool_permission_context.mode,
+            PermissionMode::Plan
+        );
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_thinking".to_string(),
+                value: json!(true),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert_eq!(
+            raw.thinking
+                .as_ref()
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str),
+            Some("enabled")
+        );
+        assert_eq!(state.engine().app_state().thinking_enabled, Some(true));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn set_ext_persists_typed_and_unknown_paths() {
+        let (home, _guard) = temp_home();
+        let state = make_web_state();
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_ext".to_string(),
+                value: json!({
+                    "path": "network.proxy_enabled",
+                    "value": true
+                }),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            state.engine().app_state().settings.proxy_enabled,
+            Some(true)
+        );
+        let raw = read_user_settings(&home);
+        assert_eq!(raw.proxy_enabled, Some(true));
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_ext".to_string(),
+                value: json!({
+                    "path": "customPanel.feature_flag",
+                    "value": "enabled"
+                }),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert_eq!(
+            raw.extra
+                .get("customPanel")
+                .and_then(|value| value.get("feature_flag")),
+            Some(&json!("enabled"))
+        );
+        assert_eq!(
+            state
+                .engine()
+                .app_state()
+                .settings
+                .settings_map()
+                .get("customPanel"),
+            Some(&json!({ "feature_flag": "enabled" }))
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn phase1_helper_endpoints_return_stable_json() {
+        let (home, _guard) = temp_home();
+        let state = make_web_state();
+        state.engine().update_app_state(|s| {
+            s.settings.auto_memory_enabled = Some(true);
+            s.settings.memory_max_retrieved = Some(8);
+        });
+
+        let response = memory_config_get_handler(State(state.clone()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["config"]["auto_memory_enabled"], json!(true));
+        assert_eq!(body["config"]["memory_max_retrieved"], json!(8));
+        assert!(body["stats"]["total"].as_u64().is_some());
+
+        let response = speech_models_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["models"].as_array().expect("models").len() >= 4);
+
+        let response = speech_model_download_handler(Json(SpeechModelDownloadRequest {
+            model_id: "tiny".to_string(),
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("speech_download_not_implemented"));
+
+        let response = search_cookies_import_handler(Json(SearchCookiesImportRequest {
+            cookies: json!([{ "name": "session", "value": "redacted" }]),
+        }))
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(home.path().join("search-cookies.json").exists());
+
+        let response = search_cookies_export_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["cookies"][0]["name"], json!("session"));
+
+        let response = search_cookies_clear_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!home.path().join("search-cookies.json").exists());
+
+        let response = data_export_handler(State(state.clone()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true));
+        assert!(body["bytes"].as_u64().expect("bytes") > 0);
+
+        let response = token_savings_handler(State(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["total_saved_tokens"], json!(0));
+        assert_eq!(body["cache_hit_rate"], json!(0.0));
+    }
 }

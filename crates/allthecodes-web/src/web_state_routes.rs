@@ -1,7 +1,7 @@
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post, put, MethodRouter};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -14,33 +14,60 @@ use allthecodes_web_state::{
 use crate::api_errors::api_error_body;
 use crate::state::WebState;
 
+fn versioned_web_path(path: &str) -> String {
+    path.replacen("/api/web", "/api/v2/web", 1)
+}
+
 pub fn routes() -> Router<WebState> {
-    Router::new()
-        .route("/api/web/health", get(health))
-        .route("/api/web/preferences/fields", get(preference_fields))
-        .route(
+    let mut web_routes: Vec<(String, MethodRouter<WebState>)> = Vec::new();
+    for (path, method_router) in raw_routes() {
+        web_routes.push((path.to_string(), method_router.clone()));
+        web_routes.push((versioned_web_path(path), method_router));
+    }
+    let mut router = Router::new();
+    for (path, method_router) in web_routes {
+        router = router.route(&path, method_router);
+    }
+    router
+}
+
+fn raw_routes() -> Vec<(&'static str, MethodRouter<WebState>)> {
+    vec![
+        ("/api/web/health", get(health).into()),
+        ("/api/web/preferences/fields", get(preference_fields).into()),
+        (
             "/api/web/preferences",
-            get(get_preferences).put(update_preferences),
-        )
-        .route("/api/web/themes", get(list_themes).post(create_theme))
-        .route(
+            get(get_preferences).put(update_preferences).into(),
+        ),
+        (
+            "/api/web/themes",
+            get(list_themes).post(create_theme).into(),
+        ),
+        (
             "/api/web/themes/{id}",
-            put(update_theme).delete(delete_theme),
-        )
-        .route("/api/web/prompts", get(list_prompts).post(create_prompt))
-        .route(
+            put(update_theme).delete(delete_theme).into(),
+        ),
+        (
+            "/api/web/prompts",
+            get(list_prompts).post(create_prompt).into(),
+        ),
+        (
             "/api/web/prompts/{id}",
-            put(update_prompt).delete(delete_prompt),
-        )
-        .route("/api/web/layouts", get(list_layouts).post(create_layout))
-        .route(
+            put(update_prompt).delete(delete_prompt).into(),
+        ),
+        (
+            "/api/web/layouts",
+            get(list_layouts).post(create_layout).into(),
+        ),
+        (
             "/api/web/layouts/{id}",
-            put(update_layout).delete(delete_layout),
-        )
-        .route(
+            put(update_layout).delete(delete_layout).into(),
+        ),
+        (
             "/api/web/layouts/{id}/set-default",
-            post(set_default_layout),
-        )
+            post(set_default_layout).into(),
+        ),
+    ]
 }
 
 #[derive(Deserialize)]

@@ -5,7 +5,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use allthecodes_protocol::v1::{
-    SessionArchiveParams, SessionDetailParams, SessionModePatchParams, SessionResumeParams,
+    SessionArchiveParams, SessionCreateParams, SessionDetailParams, SessionMessageActionParams,
+    SessionModePatchParams, SessionResumeParams,
 };
 use allthecodes_protocol::ApiMethod;
 use allthecodes_protocol::{ApiError as ProtocolApiError, NoParams, SerializationScope};
@@ -26,14 +27,13 @@ use allthecodes_types::message::{ContentBlock, Message, MessageContent};
 
 use crate::api_dispatcher::rest_processor_response;
 use crate::handler_registry::HandlerRegistry;
-use crate::handlers::workspaces::resolve_workspace_root;
-use crate::handlers::ApiError;
+use crate::handlers::workspaces::resolve_workspace_root_protocol;
 use crate::handlers::{
     chat_mode_preference_for_cwd_session, chat_mode_preference_for_session_info,
     normalize_optional_mode,
 };
 use crate::processors::Processor;
-use crate::state::{SessionOwner, WebState};
+use crate::state::WebState;
 
 pub(crate) fn handlers() -> HandlerRegistry {
     HandlerRegistry::new()
@@ -263,6 +263,50 @@ impl Processor for SessionListProcessor {
 }
 
 #[derive(Clone)]
+pub struct SessionCreateProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionCreateProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionCreateProcessor {
+    type Request = SessionCreateParams;
+    type Response = NewSessionResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.create"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(_params: &Self::Request) -> SerializationScope {
+        SerializationScope::PerProcess
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        if self.state.is_streaming.load(Ordering::SeqCst) {
+            return Err(ProtocolApiError::EngineBusy);
+        }
+
+        let target_cwd = session_create_target_cwd(&self.state, &params)?;
+        let engine = rebuild_engine(&self.state, None, target_cwd);
+        let new_id = engine.current_session_id().to_string();
+        self.state.replace_engine(engine);
+
+        info!(session_id = %new_id, "POST /api/sessions/new");
+        Ok(NewSessionResponse { session_id: new_id })
+    }
+}
+
+#[derive(Clone)]
 pub struct SessionDetailProcessor {
     state: WebState,
 }
@@ -329,8 +373,9 @@ impl Processor for SessionResumeProcessor {
         if self.state.is_streaming.load(Ordering::SeqCst) {
             return Err(ProtocolApiError::EngineBusy);
         }
-        if let Some(error) = ownership_conflict_error(&self.state) {
-            return Err(error);
+        // Check no conflicts in the same session
+        if self.state.is_streaming.load(Ordering::SeqCst) {
+            return Err(ProtocolApiError::EngineBusy);
         }
 
         info!(session_id = %params.id, "POST /api/sessions/:id/resume");
@@ -377,8 +422,9 @@ impl Processor for SessionArchiveProcessor {
         if self.state.is_streaming.load(Ordering::SeqCst) {
             return Err(ProtocolApiError::EngineBusy);
         }
-        if let Some(error) = ownership_conflict_error(&self.state) {
-            return Err(error);
+        // Check no conflicts in the same session
+        if self.state.is_streaming.load(Ordering::SeqCst) {
+            return Err(ProtocolApiError::EngineBusy);
         }
         if self.state.engine().current_session_id().to_string() == params.id {
             return Err(ProtocolApiError::Conflict {
@@ -441,6 +487,362 @@ impl Processor for SessionModePatchProcessor {
     }
 }
 
+#[derive(Clone)]
+pub struct SessionMessageBranchProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionMessageBranchProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionMessageBranchProcessor {
+    type Request = SessionMessageActionParams;
+    type Response = SessionBranchResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.message_branch"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(_params: &Self::Request) -> SerializationScope {
+        SerializationScope::PerProcess
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let _ = params.profile_id.as_deref();
+        if let Some(error) = mutation_guard_error(&self.state, &params.id, "branching a message") {
+            return Err(error);
+        }
+
+        let messages = load_session_messages(&params.id)?;
+        if message_index(&messages, &params.message_id).is_none() {
+            return Err(message_not_found_error(params.message_id));
+        }
+        let cwd = storage::load_session_info(&params.id)
+            .map(|info| info.cwd)
+            .unwrap_or_else(|_| self.state.engine().cwd().to_string());
+        let new_id = SessionId::new().to_string();
+
+        fork::fork_session(
+            &params.id,
+            &new_id,
+            &messages,
+            &cwd,
+            Some(&params.message_id),
+        )
+        .map(|outcome| SessionBranchResponse {
+            session_id: outcome.new_session_id,
+            title: Some(outcome.title),
+        })
+        .map_err(|error| ProtocolApiError::Internal {
+            message: format!("Failed to branch session: {error}"),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionMessageFeedbackProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionMessageFeedbackProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionMessageFeedbackProcessor {
+    type Request = SessionMessageActionParams;
+    type Response = SessionMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.message_feedback"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(_params: &Self::Request) -> SerializationScope {
+        SerializationScope::PerProcess
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let rating = params.rating.as_deref().unwrap_or("none");
+        if storage::load_session_info(&params.id).is_err() {
+            return Err(session_not_found_error(params.id));
+        }
+        let messages = load_session_messages(&params.id)?;
+        if message_index(&messages, &params.message_id).is_none() {
+            return Err(message_not_found_error(params.message_id));
+        }
+        info!(session_id = %params.id, message_id = %params.message_id, rating = %rating, "message feedback recorded");
+        Ok(SessionMutationResponse {
+            ok: true,
+            message: "Feedback recorded".into(),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionMessageDeleteProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionMessageDeleteProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionMessageDeleteProcessor {
+    type Request = SessionMessageActionParams;
+    type Response = SessionMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.message_delete"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(_params: &Self::Request) -> SerializationScope {
+        SerializationScope::PerProcess
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let _ = params.profile_id.as_deref();
+        if let Some(error) = mutation_guard_error(&self.state, &params.id, "deleting a message") {
+            return Err(error);
+        }
+        let messages = load_session_messages(&params.id)?;
+        let Some(index) = message_index(&messages, &params.message_id) else {
+            return Err(message_not_found_error(params.message_id));
+        };
+        storage::truncate_session(&params.id, index).map_err(|error| {
+            ProtocolApiError::Internal {
+                message: format!("Failed to delete message: {error}"),
+            }
+        })?;
+        Ok(SessionMutationResponse {
+            ok: true,
+            message: "Message deleted".into(),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionMessageRegeneratePrepareProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionMessageRegeneratePrepareProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionMessageRegeneratePrepareProcessor {
+    type Request = SessionMessageActionParams;
+    type Response = MessageRegeneratePrepareResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.message_regenerate_prepare"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(_params: &Self::Request) -> SerializationScope {
+        SerializationScope::PerProcess
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let _ = params.profile_id.as_deref();
+        if let Some(error) = mutation_guard_error(&self.state, &params.id, "regenerating a message")
+        {
+            return Err(error);
+        }
+        let messages = load_session_messages(&params.id)?;
+        let Some(assistant_index) = message_index(&messages, &params.message_id) else {
+            return Err(message_not_found_error(params.message_id));
+        };
+        let Some((user_index, prompt)) = preceding_user_prompt(&messages, assistant_index) else {
+            return Err(ProtocolApiError::BadRequest {
+                code: "message_regenerate_unavailable",
+                message: "No preceding user message found for regeneration".to_string(),
+            });
+        };
+        storage::truncate_session(&params.id, user_index).map_err(|error| {
+            ProtocolApiError::Internal {
+                message: format!("Failed to prepare regeneration: {error}"),
+            }
+        })?;
+        Ok(MessageRegeneratePrepareResponse {
+            session_id: params.id,
+            prompt,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionMessageEditPrepareProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionMessageEditPrepareProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionMessageEditPrepareProcessor {
+    type Request = SessionMessageActionParams;
+    type Response = MessageRegeneratePrepareResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.message_edit_prepare"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(_params: &Self::Request) -> SerializationScope {
+        SerializationScope::PerProcess
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        if let Some(error) = mutation_guard_error(&self.state, &params.id, "editing a message") {
+            return Err(error);
+        }
+        let edited_text = params.text.as_deref().unwrap_or("").trim().to_string();
+        if edited_text.is_empty() {
+            return Err(ProtocolApiError::BadRequest {
+                code: "message_edit_empty",
+                message: "Edited message text is required".to_string(),
+            });
+        }
+        let messages = load_session_messages(&params.id)?;
+        let Some(index) = message_index(&messages, &params.message_id) else {
+            return Err(message_not_found_error(params.message_id));
+        };
+        if !matches!(messages.get(index), Some(Message::User(_))) {
+            return Err(ProtocolApiError::BadRequest {
+                code: "message_edit_role_invalid",
+                message: "Only user messages can be edited".to_string(),
+            });
+        }
+        storage::truncate_session(&params.id, index).map_err(|error| {
+            ProtocolApiError::Internal {
+                message: format!("Failed to prepare edit: {error}"),
+            }
+        })?;
+        Ok(MessageRegeneratePrepareResponse {
+            session_id: params.id,
+            prompt: edited_text,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionMessageRollbackPreviewProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionMessageRollbackPreviewProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionMessageRollbackPreviewProcessor {
+    type Request = SessionMessageActionParams;
+    type Response = RollbackPreviewResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.message_rollback_preview"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(_params: &Self::Request) -> SerializationScope {
+        SerializationScope::PerProcess
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let _ = params.profile_id.as_deref();
+        let messages = load_session_messages(&params.id)?;
+        if message_index(&messages, &params.message_id).is_none() {
+            return Err(message_not_found_error(params.message_id));
+        }
+        Ok(RollbackPreviewResponse {
+            available: false,
+            message: Some("Rollback checkpoint is not available for this session yet".into()),
+            files: Vec::new(),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionMessageRollbackProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionMessageRollbackProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionMessageRollbackProcessor {
+    type Request = SessionMessageActionParams;
+    type Response = serde_json::Value;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.message_rollback"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(_params: &Self::Request) -> SerializationScope {
+        SerializationScope::PerProcess
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let _files = params.files;
+        Err(ProtocolApiError::NotImplemented {
+            capability: "rollback_checkpoint_unavailable".to_string(),
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handler implementations
 // ---------------------------------------------------------------------------
@@ -469,59 +871,12 @@ pub async fn session_new_handler(
     State(state): State<WebState>,
     body: Option<Json<NewSessionRequest>>,
 ) -> impl IntoResponse {
-    if state.is_streaming.load(Ordering::SeqCst) {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "A query is in progress — abort it before starting a new session".into(),
-                code: "engine_busy".into(),
-
-                details: serde_json::json!({}),
-            }),
-        )
-            .into_response();
-    }
-    if let Some(response) = ownership_conflict_response(&state) {
-        return response;
-    }
-
-    let target_cwd = match body.as_ref() {
-        Some(Json(req)) => match (&req.workspace_key, &req.cwd) {
-            (Some(workspace_key), cwd) => {
-                match resolve_workspace_root(&state, workspace_key, cwd.as_deref()) {
-                    Ok(root) => Some(root.to_string_lossy().to_string()),
-                    Err(response) => return response,
-                }
-            }
-            (None, Some(cwd)) => {
-                let cwd_path = Path::new(cwd);
-                match cwd_path.canonicalize() {
-                    Ok(root) if root.is_dir() => Some(root.to_string_lossy().to_string()),
-                    _ => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(ApiError {
-                                error: "cwd must be an existing directory".into(),
-                                code: "cwd_invalid".into(),
-
-                                details: serde_json::json!({}),
-                            }),
-                        )
-                            .into_response();
-                    }
-                }
-            }
-            (None, None) => None,
-        },
-        None => None,
-    };
-
-    let engine = rebuild_engine(&state, None, target_cwd);
-    let new_id = engine.current_session_id().to_string();
-    state.replace_engine(engine);
-
-    info!(session_id = %new_id, "POST /api/sessions/new");
-    Json(NewSessionResponse { session_id: new_id }).into_response()
+    rest_processor_response::<SessionCreateProcessor>(
+        state,
+        ApiMethod::SessionCreate,
+        session_create_params_from_body(body),
+    )
+    .await
 }
 
 /// POST /api/sessions/:id/resume -- Load an existing session into the engine.
@@ -581,7 +936,7 @@ fn update_session_mode_preference(
             return Err(ProtocolApiError::NotFound {
                 entity: "session",
                 id,
-            })
+            });
         }
     };
     let normalized = normalize_optional_mode(chat_mode_override.as_deref());
@@ -601,82 +956,86 @@ fn update_session_mode_preference(
     })
 }
 
+fn session_create_params_from_body(body: Option<Json<NewSessionRequest>>) -> SessionCreateParams {
+    match body {
+        Some(Json(req)) => SessionCreateParams {
+            title: None,
+            workspace_key: req.workspace_key,
+            cwd: req.cwd,
+        },
+        None => SessionCreateParams {
+            title: None,
+            workspace_key: None,
+            cwd: None,
+        },
+    }
+}
+
+fn session_create_target_cwd(
+    state: &WebState,
+    params: &SessionCreateParams,
+) -> Result<Option<String>, ProtocolApiError> {
+    match (params.workspace_key.as_deref(), params.cwd.as_deref()) {
+        (Some(workspace_key), cwd) => {
+            let root = resolve_workspace_root_protocol(state, workspace_key, cwd)?;
+            Ok(Some(root.to_string_lossy().to_string()))
+        }
+        (None, Some(cwd)) => {
+            let cwd_path = Path::new(cwd);
+            match cwd_path.canonicalize() {
+                Ok(root) if root.is_dir() => Ok(Some(root.to_string_lossy().to_string())),
+                _ => Err(ProtocolApiError::BadRequest {
+                    code: "cwd_invalid",
+                    message: "cwd must be an existing directory".to_string(),
+                }),
+            }
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+fn session_message_action_params(
+    id: String,
+    message_id: String,
+    body: Option<Json<MessageActionRequest>>,
+) -> SessionMessageActionParams {
+    let body = body.map(|Json(req)| req);
+    SessionMessageActionParams {
+        id,
+        message_id,
+        profile_id: body.as_ref().and_then(|req| req.profile_id.clone()),
+        rating: body.as_ref().and_then(|req| req.rating.clone()),
+        text: body.as_ref().and_then(|req| req.text.clone()),
+        files: body.map(|req| req.files).unwrap_or_default(),
+    }
+}
+
 /// POST /api/sessions/:id/messages/:message_id/branch
 pub async fn session_message_branch_handler(
     AxumPath((id, message_id)): AxumPath<(String, String)>,
     State(state): State<WebState>,
     body: Option<Json<MessageActionRequest>>,
 ) -> impl IntoResponse {
-    let _ = body
-        .as_ref()
-        .and_then(|Json(req)| req.profile_id.as_deref());
-    if let Some(response) = mutation_guard(&state, &id, "branching a message").await {
-        return response;
-    }
-
-    let messages = match load_session_messages_response(&id) {
-        Ok(messages) => messages,
-        Err(response) => return response,
-    };
-    if !messages
-        .iter()
-        .any(|msg| msg.uuid().to_string() == message_id)
-    {
-        return message_not_found_response();
-    }
-    let cwd = storage::load_session_info(&id)
-        .map(|info| info.cwd)
-        .unwrap_or_else(|_| state.engine().cwd().to_string());
-    let new_id = SessionId::new().to_string();
-
-    match fork::fork_session(&id, &new_id, &messages, &cwd, Some(&message_id)) {
-        Ok(outcome) => Json(SessionBranchResponse {
-            session_id: outcome.new_session_id,
-            title: Some(outcome.title),
-        })
-        .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Failed to branch session: {}", e),
-                code: "session_branch_failed".into(),
-
-                details: serde_json::json!({}),
-            }),
-        )
-            .into_response(),
-    }
+    rest_processor_response::<SessionMessageBranchProcessor>(
+        state,
+        ApiMethod::SessionMessageBranch,
+        session_message_action_params(id, message_id, body),
+    )
+    .await
 }
 
 /// POST /api/sessions/:id/messages/:message_id/feedback
 pub async fn session_message_feedback_handler(
     AxumPath((id, message_id)): AxumPath<(String, String)>,
-    State(_state): State<WebState>,
+    State(state): State<WebState>,
     body: Option<Json<MessageActionRequest>>,
 ) -> impl IntoResponse {
-    let rating = body
-        .as_ref()
-        .and_then(|Json(req)| req.rating.as_deref())
-        .unwrap_or("none");
-    if storage::load_session_info(&id).is_err() {
-        return session_not_found_response();
-    }
-    let messages = match load_session_messages_response(&id) {
-        Ok(messages) => messages,
-        Err(response) => return response,
-    };
-    if !messages
-        .iter()
-        .any(|msg| msg.uuid().to_string() == message_id)
-    {
-        return message_not_found_response();
-    }
-    info!(session_id = %id, message_id = %message_id, rating = %rating, "message feedback recorded");
-    Json(SessionMutationResponse {
-        ok: true,
-        message: "Feedback recorded".into(),
-    })
-    .into_response()
+    rest_processor_response::<SessionMessageFeedbackProcessor>(
+        state,
+        ApiMethod::SessionMessageFeedback,
+        session_message_action_params(id, message_id, body),
+    )
+    .await
 }
 
 /// POST /api/sessions/:id/messages/:message_id/delete
@@ -685,27 +1044,12 @@ pub async fn session_message_delete_handler(
     State(state): State<WebState>,
     body: Option<Json<MessageActionRequest>>,
 ) -> impl IntoResponse {
-    let _ = body
-        .as_ref()
-        .and_then(|Json(req)| req.profile_id.as_deref());
-    if let Some(response) = mutation_guard(&state, &id, "deleting a message").await {
-        return response;
-    }
-    let messages = match load_session_messages_response(&id) {
-        Ok(messages) => messages,
-        Err(response) => return response,
-    };
-    let Some(index) = message_index(&messages, &message_id) else {
-        return message_not_found_response();
-    };
-    match storage::truncate_session(&id, index) {
-        Ok(_) => Json(SessionMutationResponse {
-            ok: true,
-            message: "Message deleted".into(),
-        })
-        .into_response(),
-        Err(e) => storage_error_response("Failed to delete message", "message_delete_failed", e),
-    }
+    rest_processor_response::<SessionMessageDeleteProcessor>(
+        state,
+        ApiMethod::SessionMessageDelete,
+        session_message_action_params(id, message_id, body),
+    )
+    .await
 }
 
 /// POST /api/sessions/:id/messages/:message_id/regenerate/prepare
@@ -714,43 +1058,12 @@ pub async fn session_message_regenerate_prepare_handler(
     State(state): State<WebState>,
     body: Option<Json<MessageActionRequest>>,
 ) -> impl IntoResponse {
-    let _ = body
-        .as_ref()
-        .and_then(|Json(req)| req.profile_id.as_deref());
-    if let Some(response) = mutation_guard(&state, &id, "regenerating a message").await {
-        return response;
-    }
-    let messages = match load_session_messages_response(&id) {
-        Ok(messages) => messages,
-        Err(response) => return response,
-    };
-    let Some(assistant_index) = message_index(&messages, &message_id) else {
-        return message_not_found_response();
-    };
-    let Some((user_index, prompt)) = preceding_user_prompt(&messages, assistant_index) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "No preceding user message found for regeneration".into(),
-                code: "message_regenerate_unavailable".into(),
-
-                details: serde_json::json!({}),
-            }),
-        )
-            .into_response();
-    };
-    match storage::truncate_session(&id, user_index) {
-        Ok(_) => Json(MessageRegeneratePrepareResponse {
-            session_id: id,
-            prompt,
-        })
-        .into_response(),
-        Err(e) => storage_error_response(
-            "Failed to prepare regeneration",
-            "message_regenerate_failed",
-            e,
-        ),
-    }
+    rest_processor_response::<SessionMessageRegeneratePrepareProcessor>(
+        state,
+        ApiMethod::SessionMessageRegeneratePrepare,
+        session_message_action_params(id, message_id, body),
+    )
+    .await
 }
 
 /// POST /api/sessions/:id/messages/:message_id/edit/prepare
@@ -759,100 +1072,40 @@ pub async fn session_message_edit_prepare_handler(
     State(state): State<WebState>,
     body: Option<Json<MessageActionRequest>>,
 ) -> impl IntoResponse {
-    if let Some(response) = mutation_guard(&state, &id, "editing a message").await {
-        return response;
-    }
-    let edited_text = body
-        .as_ref()
-        .and_then(|Json(req)| req.text.as_deref())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if edited_text.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "Edited message text is required".into(),
-                code: "message_edit_empty".into(),
-
-                details: serde_json::json!({}),
-            }),
-        )
-            .into_response();
-    }
-    let messages = match load_session_messages_response(&id) {
-        Ok(messages) => messages,
-        Err(response) => return response,
-    };
-    let Some(index) = message_index(&messages, &message_id) else {
-        return message_not_found_response();
-    };
-    if !matches!(messages.get(index), Some(Message::User(_))) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "Only user messages can be edited".into(),
-                code: "message_edit_role_invalid".into(),
-
-                details: serde_json::json!({}),
-            }),
-        )
-            .into_response();
-    }
-    match storage::truncate_session(&id, index) {
-        Ok(_) => Json(MessageRegeneratePrepareResponse {
-            session_id: id,
-            prompt: edited_text,
-        })
-        .into_response(),
-        Err(e) => storage_error_response("Failed to prepare edit", "message_edit_failed", e),
-    }
+    rest_processor_response::<SessionMessageEditPrepareProcessor>(
+        state,
+        ApiMethod::SessionMessageEditPrepare,
+        session_message_action_params(id, message_id, body),
+    )
+    .await
 }
 
 /// POST /api/sessions/:id/messages/:message_id/rollback/preview
 pub async fn session_message_rollback_preview_handler(
     AxumPath((id, message_id)): AxumPath<(String, String)>,
-    State(_state): State<WebState>,
+    State(state): State<WebState>,
     body: Option<Json<MessageActionRequest>>,
 ) -> impl IntoResponse {
-    let _ = body
-        .as_ref()
-        .and_then(|Json(req)| req.profile_id.as_deref());
-    let messages = match load_session_messages_response(&id) {
-        Ok(messages) => messages,
-        Err(response) => return response,
-    };
-    if !messages
-        .iter()
-        .any(|msg| msg.uuid().to_string() == message_id)
-    {
-        return message_not_found_response();
-    }
-    Json(RollbackPreviewResponse {
-        available: false,
-        message: Some("Rollback checkpoint is not available for this session yet".into()),
-        files: Vec::new(),
-    })
-    .into_response()
+    rest_processor_response::<SessionMessageRollbackPreviewProcessor>(
+        state,
+        ApiMethod::SessionMessageRollbackPreview,
+        session_message_action_params(id, message_id, body),
+    )
+    .await
 }
 
 /// POST /api/sessions/:id/messages/:message_id/rollback
 pub async fn session_message_rollback_handler(
-    AxumPath((_id, _message_id)): AxumPath<(String, String)>,
-    State(_state): State<WebState>,
+    AxumPath((id, message_id)): AxumPath<(String, String)>,
+    State(state): State<WebState>,
     body: Option<Json<MessageActionRequest>>,
 ) -> impl IntoResponse {
-    let _files = body.map(|Json(req)| req.files).unwrap_or_default();
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            error: "Rollback checkpoint storage is not implemented yet".into(),
-            code: "rollback_checkpoint_unavailable".into(),
-
-            details: serde_json::json!({}),
-        }),
+    rest_processor_response::<SessionMessageRollbackProcessor>(
+        state,
+        ApiMethod::SessionMessageRollback,
+        session_message_action_params(id, message_id, body),
     )
-        .into_response()
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -951,66 +1204,18 @@ fn session_detail_from_messages(id: String, messages: &[Message]) -> SessionDeta
     }
 }
 
-fn ownership_conflict_error(state: &WebState) -> Option<ProtocolApiError> {
-    let owner = state.ownership_snapshot();
-    if owner.owner == SessionOwner::None {
-        return None;
-    }
-
-    Some(ProtocolApiError::Conflict {
-        reason: ownership_conflict_message(&owner),
-    })
-}
-
-fn ownership_conflict_message(owner: &crate::state::SessionOwnership) -> String {
-    format!(
-        "Session is currently owned by {:?}{}",
-        owner.owner,
-        owner
-            .session_id
-            .as_deref()
-            .map(|id| format!(" ({id})"))
-            .unwrap_or_default()
-    )
-}
-
-async fn mutation_guard(state: &WebState, session_id: &str, action: &str) -> Option<Response> {
+fn mutation_guard_error(
+    state: &WebState,
+    session_id: &str,
+    _action: &str,
+) -> Option<ProtocolApiError> {
     if state.is_streaming.load(Ordering::SeqCst) {
-        return Some(
-            (
-                StatusCode::CONFLICT,
-                Json(ApiError {
-                    error: format!("A query is in progress — abort it before {action}"),
-                    code: "engine_busy".into(),
-
-                    details: serde_json::json!({}),
-                }),
-            )
-                .into_response(),
-        );
-    }
-    if let Some(response) = ownership_conflict_response(state) {
-        return Some(response);
+        return Some(ProtocolApiError::EngineBusy);
     }
     if storage::load_session_info(session_id).is_err() {
-        return Some(session_not_found_response());
+        return Some(session_not_found_error(session_id.to_string()));
     }
     None
-}
-
-fn load_session_messages_response(session_id: &str) -> Result<Vec<Message>, Response> {
-    session_resume::resume_session(session_id).map_err(|e| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: format!("Session not found: {}", e),
-                code: "session_not_found".into(),
-
-                details: serde_json::json!({}),
-            }),
-        )
-            .into_response()
-    })
 }
 
 fn message_index(messages: &[Message], message_id: &str) -> Option<usize> {
@@ -1045,62 +1250,18 @@ fn user_message_text(user: &allthecodes_types::message::UserMessage) -> String {
     }
 }
 
-fn session_not_found_response() -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error: "Session not found".into(),
-            code: "session_not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
-}
-
-fn message_not_found_response() -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error: "Message not found".into(),
-            code: "message_not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
-}
-
-fn storage_error_response(prefix: &str, code: &str, error: impl std::fmt::Display) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error: format!("{prefix}: {error}"),
-            code: code.into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
-}
-
-pub(crate) fn ownership_conflict_response(state: &WebState) -> Option<Response> {
-    let owner = state.ownership_snapshot();
-    if owner.owner == SessionOwner::None {
-        return None;
+fn session_not_found_error(id: String) -> ProtocolApiError {
+    ProtocolApiError::NotFound {
+        entity: "session",
+        id,
     }
-    Some(
-        (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: ownership_conflict_message(&owner),
-                code: "session_owned".into(),
+}
 
-                details: serde_json::json!({}),
-            }),
-        )
-            .into_response(),
-    )
+fn message_not_found_error(id: String) -> ProtocolApiError {
+    ProtocolApiError::NotFound {
+        entity: "message",
+        id,
+    }
 }
 
 /// Build a fresh engine that inherits the current engine's config, with an
@@ -1121,6 +1282,22 @@ fn rebuild_engine_with_session_id(
     session_id: Option<&str>,
 ) -> Arc<QueryEngine> {
     rebuild_engine_with_session_id_and_cwd(state, seed, session_id, None)
+}
+
+pub(crate) fn build_engine_for_session(
+    state: &WebState,
+    session_id: &str,
+) -> Result<Arc<QueryEngine>, ProtocolApiError> {
+    let messages = load_session_messages(session_id)?;
+    let cwd = storage::load_session_info(session_id)
+        .ok()
+        .map(|info| info.cwd);
+    Ok(rebuild_engine_with_session_id_and_cwd(
+        state,
+        Some(messages),
+        Some(session_id),
+        cwd,
+    ))
 }
 
 fn rebuild_engine_with_session_id_and_cwd(

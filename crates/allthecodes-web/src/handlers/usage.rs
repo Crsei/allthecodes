@@ -14,11 +14,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::handlers::ApiError;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -103,23 +104,18 @@ pub struct UsageQuery {
 const VALID_PERIODS: &[&str] = &["24h", "7d", "30d", "90d", "all"];
 
 /// Validate and normalize a period string.
-/// Returns `(StatusCode, Json<ApiError>)` on failure so callers can return it
-/// directly as an `Err(...)` from the handler.
-pub fn normalize_period(raw: &str) -> Result<String, (StatusCode, Json<ApiError>)> {
+pub fn normalize_period(raw: &str) -> Result<String, Response> {
     let lower = raw.trim().to_lowercase();
     if VALID_PERIODS.contains(&lower.as_str()) {
         Ok(lower)
     } else {
         let valid = VALID_PERIODS.join(", ");
-        Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: format!("invalid period '{}'. Must be one of: {}", raw, valid),
-                code: "invalid_period".into(),
-
-                details: serde_json::json!({}),
-            }),
-        ))
+        let body = ProtocolApiError::BadRequest {
+            code: "invalid_period",
+            message: format!("invalid period '{}'. Must be one of: {}", raw, valid),
+        }
+        .into_body();
+        Err((StatusCode::BAD_REQUEST, Json(body)).into_response())
     }
 }
 
@@ -131,7 +127,7 @@ pub fn normalize_period(raw: &str) -> Result<String, (StatusCode, Json<ApiError>
 pub async fn usage_handler(
     State(_state): State<WebState>,
     Query(query): Query<UsageQuery>,
-) -> Result<Json<UsageDashboardResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<UsageDashboardResponse>, Response> {
     let period = match query.period.as_deref() {
         Some(p) if VALID_PERIODS.contains(&p) => p.to_string(),
         Some(invalid) => return Err(normalize_period(invalid).err().unwrap()),

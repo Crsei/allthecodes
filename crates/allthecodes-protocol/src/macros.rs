@@ -123,6 +123,15 @@ macro_rules! api_definitions {
             },
         }
 
+        impl SerializationPolicy {
+            pub fn access_mode(&self) -> AccessMode {
+                match self {
+                    SerializationPolicy::Concurrent => AccessMode::SharedRead,
+                    _ => AccessMode::Exclusive,
+                }
+            }
+        }
+
         #[derive(Debug, Clone, Copy)]
         pub struct ApiOperationMetadata {
             pub endpoint: ApiEndpoint,
@@ -131,6 +140,12 @@ macro_rules! api_definitions {
             pub errors: &'static [&'static str],
             pub serialization: SerializationPolicy,
             pub experimental: Option<&'static str>,
+        }
+
+        impl ApiOperationMetadata {
+            pub fn access_mode(&self) -> AccessMode {
+                self.serialization.access_mode()
+            }
         }
 
         #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +159,22 @@ macro_rules! api_definitions {
             },
         }
 
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum AccessMode {
+            SharedRead,
+            Exclusive,
+        }
+
         impl SerializationScope {
+            pub fn access_mode(&self) -> AccessMode {
+                match self {
+                    SerializationScope::Concurrent => AccessMode::SharedRead,
+                    SerializationScope::PerProcess => AccessMode::Exclusive,
+                    SerializationScope::PerConnection => AccessMode::Exclusive,
+                    SerializationScope::PerKey { .. } => AccessMode::Exclusive,
+                }
+            }
+
             pub fn per_key<T>(params: &T, field: &'static str) -> Self
             where
                 T: ::serde::Serialize,
@@ -203,6 +233,10 @@ macro_rules! api_definitions {
                         }
                     )*
                 }
+            }
+
+            pub fn access_mode(&self) -> AccessMode {
+                self.serialization_scope().access_mode()
             }
         }
 

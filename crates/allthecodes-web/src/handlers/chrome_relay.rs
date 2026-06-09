@@ -6,8 +6,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::Serialize;
 
-use crate::handlers::ApiError;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct ChromeRelayStatusResponse {
@@ -40,12 +40,13 @@ pub async fn chrome_relay_status_handler(State(state): State<WebState>) -> impl 
 pub async fn chrome_relay_launch_handler() -> impl IntoResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            error: "Chrome Relay launch is not implemented by this backend".into(),
-            code: "chrome_relay_launch_not_implemented".into(),
-
-            details: serde_json::json!({}),
-        }),
+        Json(
+            ProtocolApiError::BadRequest {
+                code: "chrome_relay_launch_not_implemented",
+                message: "Chrome Relay launch is not implemented by this backend".into(),
+            }
+            .into_body(),
+        ),
     )
 }
 
@@ -53,11 +54,13 @@ pub async fn chrome_relay_launch_handler() -> impl IntoResponse {
 pub async fn chrome_relay_token_regenerate_handler() -> impl IntoResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            error: "Chrome Relay token regeneration is not implemented by this backend".into(),
-            code: "chrome_relay_token_regenerate_not_implemented".into(),
-
-            details: serde_json::json!({}),
-        }),
+        Json(
+            ProtocolApiError::BadRequest {
+                code: "chrome_relay_token_regenerate_not_implemented",
+                message: "Chrome Relay token regeneration is not implemented by this backend"
+                    .into(),
+            }
+            .into_body(),
+        ),
     )
 }

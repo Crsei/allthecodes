@@ -4,38 +4,29 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
-use allthecodes_protocol::SerializationScope;
-use parking_lot::RwLock;
-use serde::Serialize;
-use tokio::sync::{Mutex, Semaphore};
+use allthecodes_protocol::{AccessMode, SerializationScope};
+use tokio::sync::{Mutex, RwLock as TokioRwLock};
+use tokio::time::{timeout, Duration};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionOwner {
-    #[default]
-    None,
-    ChatStream,
-    TuiPty,
-    IpcWs,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct SessionOwnership {
-    pub owner: SessionOwner,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SerializationLayer {
-    queues: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
-    owner: Arc<RwLock<SessionOwnership>>,
+    queues: Arc<Mutex<HashMap<String, Arc<TokioRwLock<()>>>>>,
+}
+
+impl Default for SerializationLayer {
+    fn default() -> Self {
+        Self {
+            queues: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
 }
 
 impl SerializationLayer {
     pub fn new() -> Self {
         Self::default()
     }
+
+    const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
     pub async fn run_scoped<K, F, Fut, R>(&self, scope: &SerializationScope, key: K, f: F) -> R
     where
@@ -44,49 +35,47 @@ impl SerializationLayer {
         Fut: Future<Output = R>,
     {
         let fallback_key = key.into();
-        let Some(queue_key) = self.queue_key(scope, fallback_key) else {
+        let Some(queue_key) = self.queue_key(scope, fallback_key.clone()) else {
             return f().await;
         };
 
-        let semaphore = {
+        let lock = {
             let mut queues = self.queues.lock().await;
             queues
                 .entry(queue_key)
-                .or_insert_with(|| Arc::new(Semaphore::new(1)))
+                .or_insert_with(|| Arc::new(TokioRwLock::new(())))
                 .clone()
         };
 
-        let Ok(_permit) = semaphore.acquire_owned().await else {
-            return f().await;
-        };
+        let access_mode = scope.access_mode();
 
-        f().await
-    }
-
-    pub fn ownership_snapshot(&self) -> SessionOwnership {
-        self.owner.read().clone()
-    }
-
-    pub fn try_claim_owner(
-        &self,
-        owner: SessionOwner,
-        session_id: String,
-    ) -> Result<(), SessionOwnership> {
-        let mut current = self.owner.write();
-        if current.owner != SessionOwner::None {
-            return Err(current.clone());
-        }
-        *current = SessionOwnership {
-            owner,
-            session_id: Some(session_id),
-        };
-        Ok(())
-    }
-
-    pub fn release_owner(&self, owner: SessionOwner) {
-        let mut current = self.owner.write();
-        if current.owner == owner {
-            *current = SessionOwnership::default();
+        match access_mode {
+            AccessMode::Exclusive => {
+                let _guard = match timeout(Self::LOCK_TIMEOUT, lock.write()).await {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        tracing::error!(
+                            "SerializationLayer: write lock timeout on key '{}'",
+                            fallback_key
+                        );
+                        return f().await;
+                    }
+                };
+                f().await
+            }
+            AccessMode::SharedRead => {
+                let _guard = match timeout(Self::LOCK_TIMEOUT, lock.read()).await {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        tracing::error!(
+                            "SerializationLayer: read lock timeout on key '{}'",
+                            fallback_key
+                        );
+                        return f().await;
+                    }
+                };
+                f().await
+            }
         }
     }
 

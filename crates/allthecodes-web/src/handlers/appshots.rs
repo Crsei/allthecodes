@@ -6,8 +6,9 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::Serialize;
 
-use crate::handlers::{setting_bool, ApiError};
+use crate::handlers::setting_bool;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct AppshotsStatusResponse {
@@ -31,11 +32,12 @@ pub async fn appshots_status_handler(State(state): State<WebState>) -> impl Into
 pub async fn appshots_capture_handler() -> impl IntoResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            error: "Appshot capture is not implemented by this backend".into(),
-            code: "appshots_capture_not_implemented".into(),
-
-            details: serde_json::json!({}),
-        }),
+        Json(
+            ProtocolApiError::BadRequest {
+                code: "appshots_capture_not_implemented",
+                message: "Appshot capture is not implemented by this backend".into(),
+            }
+            .into_body(),
+        ),
     )
 }

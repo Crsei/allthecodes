@@ -47,11 +47,10 @@ fn save_launchpad_snapshot(
         Utc::now().format("%Y-%m-%dT%H-%M-%S-%3f")
     );
     let path = dir.join(&file_name);
-    let bytes = serde_json::to_vec_pretty(&snapshot).map_err(|error| {
-        ProtocolApiError::Internal {
+    let bytes =
+        serde_json::to_vec_pretty(&snapshot).map_err(|error| ProtocolApiError::Internal {
             message: format!("Failed to serialize launchpad snapshot: {error}"),
-        }
-    })?;
+        })?;
     atomic_write(&path, &bytes).map_err(|error| ProtocolApiError::Internal {
         message: format!("Failed to write {}: {error}", path.display()),
     })?;
@@ -148,11 +147,9 @@ mod tests {
             "runHistory": [],
         });
 
-        let response = launchpad_snapshot_create_handler(Json(
-            LaunchpadSnapshotCreateRequest {
-                snapshot: snapshot.clone(),
-            },
-        ))
+        let response = launchpad_snapshot_create_handler(Json(LaunchpadSnapshotCreateRequest {
+            snapshot: snapshot.clone(),
+        }))
         .await;
 
         assert_eq!(response.status(), StatusCode::OK);
@@ -174,11 +171,9 @@ mod tests {
     async fn snapshot_create_rejects_non_object_payload() {
         let (_home, _guard) = temp_home();
 
-        let response = launchpad_snapshot_create_handler(Json(
-            LaunchpadSnapshotCreateRequest {
-                snapshot: json!(null),
-            },
-        ))
+        let response = launchpad_snapshot_create_handler(Json(LaunchpadSnapshotCreateRequest {
+            snapshot: json!(null),
+        }))
         .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);

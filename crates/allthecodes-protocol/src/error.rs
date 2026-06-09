@@ -5,6 +5,10 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ApiError {
+    #[error("bad request: {message}")]
+    BadRequest { code: &'static str, message: String },
+    #[error("forbidden: {message}")]
+    Forbidden { code: &'static str, message: String },
     #[error("{entity} not found: {id}")]
     NotFound { entity: &'static str, id: String },
     #[error("conflict: {reason}")]
@@ -31,6 +35,8 @@ pub struct ApiErrorBody {
 impl ApiError {
     pub const fn status_code(&self) -> u16 {
         match self {
+            Self::BadRequest { .. } => 400,
+            Self::Forbidden { .. } => 403,
             Self::NotFound { .. } => 404,
             Self::Conflict { .. } => 409,
             Self::Validation { .. } => 422,
@@ -43,6 +49,8 @@ impl ApiError {
 
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::BadRequest { code, .. } => code,
+            Self::Forbidden { code, .. } => code,
             Self::NotFound { .. } => "not_found",
             Self::Conflict { .. } => "conflict",
             Self::Validation { .. } => "validation",
@@ -75,6 +83,12 @@ impl ApiError {
 
     fn details(&self) -> Value {
         match self {
+            Self::BadRequest { message, .. } => json!({
+                "message": message,
+            }),
+            Self::Forbidden { message, .. } => json!({
+                "message": message,
+            }),
             Self::NotFound { entity, id } => json!({
                 "entity": entity,
                 "id": id,

@@ -1,23 +1,21 @@
 //! Chat, abort, and state handlers — core chat API.
 
-use std::collections::HashMap;
-use std::process::Command;
-use std::sync::atomic::Ordering;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::process::Command;
 use tracing::info;
 
 use allthecodes_daemon::web::sdk_stream_to_sse;
-use allthecodes_engine::types::config::QuerySource;
+use allthecodes_engine::types::config::{QuerySource, SubmitContextMode, SubmitMessageOverrides};
 use allthecodes_types::sdk::SdkMessage;
 
-use crate::handlers::ApiError;
-use crate::state::{SessionOwner, WebState};
+use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct UsageResponse {
@@ -42,9 +40,21 @@ pub struct ChatRequest {
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
+    pub profile_id: Option<String>,
+    #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
+    #[serde(default)]
+    pub thinking_enabled: Option<bool>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub skill_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub context_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -94,46 +104,35 @@ pub async fn chat_handler(
     State(state): State<WebState>,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
-    // Check if already streaming
-    if state.is_streaming.load(Ordering::SeqCst) {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "A query is already in progress".into(),
-                code: "engine_busy".into(),
-
-                details: serde_json::json!({}),
-            }),
-        )
-            .into_response();
-    }
-
-    let engine = state.engine();
+    let foreground_engine = state.engine();
     let active_session_id = req
         .session_id
         .clone()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| engine.current_session_id().to_string());
-    if let Err(owner) = state.try_claim_chat(active_session_id.clone()) {
+        .unwrap_or_else(|| foreground_engine.current_session_id().to_string());
+
+    if state.is_session_streaming(&active_session_id) {
         return (
             StatusCode::CONFLICT,
-            Json(ApiError {
-                error: format!(
-                    "Session is currently owned by {:?}{}",
-                    owner.owner,
-                    owner
-                        .session_id
-                        .as_deref()
-                        .map(|id| format!(" ({id})"))
-                        .unwrap_or_default()
-                ),
-                code: "session_owned".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(ProtocolApiError::EngineBusy.into_body()),
         )
             .into_response();
     }
+
+    let engine = match state.engine_for_session(&active_session_id) {
+        Some(engine) => engine,
+        None => {
+            match crate::handlers::sessions::build_engine_for_session(&state, &active_session_id) {
+                Ok(engine) => {
+                    state.cache_session_engine(engine.clone());
+                    engine
+                }
+                Err(error) => {
+                    return crate::api_errors::protocol_error_response(error).into_response();
+                }
+            }
+        }
+    };
 
     let mode_id = req
         .mode
@@ -145,9 +144,8 @@ pub async fn chat_handler(
         });
     let activation = match crate::handlers::resolve_mode_activation(&state, Some(&mode_id)) {
         Ok(activation) => activation,
-        Err((status, error)) => {
-            state.release_owner(SessionOwner::ChatStream);
-            return (status, Json(error)).into_response();
+        Err(error) => {
+            return crate::api_errors::protocol_error_response(error).into_response();
         }
     };
     if req.mode.is_some() {
@@ -156,15 +154,15 @@ pub async fn chat_handler(
             Some(&mode_id),
             engine.cwd(),
         ) {
-            state.release_owner(SessionOwner::ChatStream);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: format!("Failed to persist session mode: {error}"),
-                    code: "session_mode_update_failed".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::BadRequest {
+                        code: "session_mode_update_failed",
+                        message: format!("Failed to persist session mode: {error}"),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -177,16 +175,18 @@ pub async fn chat_handler(
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string);
-    if let Some(model) = requested_model.as_ref() {
-        engine.update_app_state(|app_state| {
-            app_state.main_loop_model = model.clone();
-            app_state.settings.model = Some(model.clone());
-            app_state.settings.sources.insert(
-                "model".to_string(),
-                allthecodes_config::settings::SettingsSource::User,
-            );
-        });
-    }
+    let context_mode = req
+        .context_mode
+        .as_deref()
+        .and_then(SubmitContextMode::parse);
+    let overrides = SubmitMessageOverrides {
+        model: requested_model.clone(),
+        thinking_enabled: req.thinking_enabled,
+        effort: req.effort.clone(),
+        allowed_tools: req.allowed_tools.clone(),
+        skill_ids: req.skill_ids.clone(),
+        context_mode,
+    };
     info!(
         message = %req.message,
         session_id = %requested_session,
@@ -195,7 +195,7 @@ pub async fn chat_handler(
         "POST /api/chat"
     );
 
-    state.is_streaming.store(true, Ordering::SeqCst);
+    state.set_session_streaming(&active_session_id, true);
 
     // Get the stream from the engine
     let prompt = match activation {
@@ -205,14 +205,14 @@ pub async fn chat_handler(
         }
         None => req.message.clone(),
     };
-    let stream = engine.submit_message(&prompt, QuerySource::Sdk);
+    let stream = engine.submit_message_with_overrides(&prompt, QuerySource::Sdk, overrides);
 
     // Wrap in a stream that clears is_streaming when done
-    let is_streaming = state.is_streaming.clone();
-    let release_state = state.clone();
+    let stream_state = state.clone();
+    let stream_session_id = active_session_id.clone();
     let wrapped_stream = Box::pin(futures::stream::unfold(
-        (stream, is_streaming, release_state, false),
-        |(mut stream, flag, release_state, done)| async move {
+        (stream, stream_state, stream_session_id, false),
+        |(mut stream, state, session_id, done)| async move {
             if done {
                 return None;
             }
@@ -221,14 +221,12 @@ pub async fn chat_handler(
                 Some(msg) => {
                     let is_result = matches!(&msg, SdkMessage::Result(_));
                     if is_result {
-                        flag.store(false, Ordering::SeqCst);
-                        release_state.release_owner(SessionOwner::ChatStream);
+                        state.set_session_streaming(&session_id, false);
                     }
-                    Some((msg, (stream, flag, release_state, is_result)))
+                    Some((msg, (stream, state, session_id, is_result)))
                 }
                 None => {
-                    flag.store(false, Ordering::SeqCst);
-                    release_state.release_owner(SessionOwner::ChatStream);
+                    state.set_session_streaming(&session_id, false);
                     None
                 }
             }
@@ -245,9 +243,18 @@ pub async fn abort_handler(
 ) -> impl IntoResponse {
     let requested_session = req.session_id.as_deref().unwrap_or("");
     info!(session_id = %requested_session, "POST /api/abort");
-    state.engine().abort();
-    state.is_streaming.store(false, Ordering::SeqCst);
-    state.release_owner(SessionOwner::ChatStream);
+    if requested_session.is_empty() {
+        state.engine().abort();
+        state
+            .is_streaming
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    } else {
+        state
+            .engine_for_session(requested_session)
+            .unwrap_or_else(|| state.engine())
+            .abort();
+        state.set_session_streaming(requested_session, false);
+    }
     StatusCode::OK
 }
 
@@ -372,5 +379,68 @@ fn probe_agent(id: &str, label: &str, commands: &[&str]) -> CodingAgentStatus {
         available: false,
         command: None,
         error: last_error.or_else(|| Some("command not found".to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handlers::test_support::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn state_response_includes_settings_map_version_and_capabilities() {
+        let state = make_web_state();
+        state.engine().update_app_state(|s| {
+            s.settings.language = Some("zh-CN".to_string());
+            s.settings.proxy_enabled = Some(true);
+        });
+
+        let response = state_handler(State(state)).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["settings_map"]["language"], json!("zh-CN"));
+        assert_eq!(body["settings_map"]["proxy_enabled"], json!(true));
+        assert!(body["version"].as_str().is_some());
+        assert_eq!(body["capabilities"]["settings"], json!(true));
+        assert_eq!(body["capabilities"]["memory"], json!(true));
+        assert_eq!(body["capabilities"]["agents"], json!(true));
+        assert_eq!(body["capabilities"]["people"], json!(true));
+        assert_eq!(body["capabilities"]["hooks"], json!(true));
+        assert_eq!(body["capabilities"]["prompts"], json!(true));
+        assert_eq!(body["capabilities"]["mcp_servers"], json!(true));
+        assert_eq!(body["capabilities"]["plugins"], json!(true));
+        assert_eq!(body["capabilities"]["channels"], json!(true));
+        assert_eq!(body["capabilities"]["gateways"], json!(true));
+        assert_eq!(body["capabilities"]["computer_use"], json!(true));
+        assert_eq!(body["capabilities"]["appshots"], json!(true));
+        assert_eq!(body["capabilities"]["activity_recorder"], json!(true));
+        assert_eq!(body["capabilities"]["chrome_relay"], json!(true));
+        assert_eq!(body["capabilities"]["skills"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn build_router_accepts_phase3_routes() {
+        let _router = crate::build_router(make_web_state());
+    }
+
+    #[tokio::test]
+    async fn web_state_tracks_streaming_by_session() {
+        let state = make_web_state();
+
+        state.set_session_streaming("session-a", true);
+        assert!(state.is_session_streaming("session-a"));
+        assert!(!state.is_session_streaming("session-b"));
+        assert!(state.is_streaming.load(std::sync::atomic::Ordering::SeqCst));
+
+        state.set_session_streaming("session-b", true);
+        state.set_session_streaming("session-a", false);
+        assert!(!state.is_session_streaming("session-a"));
+        assert!(state.is_session_streaming("session-b"));
+        assert!(state.is_streaming.load(std::sync::atomic::Ordering::SeqCst));
+
+        state.set_session_streaming("session-b", false);
+        assert!(!state.is_streaming.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

@@ -872,46 +872,7 @@ fn diagnostics_event_from_log_entry(entry: &LogEntry) -> DiagnosticsEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::WebState;
-    use allthecodes_engine::lifecycle::QueryEngine;
-    use allthecodes_engine::types::config::QueryEngineConfig;
-    use axum::body::to_bytes;
-    use axum::response::IntoResponse;
-    use serde_json::{json, Value};
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-
-    async fn response_json(response: axum::response::Response) -> Value {
-        let body = to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .expect("response body");
-        serde_json::from_slice(&body).expect("json body")
-    }
-
-    fn make_web_state() -> WebState {
-        let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
-            cwd: ".".to_string(),
-            tools: vec![],
-            custom_system_prompt: None,
-            append_system_prompt: None,
-            user_specified_model: None,
-            fallback_model: None,
-            max_turns: None,
-            max_budget_usd: None,
-            task_budget: None,
-            verbose: false,
-            initial_messages: None,
-            commands: vec![],
-            thinking_config: None,
-            json_schema: None,
-            replay_user_messages: false,
-            persist_session: false,
-            resolved_model: None,
-            auto_save_session: false,
-            agent_context: None,
-        }));
-        WebState::new(engine, Arc::new(AtomicBool::new(false)))
-    }
+    use crate::handlers::test_support::*;
 
     #[tokio::test]
     async fn diagnostics_snapshot_returns_empty_snapshot_without_trace_store() {

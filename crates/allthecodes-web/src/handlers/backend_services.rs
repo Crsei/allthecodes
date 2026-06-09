@@ -14,7 +14,7 @@ use serde_json::json;
 
 use allthecodes_config::paths;
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 const TARGET_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_TOKEN_BUDGET: u32 = 24_000;
@@ -540,75 +540,24 @@ fn generated_id(prefix: &str) -> String {
 }
 
 fn not_found(error: String) -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error,
-            code: "not_found".to_string(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+    let body = ProtocolApiError::NotFound {
+        entity: "backend_service",
+        id: error,
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
 fn internal_error(error: String) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error,
-            code: "internal_error".to_string(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
-    use axum::response::IntoResponse;
-    use serde_json::{json, Value};
+    use crate::handlers::test_support::*;
     use std::path::Path;
-    use tempfile::TempDir;
-
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set_path(key: &'static str, value: &Path) -> Self {
-            let previous = std::env::var(key).ok();
-            std::env::set_var(key, value);
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(previous) = &self.previous {
-                std::env::set_var(self.key, previous);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn temp_home() -> (TempDir, EnvGuard) {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let guard = EnvGuard::set_path("ALLTHECODES_HOME", temp.path());
-        (temp, guard)
-    }
-
-    async fn response_json(response: Response) -> Value {
-        let body = to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .expect("response body");
-        serde_json::from_slice(&body).expect("json body")
-    }
 
     #[tokio::test]
     #[serial_test::serial]

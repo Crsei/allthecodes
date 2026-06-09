@@ -105,6 +105,7 @@ pub enum RegistryValidationError {
 
 pub fn all_api_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
+        .extend(handlers::health::handlers())
         .extend(chat_handlers())
         .extend(launchpad_handlers())
         .extend(handlers::sessions::handlers())
@@ -160,15 +161,7 @@ pub fn launchpad_handlers() -> HandlerRegistry {
 }
 
 pub fn chat_mode_handlers() -> HandlerRegistry {
-    HandlerRegistry::new()
-        .handle(
-            ApiMethod::ChatModesList,
-            get(handlers::chat_modes_list_handler),
-        )
-        .handle(
-            ApiMethod::ChatModesResources,
-            get(handlers::chat_modes_resources_handler),
-        )
+    handlers::chat_modes::handlers()
         .handle(
             ApiMethod::ChatModesUpsert,
             put(handlers::chat_modes_upsert_handler),
@@ -205,12 +198,7 @@ pub fn agent_handlers() -> HandlerRegistry {
 }
 
 pub fn people_handlers() -> HandlerRegistry {
-    HandlerRegistry::new()
-        .handle(ApiMethod::PeopleList, get(handlers::people_list_handler))
-        .handle(
-            ApiMethod::PeopleCreate,
-            post(handlers::people_create_handler),
-        )
+    handlers::people::handlers()
         .handle(
             ApiMethod::PeopleDetail,
             get(handlers::people_detail_handler),
@@ -242,12 +230,7 @@ pub fn hook_handlers() -> HandlerRegistry {
 }
 
 pub fn prompt_handlers() -> HandlerRegistry {
-    HandlerRegistry::new()
-        .handle(ApiMethod::PromptsList, get(handlers::prompts_list_handler))
-        .handle(
-            ApiMethod::PromptsCreate,
-            post(handlers::prompts_create_handler),
-        )
+    handlers::prompts::handlers()
         .handle(
             ApiMethod::PromptsDetail,
             get(handlers::prompts_detail_handler),
@@ -291,20 +274,10 @@ pub fn mcp_server_handlers() -> HandlerRegistry {
 }
 
 pub fn plugin_handlers() -> HandlerRegistry {
-    HandlerRegistry::new()
-        .handle(ApiMethod::PluginsList, get(handlers::plugins_list_handler))
-        .handle(
-            ApiMethod::PluginsMarketplace,
-            get(handlers::plugins_marketplace_handler),
-        )
-        .handle(
-            ApiMethod::PluginsInstall,
-            post(handlers::plugins_install_handler),
-        )
-        .handle(
-            ApiMethod::PluginsUninstall,
-            post(handlers::plugins_uninstall_handler),
-        )
+    handlers::plugins::handlers().handle(
+        ApiMethod::PluginsUninstall,
+        post(handlers::plugins_uninstall_handler),
+    )
 }
 
 pub fn channel_handlers() -> HandlerRegistry {
@@ -328,15 +301,7 @@ pub fn channel_handlers() -> HandlerRegistry {
 }
 
 pub fn gateway_handlers() -> HandlerRegistry {
-    HandlerRegistry::new()
-        .handle(
-            ApiMethod::GatewayStatus,
-            get(handlers::gateway_status_handler),
-        )
-        .handle(
-            ApiMethod::GatewaysList,
-            get(handlers::gateways_list_handler),
-        )
+    handlers::gateways::handlers()
         .handle(
             ApiMethod::GatewayStart,
             post(handlers::gateway_start_handler),
@@ -537,8 +502,7 @@ pub fn provider_handlers() -> HandlerRegistry {
 }
 
 pub fn model_handlers() -> HandlerRegistry {
-    HandlerRegistry::new()
-        .handle(ApiMethod::ModelsList, get(handlers::models_list_handler))
+    handlers::models::handlers()
         .handle(
             ApiMethod::ModelsUpdate,
             patch(handlers::models_update_handler),
@@ -630,8 +594,7 @@ pub fn file_handlers() -> HandlerRegistry {
 }
 
 pub fn skill_handlers() -> HandlerRegistry {
-    HandlerRegistry::new()
-        .handle(ApiMethod::SkillsList, get(handlers::skills_list_handler))
+    handlers::skills::handlers()
         .handle(
             ApiMethod::SkillsDetail,
             get(handlers::skills_detail_handler),
@@ -644,18 +607,10 @@ pub fn skill_handlers() -> HandlerRegistry {
 }
 
 pub fn kanban_handlers() -> HandlerRegistry {
-    HandlerRegistry::new()
-        .handle(
-            ApiMethod::KanbanBoards,
-            get(handlers::kanban_boards_handler),
-        )
+    handlers::kanban::handlers()
         .handle(
             ApiMethod::KanbanBoardDetail,
             get(handlers::kanban_board_detail_handler),
-        )
-        .handle(
-            ApiMethod::KanbanTaskCreate,
-            post(handlers::kanban_task_create_handler),
         )
         .handle(
             ApiMethod::KanbanTaskUpdate,
@@ -954,6 +909,7 @@ mod tests {
 
         for method in [
             ApiMethod::ProtocolRoutes,
+            ApiMethod::Health,
             ApiMethod::SessionList,
             ApiMethod::Capabilities,
             ApiMethod::TerminalProfiles,

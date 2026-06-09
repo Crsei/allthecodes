@@ -1,5 +1,19 @@
 {
+  "_generated": {
+    "generator": "allthecodes-protocol",
+    "version": "v1"
+  },
   "endpoints": [
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "GET",
+      "operation": "Health",
+      "params": null,
+      "path": "/api/healthz",
+      "response": "HealthResponse",
+      "serialization": "concurrent"
+    },
     {
       "errors": [],
       "experimental": null,
@@ -110,11 +124,24 @@
       "serialization": "per-key:id"
     },
     {
+      "errors": [
+        "NotFound",
+        "Conflict"
+      ],
+      "experimental": null,
+      "method": "PATCH",
+      "operation": "SessionModePatch",
+      "params": "SessionModePatchParams",
+      "path": "/api/sessions/{id}/mode",
+      "response": "SessionModePatchResponse",
+      "serialization": "per-key:id"
+    },
+    {
       "errors": [],
       "experimental": null,
       "method": "POST",
       "operation": "SessionMessageBranch",
-      "params": null,
+      "params": "SessionMessageActionParams",
       "path": "/api/sessions/{id}/messages/{message_id}/branch",
       "response": "JsonValue",
       "serialization": "per-process"
@@ -124,7 +151,7 @@
       "experimental": null,
       "method": "POST",
       "operation": "SessionMessageFeedback",
-      "params": null,
+      "params": "SessionMessageActionParams",
       "path": "/api/sessions/{id}/messages/{message_id}/feedback",
       "response": "JsonValue",
       "serialization": "per-process"
@@ -134,7 +161,7 @@
       "experimental": null,
       "method": "POST",
       "operation": "SessionMessageDelete",
-      "params": null,
+      "params": "SessionMessageActionParams",
       "path": "/api/sessions/{id}/messages/{message_id}/delete",
       "response": "JsonValue",
       "serialization": "per-process"
@@ -144,7 +171,7 @@
       "experimental": null,
       "method": "POST",
       "operation": "SessionMessageRegeneratePrepare",
-      "params": null,
+      "params": "SessionMessageActionParams",
       "path": "/api/sessions/{id}/messages/{message_id}/regenerate/prepare",
       "response": "JsonValue",
       "serialization": "per-process"
@@ -154,7 +181,7 @@
       "experimental": null,
       "method": "POST",
       "operation": "SessionMessageEditPrepare",
-      "params": null,
+      "params": "SessionMessageActionParams",
       "path": "/api/sessions/{id}/messages/{message_id}/edit/prepare",
       "response": "JsonValue",
       "serialization": "per-process"
@@ -164,7 +191,7 @@
       "experimental": null,
       "method": "POST",
       "operation": "SessionMessageRollbackPreview",
-      "params": null,
+      "params": "SessionMessageActionParams",
       "path": "/api/sessions/{id}/messages/{message_id}/rollback/preview",
       "response": "JsonValue",
       "serialization": "per-process"
@@ -174,7 +201,7 @@
       "experimental": null,
       "method": "POST",
       "operation": "SessionMessageRollback",
-      "params": null,
+      "params": "SessionMessageActionParams",
       "path": "/api/sessions/{id}/messages/{message_id}/rollback",
       "response": "JsonValue",
       "serialization": "per-process"
@@ -3365,7 +3392,19 @@
         },
         "SessionCreateParams": {
           "properties": {
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_key": {
               "type": [
                 "string",
                 "null"
@@ -3376,6 +3415,63 @@
         },
         "SessionDetailParams": {
           "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "SessionMessageActionParams": {
+          "properties": {
+            "files": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "message_id": {
+              "type": "string"
+            },
+            "profile_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "rating": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "message_id"
+          ],
+          "type": "object"
+        },
+        "SessionModePatchParams": {
+          "properties": {
+            "chat_mode_override": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
             }
@@ -3471,6 +3567,12 @@
         },
         "WorkspacePatchRequest": {
           "properties": {
+            "default_chat_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "display_name": {
               "type": [
                 "string",
@@ -3494,6 +3596,25 @@
         }
       },
       "oneOf": [
+        {
+          "description": "Check web backend health.",
+          "properties": {
+            "method": {
+              "enum": [
+                "Health"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
         {
           "description": "Send a chat message.",
           "properties": {
@@ -3685,6 +3806,25 @@
           "type": "object"
         },
         {
+          "description": "Set or clear a session chat mode override.",
+          "properties": {
+            "method": {
+              "enum": [
+                "SessionModePatch"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/SessionModePatchParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Branch a session from a message.",
           "properties": {
             "method": {
@@ -3694,7 +3834,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/definitions/NoParams"
+              "$ref": "#/definitions/SessionMessageActionParams"
             }
           },
           "required": [
@@ -3713,7 +3853,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/definitions/NoParams"
+              "$ref": "#/definitions/SessionMessageActionParams"
             }
           },
           "required": [
@@ -3732,7 +3872,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/definitions/NoParams"
+              "$ref": "#/definitions/SessionMessageActionParams"
             }
           },
           "required": [
@@ -3751,7 +3891,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/definitions/NoParams"
+              "$ref": "#/definitions/SessionMessageActionParams"
             }
           },
           "required": [
@@ -3770,7 +3910,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/definitions/NoParams"
+              "$ref": "#/definitions/SessionMessageActionParams"
             }
           },
           "required": [
@@ -3789,7 +3929,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/definitions/NoParams"
+              "$ref": "#/definitions/SessionMessageActionParams"
             }
           },
           "required": [
@@ -3808,7 +3948,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/definitions/NoParams"
+              "$ref": "#/definitions/SessionMessageActionParams"
             }
           },
           "required": [
@@ -7340,6 +7480,26 @@
           ],
           "type": "object"
         },
+        "HealthResponse": {
+          "description": "Response returned by the web health check endpoint.",
+          "properties": {
+            "db": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "db",
+            "status",
+            "version"
+          ],
+          "type": "object"
+        },
         "HookEventConfig": {
           "description": "A single hook event configuration.",
           "properties": {
@@ -8429,6 +8589,35 @@
           ],
           "type": "object"
         },
+        "SessionModePatchResponse": {
+          "properties": {
+            "chat_mode_override": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "default_chat_mode": {
+              "type": "string"
+            },
+            "effective_chat_mode": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "workspace_key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "default_chat_mode",
+            "effective_chat_mode",
+            "session_id",
+            "workspace_key"
+          ],
+          "type": "object"
+        },
         "SessionResumeResponse": {
           "properties": {
             "id": {
@@ -8448,6 +8637,16 @@
           "properties": {
             "archived": {
               "type": "boolean"
+            },
+            "chat_mode_override": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "effective_chat_mode": {
+              "default": "",
+              "type": "string"
             },
             "id": {
               "type": "string"
@@ -8629,11 +8828,23 @@
               },
               "type": "object"
             },
+            "chat_mode_override": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "commands": {
               "items": {
                 "$ref": "#/definitions/CommandInfo"
               },
               "type": "array"
+            },
+            "default_chat_mode": {
+              "type": "string"
+            },
+            "effective_chat_mode": {
+              "type": "string"
             },
             "effective_system_prompt": {
               "type": "string"
@@ -8677,11 +8888,16 @@
             },
             "version": {
               "type": "string"
+            },
+            "workspace_key": {
+              "type": "string"
             }
           },
           "required": [
             "capabilities",
             "commands",
+            "default_chat_mode",
+            "effective_chat_mode",
             "effective_system_prompt",
             "fast_mode",
             "model",
@@ -8690,7 +8906,8 @@
             "settings_map",
             "tools",
             "usage",
-            "version"
+            "version",
+            "workspace_key"
           ],
           "type": "object"
         },
@@ -8792,6 +9009,9 @@
         },
         "WorkspaceSummary": {
           "properties": {
+            "default_chat_mode": {
+              "type": "string"
+            },
             "display_name": {
               "type": [
                 "string",
@@ -8824,6 +9044,7 @@
             }
           },
           "required": [
+            "default_chat_mode",
             "hidden",
             "key",
             "last_modified",
@@ -8850,6 +9071,25 @@
         }
       },
       "oneOf": [
+        {
+          "description": "Check web backend health.",
+          "properties": {
+            "method": {
+              "enum": [
+                "Health"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/HealthResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
         {
           "description": "Send a chat message.",
           "properties": {
@@ -9031,6 +9271,25 @@
             },
             "result": {
               "$ref": "#/definitions/SessionArchiveResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Set or clear a session chat mode override.",
+          "properties": {
+            "method": {
+              "enum": [
+                "SessionModePatch"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/SessionModePatchResponse"
             }
           },
           "required": [
@@ -12619,6 +12878,28 @@
       "title": "GatewayStatusResponse",
       "type": "object"
     },
+    "HealthResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Response returned by the web health check endpoint.",
+      "properties": {
+        "db": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "db",
+        "status",
+        "version"
+      ],
+      "title": "HealthResponse",
+      "type": "object"
+    },
     "HookEventRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Request body for creating a new hook event.",
@@ -14886,7 +15167,19 @@
     "SessionCreateParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace_key": {
           "type": [
             "string",
             "null"
@@ -14930,6 +15223,16 @@
             "archived": {
               "type": "boolean"
             },
+            "chat_mode_override": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "effective_chat_mode": {
+              "default": "",
+              "type": "string"
+            },
             "id": {
               "type": "string"
             },
@@ -14966,6 +15269,16 @@
             "archived": {
               "type": "boolean"
             },
+            "chat_mode_override": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "effective_chat_mode": {
+              "default": "",
+              "type": "string"
+            },
             "id": {
               "type": "string"
             },
@@ -14995,6 +15308,98 @@
         "sessions"
       ],
       "title": "SessionListResponse",
+      "type": "object"
+    },
+    "SessionMessageActionParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "files": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rating": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "message_id"
+      ],
+      "title": "SessionMessageActionParams",
+      "type": "object"
+    },
+    "SessionModePatchParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "chat_mode_override": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "SessionModePatchParams",
+      "type": "object"
+    },
+    "SessionModePatchResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "chat_mode_override": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_chat_mode": {
+          "type": "string"
+        },
+        "effective_chat_mode": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "workspace_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "default_chat_mode",
+        "effective_chat_mode",
+        "session_id",
+        "workspace_key"
+      ],
+      "title": "SessionModePatchResponse",
       "type": "object"
     },
     "SessionResumeParams": {
@@ -15419,11 +15824,23 @@
           },
           "type": "object"
         },
+        "chat_mode_override": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "commands": {
           "items": {
             "$ref": "#/definitions/CommandInfo"
           },
           "type": "array"
+        },
+        "default_chat_mode": {
+          "type": "string"
+        },
+        "effective_chat_mode": {
+          "type": "string"
         },
         "effective_system_prompt": {
           "type": "string"
@@ -15467,11 +15884,16 @@
         },
         "version": {
           "type": "string"
+        },
+        "workspace_key": {
+          "type": "string"
         }
       },
       "required": [
         "capabilities",
         "commands",
+        "default_chat_mode",
+        "effective_chat_mode",
         "effective_system_prompt",
         "fast_mode",
         "model",
@@ -15480,7 +15902,8 @@
         "settings_map",
         "tools",
         "usage",
-        "version"
+        "version",
+        "workspace_key"
       ],
       "title": "StateResponse",
       "type": "object"
@@ -15574,6 +15997,12 @@
     "WorkspacePatchRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "default_chat_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "display_name": {
           "type": [
             "string",
@@ -15601,6 +16030,9 @@
       "definitions": {
         "WorkspaceSummary": {
           "properties": {
+            "default_chat_mode": {
+              "type": "string"
+            },
             "display_name": {
               "type": [
                 "string",
@@ -15633,6 +16065,7 @@
             }
           },
           "required": [
+            "default_chat_mode",
             "hidden",
             "key",
             "last_modified",

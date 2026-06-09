@@ -1013,6 +1013,28 @@
         "title": "GatewayStatusResponse",
         "type": "object"
       },
+      "HealthResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Response returned by the web health check endpoint.",
+        "properties": {
+          "db": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "db",
+          "status",
+          "version"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
       "HookEventConfig": {
         "description": "A single hook event configuration.",
         "properties": {
@@ -2816,7 +2838,19 @@
       "SessionCreateParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_key": {
             "type": [
               "string",
               "null"
@@ -2881,6 +2915,98 @@
         "title": "SessionListResponse",
         "type": "object"
       },
+      "SessionMessageActionParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "files": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "profile_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rating": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "message_id"
+        ],
+        "title": "SessionMessageActionParams",
+        "type": "object"
+      },
+      "SessionModePatchParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "chat_mode_override": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "SessionModePatchParams",
+        "type": "object"
+      },
+      "SessionModePatchResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "chat_mode_override": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_chat_mode": {
+            "type": "string"
+          },
+          "effective_chat_mode": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "workspace_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "default_chat_mode",
+          "effective_chat_mode",
+          "session_id",
+          "workspace_key"
+        ],
+        "title": "SessionModePatchResponse",
+        "type": "object"
+      },
       "SessionResumeParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -2915,6 +3041,16 @@
         "properties": {
           "archived": {
             "type": "boolean"
+          },
+          "chat_mode_override": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_chat_mode": {
+            "default": "",
+            "type": "string"
           },
           "id": {
             "type": "string"
@@ -3158,11 +3294,23 @@
             },
             "type": "object"
           },
+          "chat_mode_override": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "commands": {
             "items": {
               "$ref": "#/components/schemas/CommandInfo"
             },
             "type": "array"
+          },
+          "default_chat_mode": {
+            "type": "string"
+          },
+          "effective_chat_mode": {
+            "type": "string"
           },
           "effective_system_prompt": {
             "type": "string"
@@ -3206,11 +3354,16 @@
           },
           "version": {
             "type": "string"
+          },
+          "workspace_key": {
+            "type": "string"
           }
         },
         "required": [
           "capabilities",
           "commands",
+          "default_chat_mode",
+          "effective_chat_mode",
           "effective_system_prompt",
           "fast_mode",
           "model",
@@ -3219,7 +3372,8 @@
           "settings_map",
           "tools",
           "usage",
-          "version"
+          "version",
+          "workspace_key"
         ],
         "title": "StateResponse",
         "type": "object"
@@ -3355,6 +3509,12 @@
       "WorkspacePatchRequest": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "default_chat_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "display_name": {
             "type": [
               "string",
@@ -3379,6 +3539,9 @@
       },
       "WorkspaceSummary": {
         "properties": {
+          "default_chat_mode": {
+            "type": "string"
+          },
           "display_name": {
             "type": [
               "string",
@@ -3411,6 +3574,7 @@
           }
         },
         "required": [
+          "default_chat_mode",
           "hidden",
           "key",
           "last_modified",
@@ -6084,6 +6248,34 @@
         "x-allthecodes-serialization": "concurrent"
       }
     },
+    "/api/healthz": {
+      "get": {
+        "operationId": "Health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
     "/api/hooks": {
       "get": {
         "operationId": "HooksList",
@@ -8623,6 +8815,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessageActionParams"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8667,6 +8869,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessageActionParams"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8711,6 +8923,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessageActionParams"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8755,6 +8977,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessageActionParams"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8799,6 +9031,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessageActionParams"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8843,6 +9085,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessageActionParams"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8887,6 +9139,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessageActionParams"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8908,6 +9170,54 @@
           }
         },
         "x-allthecodes-serialization": "per-process"
+      }
+    },
+    "/api/sessions/{id}/mode": {
+      "patch": {
+        "operationId": "SessionModePatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionModePatchParams"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionModePatchResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "per-key:id"
       }
     },
     "/api/sessions/{id}/resume": {

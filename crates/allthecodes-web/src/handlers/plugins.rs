@@ -19,8 +19,221 @@ use allthecodes_plugins::marketplace::{
 };
 use allthecodes_plugins::PluginEntry;
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::v1::plugins::PluginInstallResponse as ProtocolPluginInstallResponse;
+use allthecodes_protocol::v1::plugins::PluginsListResponse as ProtocolPluginsListResponse;
+use allthecodes_protocol::v1::plugins::PluginsMarketplaceResponse as ProtocolPluginsMarketplaceResponse;
+use allthecodes_protocol::ApiError as ProtocolApiError;
+use allthecodes_protocol::ApiMethod;
+use allthecodes_protocol::NoParams;
+use async_trait::async_trait;
+use axum::routing::{get, post};
+
+use crate::api_dispatcher::rest_processor_response;
+use crate::handler_registry::HandlerRegistry;
+use crate::processors::Processor;
+use crate::serialization::SerializationLayer;
 use crate::state::WebState;
+
+// ---------------------------------------------------------------------------
+// Processors
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct PluginsListProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for PluginsListProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for PluginsListProcessor {
+    type Request = NoParams;
+    type Response = ProtocolPluginsListResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "plugins.list"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _request: NoParams) -> Result<Self::Response, Self::Error> {
+        let handler_resp = plugins_list_response();
+        serde_json::from_value(serde_json::to_value(&handler_resp).map_err(|e| {
+            ProtocolApiError::Internal {
+                message: e.to_string(),
+            }
+        })?)
+        .map_err(|e| ProtocolApiError::Internal {
+            message: e.to_string(),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct PluginsMarketplaceProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for PluginsMarketplaceProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for PluginsMarketplaceProcessor {
+    type Request = NoParams;
+    type Response = ProtocolPluginsMarketplaceResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "plugins.marketplace"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _request: NoParams) -> Result<Self::Response, Self::Error> {
+        let handler_resp = PluginsMarketplaceResponse {
+            plugins: GLOBAL_MARKETPLACE_INDEX.list_all_entries(),
+            sources: GLOBAL_MARKETPLACE_INDEX.list_sources(),
+        };
+        serde_json::from_value(serde_json::to_value(&handler_resp).map_err(|e| {
+            ProtocolApiError::Internal {
+                message: e.to_string(),
+            }
+        })?)
+        .map_err(|e| ProtocolApiError::Internal {
+            message: e.to_string(),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct PluginsInstallProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for PluginsInstallProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for PluginsInstallProcessor {
+    type Request = allthecodes_protocol::v1::plugins::PluginInstallRequest;
+    type Response = ProtocolPluginInstallResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "plugins.install"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, request: Self::Request) -> Result<Self::Response, Self::Error> {
+        let scope = match parse_install_scope(request.scope.as_deref()) {
+            Ok(scope) => scope,
+            Err(error) => {
+                return Err(ProtocolApiError::BadRequest {
+                    code: "validation_error",
+                    message: error,
+                })
+            }
+        };
+        let source =
+            resolve_source_against_cwd(&request.source, Path::new(&self.state.engine().cwd()));
+        let available_plugins = HashMap::<String, String>::new();
+        let manifests = HashMap::<String, PluginManifest>::new();
+
+        match install_plugin(
+            &source,
+            Some(scope),
+            Some(env!("CARGO_PKG_VERSION")),
+            None,
+            &available_plugins,
+            &manifests,
+        )
+        .await
+        {
+            Ok(result) => {
+                let handler_resp = PluginInstallResponse {
+                    plugin: result.plugin,
+                    install_path: result.install_path,
+                    fresh_install: result.fresh_install,
+                };
+                serde_json::from_value(serde_json::to_value(&handler_resp).map_err(|e| {
+                    ProtocolApiError::Internal {
+                        message: e.to_string(),
+                    }
+                })?)
+                .map_err(|e| ProtocolApiError::Internal {
+                    message: e.to_string(),
+                })
+            }
+            Err(error) => {
+                let err_str = match &error {
+                    InstallError::AlreadyInstalled(plugin) => {
+                        format!("Plugin '{}' is already installed", plugin)
+                    }
+                    InstallError::SourceNotFound(msg)
+                    | InstallError::ValidationFailed(msg)
+                    | InstallError::MissingDependency(msg)
+                    | InstallError::PolicyBlocked(msg)
+                    | InstallError::DownloadFailed(msg) => msg.clone(),
+                    InstallError::EngineIncompatible { required, current } => {
+                        format!(
+                            "Plugin engine version incompatible: required {}, running {}",
+                            required, current
+                        )
+                    }
+                    InstallError::MaxPluginsReached { max } => {
+                        format!("Max plugins limit reached ({})", max)
+                    }
+                    InstallError::Other(msg) => msg.clone(),
+                };
+                Err(match error {
+                    InstallError::AlreadyInstalled(_) => {
+                        ProtocolApiError::Conflict { reason: err_str }
+                    }
+                    _ => ProtocolApiError::BadRequest {
+                        code: "validation_error",
+                        message: err_str,
+                    },
+                })
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler registry
+// ---------------------------------------------------------------------------
+
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::PluginsList, get(plugins_list_handler))
+        .handle(
+            ApiMethod::PluginsMarketplace,
+            get(plugins_marketplace_handler),
+        )
+        .handle(ApiMethod::PluginsInstall, post(plugins_install_handler))
+}
+
+// ---------------------------------------------------------------------------
+// Handler types
+// ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 pub struct PluginsListResponse {
@@ -61,49 +274,27 @@ pub struct PluginUninstallResponse {
 }
 
 /// GET /api/plugins
-pub async fn plugins_list_handler() -> impl IntoResponse {
-    Json(plugins_list_response())
+pub async fn plugins_list_handler(State(state): State<WebState>) -> Response {
+    rest_processor_response::<PluginsListProcessor>(state, ApiMethod::PluginsList, NoParams {})
+        .await
 }
 
 /// GET /api/plugins/marketplace
-pub async fn plugins_marketplace_handler() -> impl IntoResponse {
-    Json(PluginsMarketplaceResponse {
-        plugins: GLOBAL_MARKETPLACE_INDEX.list_all_entries(),
-        sources: GLOBAL_MARKETPLACE_INDEX.list_sources(),
-    })
+pub async fn plugins_marketplace_handler(State(state): State<WebState>) -> Response {
+    rest_processor_response::<PluginsMarketplaceProcessor>(
+        state,
+        ApiMethod::PluginsMarketplace,
+        NoParams {},
+    )
+    .await
 }
 
 /// POST /api/plugins/install
 pub async fn plugins_install_handler(
     State(state): State<WebState>,
-    Json(req): Json<PluginInstallRequest>,
+    Json(req): Json<allthecodes_protocol::v1::plugins::PluginInstallRequest>,
 ) -> Response {
-    let scope = match parse_install_scope(req.scope.as_deref()) {
-        Ok(scope) => scope,
-        Err(error) => return validation_error(error).into_response(),
-    };
-    let source = resolve_source_against_cwd(&req.source, Path::new(&state.engine().cwd()));
-    let available_plugins = HashMap::<String, String>::new();
-    let manifests = HashMap::<String, PluginManifest>::new();
-
-    match install_plugin(
-        &source,
-        Some(scope),
-        Some(env!("CARGO_PKG_VERSION")),
-        None,
-        &available_plugins,
-        &manifests,
-    )
-    .await
-    {
-        Ok(result) => Json(PluginInstallResponse {
-            plugin: result.plugin,
-            install_path: result.install_path,
-            fresh_install: result.fresh_install,
-        })
-        .into_response(),
-        Err(error) => install_error(error).into_response(),
-    }
+    rest_processor_response::<PluginsInstallProcessor>(state, ApiMethod::PluginsInstall, req).await
 }
 
 /// POST /api/plugins/{id}/uninstall
@@ -117,8 +308,8 @@ pub async fn plugins_uninstall_handler(
             purged: req.purge,
         })
         .into_response(),
-        Ok(None) => not_found(format!("Plugin '{}' not found", id)).into_response(),
-        Err(error) => internal_error(error.to_string()).into_response(),
+        Ok(None) => not_found(format!("Plugin '{}' not found", id)),
+        Err(error) => internal_error(error.to_string()),
     }
 }
 
@@ -153,17 +344,19 @@ fn resolve_source_against_cwd(source: &str, cwd: &Path) -> String {
     source.to_string()
 }
 
-fn install_error(error: InstallError) -> (StatusCode, Json<ApiError>) {
+fn install_error(error: InstallError) -> Response {
     match error {
         InstallError::AlreadyInstalled(plugin) => (
             StatusCode::CONFLICT,
-            Json(ApiError {
-                error: format!("Plugin '{}' is already installed", plugin),
-                code: "plugin_already_installed".into(),
-
-                details: serde_json::json!({}),
-            }),
-        ),
+            Json(
+                ProtocolApiError::BadRequest {
+                    code: "plugin_already_installed",
+                    message: format!("Plugin '{}' is already installed", plugin),
+                }
+                .into_body(),
+            ),
+        )
+            .into_response(),
         InstallError::SourceNotFound(message)
         | InstallError::ValidationFailed(message)
         | InstallError::MissingDependency(message)
@@ -180,38 +373,25 @@ fn install_error(error: InstallError) -> (StatusCode, Json<ApiError>) {
     }
 }
 
-fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error,
-            code: "validation_error".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn validation_error(error: String) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code: "validation_error",
+        message: error,
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error,
-            code: "not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn not_found(error: String) -> Response {
+    let body = ProtocolApiError::NotFound {
+        entity: "plugin",
+        id: error,
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
-fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error,
-            code: "internal_error".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn internal_error(error: String) -> Response {
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }

@@ -37,6 +37,11 @@ pub fn serialization_key(value: Value) -> String {
 }
 
 crate::api_definitions! {
+    /// Check web backend health.
+    Health => "GET /api/healthz" {
+        response: v1::health::HealthResponse,
+    },
+
     /// Send a chat message.
     Chat => "POST /api/chat" {
         params: v1::chat::ChatRequest,
@@ -110,36 +115,43 @@ crate::api_definitions! {
 
     /// Branch a session from a message.
     SessionMessageBranch => "POST /api/sessions/{id}/messages/{message_id}/branch" {
+        params: v1::sessions::SessionMessageActionParams,
         response: Value,
         serialization: PerProcess,
     },
     /// Store feedback on a session message.
     SessionMessageFeedback => "POST /api/sessions/{id}/messages/{message_id}/feedback" {
+        params: v1::sessions::SessionMessageActionParams,
         response: Value,
         serialization: PerProcess,
     },
     /// Delete a session message.
     SessionMessageDelete => "POST /api/sessions/{id}/messages/{message_id}/delete" {
+        params: v1::sessions::SessionMessageActionParams,
         response: Value,
         serialization: PerProcess,
     },
     /// Prepare message regeneration.
     SessionMessageRegeneratePrepare => "POST /api/sessions/{id}/messages/{message_id}/regenerate/prepare" {
+        params: v1::sessions::SessionMessageActionParams,
         response: Value,
         serialization: PerProcess,
     },
     /// Prepare message editing.
     SessionMessageEditPrepare => "POST /api/sessions/{id}/messages/{message_id}/edit/prepare" {
+        params: v1::sessions::SessionMessageActionParams,
         response: Value,
         serialization: PerProcess,
     },
     /// Preview rollback to a message.
     SessionMessageRollbackPreview => "POST /api/sessions/{id}/messages/{message_id}/rollback/preview" {
+        params: v1::sessions::SessionMessageActionParams,
         response: Value,
         serialization: PerProcess,
     },
     /// Roll back to a message.
     SessionMessageRollback => "POST /api/sessions/{id}/messages/{message_id}/rollback" {
+        params: v1::sessions::SessionMessageActionParams,
         response: Value,
         serialization: PerProcess,
     },

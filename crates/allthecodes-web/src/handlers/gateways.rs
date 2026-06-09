@@ -10,7 +10,118 @@ use serde::{Deserialize, Serialize};
 use allthecodes_daemon::gateway_client::{LocalGatewayClient, LocalGatewayDaemonStatus};
 use allthecodes_daemon::process_state;
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::ApiError as ProtocolApiError;
+
+use allthecodes_protocol::v1::gateways::GatewayListResponse as ProtocolGatewayListResponse;
+use allthecodes_protocol::v1::gateways::GatewayStatusResponse as ProtocolGatewayStatusResponse;
+use allthecodes_protocol::ApiMethod;
+use allthecodes_protocol::NoParams;
+use async_trait::async_trait;
+use axum::extract::State;
+use axum::routing::get;
+
+use crate::api_dispatcher::rest_processor_response;
+use crate::handler_registry::HandlerRegistry;
+use crate::processors::Processor;
+use crate::serialization::SerializationLayer;
+use crate::state::WebState;
+
+// ---------------------------------------------------------------------------
+// Processors
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct GatewayStatusProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for GatewayStatusProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for GatewayStatusProcessor {
+    type Request = NoParams;
+    type Response = ProtocolGatewayStatusResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "gateway.status"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _request: NoParams) -> Result<Self::Response, Self::Error> {
+        let handler_resp = status_response(None);
+        serde_json::from_value(serde_json::to_value(&handler_resp).map_err(|e| {
+            ProtocolApiError::Internal {
+                message: e.to_string(),
+            }
+        })?)
+        .map_err(|e| ProtocolApiError::Internal {
+            message: e.to_string(),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct GatewaysListProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for GatewaysListProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for GatewaysListProcessor {
+    type Request = NoParams;
+    type Response = ProtocolGatewayListResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "gateways.list"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _request: NoParams) -> Result<Self::Response, Self::Error> {
+        let handler_resp = GatewayListResponse {
+            gateways: vec![status_response(None)],
+            active_gateway_id: Some(LOCAL_GATEWAY_ID.to_string()),
+        };
+        serde_json::from_value(serde_json::to_value(&handler_resp).map_err(|e| {
+            ProtocolApiError::Internal {
+                message: e.to_string(),
+            }
+        })?)
+        .map_err(|e| ProtocolApiError::Internal {
+            message: e.to_string(),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler registry
+// ---------------------------------------------------------------------------
+
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::GatewayStatus, get(gateway_status_handler))
+        .handle(ApiMethod::GatewaysList, get(gateways_list_handler))
+}
+
+// ---------------------------------------------------------------------------
+// Handler types
+// ---------------------------------------------------------------------------
 
 const LOCAL_GATEWAY_ID: &str = "local-daemon";
 const LOCAL_GATEWAY_NAME: &str = "Local daemon gateway";
@@ -47,17 +158,21 @@ pub struct GatewayListResponse {
 }
 
 /// GET /api/gateway/status
-pub async fn gateway_status_handler(Query(query): Query<GatewayQuery>) -> Response {
-    Json(status_response(query.profile_id)).into_response()
+pub async fn gateway_status_handler(
+    State(state): State<WebState>,
+    Query(_query): Query<allthecodes_protocol::v1::gateways::GatewayQuery>,
+) -> Response {
+    rest_processor_response::<GatewayStatusProcessor>(state, ApiMethod::GatewayStatus, NoParams {})
+        .await
 }
 
 /// GET /api/gateways
-pub async fn gateways_list_handler(Query(query): Query<GatewayQuery>) -> Response {
-    Json(GatewayListResponse {
-        gateways: vec![status_response(query.profile_id)],
-        active_gateway_id: Some(LOCAL_GATEWAY_ID.to_string()),
-    })
-    .into_response()
+pub async fn gateways_list_handler(
+    State(state): State<WebState>,
+    Query(_query): Query<allthecodes_protocol::v1::gateways::GatewayQuery>,
+) -> Response {
+    rest_processor_response::<GatewaysListProcessor>(state, ApiMethod::GatewaysList, NoParams {})
+        .await
 }
 
 /// POST /api/gateways/{id}/start
@@ -202,17 +317,13 @@ fn is_local_gateway_id(id: &str) -> bool {
     matches!(id, LOCAL_GATEWAY_ID | "default")
 }
 
-fn api_error(status: StatusCode, code: &str, error: impl Into<String>) -> Response {
-    (
-        status,
-        Json(ApiError {
-            error: error.into(),
-            code: code.to_string(),
-
-            details: serde_json::json!({}),
-        }),
-    )
-        .into_response()
+fn api_error(status: StatusCode, code: &'static str, error: impl Into<String>) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code,
+        message: error.into(),
+    }
+    .into_body();
+    (status, Json(body)).into_response()
 }
 
 fn parse_port(url: &str) -> Option<u16> {
@@ -234,87 +345,26 @@ fn parse_bind_address(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::WebState;
-    use allthecodes_engine::lifecycle::QueryEngine;
-    use allthecodes_engine::types::config::QueryEngineConfig;
-    use axum::body::{to_bytes, Body};
+    use crate::handlers::test_support::*;
+    use axum::body::Body;
     use axum::http::{Method, Request};
-    use serde_json::{json, Value};
-    use std::path::Path;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-    use tempfile::TempDir;
+    use serde_json::json;
     use tower::ServiceExt;
 
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set_path(key: &'static str, value: &Path) -> Self {
-            let previous = std::env::var(key).ok();
-            std::env::set_var(key, value);
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(previous) = &self.previous {
-                std::env::set_var(self.key, previous);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn temp_home() -> (TempDir, EnvGuard) {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let guard = EnvGuard::set_path("ALLTHECODES_HOME", temp.path());
-        (temp, guard)
-    }
-
-    fn make_web_state() -> WebState {
-        let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
-            cwd: ".".to_string(),
-            tools: vec![],
-            custom_system_prompt: None,
-            append_system_prompt: None,
-            user_specified_model: None,
-            fallback_model: None,
-            max_turns: None,
-            max_budget_usd: None,
-            task_budget: None,
-            verbose: false,
-            initial_messages: None,
-            commands: vec![],
-            thinking_config: None,
-            json_schema: None,
-            replay_user_messages: false,
-            persist_session: false,
-            resolved_model: None,
-            auto_save_session: false,
-            agent_context: None,
-        }));
-        WebState::new(engine, Arc::new(AtomicBool::new(false)))
-    }
-
-    async fn response_json(response: Response) -> Value {
-        let body = to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .expect("response body");
-        serde_json::from_slice(&body).expect("json body")
-    }
+    use allthecodes_protocol::v1::gateways::GatewayQuery as ProtocolGatewayQuery;
 
     #[tokio::test]
     #[serial_test::serial]
     async fn gateway_status_returns_stopped_when_daemon_state_absent() {
         let (_home, _guard) = temp_home();
+        let state = make_web_state();
 
-        let response = gateway_status_handler(Query(GatewayQuery { profile_id: None }))
-            .await
-            .into_response();
+        let response = gateway_status_handler(
+            State(state),
+            Query(ProtocolGatewayQuery { profile_id: None }),
+        )
+        .await
+        .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
@@ -327,10 +377,14 @@ mod tests {
     #[serial_test::serial]
     async fn gateways_list_returns_default_gateway() {
         let (_home, _guard) = temp_home();
+        let state = make_web_state();
 
-        let response = gateways_list_handler(Query(GatewayQuery { profile_id: None }))
-            .await
-            .into_response();
+        let response = gateways_list_handler(
+            State(state),
+            Query(ProtocolGatewayQuery { profile_id: None }),
+        )
+        .await
+        .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;

@@ -17,8 +17,8 @@ use allthecodes_config::settings::{
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_engine::types::tool::PermissionMode;
 
-use crate::handlers::ApiError;
-use crate::state::{SessionOwner, WebState};
+use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -75,7 +75,6 @@ pub struct DebugActionResponse {
 pub struct DebugStateResponse {
     pub enabled: bool,
     pub session_id: String,
-    pub ownership: crate::state::SessionOwnership,
     pub is_streaming: bool,
     pub pty: crate::ws::tui::PtyDiagnosticsSnapshot,
 }
@@ -83,7 +82,6 @@ pub struct DebugStateResponse {
 #[derive(Serialize)]
 pub struct SessionTraceResponse {
     pub session_id: String,
-    pub ownership: crate::state::SessionOwnership,
     pub is_streaming: bool,
     pub current_turn: Option<TurnTraceItem>,
     pub pending_permissions: Vec<String>,
@@ -554,6 +552,11 @@ pub(crate) fn normalize_settings_path(path: &str) -> Option<&'static str> {
 }
 
 fn validate_setting_value(key: &str, value: &Value) -> Result<()> {
+    if key == "backend" {
+        normalize_backend_value(&string_value(key, value)?)?;
+        return Ok(());
+    }
+
     match setting_kind(key) {
         SettingKind::Bool => {
             bool_value(key, value)?;
@@ -658,7 +661,7 @@ fn setting_kind(key: &str) -> SettingKind {
 fn apply_value_to_raw(raw: &mut RawSettings, key: &str, value: Value) -> Result<()> {
     match key {
         "model" => raw.model = Some(string_value(key, &value)?),
-        "backend" => raw.backend = Some(normalize_backend_value(&string_value(key, &value)?)),
+        "backend" => raw.backend = Some(normalize_backend_value(&string_value(key, &value)?)?),
         "permission_mode" => raw.permission_mode = Some(string_value(key, &value)?),
         "thinking" => raw.thinking = value_to_optional(value),
         "language" => raw.language = Some(string_value(key, &value)?),
@@ -743,8 +746,9 @@ fn apply_value_to_app_state(app_state: &mut AppState, key: &str, value: Value) {
             }
         }
         "backend" => {
-            if let Ok(value) = string_value(key, &value) {
-                let normalized = normalize_backend_value(&value);
+            if let Ok(normalized) =
+                string_value(key, &value).and_then(|value| normalize_backend_value(&value))
+            {
                 app_state.main_loop_backend = normalized.clone();
                 settings.backend = Some(normalized);
             }
@@ -937,13 +941,16 @@ fn parse_permission_mode(value: &str) -> PermissionMode {
     }
 }
 
-fn normalize_backend_value(value: &str) -> String {
+fn normalize_backend_value(value: &str) -> Result<String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "codex" | "openai-codex" => "codex".to_string(),
+        "codex" | "openai-codex" => Ok("codex".to_string()),
         "native" | "allthecodes" | "claude" | "claude-code" | "claude_code" | "auto" => {
-            "native".to_string()
+            Ok("native".to_string())
         }
-        other => other.to_string(),
+        other => bail!(
+            "Unknown backend '{}'. Known backends: native, codex. Claude Code is stored as native.",
+            other
+        ),
     }
 }
 
@@ -1080,7 +1087,6 @@ pub async fn debug_state_handler(State(state): State<WebState>) -> Response {
     Json(DebugStateResponse {
         enabled: true,
         session_id: engine.current_session_id().to_string(),
-        ownership: state.ownership_snapshot(),
         is_streaming: state.is_streaming.load(std::sync::atomic::Ordering::SeqCst),
         pty: state.pty_diagnostics.snapshot(),
     })
@@ -1096,12 +1102,10 @@ pub async fn debug_session_trace_handler(
         return debug_disabled_response();
     }
 
-    let ownership = state.ownership_snapshot();
     let is_streaming = state.is_streaming.load(std::sync::atomic::Ordering::SeqCst);
 
     Json(SessionTraceResponse {
         session_id: id,
-        ownership,
         is_streaming,
         current_turn: if is_streaming {
             Some(TurnTraceItem {
@@ -1145,7 +1149,6 @@ pub async fn debug_action_handler(
             state
                 .is_streaming
                 .store(false, std::sync::atomic::Ordering::SeqCst);
-            state.release_owner(SessionOwner::ChatStream);
         }
         "chat/submit" => {
             ok = false;
@@ -1194,12 +1197,38 @@ fn debug_enabled() -> bool {
 fn debug_disabled_response() -> Response {
     (
         StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error: "Debug API is disabled".into(),
-            code: "debug_disabled".into(),
-
-            details: serde_json::json!({}),
-        }),
+        Json(
+            ProtocolApiError::Forbidden {
+                code: "debug_disabled",
+                message: "Debug API is disabled".into(),
+            }
+            .into_body(),
+        ),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_backend_value_maps_claude_code_to_native() {
+        assert_eq!(normalize_backend_value("claude_code").unwrap(), "native");
+        assert_eq!(normalize_backend_value("claude-code").unwrap(), "native");
+        assert_eq!(normalize_backend_value("allthecodes").unwrap(), "native");
+    }
+
+    #[test]
+    fn normalize_backend_value_maps_codex_alias() {
+        assert_eq!(normalize_backend_value("openai-codex").unwrap(), "codex");
+    }
+
+    #[test]
+    fn backend_validation_rejects_unknown_values() {
+        let err = validate_setting_value("backend", &serde_json::json!("alma"))
+            .expect_err("unknown backend should be rejected")
+            .to_string();
+        assert!(err.contains("Unknown backend 'alma'"));
+    }
 }

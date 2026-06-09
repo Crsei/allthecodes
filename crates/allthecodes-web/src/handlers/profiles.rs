@@ -13,7 +13,7 @@ use allthecodes_config::settings::{
     load_global_config, write_user_settings, ProviderProfileSettings,
 };
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize, Clone)]
 pub struct ProfileSummary {
@@ -119,12 +119,13 @@ pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> i
     if req.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "Profile name cannot be empty".into(),
-                code: "validation_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::BadRequest {
+                    code: "validation_error",
+                    message: "Profile name cannot be empty".into(),
+                }
+                .into_body(),
+            ),
         )
             .into_response();
     }
@@ -135,12 +136,12 @@ pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> i
     if profiles.iter().any(|p| p.id == req.name.trim()) {
         return (
             StatusCode::CONFLICT,
-            Json(ApiError {
-                error: format!("Profile '{}' already exists", req.name),
-                code: "conflict".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::Conflict {
+                    reason: format!("Profile '{}' already exists", req.name),
+                }
+                .into_body(),
+            ),
         )
             .into_response();
     }
@@ -162,12 +163,7 @@ pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> i
         .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e,
-                code: "internal_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(ProtocolApiError::Internal { message: e }.into_body()),
         )
             .into_response(),
     }
@@ -181,12 +177,13 @@ pub async fn profiles_detail_handler(AxumPath(id): AxumPath<String>) -> impl Int
     } else {
         (
             StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: format!("Profile '{}' not found", id),
-                code: "not_found".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::NotFound {
+                    entity: "profile",
+                    id: format!("Profile '{}' not found", id),
+                }
+                .into_body(),
+            ),
         )
             .into_response()
     }
@@ -204,12 +201,13 @@ pub async fn profiles_update_handler(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: format!("Profile '{}' not found", id),
-                    code: "not_found".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::NotFound {
+                        entity: "profile",
+                        id: format!("Profile '{}' not found", id),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -220,12 +218,13 @@ pub async fn profiles_update_handler(
         if trimmed.is_empty() {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: "Profile name cannot be empty".into(),
-                    code: "validation_error".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::BadRequest {
+                        code: "validation_error",
+                        message: "Profile name cannot be empty".into(),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -242,12 +241,7 @@ pub async fn profiles_update_handler(
         .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e,
-                code: "internal_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(ProtocolApiError::Internal { message: e }.into_body()),
         )
             .into_response(),
     }
@@ -262,12 +256,13 @@ pub async fn profiles_delete_handler(AxumPath(id): AxumPath<String>) -> impl Int
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: format!("Profile '{}' not found", id),
-                    code: "not_found".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::NotFound {
+                        entity: "profile",
+                        id: format!("Profile '{}' not found", id),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -289,12 +284,7 @@ pub async fn profiles_delete_handler(AxumPath(id): AxumPath<String>) -> impl Int
         .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e,
-                code: "internal_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(ProtocolApiError::Internal { message: e }.into_body()),
         )
             .into_response(),
     }
@@ -307,12 +297,13 @@ pub async fn profiles_switch_handler(AxumPath(id): AxumPath<String>) -> impl Int
     if !profiles.iter().any(|p| p.id == id) {
         return (
             StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: format!("Profile '{}' not found", id),
-                code: "not_found".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::NotFound {
+                    entity: "profile",
+                    id: format!("Profile '{}' not found", id),
+                }
+                .into_body(),
+            ),
         )
             .into_response();
     }
@@ -331,12 +322,7 @@ pub async fn profiles_switch_handler(AxumPath(id): AxumPath<String>) -> impl Int
         .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e,
-                code: "internal_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(ProtocolApiError::Internal { message: e }.into_body()),
         )
             .into_response(),
     }
@@ -349,12 +335,13 @@ pub async fn profiles_import_handler(Json(req): Json<ProfileImportRequest>) -> i
         None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: "Missing 'payload' field".into(),
-                    code: "validation_error".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::BadRequest {
+                        code: "validation_error",
+                        message: "Missing 'payload' field".into(),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -384,12 +371,7 @@ pub async fn profiles_import_handler(Json(req): Json<ProfileImportRequest>) -> i
         .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e,
-                code: "internal_error".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(ProtocolApiError::Internal { message: e }.into_body()),
         )
             .into_response(),
     }
@@ -403,12 +385,13 @@ pub async fn profiles_export_handler(AxumPath(id): AxumPath<String>) -> Response
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: format!("Profile '{}' not found", id),
-                    code: "not_found".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::NotFound {
+                        entity: "profile",
+                        id: format!("Profile '{}' not found", id),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }

@@ -120,7 +120,7 @@ impl QueryEngineDeps {
             )
         })?;
 
-        let app_model = self.state.read().app_state.main_loop_model.clone();
+        let app_model = self.get_app_state().main_loop_model;
         prepare_model_call_params_for_client(&mut params, &app_model, client);
 
         // Strip advisor_model for providers that don't support it (issue #33).
@@ -172,7 +172,7 @@ impl QueryEngineDeps {
             )
         })?;
 
-        let app_model = self.state.read().app_state.main_loop_model.clone();
+        let app_model = self.get_app_state().main_loop_model;
         prepare_model_call_params_for_client(&mut params, &app_model, client);
 
         // Strip advisor_model for providers that don't support it (issue #33).

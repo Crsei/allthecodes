@@ -25,12 +25,17 @@ use crate::state::WebState;
 pub fn build_router(state: WebState) -> Router {
     let registry = handler_registry::all_api_handlers();
     let router = handler_registry::register_protocol_routes(Router::new(), &registry)
-        .merge(web_state_routes::routes());
+        .merge(web_state_routes::routes())
+        .route("/api/rpc/ws", get(ws::api_rpc::api_rpc_ws_handler));
 
     router
         // API catch-all: unregistered /api/* paths return JSON 501
         .route(
             "/api/{*path}",
+            get(api_errors::api_fallback_handler).post(api_errors::api_fallback_handler),
+        )
+        .route(
+            "/api/v2/{*path}",
             get(api_errors::api_fallback_handler).post(api_errors::api_fallback_handler),
         )
         // Static files (SPA)

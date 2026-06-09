@@ -1,5 +1,6 @@
 //! Shared state for the web server layer.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -10,7 +11,6 @@ use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_web_state::WebUiStore;
 
 use crate::serialization::SerializationLayer;
-pub use crate::serialization::{SessionOwner, SessionOwnership};
 use crate::ws::terminal::{PtyDiagnostics, TerminalManager};
 
 /// Shared state passed to all Axum handlers via State extractor.
@@ -26,6 +26,10 @@ pub struct WebState {
     pub engine_slot: Arc<RwLock<Arc<QueryEngine>>>,
     /// Flag: is a query currently in progress?
     pub is_streaming: Arc<AtomicBool>,
+    /// Session-scoped engines used by concurrent web chat turns.
+    pub session_engines: Arc<RwLock<HashMap<String, Arc<QueryEngine>>>>,
+    /// Session ids with an active streaming chat turn.
+    pub streaming_sessions: Arc<RwLock<HashSet<String>>>,
     /// PTY diagnostics for the active TUI WebSocket connection.
     pub pty_diagnostics: PtyDiagnostics,
     /// Multi-session PTY manager used by the terminal panel.
@@ -40,9 +44,14 @@ impl WebState {
     /// Build a new `WebState` from an initial engine.
     pub fn new(engine: Arc<QueryEngine>, is_streaming: Arc<AtomicBool>) -> Self {
         let terminal_manager = TerminalManager::default();
+        let current_session_id = engine.current_session_id().to_string();
+        let mut session_engines = HashMap::new();
+        session_engines.insert(current_session_id, engine.clone());
         Self {
             engine_slot: Arc::new(RwLock::new(engine)),
             is_streaming,
+            session_engines: Arc::new(RwLock::new(session_engines)),
+            streaming_sessions: Arc::new(RwLock::new(HashSet::new())),
             pty_diagnostics: PtyDiagnostics::new(terminal_manager.clone()),
             terminal_manager,
             serialization: SerializationLayer::new(),
@@ -57,30 +66,39 @@ impl WebState {
 
     /// Replace the current engine (used by new/resume session flows).
     pub fn replace_engine(&self, engine: Arc<QueryEngine>) {
-        *self.engine_slot.write() = engine;
+        let session_id = engine.current_session_id().to_string();
+        *self.engine_slot.write() = engine.clone();
+        self.session_engines.write().insert(session_id, engine);
     }
 
-    pub fn ownership_snapshot(&self) -> SessionOwnership {
-        self.serialization.ownership_snapshot()
+    /// Return the cached engine for a session, if one has been built.
+    pub fn engine_for_session(&self, session_id: &str) -> Option<Arc<QueryEngine>> {
+        self.session_engines.read().get(session_id).cloned()
     }
 
-    pub fn try_claim_chat(&self, session_id: String) -> Result<(), SessionOwnership> {
-        self.try_claim(SessionOwner::ChatStream, session_id)
+    /// Cache an engine without making it the foreground UI engine.
+    pub fn cache_session_engine(&self, engine: Arc<QueryEngine>) {
+        let session_id = engine.current_session_id().to_string();
+        self.session_engines.write().insert(session_id, engine);
     }
 
-    pub fn try_claim_tui(&self, session_id: String) -> Result<(), SessionOwnership> {
-        self.try_claim(SessionOwner::TuiPty, session_id)
+    /// Check whether a specific session has an active streaming turn.
+    pub fn is_session_streaming(&self, session_id: &str) -> bool {
+        self.streaming_sessions.read().contains(session_id)
     }
 
-    pub fn try_claim(
-        &self,
-        owner: SessionOwner,
-        session_id: String,
-    ) -> Result<(), SessionOwnership> {
-        self.serialization.try_claim_owner(owner, session_id)
-    }
-
-    pub fn release_owner(&self, owner: SessionOwner) {
-        self.serialization.release_owner(owner);
+    /// Update a session's streaming state and keep the legacy global flag in sync.
+    pub fn set_session_streaming(&self, session_id: &str, streaming: bool) {
+        let any_streaming = {
+            let mut sessions = self.streaming_sessions.write();
+            if streaming {
+                sessions.insert(session_id.to_string());
+            } else {
+                sessions.remove(session_id);
+            }
+            !sessions.is_empty()
+        };
+        self.is_streaming
+            .store(any_streaming, std::sync::atomic::Ordering::SeqCst);
     }
 }

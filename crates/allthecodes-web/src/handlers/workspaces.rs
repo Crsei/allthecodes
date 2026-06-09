@@ -12,10 +12,9 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{info, warn};
 
+use allthecodes_protocol::ApiError as ProtocolApiError;
 use allthecodes_session::storage::{self, SessionInfo};
 
-use crate::handlers::sessions::ownership_conflict_response;
-use crate::handlers::ApiError;
 use crate::state::WebState;
 use crate::workspace_metadata::{self, WorkspaceUiMetadata, WorkspaceUiMetadataPatch};
 
@@ -145,12 +144,12 @@ pub async fn workspace_patch_handler(
             warn!(%error, workspace_key = %workspace_key, "failed to update workspace metadata");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: format!("Failed to update workspace metadata: {error}"),
-                    code: "workspace_metadata_failed".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::Internal {
+                        message: format!("Failed to update workspace metadata: {error}"),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -193,20 +192,24 @@ pub async fn workspace_open_handler(
             })
             .into_response()
         }
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: if cfg!(target_os = "linux") {
-                    format!("Failed to open workspace in VS Code with `code`: {error}")
-                } else {
-                    format!("Failed to open workspace: {error}")
-                },
-                code: "workspace_open_failed".into(),
-
-                details: serde_json::json!({}),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            let message = if cfg!(target_os = "linux") {
+                format!("Failed to open workspace in VS Code with `code`: {error}")
+            } else {
+                format!("Failed to open workspace: {error}")
+            };
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    ProtocolApiError::BadRequest {
+                        code: "workspace_open_failed",
+                        message,
+                    }
+                    .into_body(),
+                ),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -219,17 +222,9 @@ pub async fn workspace_sessions_archive_handler(
     if state.is_streaming.load(Ordering::SeqCst) {
         return (
             StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "A query is in progress — abort it before archiving sessions".into(),
-                code: "engine_busy".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(ProtocolApiError::EngineBusy.into_body()),
         )
             .into_response();
-    }
-    if let Some(response) = ownership_conflict_response(&state) {
-        return response;
     }
 
     let sessions = match storage::list_sessions() {
@@ -238,12 +233,12 @@ pub async fn workspace_sessions_archive_handler(
             warn!(%error, "failed to list sessions for workspace archive");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: format!("Failed to list sessions: {error}"),
-                    code: "session_list_failed".into(),
-
-                    details: serde_json::json!({}),
-                }),
+                Json(
+                    ProtocolApiError::Internal {
+                        message: format!("Failed to list sessions: {error}"),
+                    }
+                    .into_body(),
+                ),
             )
                 .into_response();
         }
@@ -355,12 +350,13 @@ pub(crate) fn resolve_workspace_root(
             if candidate_key != workspace_key {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    Json(ApiError {
-                        error: "Workspace root does not match workspace key".into(),
-                        code: "workspace_root_mismatch".into(),
-
-                        details: serde_json::json!({}),
-                    }),
+                    Json(
+                        ProtocolApiError::BadRequest {
+                            code: "workspace_root_mismatch",
+                            message: "Workspace root does not match workspace key".into(),
+                        }
+                        .into_body(),
+                    ),
                 )
                     .into_response());
             }
@@ -373,32 +369,75 @@ pub(crate) fn resolve_workspace_root(
     Ok(root)
 }
 
+pub(crate) fn resolve_workspace_root_protocol(
+    state: &WebState,
+    workspace_key: &str,
+    requested_root: Option<&str>,
+) -> Result<PathBuf, ProtocolApiError> {
+    let known = known_workspaces(state);
+    let Some(workspace) = known.get(workspace_key) else {
+        return Err(ProtocolApiError::NotFound {
+            entity: "workspace",
+            id: workspace_key.to_string(),
+        });
+    };
+
+    let root = match requested_root {
+        Some(root) => {
+            let candidate = validate_local_dir_protocol(root)?;
+            let candidate_key = storage::workspace_key(&candidate);
+            if candidate_key != workspace_key {
+                return Err(ProtocolApiError::BadRequest {
+                    code: "workspace_root_mismatch",
+                    message: "Workspace root does not match workspace key".to_string(),
+                });
+            }
+            candidate
+        }
+        None => workspace.root.clone(),
+    };
+
+    validate_local_dir_path_protocol(&root)
+}
+
 fn validate_local_dir(raw: &str) -> Result<PathBuf, Response> {
     if raw.contains("://") {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "Workspace root must be a local directory path".into(),
-                code: "workspace_root_invalid".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::BadRequest {
+                    code: "workspace_root_invalid",
+                    message: "Workspace root must be a local directory path".into(),
+                }
+                .into_body(),
+            ),
         )
             .into_response());
     }
     validate_local_dir_path(Path::new(raw))
 }
 
+fn validate_local_dir_protocol(raw: &str) -> Result<PathBuf, ProtocolApiError> {
+    if raw.contains("://") {
+        return Err(ProtocolApiError::BadRequest {
+            code: "workspace_root_invalid",
+            message: "Workspace root must be a local directory path".to_string(),
+        });
+    }
+    validate_local_dir_path_protocol(Path::new(raw))
+}
+
 fn validate_local_dir_path(path: &Path) -> Result<PathBuf, Response> {
     let canonical = std::fs::canonicalize(path).map_err(|error| {
         (
             StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: format!("Workspace root is not accessible: {error}"),
-                code: "workspace_root_invalid".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::BadRequest {
+                    code: "workspace_root_invalid",
+                    message: format!("Workspace root is not accessible: {error}"),
+                }
+                .into_body(),
+            ),
         )
             .into_response()
     })?;
@@ -406,14 +445,31 @@ fn validate_local_dir_path(path: &Path) -> Result<PathBuf, Response> {
     if !canonical.is_dir() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "Workspace root must be a directory".into(),
-                code: "workspace_root_invalid".into(),
-
-                details: serde_json::json!({}),
-            }),
+            Json(
+                ProtocolApiError::BadRequest {
+                    code: "workspace_root_invalid",
+                    message: "Workspace root must be a directory".into(),
+                }
+                .into_body(),
+            ),
         )
             .into_response());
+    }
+
+    Ok(canonical)
+}
+
+fn validate_local_dir_path_protocol(path: &Path) -> Result<PathBuf, ProtocolApiError> {
+    let canonical = std::fs::canonicalize(path).map_err(|error| ProtocolApiError::BadRequest {
+        code: "workspace_root_invalid",
+        message: format!("Workspace root is not accessible: {error}"),
+    })?;
+
+    if !canonical.is_dir() {
+        return Err(ProtocolApiError::BadRequest {
+            code: "workspace_root_invalid",
+            message: "Workspace root must be a directory".to_string(),
+        });
     }
 
     Ok(canonical)
@@ -443,12 +499,13 @@ fn workspace_summary(
 fn workspace_not_found() -> Response {
     (
         StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error: "Workspace not found".into(),
-            code: "workspace_not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
+        Json(
+            ProtocolApiError::NotFound {
+                entity: "workspace",
+                id: "Workspace not found".into(),
+            }
+            .into_body(),
+        ),
     )
         .into_response()
 }

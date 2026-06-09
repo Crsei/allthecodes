@@ -4,6 +4,7 @@ Generated from `allthecodes-protocol` metadata.
 
 | Operation | Method | Path | Params | Response | Serialization | Errors | Experimental |
 |---|---|---|---|---|---|---|---|
+| `Health` | `GET` | `/api/healthz` | - | `HealthResponse` | `concurrent` | - | - |
 | `Chat` | `POST` | `/api/chat` | `ChatRequest` | `JsonValue` | `per-key:session_id` | - | - |
 | `Abort` | `POST` | `/api/abort` | `AbortRequest` | `JsonValue` | `per-key:session_id` | - | - |
 | `State` | `GET` | `/api/state` | - | `StateResponse` | `concurrent` | - | - |
@@ -14,13 +15,14 @@ Generated from `allthecodes-protocol` metadata.
 | `SessionDetail` | `GET` | `/api/sessions/{id}` | `SessionDetailParams` | `SessionDetailResponse` | `per-key:id` | `NotFound` | - |
 | `SessionResume` | `POST` | `/api/sessions/{id}/resume` | `SessionResumeParams` | `SessionResumeResponse` | `per-key:id` | `NotFound`, `Conflict`, `EngineBusy` | - |
 | `SessionArchive` | `POST` | `/api/sessions/{id}/archive` | `SessionArchiveParams` | `SessionArchiveResponse` | `per-key:id` | `NotFound`, `Conflict` | - |
-| `SessionMessageBranch` | `POST` | `/api/sessions/{id}/messages/{message_id}/branch` | - | `JsonValue` | `per-process` | - | - |
-| `SessionMessageFeedback` | `POST` | `/api/sessions/{id}/messages/{message_id}/feedback` | - | `JsonValue` | `per-process` | - | - |
-| `SessionMessageDelete` | `POST` | `/api/sessions/{id}/messages/{message_id}/delete` | - | `JsonValue` | `per-process` | - | - |
-| `SessionMessageRegeneratePrepare` | `POST` | `/api/sessions/{id}/messages/{message_id}/regenerate/prepare` | - | `JsonValue` | `per-process` | - | - |
-| `SessionMessageEditPrepare` | `POST` | `/api/sessions/{id}/messages/{message_id}/edit/prepare` | - | `JsonValue` | `per-process` | - | - |
-| `SessionMessageRollbackPreview` | `POST` | `/api/sessions/{id}/messages/{message_id}/rollback/preview` | - | `JsonValue` | `per-process` | - | - |
-| `SessionMessageRollback` | `POST` | `/api/sessions/{id}/messages/{message_id}/rollback` | - | `JsonValue` | `per-process` | - | - |
+| `SessionModePatch` | `PATCH` | `/api/sessions/{id}/mode` | `SessionModePatchParams` | `SessionModePatchResponse` | `per-key:id` | `NotFound`, `Conflict` | - |
+| `SessionMessageBranch` | `POST` | `/api/sessions/{id}/messages/{message_id}/branch` | `SessionMessageActionParams` | `JsonValue` | `per-process` | - | - |
+| `SessionMessageFeedback` | `POST` | `/api/sessions/{id}/messages/{message_id}/feedback` | `SessionMessageActionParams` | `JsonValue` | `per-process` | - | - |
+| `SessionMessageDelete` | `POST` | `/api/sessions/{id}/messages/{message_id}/delete` | `SessionMessageActionParams` | `JsonValue` | `per-process` | - | - |
+| `SessionMessageRegeneratePrepare` | `POST` | `/api/sessions/{id}/messages/{message_id}/regenerate/prepare` | `SessionMessageActionParams` | `JsonValue` | `per-process` | - | - |
+| `SessionMessageEditPrepare` | `POST` | `/api/sessions/{id}/messages/{message_id}/edit/prepare` | `SessionMessageActionParams` | `JsonValue` | `per-process` | - | - |
+| `SessionMessageRollbackPreview` | `POST` | `/api/sessions/{id}/messages/{message_id}/rollback/preview` | `SessionMessageActionParams` | `JsonValue` | `per-process` | - | - |
+| `SessionMessageRollback` | `POST` | `/api/sessions/{id}/messages/{message_id}/rollback` | `SessionMessageActionParams` | `JsonValue` | `per-process` | - | - |
 | `Capabilities` | `GET` | `/api/capabilities` | - | `CapabilityDiscoveryResponse` | `concurrent` | - | - |
 | `ChatModesList` | `GET` | `/api/chat-modes` | - | `ChatModesResponse` | `concurrent` | - | - |
 | `ChatModesResources` | `GET` | `/api/chat-modes/resources` | - | `ChatModeResourcesResponse` | `concurrent` | - | - |

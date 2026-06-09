@@ -200,7 +200,7 @@ pub fn generate_typescript_types() -> String {
         }
         output.push_str(" }\n");
     }
-    output.push_str(";\n\n");
+    output.push_str(";\n");
 
     output
 }

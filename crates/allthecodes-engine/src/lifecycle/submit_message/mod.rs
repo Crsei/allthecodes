@@ -18,7 +18,7 @@ use crate::codex_exec;
 use crate::input_processing;
 use crate::result;
 use crate::session::transcript;
-use crate::types::config::{QueryParams, QuerySource};
+use crate::types::config::{QueryParams, QuerySource, SubmitContextMode, SubmitMessageOverrides};
 use allthecodes_engine::query::loop_impl;
 use allthecodes_types::sdk::*;
 
@@ -120,6 +120,66 @@ fn finish_hook_telemetry(span_id: Option<crate::telemetry_bridge::SpanId>, resul
 #[cfg(not(feature = "telemetry"))]
 fn finish_hook_telemetry(_span_id: Option<u64>, _result: &str) {}
 
+fn normalize_submit_overrides(mut overrides: SubmitMessageOverrides) -> SubmitMessageOverrides {
+    overrides.model = overrides
+        .model
+        .and_then(|value| non_empty_string(value.as_str()));
+    overrides.effort = overrides
+        .effort
+        .and_then(|value| non_empty_string(value.as_str()));
+    overrides.allowed_tools = overrides
+        .allowed_tools
+        .map(|tools| unique_non_empty_strings(tools.into_iter()));
+    overrides.skill_ids = overrides
+        .skill_ids
+        .map(|skills| unique_non_empty_strings(skills.into_iter()));
+    overrides
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn unique_non_empty_strings(values: impl Iterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    values
+        .filter_map(|value| non_empty_string(value.as_str()))
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
+fn filter_tools_for_submit_overrides(
+    tools: crate::types::tool::Tools,
+    allowed_tools: Option<&Vec<String>>,
+) -> crate::types::tool::Tools {
+    let Some(allowed_tools) = allowed_tools else {
+        return tools;
+    };
+    let allowed: std::collections::HashSet<String> = allowed_tools
+        .iter()
+        .map(|tool| tool.to_ascii_lowercase())
+        .collect();
+    tools
+        .into_iter()
+        .filter(|tool| allowed.contains(&tool.name().to_ascii_lowercase()))
+        .collect()
+}
+
+fn selected_skill_instruction_parts(skill_ids: &[String], session_id: Option<&str>) -> Vec<String> {
+    skill_ids
+        .iter()
+        .filter_map(|skill_id| allthecodes_skills::find_skill(skill_id))
+        .map(|skill| {
+            format!(
+                "# Skill: {}\n\n{}",
+                skill.display_name(),
+                skill.expand_prompt("", session_id)
+            )
+        })
+        .collect()
+}
+
 impl QueryEngine {
     /// Submit a user message and return a stream of `SdkMessage` items.
     ///
@@ -130,6 +190,15 @@ impl QueryEngine {
         &self,
         prompt: &str,
         query_source: QuerySource,
+    ) -> Pin<Box<dyn Stream<Item = SdkMessage> + Send>> {
+        self.submit_message_with_overrides(prompt, query_source, SubmitMessageOverrides::default())
+    }
+
+    pub fn submit_message_with_overrides(
+        &self,
+        prompt: &str,
+        query_source: QuerySource,
+        overrides: SubmitMessageOverrides,
     ) -> Pin<Box<dyn Stream<Item = SdkMessage> + Send>> {
         let session_id = self.current_session_id();
         info!(
@@ -142,6 +211,7 @@ impl QueryEngine {
         // Capture owned/cloned references for the async stream closure.
         let config = self.config.clone();
         let prompt = prompt.to_string();
+        let overrides = normalize_submit_overrides(overrides);
 
         let state_ref = self.state.clone();
         let active_session_id_ref = self.active_session_id.clone();
@@ -346,7 +416,12 @@ impl QueryEngine {
                 let model = config
                     .user_specified_model
                     .clone()
-                    .unwrap_or_else(|| s.app_state.main_loop_model.clone());
+                    .unwrap_or_else(|| {
+                        overrides
+                            .model
+                            .clone()
+                            .unwrap_or_else(|| s.app_state.main_loop_model.clone())
+                    });
                 let backend = s.app_state.main_loop_backend.clone();
                 let settings = s.app_state.settings.clone();
                 (tools, model, backend, settings)
@@ -378,6 +453,8 @@ impl QueryEngine {
             } else {
                 session_tools_snapshot.clone()
             };
+            let prompt_tools_snapshot =
+                filter_tools_for_submit_overrides(prompt_tools_snapshot, overrides.allowed_tools.as_ref());
 
             // ================================================================
             // PHASE C: Pre-Query Setup
@@ -445,7 +522,7 @@ impl QueryEngine {
             // PHASE B: System Prompt Build
             // ================================================================
 
-            let prompt_build = build_submit_system_prompt(
+            let mut prompt_build = build_submit_system_prompt(
                 &prompt,
                 &config,
                 &session_id,
@@ -456,12 +533,27 @@ impl QueryEngine {
                 &backend_name,
             )
             .await;
+            if let Some(skill_ids) = overrides.skill_ids.as_ref() {
+                prompt_build
+                    .system_prompt_parts
+                    .extend(selected_skill_instruction_parts(skill_ids, Some(session_id.as_str())));
+            }
 
             // ================================================================
             // PHASE D: Query Loop -- full message dispatch
             // ================================================================
 
-            let current_messages = state_ref.read().messages.clone();
+            let current_messages = match overrides.context_mode.unwrap_or(SubmitContextMode::Inherit) {
+                SubmitContextMode::Inherit => state_ref.read().messages.clone(),
+                SubmitContextMode::Compact => {
+                    let messages = state_ref.read().messages.clone();
+                    crate::compact::pipeline::try_reactive_compact(messages.clone(), &model_name)
+                        .await
+                        .map(|result| result.messages)
+                        .unwrap_or(messages)
+                }
+                SubmitContextMode::Isolated => processed.messages.clone(),
+            };
 
             let params = QueryParams {
                 messages: current_messages,
@@ -569,6 +661,8 @@ impl QueryEngine {
                 hook_runner: hook_runner.clone(),
                 command_dispatcher: command_dispatcher.clone(),
                 auto_classifier_fn: auto_classifier_fn.clone(),
+                submit_overrides: overrides.clone(),
+                submit_tools: Some(prompt_tools_snapshot.clone()),
             });
 
             prime_goal_runtime_for_session(session_id.as_str(), &state_ref);

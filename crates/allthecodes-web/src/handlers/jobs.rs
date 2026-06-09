@@ -14,7 +14,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -389,7 +389,7 @@ where
     let _guard = match STORE_LOCK.lock() {
         Ok(guard) => guard,
         Err(err) => {
-            return internal_error(format!("Job store lock poisoned: {err}")).into_response();
+            return internal_error(format!("Job store lock poisoned: {err}"));
         }
     };
     match f() {
@@ -734,98 +734,48 @@ enum MutationError {
 impl MutationError {
     fn into_response(self) -> Response {
         match self {
-            MutationError::Validation(error) => validation_error(error).into_response(),
-            MutationError::NotFound(error) => not_found(error).into_response(),
-            MutationError::RevisionConflict(error) => revision_conflict(error).into_response(),
-            MutationError::Internal(error) => internal_error(error).into_response(),
+            MutationError::Validation(error) => validation_error(error),
+            MutationError::NotFound(error) => not_found(error),
+            MutationError::RevisionConflict(error) => revision_conflict(error),
+            MutationError::Internal(error) => internal_error(error),
         }
     }
 }
 
-fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error,
-            code: "validation_error".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn validation_error(error: String) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code: "validation_error",
+        message: error,
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error,
-            code: "not_found".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn not_found(error: String) -> Response {
+    let body = ProtocolApiError::NotFound {
+        entity: "job",
+        id: error,
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
-fn revision_conflict(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::CONFLICT,
-        Json(ApiError {
-            error,
-            code: "revision_conflict".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn revision_conflict(error: String) -> Response {
+    let body = ProtocolApiError::Conflict { reason: error }.into_body();
+    (StatusCode::CONFLICT, Json(body)).into_response()
 }
 
-fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error,
-            code: "internal_error".into(),
-
-            details: serde_json::json!({}),
-        }),
-    )
+fn internal_error(error: String) -> Response {
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
+    use crate::handlers::test_support::*;
     use serde_json::{json, Value};
     use serial_test::serial;
-    use tempfile::TempDir;
-
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
-            let previous = std::env::var(key).ok();
-            std::env::set_var(key, value);
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(previous) = &self.previous {
-                std::env::set_var(self.key, previous);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn temp_home() -> (TempDir, EnvGuard) {
-        let temp = tempfile::tempdir().unwrap();
-        let guard = EnvGuard::set_path("ALLTHECODES_HOME", temp.path());
-        (temp, guard)
-    }
 
     fn create_request() -> JobCreateRequest {
         JobCreateRequest {
@@ -843,11 +793,6 @@ mod tests {
             session_id: None,
             artifact_links: Vec::new(),
         }
-    }
-
-    async fn response_json(response: Response) -> Value {
-        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-        serde_json::from_slice(&body).unwrap()
     }
 
     #[tokio::test]
@@ -891,7 +836,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = response_json(response).await;
-        assert_eq!(body["code"], json!("revision_conflict"));
+        assert_eq!(body["code"], json!("conflict"));
     }
 
     #[tokio::test]

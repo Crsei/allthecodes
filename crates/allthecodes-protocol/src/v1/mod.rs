@@ -4,6 +4,7 @@ pub mod chat;
 pub mod chat_modes;
 pub mod files;
 pub mod gateways;
+pub mod health;
 pub mod hooks;
 pub mod kanban;
 pub mod launchpad;
