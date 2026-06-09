@@ -423,6 +423,25 @@ fn built_in_bundles() -> Vec<ChatModeBundle> {
             enabled: true,
             built_in: true,
         },
+        ChatModeBundle {
+            id: "orchestrator".into(),
+            display_name: "Orchestrator".into(),
+            prompt: concat!(
+                "You are the Orchestrator. Coordinate work through the ",
+                "allthecodes-bridge shared projects, tasks, agents, and knowledge state. ",
+                "Use the local allthecodes-bridge-cli plugin and the allthecodes-bridge ",
+                "MCP server when bridge coordination is relevant. You may delegate work ",
+                "to Claude Code- and Codex-capable agents through the bridge/plugin, ",
+                "then inspect or summarize terminal and tool results before declaring ",
+                "the work complete."
+            )
+            .into(),
+            plugin_ids: vec!["allthecodes-bridge-cli@local".into()],
+            skill_ids: Vec::new(),
+            mcp_server_names: vec!["allthecodes-bridge".into()],
+            enabled: true,
+            built_in: true,
+        },
     ]
 }
 
@@ -432,14 +451,15 @@ fn merge_builtin_flags(mut bundle: ChatModeBundle) -> ChatModeBundle {
 }
 
 fn is_builtin_mode(id: &str) -> bool {
-    matches!(id, "normal" | "eco-boost")
+    matches!(id, "normal" | "eco-boost" | "orchestrator")
 }
 
 fn mode_sort_key(bundle: &ChatModeBundle) -> (u8, String) {
     let order = match bundle.id.as_str() {
         "normal" => 0,
         "eco-boost" => 1,
-        _ => 2,
+        "orchestrator" => 2,
+        _ => 3,
     };
     (order, bundle.display_name.to_lowercase())
 }

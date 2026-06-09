@@ -22,6 +22,8 @@ use tracing::warn;
 use crate::state::WebState;
 
 const OUTPUT_BUFFER_LIMIT: usize = 256 * 1024;
+const BRIDGE_CLI_PLUGIN_NAME: &str = "allthecodes-bridge-cli";
+const BRIDGE_CLI_MCP_SERVER: &str = "allthecodes-bridge";
 static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Default)]
@@ -447,12 +449,19 @@ enum TerminalProfile {
     Allthecodes,
     Codex,
     Claude,
+    BridgeCli,
     Shell,
 }
 
 impl TerminalProfile {
-    fn all() -> [Self; 4] {
-        [Self::Allthecodes, Self::Codex, Self::Claude, Self::Shell]
+    fn all() -> [Self; 5] {
+        [
+            Self::Allthecodes,
+            Self::Codex,
+            Self::Claude,
+            Self::BridgeCli,
+            Self::Shell,
+        ]
     }
 
     fn from_id(id: &str) -> Result<Self, String> {
@@ -460,6 +469,7 @@ impl TerminalProfile {
             "allthecodes" | "tui" => Ok(Self::Allthecodes),
             "codex" => Ok(Self::Codex),
             "claude" | "claude-code" => Ok(Self::Claude),
+            "allthecodes-bridge-cli" | "bridge-cli" => Ok(Self::BridgeCli),
             "shell" | "bash" => Ok(Self::Shell),
             _ => Err(format!("unknown terminal profile: {id}")),
         }
@@ -470,6 +480,7 @@ impl TerminalProfile {
             Self::Allthecodes => "allthecodes",
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::BridgeCli => "allthecodes-bridge-cli",
             Self::Shell => "shell",
         }
     }
@@ -479,6 +490,7 @@ impl TerminalProfile {
             Self::Allthecodes => "Allthecodes",
             Self::Codex => "Codex",
             Self::Claude => "Claude",
+            Self::BridgeCli => "Bridge CLI",
             Self::Shell => "Shell",
         }
     }
@@ -797,6 +809,7 @@ fn resolve_profile_command(
         }
         TerminalProfile::Codex => resolve_path_command("codex", &[]),
         TerminalProfile::Claude => resolve_path_command("claude", &[]),
+        TerminalProfile::BridgeCli => resolve_bridge_cli_command(),
         TerminalProfile::Shell => {
             if let Some(shell) = std::env::var_os("SHELL")
                 .map(PathBuf::from)
@@ -812,6 +825,103 @@ fn resolve_profile_command(
             resolve_path_command("bash", &[])
         }
     }
+}
+
+fn resolve_bridge_cli_command() -> Result<ResolvedCommand, String> {
+    let (plugin_id, config) = allthecodes_plugins::discover_plugin_mcp_servers_scoped()
+        .into_iter()
+        .find(|(plugin_id, config)| {
+            config.name == BRIDGE_CLI_MCP_SERVER
+                && plugin_id
+                    .split('@')
+                    .next()
+                    .is_some_and(|name| name == BRIDGE_CLI_PLUGIN_NAME)
+        })
+        .ok_or_else(|| {
+            format!(
+                "Bridge CLI plugin is not installed or did not contribute MCP server '{}'",
+                BRIDGE_CLI_MCP_SERVER
+            )
+        })?;
+    if config.disabled == Some(true) {
+        return Err(format!(
+            "Bridge CLI MCP server '{}' is disabled",
+            BRIDGE_CLI_MCP_SERVER
+        ));
+    }
+    if config.transport != "stdio" {
+        return Err(format!(
+            "Bridge CLI MCP server '{}' must use stdio transport",
+            BRIDGE_CLI_MCP_SERVER
+        ));
+    }
+    let command = config.command.as_deref().ok_or_else(|| {
+        format!(
+            "Bridge CLI MCP server '{}' has no command",
+            BRIDGE_CLI_MCP_SERVER
+        )
+    })?;
+    let command_path = PathBuf::from(command);
+    if command_path.is_absolute() && !command_path.exists() {
+        return Err(format!(
+            "Bridge CLI MCP command was not found at {}",
+            command_path.display()
+        ));
+    }
+    let plugin_root = allthecodes_plugins::find_plugin(&plugin_id)
+        .and_then(|plugin| plugin.cache_path)
+        .ok_or_else(|| {
+            format!(
+                "Bridge CLI plugin '{}' is registered without a plugin root",
+                plugin_id
+            )
+        })?;
+    let shell = std::env::var_os("SHELL")
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| find_on_path("bash"))
+        .ok_or_else(|| "shell command was not found in SHELL or PATH".to_string())?;
+    let server_args = config.args.unwrap_or_else(|| vec!["serve".to_string()]);
+    let args = vec![
+        "-lc".to_string(),
+        bridge_cli_shell_command(&plugin_root, command, &server_args),
+    ];
+    let display = display_command(&shell, &args);
+    Ok(ResolvedCommand {
+        executable: shell,
+        args,
+        display,
+    })
+}
+
+fn bridge_cli_shell_command(plugin_root: &Path, command: &str, serve_args: &[String]) -> String {
+    let serve_args = if serve_args.is_empty() {
+        vec!["serve".to_string()]
+    } else {
+        serve_args.to_vec()
+    };
+    let exec_command = std::iter::once(shell_quote(command))
+        .chain(serve_args.iter().map(|arg| shell_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "cd {} && {} doctor && echo {} && exec {}",
+        shell_quote(&plugin_root.to_string_lossy()),
+        shell_quote(command),
+        shell_quote("[bridge] starting MCP stdio server..."),
+        exec_command
+    )
+}
+
+fn shell_quote(value: impl AsRef<str>) -> String {
+    let value = value.as_ref();
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':' | '+'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn resolve_path_command(command: &str, args: &[&str]) -> Result<ResolvedCommand, String> {
@@ -870,4 +980,32 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bridge_cli_profile_id_resolves() {
+        let profile = TerminalProfile::from_id("allthecodes-bridge-cli").unwrap();
+        assert_eq!(profile, TerminalProfile::BridgeCli);
+        assert_eq!(profile.id(), "allthecodes-bridge-cli");
+        assert_eq!(profile.default_label(), "Bridge CLI");
+    }
+
+    #[test]
+    fn bridge_cli_shell_command_runs_doctor_then_plugin_server() {
+        let command = bridge_cli_shell_command(
+            Path::new("/plugins/allthecodes-bridge-cli"),
+            "/plugins/allthecodes-bridge-cli/target/release/allthecodes-bridge-cli",
+            &["serve".to_string()],
+        );
+        assert!(command.contains("cd /plugins/allthecodes-bridge-cli"));
+        assert!(command.contains("allthecodes-bridge-cli doctor"));
+        assert!(command.contains("[bridge] starting MCP stdio server..."));
+        assert!(command.contains(
+            "exec /plugins/allthecodes-bridge-cli/target/release/allthecodes-bridge-cli serve"
+        ));
+    }
 }
