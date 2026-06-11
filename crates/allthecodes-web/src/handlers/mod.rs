@@ -299,6 +299,126 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn session_resume_reuses_cached_engine_session_grants() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+        let session_id = state.engine().current_session_id().to_string();
+        allthecodes_session::storage::save_session(&session_id, &[], ".")
+            .expect("seed cached session");
+        state.engine().update_app_state(|app| {
+            app.tool_permission_context
+                .grant_session_allow("mcp__computer-use__screenshot");
+        });
+
+        let response = session_resume_handler(AxumPath(session_id.clone()), State(state.clone()))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let app_state = state.engine().app_state();
+        assert!(
+            app_state
+                .tool_permission_context
+                .has_session_grant("mcp__computer-use__screenshot")
+        );
+        assert_eq!(state.engine().current_session_id().to_string(), session_id);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_new_inherits_runtime_permissions_but_clears_session_grants() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+        state.engine().update_app_state(|app| {
+            app.tool_permission_context.mode =
+                allthecodes_types::permissions::PermissionMode::Auto;
+            app.tool_permission_context
+                .always_allow_rules
+                .insert("user".into(), vec!["Read".into()]);
+            app.tool_permission_context
+                .always_deny_rules
+                .insert("user".into(), vec!["Write".into()]);
+            app.tool_permission_context
+                .always_ask_rules
+                .insert("user".into(), vec!["Bash".into()]);
+            app.tool_permission_context
+                .grant_session_allow("mcp__computer-use__screenshot");
+        });
+
+        let response = session_new_handler(State(state.clone()), None)
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let app_state = state.engine().app_state();
+        assert_eq!(
+            app_state.tool_permission_context.mode,
+            allthecodes_types::permissions::PermissionMode::Auto
+        );
+        assert_eq!(
+            app_state
+                .tool_permission_context
+                .always_allow_rules
+                .get("user"),
+            Some(&vec!["Read".to_string()])
+        );
+        assert_eq!(
+            app_state.tool_permission_context.always_deny_rules.get("user"),
+            Some(&vec!["Write".to_string()])
+        );
+        assert_eq!(
+            app_state.tool_permission_context.always_ask_rules.get("user"),
+            Some(&vec!["Bash".to_string()])
+        );
+        assert!(
+            !app_state
+                .tool_permission_context
+                .has_session_grant("mcp__computer-use__screenshot")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cold_session_engine_inherits_runtime_permissions_but_clears_session_grants() {
+        let (_home, _guard) = temp_home();
+        let state = make_web_state();
+        let session_id = "cold-session-engine";
+        allthecodes_session::storage::save_session(session_id, &[], ".")
+            .expect("seed cold session");
+        state.engine().update_app_state(|app| {
+            app.tool_permission_context.mode =
+                allthecodes_types::permissions::PermissionMode::Plan;
+            app.tool_permission_context
+                .always_allow_rules
+                .insert("user".into(), vec!["Read".into()]);
+            app.tool_permission_context
+                .grant_session_allow("mcp__computer-use__screenshot");
+        });
+
+        let engine = crate::handlers::sessions::build_engine_for_session(&state, session_id)
+            .expect("engine");
+
+        let app_state = engine.app_state();
+        assert_eq!(
+            app_state.tool_permission_context.mode,
+            allthecodes_types::permissions::PermissionMode::Plan
+        );
+        assert_eq!(
+            app_state
+                .tool_permission_context
+                .always_allow_rules
+                .get("user"),
+            Some(&vec!["Read".to_string()])
+        );
+        assert!(
+            !app_state
+                .tool_permission_context
+                .has_session_grant("mcp__computer-use__screenshot")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn workspace_archive_skips_active_and_archives_inactive_sessions() {
         let (_home, _guard) = temp_home();
         let project = tempfile::tempdir().expect("project");

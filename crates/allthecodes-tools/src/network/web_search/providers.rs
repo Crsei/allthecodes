@@ -3,30 +3,47 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
+use allthecodes_config::runtime_settings::SettingsJson;
+
 use super::{
-    BraveSearchResponse, SearchProvider, SearchResultEntry, TavilySearchResponse,
-    BRAVE_API_KEY_ENV, BRAVE_API_URL, TAVILY_API_KEY_ENV, TAVILY_API_URL,
+    BraveSearchResponse, SearchProvider, SearchResultEntry, TavilySearchResponse, BRAVE_API_URL,
+    TAVILY_API_URL,
 };
 
-pub(super) fn detect_provider() -> Option<SearchProvider> {
-    detect_provider_from_keys(
-        std::env::var(TAVILY_API_KEY_ENV).ok(),
-        std::env::var(BRAVE_API_KEY_ENV).ok(),
-    )
+pub(super) fn detect_provider_from_settings(settings: &SettingsJson) -> Option<SearchProvider> {
+    let provider = settings
+        .web_search_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match provider {
+        Some("tavily") => {
+            configured_key(settings.web_search_tavily_api_key.clone()).map(SearchProvider::Tavily)
+        }
+        Some("brave") => {
+            configured_key(settings.web_search_brave_api_key.clone()).map(SearchProvider::Brave)
+        }
+        Some(_) => None,
+        None => detect_provider_from_keys(
+            settings.web_search_tavily_api_key.clone(),
+            settings.web_search_brave_api_key.clone(),
+        ),
+    }
 }
 
 pub(super) fn detect_provider_from_keys(
     tavily_key: Option<String>,
     brave_key: Option<String>,
 ) -> Option<SearchProvider> {
-    tavily_key
-        .filter(|key| !key.is_empty())
+    configured_key(tavily_key)
         .map(SearchProvider::Tavily)
-        .or_else(|| {
-            brave_key
-                .filter(|key| !key.is_empty())
-                .map(SearchProvider::Brave)
-        })
+        .or_else(|| configured_key(brave_key).map(SearchProvider::Brave))
+}
+
+fn configured_key(key: Option<String>) -> Option<String> {
+    key.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Execute a Tavily search and return unified results.

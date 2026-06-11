@@ -26,14 +26,20 @@ pub(crate) fn merge_refreshed_mcp_tools(
         if tool.mcp_server_name().is_some() {
             continue;
         }
-        if seen.insert(tool.name().to_string()) {
+        let name = tool.name().to_string();
+        if seen.insert(name.clone()) {
             merged.push(tool);
+        } else {
+            tracing::warn!(tool = %name, "skipping existing tool with duplicate name");
         }
     }
 
     for tool in refreshed_mcp_tools {
-        if seen.insert(tool.name().to_string()) {
+        let name = tool.name().to_string();
+        if seen.insert(name.clone()) {
             merged.push(tool);
+        } else {
+            tracing::warn!(tool = %name, "skipping refreshed MCP tool with duplicate name");
         }
     }
 

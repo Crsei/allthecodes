@@ -9,11 +9,11 @@ use serde_json::{json, Value};
 use crate::tool::*;
 use allthecodes_types::message::AssistantMessage;
 
-use super::providers::{detect_provider, search_brave, search_tavily};
+use super::providers::{detect_provider_from_settings, search_brave, search_tavily};
 use super::{
     build_cache_key, cache_ttl_secs, filter_results_unified, format_results_text, SearchProvider,
-    SearchResultEntry, BRAVE_API_KEY_ENV, DEFAULT_MAX_RESULTS, MAX_QUERY_LENGTH, MAX_RESULTS_CAP,
-    SEARCH_CACHE, SEARCH_TIMEOUT, TAVILY_API_KEY_ENV,
+    SearchResultEntry, DEFAULT_MAX_RESULTS, MAX_QUERY_LENGTH, MAX_RESULTS_CAP, SEARCH_CACHE,
+    SEARCH_TIMEOUT,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ impl Tool for WebSearchTool {
     async fn call(
         &self,
         input: Value,
-        _ctx: &ToolUseContext,
+        ctx: &ToolUseContext,
         _parent: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
@@ -140,15 +140,13 @@ impl Tool for WebSearchTool {
             })
             .unwrap_or_default();
 
-        let provider = match detect_provider() {
+        let app_state = (ctx.get_app_state)();
+        let provider = match detect_provider_from_settings(&app_state.settings) {
             Some(p) => p,
             None => {
                 return Ok(ToolResult {
                     data: json!({
-                        "error": format!(
-                            "WebSearch requires either {} or {} environment variable to be set.",
-                            TAVILY_API_KEY_ENV, BRAVE_API_KEY_ENV
-                        )
+                        "error": "WebSearch requires webSearchProvider and the matching API key in allthecodes settings.",
                     }),
                     new_messages: vec![],
                     ..Default::default()
@@ -226,14 +224,9 @@ impl Tool for WebSearchTool {
     async fn prompt(&self) -> String {
         let now = chrono::Utc::now();
         let month_year = now.format("%B %Y");
-        let provider = match detect_provider() {
-            Some(SearchProvider::Tavily(_)) => "Tavily",
-            Some(SearchProvider::Brave(_)) => "Brave",
-            None => "none (API key required)",
-        };
         format!(
             r#"Search the web for current information. The current date is {month_year}.
-Search provider: {provider}.
+Search provider: configured in allthecodes settings.
 
 When presenting search results, you MUST include a "Sources:" section at the end
 with markdown hyperlinks to the sources used.

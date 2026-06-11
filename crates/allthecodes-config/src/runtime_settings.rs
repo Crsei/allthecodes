@@ -143,6 +143,9 @@ pub struct SettingsJson {
     pub tts_voice_custom_id: Option<String>,
     pub tts_model: Option<String>,
     pub search_engine: Option<String>,
+    pub web_search_provider: Option<String>,
+    pub web_search_tavily_api_key: Option<String>,
+    pub web_search_brave_api_key: Option<String>,
 
     // -- Data / savings -------------------------------------------------
     pub cloud_sync_enabled: Option<bool>,
@@ -268,6 +271,19 @@ impl SettingsJson {
         insert_opt_ref!("tts_voice_custom_id", self.tts_voice_custom_id);
         insert_opt_ref!("tts_model", self.tts_model);
         insert_opt_ref!("search_engine", self.search_engine);
+        insert_opt_ref!("web_search_provider", self.web_search_provider);
+        insert_opt!(
+            "web_search_tavily_configured",
+            self.web_search_tavily_api_key
+                .as_ref()
+                .map(|value| !value.trim().is_empty())
+        );
+        insert_opt!(
+            "web_search_brave_configured",
+            self.web_search_brave_api_key
+                .as_ref()
+                .map(|value| !value.trim().is_empty())
+        );
         insert_opt!("cloud_sync_enabled", self.cloud_sync_enabled);
         insert_opt_ref!("cloud_sync_path", self.cloud_sync_path);
         insert_opt!("token_savings_tracking", self.token_savings_tracking);
@@ -335,6 +351,9 @@ mod tests {
             language: Some("zh-CN".to_string()),
             proxy_enabled: Some(true),
             tts_api_key: Some("sk-secret".to_string()),
+            web_search_provider: Some("tavily".to_string()),
+            web_search_tavily_api_key: Some("tvly-secret".to_string()),
+            web_search_brave_api_key: Some("brave-secret".to_string()),
             extra: HashMap::from([
                 ("appMode".to_string(), json!("desktop")),
                 ("apiToken".to_string(), json!("secret")),
@@ -352,7 +371,12 @@ mod tests {
         let map = settings.settings_map();
         assert_eq!(map.get("language"), Some(&json!("zh-CN")));
         assert_eq!(map.get("proxy_enabled"), Some(&json!(true)));
+        assert_eq!(map.get("web_search_provider"), Some(&json!("tavily")));
+        assert_eq!(map.get("web_search_tavily_configured"), Some(&json!(true)));
+        assert_eq!(map.get("web_search_brave_configured"), Some(&json!(true)));
         assert!(!map.contains_key("tts_api_key"));
+        assert!(!map.contains_key("web_search_tavily_api_key"));
+        assert!(!map.contains_key("web_search_brave_api_key"));
         assert!(!map.contains_key("apiToken"));
         assert_eq!(map.get("appMode"), Some(&json!("desktop")));
         assert_eq!(map.get("nested"), Some(&json!({ "safe": true })));

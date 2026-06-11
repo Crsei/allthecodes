@@ -101,12 +101,14 @@ pub(crate) async fn prepare_model_request(
         &app_state_for_request.settings,
         &request_model,
     );
-    let session_filtered_tools = allthecodes_tools::registry::filter_tools_for_session_gates(
-        capability_filtered_tools,
-        allthecodes_tools::registry::ToolSessionGates {
-            non_interactive: context.query_source.is_non_interactive(),
-            subagent: context.query_source.starts_with_agent(),
-        },
+    let session_filtered_tools = allthecodes_tools::registry::dedupe_tools_by_name(
+        allthecodes_tools::registry::filter_tools_for_session_gates(
+            capability_filtered_tools,
+            allthecodes_tools::registry::ToolSessionGates {
+                non_interactive: context.query_source.is_non_interactive(),
+                subagent: context.query_source.starts_with_agent(),
+            },
+        ),
     );
     let deferred_session_id = context
         .gates
@@ -121,6 +123,7 @@ pub(crate) async fn prepare_model_request(
     } else {
         session_filtered_tools
     };
+    let tools_for_request = allthecodes_tools::registry::dedupe_tools_by_name(tools_for_request);
 
     let autocompact_params = ModelCallParams {
         messages: messages.clone(),

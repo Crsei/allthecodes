@@ -432,29 +432,36 @@ impl QueryEngine {
                     &app_settings,
                     &model_name,
                 );
-            let session_tools_snapshot =
+            let session_tools_snapshot = allthecodes_tools::registry::dedupe_tools_by_name(
                 allthecodes_tools::registry::filter_tools_for_session_gates(
                     capability_tools_snapshot,
                     allthecodes_tools::registry::ToolSessionGates {
                         non_interactive: query_source.is_non_interactive(),
                         subagent: query_source.starts_with_agent(),
                     },
-                );
+                ),
+            );
             let query_gates = crate::types::config::QueryGates::from_env(
                 state_ref.read().app_state.fast_mode,
             );
+            let execution_tools_snapshot = filter_tools_for_submit_overrides(
+                session_tools_snapshot.clone(),
+                overrides.allowed_tools.as_ref(),
+            );
+            let execution_tools_snapshot =
+                allthecodes_tools::registry::dedupe_tools_by_name(execution_tools_snapshot);
             let prompt_tools_snapshot = if query_gates.deferred_tool_loading {
                 let messages = state_ref.read().messages.clone();
                 allthecodes_tools::deferred_tools::filter_tools_for_deferred_request(
-                    session_tools_snapshot.clone(),
+                    execution_tools_snapshot.clone(),
                     &messages,
                     session_id.as_str(),
                 )
             } else {
-                session_tools_snapshot.clone()
+                execution_tools_snapshot.clone()
             };
             let prompt_tools_snapshot =
-                filter_tools_for_submit_overrides(prompt_tools_snapshot, overrides.allowed_tools.as_ref());
+                allthecodes_tools::registry::dedupe_tools_by_name(prompt_tools_snapshot);
 
             // ================================================================
             // PHASE C: Pre-Query Setup
@@ -662,7 +669,7 @@ impl QueryEngine {
                 command_dispatcher: command_dispatcher.clone(),
                 auto_classifier_fn: auto_classifier_fn.clone(),
                 submit_overrides: overrides.clone(),
-                submit_tools: Some(prompt_tools_snapshot.clone()),
+                submit_tools: None,
             });
 
             prime_goal_runtime_for_session(session_id.as_str(), &state_ref);

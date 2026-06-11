@@ -1,4 +1,4 @@
-use super::providers::detect_provider_from_keys;
+use super::providers::{detect_provider_from_keys, detect_provider_from_settings};
 use super::tool::WebSearchTool;
 use super::*;
 
@@ -97,6 +97,19 @@ fn test_detect_provider_tavily_first() {
 #[test]
 fn test_detect_provider_brave_fallback() {
     let provider = detect_provider_from_keys(None, Some("brave-test".into()));
+    assert!(matches!(provider, Some(SearchProvider::Brave(_))));
+}
+
+#[test]
+fn test_detect_provider_from_settings_honors_explicit_provider() {
+    let settings = allthecodes_config::runtime_settings::SettingsJson {
+        web_search_provider: Some("brave".into()),
+        web_search_tavily_api_key: Some("tvly-test".into()),
+        web_search_brave_api_key: Some("brave-test".into()),
+        ..Default::default()
+    };
+
+    let provider = detect_provider_from_settings(&settings);
     assert!(matches!(provider, Some(SearchProvider::Brave(_))));
 }
 

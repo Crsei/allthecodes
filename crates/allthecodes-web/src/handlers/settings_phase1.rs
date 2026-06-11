@@ -593,6 +593,45 @@ mod tests {
             Some("enabled")
         );
         assert_eq!(state.engine().app_state().thinking_enabled, Some(true));
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_web_search_provider".to_string(),
+                value: json!("brave"),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
+                action: "set_web_search_brave_api_key".to_string(),
+                value: json!("brave-test-key"),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let raw = read_user_settings(&home);
+        assert_eq!(raw.web_search_provider.as_deref(), Some("brave"));
+        assert_eq!(
+            raw.web_search_brave_api_key.as_deref(),
+            Some("brave-test-key")
+        );
+        let settings_map = state.engine().app_state().settings.settings_map();
+        assert_eq!(
+            settings_map.get("web_search_provider"),
+            Some(&json!("brave"))
+        );
+        assert_eq!(
+            settings_map.get("web_search_brave_configured"),
+            Some(&json!(true))
+        );
+        assert!(!settings_map.contains_key("web_search_brave_api_key"));
     }
 
     #[tokio::test]

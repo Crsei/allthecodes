@@ -14,7 +14,7 @@ use axum::Json;
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::info;
+use tracing::{info, warn};
 
 use allthecodes_engine::types::config::{QuerySource, SubmitContextMode, SubmitMessageOverrides};
 use allthecodes_types::callbacks::{PermissionRequestPayload, PermissionResponsePayload};
@@ -23,7 +23,7 @@ use allthecodes_types::sdk::SdkMessage;
 use crate::state::WebState;
 use allthecodes_protocol::ApiError as ProtocolApiError;
 
-const CHAT_PERMISSION_TIMEOUT: Duration = Duration::from_secs(30);
+const CHAT_PERMISSION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Serialize)]
 pub struct UsageResponse {
@@ -251,6 +251,7 @@ pub async fn chat_handler(
             let sse_tx = permission_sse_tx.clone();
             Box::pin(async move {
                 let tool_use_id = request.tool_use_id.clone();
+                let tool_name = request.tool_name.clone();
                 let command = request.legacy_command();
                 let (response_tx, response_rx) = tokio::sync::oneshot::channel();
                 state.insert_chat_permission(&session_id, &tool_use_id, response_tx);
@@ -266,13 +267,52 @@ pub async fn chat_handler(
                 };
 
                 if sse_tx.send(ChatSseItem::Permission(event)).is_err() {
+                    warn!(
+                        session_id = %session_id,
+                        tool_use_id = %tool_use_id,
+                        tool = %tool_name,
+                        "chat permission request could not be delivered"
+                    );
                     state.remove_chat_permission(&session_id, &tool_use_id);
                     return PermissionResponsePayload::deny();
                 }
+                info!(
+                    session_id = %session_id,
+                    tool_use_id = %tool_use_id,
+                    tool = %tool_name,
+                    "chat permission request sent"
+                );
 
                 match tokio::time::timeout(CHAT_PERMISSION_TIMEOUT, response_rx).await {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(_)) | Err(_) => {
+                    Ok(Ok(response)) => {
+                        let decision = response.normalized_decision();
+                        info!(
+                            session_id = %session_id,
+                            tool_use_id = %tool_use_id,
+                            tool = %tool_name,
+                            decision = %decision,
+                            "chat permission response received"
+                        );
+                        response
+                    }
+                    Ok(Err(_)) => {
+                        warn!(
+                            session_id = %session_id,
+                            tool_use_id = %tool_use_id,
+                            tool = %tool_name,
+                            "chat permission response channel closed"
+                        );
+                        state.remove_chat_permission(&session_id, &tool_use_id);
+                        PermissionResponsePayload::deny()
+                    }
+                    Err(_) => {
+                        warn!(
+                            session_id = %session_id,
+                            tool_use_id = %tool_use_id,
+                            tool = %tool_name,
+                            timeout_ms = CHAT_PERMISSION_TIMEOUT.as_millis(),
+                            "chat permission request timed out"
+                        );
                         state.remove_chat_permission(&session_id, &tool_use_id);
                         PermissionResponsePayload::deny()
                     }
@@ -328,9 +368,15 @@ pub async fn chat_permission_response_handler(
     let resolved = state.resolve_chat_permission(
         &req.session_id,
         &tool_use_id,
-        PermissionResponsePayload::new(decision, req.feedback),
+        PermissionResponsePayload::new(decision.clone(), req.feedback),
     );
     if !resolved {
+        warn!(
+            session_id = %req.session_id,
+            tool_use_id = %tool_use_id,
+            decision = %decision,
+            "stale chat permission response"
+        );
         return (
             StatusCode::CONFLICT,
             Json(json!({
@@ -345,6 +391,12 @@ pub async fn chat_permission_response_handler(
             .into_response();
     }
 
+    info!(
+        session_id = %req.session_id,
+        tool_use_id = %tool_use_id,
+        decision = %decision,
+        "chat permission response accepted"
+    );
     Json(json!({ "status": "ok" })).into_response()
 }
 

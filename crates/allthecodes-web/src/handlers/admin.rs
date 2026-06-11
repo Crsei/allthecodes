@@ -422,6 +422,9 @@ fn action_to_setting_key(action: &str) -> Option<&'static str> {
         "set_tts_voice_custom_id" => "tts_voice_custom_id",
         "set_tts_model" => "tts_model",
         "set_search_engine" => "search_engine",
+        "set_web_search_provider" => "web_search_provider",
+        "set_web_search_tavily_api_key" => "web_search_tavily_api_key",
+        "set_web_search_brave_api_key" => "web_search_brave_api_key",
         "set_memory_enabled" => "auto_memory_enabled",
         "set_auto_retrieve" | "set_memory_auto_retrieve" => "memory_auto_retrieve",
         "set_query_rewriting" | "set_memory_query_rewriting" => "memory_query_rewriting",
@@ -528,6 +531,13 @@ pub(crate) fn normalize_settings_path(path: &str) -> Option<&'static str> {
         "tts.voice_custom_id" | "tts_voice_custom_id" => "tts_voice_custom_id",
         "tts.model" | "tts_model" => "tts_model",
         "web_search.search_engine" | "search.search_engine" | "search_engine" => "search_engine",
+        "web_search.provider" | "search.provider" | "web_search_provider" => "web_search_provider",
+        "web_search.tavily_api_key" | "search.tavily_api_key" | "web_search_tavily_api_key" => {
+            "web_search_tavily_api_key"
+        }
+        "web_search.brave_api_key" | "search.brave_api_key" | "web_search_brave_api_key" => {
+            "web_search_brave_api_key"
+        }
         "memory.enabled" | "memory.auto_memory_enabled" | "auto_memory_enabled" => {
             "auto_memory_enabled"
         }
@@ -583,6 +593,18 @@ fn validate_setting_value(key: &str, value: &Value) -> Result<()> {
     }
     if matches!(key, "tts_api_key") {
         reject_empty_string(key, value)?;
+    }
+    if matches!(
+        key,
+        "web_search_tavily_api_key" | "web_search_brave_api_key"
+    ) {
+        reject_empty_string(key, value)?;
+    }
+    if key == "web_search_provider" {
+        let provider = string_value(key, value)?;
+        if !matches!(provider.as_str(), "tavily" | "brave") {
+            bail!("{key} must be tavily or brave");
+        }
     }
     Ok(())
 }
@@ -653,7 +675,9 @@ fn setting_kind(key: &str) -> SettingKind {
         | "memory_max_retrieved"
         | "memory_similarity_threshold" => SettingKind::U8,
         "temperature" => SettingKind::Temperature,
-        "tts_api_key" => SettingKind::SensitiveString,
+        "tts_api_key" | "web_search_tavily_api_key" | "web_search_brave_api_key" => {
+            SettingKind::SensitiveString
+        }
         _ => SettingKind::String,
     }
 }
@@ -714,6 +738,13 @@ fn apply_value_to_raw(raw: &mut RawSettings, key: &str, value: Value) -> Result<
         "tts_voice_custom_id" => raw.tts_voice_custom_id = Some(string_value(key, &value)?),
         "tts_model" => raw.tts_model = Some(string_value(key, &value)?),
         "search_engine" => raw.search_engine = Some(string_value(key, &value)?),
+        "web_search_provider" => raw.web_search_provider = Some(string_value(key, &value)?),
+        "web_search_tavily_api_key" => {
+            raw.web_search_tavily_api_key = Some(string_value(key, &value)?)
+        }
+        "web_search_brave_api_key" => {
+            raw.web_search_brave_api_key = Some(string_value(key, &value)?)
+        }
         "auto_memory_enabled" => raw.auto_memory_enabled = Some(bool_value(key, &value)?),
         "memory_auto_retrieve" => raw.memory_auto_retrieve = Some(bool_value(key, &value)?),
         "memory_query_rewriting" => raw.memory_query_rewriting = Some(bool_value(key, &value)?),
@@ -828,6 +859,13 @@ fn apply_value_to_app_state(app_state: &mut AppState, key: &str, value: Value) {
         "tts_voice_custom_id" => settings.tts_voice_custom_id = value.as_str().map(str::to_string),
         "tts_model" => settings.tts_model = value.as_str().map(str::to_string),
         "search_engine" => settings.search_engine = value.as_str().map(str::to_string),
+        "web_search_provider" => settings.web_search_provider = value.as_str().map(str::to_string),
+        "web_search_tavily_api_key" => {
+            settings.web_search_tavily_api_key = value.as_str().map(str::to_string)
+        }
+        "web_search_brave_api_key" => {
+            settings.web_search_brave_api_key = value.as_str().map(str::to_string)
+        }
         "auto_memory_enabled" => settings.auto_memory_enabled = value.as_bool(),
         "memory_auto_retrieve" => settings.memory_auto_retrieve = value.as_bool(),
         "memory_query_rewriting" => settings.memory_query_rewriting = value.as_bool(),

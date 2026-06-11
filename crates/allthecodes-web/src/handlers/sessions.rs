@@ -382,7 +382,12 @@ impl Processor for SessionResumeProcessor {
 
         let messages = load_session_messages(&params.id)?;
         let response = session_detail_from_messages(params.id.clone(), &messages);
-        let engine = rebuild_engine_with_session_id(&self.state, Some(messages), Some(&params.id));
+        let engine = self
+            .state
+            .engine_for_session(&params.id)
+            .unwrap_or_else(|| {
+                rebuild_engine_with_session_id(&self.state, Some(messages), Some(&params.id))
+            });
         self.state.replace_engine(engine);
 
         Ok(response)
@@ -1316,6 +1321,9 @@ fn rebuild_engine_with_session_id_and_cwd(
     let mut engine = QueryEngine::new(cfg);
     engine.set_hook_runner(current.hook_runner());
     engine.set_command_dispatcher(current.command_dispatcher());
+    let mut app_state = current.app_state();
+    app_state.tool_permission_context.clear_session_grants();
+    engine.update_app_state(|state| *state = app_state);
     if let Some(id) = session_id {
         let id = SessionId::from_string(id);
         engine.session_id = id.clone();

@@ -30,13 +30,16 @@ impl QueryEngineDeps {
                 &app_state.settings,
                 &app_state.main_loop_model,
             );
-            allthecodes_tools::registry::filter_tools_for_session_gates(
-                capability_filtered,
-                allthecodes_tools::registry::ToolSessionGates {
-                    non_interactive: self.query_source.is_non_interactive(),
-                    subagent: self.query_source.starts_with_agent(),
-                },
-            )
+            let tools = allthecodes_tools::registry::dedupe_tools_by_name(
+                allthecodes_tools::registry::filter_tools_for_session_gates(
+                    capability_filtered,
+                    allthecodes_tools::registry::ToolSessionGates {
+                        non_interactive: self.query_source.is_non_interactive(),
+                        subagent: self.query_source.starts_with_agent(),
+                    },
+                ),
+            );
+            filter_tools_for_allowed_override(tools, self.submit_overrides.allowed_tools.as_ref())
         });
         let execute_deferred_tool: crate::types::tool::DeferredToolExecutor = {
             let deps = self.clone();
@@ -905,4 +908,18 @@ impl QueryEngineDeps {
             }
         }
     }
+}
+
+fn filter_tools_for_allowed_override(tools: Tools, allowed_tools: Option<&Vec<String>>) -> Tools {
+    let Some(allowed_tools) = allowed_tools else {
+        return tools;
+    };
+    let allowed: HashSet<String> = allowed_tools
+        .iter()
+        .map(|tool| tool.to_ascii_lowercase())
+        .collect();
+    tools
+        .into_iter()
+        .filter(|tool| allowed.contains(&tool.name().to_ascii_lowercase()))
+        .collect()
 }
