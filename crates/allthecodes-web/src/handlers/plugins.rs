@@ -395,3 +395,31 @@ fn internal_error(error: String) -> Response {
     let body = ProtocolApiError::Internal { message: error }.into_body();
     (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handlers::test_support::*;
+    use axum::response::IntoResponse;
+    use serde_json::json;
+    use serial_test::serial;
+
+    #[tokio::test]
+    #[serial]
+    async fn marketplace_handler_lists_builtin_superpowers() {
+        let (_home, _guard) = temp_home();
+        let response = plugins_marketplace_handler(State(make_web_state()))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let plugins = body["plugins"].as_array().expect("plugins");
+        assert!(plugins.iter().any(|plugin| {
+            plugin["id"] == json!("superpowers")
+                && plugin["name"] == json!("Superpowers")
+                && plugin["source_name"] == json!("default-marketplace-source")
+                && plugin["homepage"] == json!("https://github.com/obra/superpowers")
+        }));
+    }
+}

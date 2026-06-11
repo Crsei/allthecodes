@@ -25,6 +25,15 @@ pub struct AbortRequest {
     pub session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ChatPermissionResponseRequest {
+    pub session_id: String,
+    pub decision: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // State / Status
 // ---------------------------------------------------------------------------

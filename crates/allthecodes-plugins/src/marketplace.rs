@@ -13,6 +13,14 @@ use std::sync::LazyLock;
 
 use crate::PluginSource;
 
+pub const DEFAULT_MARKETPLACE_SOURCE_NAME: &str = "default-marketplace-source";
+pub const SUPERPOWERS_PLUGIN_ID: &str = "superpowers";
+const SUPERPOWERS_VERSION: &str = "5.1.0";
+const SUPERPOWERS_REPO: &str = "obra/superpowers";
+const SUPERPOWERS_HOMEPAGE: &str = "https://github.com/obra/superpowers";
+const SUPERPOWERS_DOWNLOAD_URL: &str =
+    "https://github.com/obra/superpowers/archive/refs/tags/v5.1.0.zip";
+
 /// A marketplace source configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceSource {
@@ -87,6 +95,17 @@ impl MarketplaceIndex {
             cache: Mutex::new(HashMap::new()),
             refresh_times: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Create a marketplace index seeded with built-in entries.
+    pub fn with_builtin_defaults() -> Self {
+        let index = Self::new();
+        index.register_source(default_marketplace_source());
+        index.set_marketplace_entries(
+            DEFAULT_MARKETPLACE_SOURCE_NAME,
+            default_marketplace_entries(),
+        );
+        index
     }
 
     /// Register a marketplace source.
@@ -202,9 +221,13 @@ impl MarketplaceIndex {
         let sources = self.list_sources();
         let mut total = 0usize;
         for source in sources {
-            let entries = load_entries_from_source(&source)
-                .await
-                .with_context(|| format!("Failed to refresh marketplace '{}'", source.name))?;
+            let entries = if source.name == DEFAULT_MARKETPLACE_SOURCE_NAME {
+                default_marketplace_entries()
+            } else {
+                load_entries_from_source(&source)
+                    .await
+                    .with_context(|| format!("Failed to refresh marketplace '{}'", source.name))?
+            };
             total += entries.len();
             self.set_marketplace_entries(&source.name, entries);
         }
@@ -234,7 +257,7 @@ impl Default for MarketplaceIndex {
 
 /// Global marketplace index instance.
 pub static GLOBAL_MARKETPLACE_INDEX: LazyLock<MarketplaceIndex> =
-    LazyLock::new(MarketplaceIndex::new);
+    LazyLock::new(MarketplaceIndex::with_builtin_defaults);
 
 /// List marketplace entries for a given source name.
 ///
@@ -262,6 +285,40 @@ pub async fn refresh_all_marketplaces() -> Result<usize> {
 /// Get the marketplace directory path.
 pub fn marketplaces_cache_dir() -> PathBuf {
     crate::marketplaces_dir()
+}
+
+pub fn default_marketplace_source() -> MarketplaceSource {
+    MarketplaceSource {
+        name: DEFAULT_MARKETPLACE_SOURCE_NAME.to_string(),
+        source: PluginSource::GitHub {
+            repo: SUPERPOWERS_REPO.to_string(),
+            ref_spec: Some(format!("v{SUPERPOWERS_VERSION}")),
+        },
+        description: "Built-in allthecodes marketplace entries".to_string(),
+        auto_update: false,
+        priority: 0,
+    }
+}
+
+pub fn default_marketplace_entries() -> Vec<MarketplacePluginEntry> {
+    vec![MarketplacePluginEntry {
+        id: SUPERPOWERS_PLUGIN_ID.to_string(),
+        name: "Superpowers".to_string(),
+        description: "Composable skills and workflow methodology for coding agents.".to_string(),
+        version: SUPERPOWERS_VERSION.to_string(),
+        author: Some("Jesse Vincent".to_string()),
+        source_name: DEFAULT_MARKETPLACE_SOURCE_NAME.to_string(),
+        download_url: Some(SUPERPOWERS_DOWNLOAD_URL.to_string()),
+        checksum: None,
+        tags: vec![
+            "tool".to_string(),
+            "skills".to_string(),
+            "workflow".to_string(),
+            "featured".to_string(),
+        ],
+        homepage: Some(SUPERPOWERS_HOMEPAGE.to_string()),
+        license: Some("MIT".to_string()),
+    }]
 }
 
 async fn load_entries_from_source(
@@ -356,6 +413,38 @@ mod tests {
         let index = MarketplaceIndex::new();
         assert!(index.list_sources().is_empty());
         assert!(index.list_all_entries().is_empty());
+    }
+
+    #[test]
+    fn builtin_index_lists_superpowers_by_default() {
+        let index = MarketplaceIndex::with_builtin_defaults();
+        let entries = index.list_all_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, SUPERPOWERS_PLUGIN_ID);
+        assert_eq!(entries[0].source_name, DEFAULT_MARKETPLACE_SOURCE_NAME);
+        assert_eq!(
+            entries[0].download_url.as_deref(),
+            Some(SUPERPOWERS_DOWNLOAD_URL)
+        );
+        assert_eq!(
+            index.list_sources()[0].name,
+            DEFAULT_MARKETPLACE_SOURCE_NAME
+        );
+        assert!(index.find_plugin(SUPERPOWERS_PLUGIN_ID).is_some());
+    }
+
+    #[tokio::test]
+    async fn builtin_marketplace_refresh_stays_local() {
+        let index = MarketplaceIndex::with_builtin_defaults();
+        let count = index.refresh_all().await.unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            index
+                .find_plugin(SUPERPOWERS_PLUGIN_ID)
+                .unwrap()
+                .source_name,
+            DEFAULT_MARKETPLACE_SOURCE_NAME
+        );
     }
 
     #[test]

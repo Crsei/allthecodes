@@ -41,7 +41,10 @@ impl TerminalManager {
         self.prune_idle_sessions();
         let profile = TerminalProfile::from_id(&request.profile)?;
         let cwd = resolve_cwd(workspace_cwd, request.cwd.as_deref())?;
-        let resolved = resolve_profile_command(profile, request.session_id.as_deref())?;
+        let resolved = match request.command {
+            Some(command) => resolve_custom_command(command)?,
+            None => resolve_profile_command(profile, request.session_id.as_deref())?,
+        };
         let size = request.initial_size.unwrap_or_default().to_pty_size();
         let persist = request.persist.unwrap_or(true);
         let id = format!(
@@ -155,6 +158,7 @@ impl TerminalSession {
             cmd.arg(arg);
         }
         cmd.cwd(&cwd);
+        configure_terminal_environment(&mut cmd);
 
         let child = pair
             .slave
@@ -376,9 +380,18 @@ pub struct TerminalCreateRequest {
     pub profile: String,
     pub cwd: Option<String>,
     pub label: Option<String>,
+    pub command: Option<TerminalCommandRequest>,
     pub session_id: Option<String>,
     pub persist: Option<bool>,
     pub initial_size: Option<TerminalSize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TerminalCommandRequest {
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub display: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -518,6 +531,7 @@ enum TerminalProfile {
     Codex,
     Claude,
     BridgeCli,
+    Custom,
     Shell,
 }
 
@@ -538,6 +552,7 @@ impl TerminalProfile {
             "codex" => Ok(Self::Codex),
             "claude" | "claude-code" => Ok(Self::Claude),
             "allthecodes-bridge-cli" | "bridge-cli" => Ok(Self::BridgeCli),
+            "custom" => Ok(Self::Custom),
             "shell" | "bash" => Ok(Self::Shell),
             _ => Err(format!("unknown terminal profile: {id}")),
         }
@@ -549,6 +564,7 @@ impl TerminalProfile {
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::BridgeCli => "allthecodes-bridge-cli",
+            Self::Custom => "custom",
             Self::Shell => "shell",
         }
     }
@@ -559,6 +575,7 @@ impl TerminalProfile {
             Self::Codex => "Codex",
             Self::Claude => "Claude",
             Self::BridgeCli => "Bridge CLI",
+            Self::Custom => "Custom",
             Self::Shell => "Shell",
         }
     }
@@ -679,6 +696,7 @@ pub async fn legacy_tui_ws_handler(
         profile: "allthecodes".to_string(),
         cwd: params.cwd,
         label: Some("Allthecodes".to_string()),
+        command: None,
         session_id: params.session_id,
         persist: Some(false),
         initial_size: Some(TerminalSize::default()),
@@ -886,6 +904,7 @@ fn resolve_profile_command(
         TerminalProfile::Codex => resolve_path_command("codex", &[]),
         TerminalProfile::Claude => resolve_path_command("claude", &[]),
         TerminalProfile::BridgeCli => resolve_bridge_cli_command(),
+        TerminalProfile::Custom => Err("custom terminal profile requires a command".to_string()),
         TerminalProfile::Shell => {
             if let Some(shell) = std::env::var_os("SHELL")
                 .map(PathBuf::from)
@@ -901,6 +920,41 @@ fn resolve_profile_command(
             resolve_path_command("bash", &[])
         }
     }
+}
+
+fn resolve_custom_command(command: TerminalCommandRequest) -> Result<ResolvedCommand, String> {
+    let raw_executable = command.executable.trim();
+    if raw_executable.is_empty() {
+        return Err("custom terminal command executable is required".to_string());
+    }
+
+    let requested = PathBuf::from(raw_executable);
+    let executable = if requested.is_absolute() {
+        if !requested.exists() {
+            return Err(format!(
+                "custom terminal command was not found at {}",
+                requested.display()
+            ));
+        }
+        requested
+    } else if raw_executable.contains('/') || raw_executable.contains('\\') {
+        return Err(
+            "custom terminal command executable must be absolute or available on PATH".to_string(),
+        );
+    } else {
+        find_on_path(raw_executable)
+            .ok_or_else(|| format!("{} command was not found in PATH", raw_executable))?
+    };
+    let args = command.args;
+    let display = command
+        .display
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| display_command(&executable, &args));
+    Ok(ResolvedCommand {
+        executable,
+        args,
+        display,
+    })
 }
 
 fn resolve_bridge_cli_command() -> Result<ResolvedCommand, String> {
@@ -1067,6 +1121,12 @@ fn decrement_atomic_counter(counter: &AtomicU64) -> u64 {
     }
 }
 
+fn configure_terminal_environment(cmd: &mut CommandBuilder) {
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env_remove("NO_COLOR");
+}
+
 fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1084,6 +1144,48 @@ mod tests {
         assert_eq!(profile, TerminalProfile::BridgeCli);
         assert_eq!(profile.id(), "allthecodes-bridge-cli");
         assert_eq!(profile.default_label(), "Bridge CLI");
+    }
+
+    #[test]
+    fn custom_profile_id_resolves() {
+        let profile = TerminalProfile::from_id("custom").unwrap();
+        assert_eq!(profile, TerminalProfile::Custom);
+        assert_eq!(profile.id(), "custom");
+        assert_eq!(profile.default_label(), "Custom");
+    }
+
+    #[test]
+    fn custom_command_uses_explicit_display_command() {
+        let command = resolve_custom_command(TerminalCommandRequest {
+            executable: "sh".to_string(),
+            args: vec!["-lc".to_string(), "echo ok".to_string()],
+            display: Some("plugin-provided command".to_string()),
+        })
+        .unwrap();
+
+        assert!(command.executable.ends_with("sh"));
+        assert_eq!(command.args, vec!["-lc", "echo ok"]);
+        assert_eq!(command.display, "plugin-provided command");
+    }
+
+    #[test]
+    fn terminal_environment_enables_color_output() {
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.env("TERM", "dumb");
+        cmd.env("COLORTERM", "");
+        cmd.env("NO_COLOR", "1");
+
+        configure_terminal_environment(&mut cmd);
+
+        assert_eq!(
+            cmd.get_env("TERM").and_then(|value| value.to_str()),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            cmd.get_env("COLORTERM").and_then(|value| value.to_str()),
+            Some("truecolor")
+        );
+        assert!(cmd.get_env("NO_COLOR").is_none());
     }
 
     #[test]

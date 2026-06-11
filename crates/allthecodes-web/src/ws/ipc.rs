@@ -35,6 +35,7 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tracing::{info, warn};
 
+use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_ipc::runtime::IpcRuntime;
 use allthecodes_ipc_protocol::{BackendMessage, FrontendMessage};
 use allthecodes_types::callbacks::{
@@ -88,13 +89,17 @@ pub async fn ipc_ws_handler(
             .into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_ipc_socket(socket, state, params.session_id))
+    ws.on_upgrade(move |socket| handle_ipc_socket(socket, state, engine, params.session_id))
         .into_response()
 }
 
 /// Drive the IPC WebSocket for the lifetime of the connection.
-async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Option<String>) {
-    let engine = state.engine();
+async fn handle_ipc_socket(
+    socket: WebSocket,
+    state: WebState,
+    engine: Arc<QueryEngine>,
+    session_id: Option<String>,
+) {
     let actual_session_id = session_id
         .clone()
         .unwrap_or_else(|| engine.current_session_id().to_string());
@@ -152,7 +157,8 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
     });
 
     // ── Task: handle incoming FrontendMessages ────────────────────
-    let engine_for_tasks = state.clone();
+    let state_for_tasks = state.clone();
+    let engine_for_tasks = engine.clone();
     let runtime_inner = ipc_runtime.clone();
     let sid = actual_session_id.clone();
 
@@ -172,6 +178,7 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
 
                             if !handle_frontend_message(
                                 frontend,
+                                &state_for_tasks,
                                 &engine_for_tasks,
                                 &runtime_inner,
                                 &sid,
@@ -199,8 +206,8 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
         }
 
         // Cleanup: abort any running query
-        engine_for_tasks.engine().abort();
-        engine_for_tasks.set_session_streaming(&sid, false);
+        engine_for_tasks.abort();
+        state_for_tasks.set_session_streaming(&sid, false);
     });
 
     // Wait for either task to complete (connection closed)
@@ -228,16 +235,17 @@ async fn handle_ipc_socket(socket: WebSocket, state: WebState, session_id: Optio
 async fn handle_frontend_message(
     msg: FrontendMessage,
     state: &WebState,
+    engine: &Arc<QueryEngine>,
     runtime: &IpcRuntime,
     session_id: &str,
 ) -> bool {
     match msg {
         FrontendMessage::SubmitPrompt { text, id } => {
-            submit_prompt_via_ipc(text, id, state, runtime, session_id).await;
+            submit_prompt_via_ipc(text, id, state, engine, runtime, session_id).await;
             true
         }
         FrontendMessage::AbortQuery => {
-            state.engine().abort();
+            engine.abort();
             state.set_session_streaming(session_id, false);
             let msg = BackendMessage::SystemInfo {
                 text: "Query aborted".to_string(),
@@ -345,12 +353,12 @@ async fn submit_prompt_via_ipc(
     text: String,
     _id: String,
     state: &WebState,
+    engine: &Arc<QueryEngine>,
     runtime: &IpcRuntime,
     _session_id: &str,
 ) {
     state.set_session_streaming(_session_id, true);
 
-    let engine = state.engine();
     let stream = engine.submit_message(&text, allthecodes_engine::types::config::QuerySource::Sdk);
     let mut stream = std::pin::pin!(stream);
 

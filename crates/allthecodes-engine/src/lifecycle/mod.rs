@@ -369,6 +369,14 @@ impl QueryEngine {
         self.state.write().permission_callback = Some(cb);
     }
 
+    /// Replace the async permission callback and return the previous callback.
+    pub fn replace_permission_callback(
+        &self,
+        cb: Option<crate::types::tool::PermissionCallback>,
+    ) -> Option<crate::types::tool::PermissionCallback> {
+        std::mem::replace(&mut self.state.write().permission_callback, cb)
+    }
+
     /// Remove the permission callback, restoring default behaviour (deny).
     pub fn clear_permission_callback(&self) {
         self.state.write().permission_callback = None;

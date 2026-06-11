@@ -142,6 +142,10 @@ pub fn chat_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
         .handle(ApiMethod::Chat, post(handlers::chat_handler))
         .handle(ApiMethod::Abort, post(handlers::abort_handler))
+        .handle(
+            ApiMethod::ChatPermissionResponse,
+            post(handlers::chat_permission_response_handler),
+        )
         .handle(ApiMethod::State, get(handlers::state_handler))
         .handle(
             ApiMethod::SystemPrompt,

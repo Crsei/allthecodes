@@ -54,6 +54,12 @@ crate::api_definitions! {
         response: Value,
         serialization: PerKey("session_id"),
     },
+    /// Respond to a pending chat tool permission request.
+    ChatPermissionResponse => "POST /api/chat/permissions/{tool_use_id}/response" {
+        params: v1::chat::ChatPermissionResponseRequest,
+        response: Value,
+        serialization: PerKey("session_id"),
+    },
     /// Fetch current web UI state.
     State => "GET /api/state" {
         response: v1::chat::StateResponse,

@@ -17,7 +17,7 @@ use crate::blocklist;
 use crate::dependency_resolver::DependencyResolver;
 use crate::flagging;
 use crate::loader;
-use crate::manifest::{load_manifest, PluginManifest};
+use crate::manifest::{load_manifest, PluginManifest, SkillContribution};
 use crate::marketplace;
 use crate::mcpb::{parse_mcpb_from_bytes, verify_mcpb_integrity};
 use crate::policy::{PluginPolicyEnforcer, PolicyDecision};
@@ -153,7 +153,14 @@ pub async fn install_plugin(
 
     // 4. Check if already installed
     let existing = loader::load_installed_plugins();
-    if existing.iter().any(|p| p.id == source || p.name == source) {
+    if existing.iter().any(|p| {
+        p.id == source
+            || p.id
+                .split_once('@')
+                .is_some_and(|(marketplace_id, _)| marketplace_id == source)
+            || p.name.eq_ignore_ascii_case(source)
+            || matches!(&p.source, PluginSource::Marketplace { id, .. } if id == source)
+    }) {
         return Err(InstallError::AlreadyInstalled(source.to_string()));
     }
 
@@ -203,6 +210,7 @@ pub async fn install_plugin(
         std::fs::copy(&resolved_plugin.path, plugin_dir.join("plugin.bin"))?;
         plugin_dir
     };
+    let install_path = normalize_install_path(install_path)?;
 
     // 8. Load and validate the manifest
     let manifest = load_manifest(&install_path)
@@ -487,6 +495,150 @@ fn normalize_npm_package_root(extract_dir: &Path) -> std::result::Result<(), Ins
     Ok(())
 }
 
+fn normalize_install_path(install_path: PathBuf) -> std::result::Result<PathBuf, InstallError> {
+    if install_path.join("plugin.json").is_file() {
+        return Ok(install_path);
+    }
+
+    let content_root = single_top_level_dir(&install_path)?.unwrap_or_else(|| install_path.clone());
+    if content_root.join("plugin.json").is_file() {
+        return Ok(content_root);
+    }
+
+    if synthesize_allthecodes_manifest(&install_path, &content_root)? {
+        return Ok(install_path);
+    }
+
+    Ok(install_path)
+}
+
+fn single_top_level_dir(root: &Path) -> std::result::Result<Option<PathBuf>, InstallError> {
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            dirs.push(path);
+        } else {
+            return Ok(None);
+        }
+    }
+
+    if dirs.len() == 1 {
+        Ok(dirs.pop())
+    } else {
+        Ok(None)
+    }
+}
+
+fn synthesize_allthecodes_manifest(
+    manifest_root: &Path,
+    content_root: &Path,
+) -> std::result::Result<bool, InstallError> {
+    let source_manifest = content_root
+        .join(".codex-plugin")
+        .join("plugin.json")
+        .is_file()
+        .then(|| content_root.join(".codex-plugin").join("plugin.json"))
+        .or_else(|| {
+            content_root
+                .join(".claude-plugin")
+                .join("plugin.json")
+                .is_file()
+                .then(|| content_root.join(".claude-plugin").join("plugin.json"))
+        });
+    let Some(source_manifest) = source_manifest else {
+        return Ok(false);
+    };
+
+    let content = std::fs::read_to_string(&source_manifest)?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| InstallError::ValidationFailed(format!("Invalid plugin manifest: {e}")))?;
+
+    let mut manifest = PluginManifest {
+        name: json_string(&value, &["name"]).unwrap_or_else(|| "plugin".to_string()),
+        display_name: json_string(&value, &["display_name"])
+            .or_else(|| json_string(&value, &["displayName"]))
+            .or_else(|| json_string(&value, &["interface", "displayName"])),
+        version: json_string(&value, &["version"]).unwrap_or_else(|| "0.0.0".to_string()),
+        description: json_string(&value, &["description"])
+            .or_else(|| json_string(&value, &["interface", "longDescription"]))
+            .or_else(|| json_string(&value, &["interface", "shortDescription"]))
+            .unwrap_or_default(),
+        author: json_string(&value, &["author"])
+            .or_else(|| json_string(&value, &["author", "name"]))
+            .or_else(|| json_string(&value, &["interface", "developerName"])),
+        license: json_string(&value, &["license"]),
+        ..PluginManifest::default()
+    };
+    manifest.skills = scan_skill_contributions(manifest_root, content_root)?;
+
+    let manifest_path = manifest_root.join("plugin.json");
+    let json = serde_json::to_string_pretty(&manifest).map_err(|e| {
+        InstallError::ValidationFailed(format!("Failed to serialize manifest: {e}"))
+    })?;
+    std::fs::write(&manifest_path, json)?;
+    Ok(true)
+}
+
+fn json_string(value: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_str().map(str::trim).and_then(|s| {
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    })
+}
+
+fn scan_skill_contributions(
+    manifest_root: &Path,
+    content_root: &Path,
+) -> std::result::Result<Vec<SkillContribution>, InstallError> {
+    let skills_root = content_root.join("skills");
+    if !skills_root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut skills = Vec::new();
+    for entry in std::fs::read_dir(&skills_root)? {
+        let entry = entry?;
+        let skill_dir = entry.path();
+        if !skill_dir.is_dir() {
+            continue;
+        }
+
+        let skill_path = skill_dir.join("SKILL.md");
+        if !skill_path.is_file() {
+            continue;
+        }
+
+        let name = skill_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "skill".to_string());
+        let relative_path = relative_path_string(manifest_root, &skill_path);
+        skills.push(SkillContribution {
+            name,
+            path: relative_path,
+            description: None,
+        });
+    }
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(skills)
+}
+
+fn relative_path_string(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +702,28 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_superpowers_builtin_marketplace_source() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(lookup_plugin_by_source(marketplace::SUPERPOWERS_PLUGIN_ID));
+        assert!(result.is_ok());
+        let lookup = result.unwrap();
+        match lookup.source {
+            PluginSource::Marketplace { id, source_name } => {
+                assert_eq!(id, marketplace::SUPERPOWERS_PLUGIN_ID);
+                assert_eq!(source_name, marketplace::DEFAULT_MARKETPLACE_SOURCE_NAME);
+            }
+            _ => panic!("Expected marketplace source"),
+        }
+        match lookup.resolve_source {
+            ResolveSource::Url(url) => {
+                assert!(url.contains("github.com/obra/superpowers"));
+                assert!(url.ends_with("/v5.1.0.zip"));
+            }
+            _ => panic!("Expected URL resolve source"),
+        }
+    }
+
+    #[test]
     fn test_lookup_local_source() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test-plugin");
@@ -569,5 +743,47 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(lookup_plugin_by_source("nonexistent-plugin-name"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn github_style_archive_root_generates_allthecodes_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let extract_root = dir.path().join("extracted");
+        let content_root = extract_root.join("superpowers-5.1.0");
+        std::fs::create_dir_all(content_root.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(content_root.join("skills/brainstorming")).unwrap();
+        std::fs::write(
+            content_root.join(".codex-plugin/plugin.json"),
+            r##"{
+                "name": "superpowers",
+                "version": "5.1.0",
+                "description": "Agentic skills framework",
+                "author": { "name": "Jesse Vincent" },
+                "homepage": "https://github.com/obra/superpowers",
+                "license": "MIT",
+                "interface": { "displayName": "Superpowers" }
+            }"##,
+        )
+        .unwrap();
+        std::fs::write(
+            content_root.join("skills/brainstorming/SKILL.md"),
+            "---\nname: brainstorming\n---\n# Brainstorming\n",
+        )
+        .unwrap();
+
+        let normalized = normalize_install_path(extract_root.clone()).unwrap();
+        assert_eq!(normalized, extract_root);
+
+        let manifest = load_manifest(&normalized).unwrap();
+        assert_eq!(manifest.name, "superpowers");
+        assert_eq!(manifest.display_name.as_deref(), Some("Superpowers"));
+        assert_eq!(manifest.version, "5.1.0");
+        assert_eq!(manifest.author.as_deref(), Some("Jesse Vincent"));
+        assert_eq!(manifest.skills.len(), 1);
+        assert_eq!(manifest.skills[0].name, "brainstorming");
+        assert_eq!(
+            manifest.skills[0].path,
+            "superpowers-5.1.0/skills/brainstorming/SKILL.md"
+        );
     }
 }

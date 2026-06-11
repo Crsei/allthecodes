@@ -1,21 +1,29 @@
 //! Chat, abort, and state handlers — core chat API.
 
-use axum::extract::State;
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::HashMap;
-use std::process::Command;
+use serde_json::{json, Value};
 use tracing::info;
 
-use allthecodes_daemon::web::sdk_stream_to_sse;
 use allthecodes_engine::types::config::{QuerySource, SubmitContextMode, SubmitMessageOverrides};
+use allthecodes_types::callbacks::{PermissionRequestPayload, PermissionResponsePayload};
 use allthecodes_types::sdk::SdkMessage;
 
 use crate::state::WebState;
 use allthecodes_protocol::ApiError as ProtocolApiError;
+
+const CHAT_PERMISSION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Serialize)]
 pub struct UsageResponse {
@@ -61,6 +69,31 @@ pub struct ChatRequest {
 pub struct AbortRequest {
     #[serde(default)]
     pub session_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ChatPermissionResponseRequest {
+    pub session_id: String,
+    pub decision: String,
+    #[serde(default)]
+    pub feedback: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ChatPermissionRequestEvent {
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    session_id: String,
+    tool_use_id: String,
+    tool: String,
+    command: String,
+    input: Value,
+    options: Vec<String>,
+}
+
+enum ChatSseItem {
+    Sdk(SdkMessage),
+    Permission(ChatPermissionRequestEvent),
 }
 
 #[derive(Serialize)]
@@ -195,6 +228,8 @@ pub async fn chat_handler(
         "POST /api/chat"
     );
 
+    // Match the TUI submit path: a previous abort must not poison the next turn.
+    engine.reset_abort();
     state.set_session_streaming(&active_session_id, true);
 
     // Get the stream from the engine
@@ -205,35 +240,140 @@ pub async fn chat_handler(
         }
         None => req.message.clone(),
     };
-    let stream = engine.submit_message_with_overrides(&prompt, QuerySource::Sdk, overrides);
+    let (sse_tx, sse_rx) = tokio::sync::mpsc::unbounded_channel::<ChatSseItem>();
+    let permission_state = state.clone();
+    let permission_session_id = active_session_id.clone();
+    let permission_sse_tx = sse_tx.clone();
+    let permission_callback: allthecodes_types::callbacks::PermissionCallback =
+        Arc::new(move |request: PermissionRequestPayload| {
+            let state = permission_state.clone();
+            let session_id = permission_session_id.clone();
+            let sse_tx = permission_sse_tx.clone();
+            Box::pin(async move {
+                let tool_use_id = request.tool_use_id.clone();
+                let command = request.legacy_command();
+                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                state.insert_chat_permission(&session_id, &tool_use_id, response_tx);
 
-    // Wrap in a stream that clears is_streaming when done
+                let event = ChatPermissionRequestEvent {
+                    event_type: "permission_request",
+                    session_id: session_id.clone(),
+                    tool_use_id: tool_use_id.clone(),
+                    tool: request.tool_name,
+                    command,
+                    input: request.tool_input,
+                    options: request.options,
+                };
+
+                if sse_tx.send(ChatSseItem::Permission(event)).is_err() {
+                    state.remove_chat_permission(&session_id, &tool_use_id);
+                    return PermissionResponsePayload::deny();
+                }
+
+                match tokio::time::timeout(CHAT_PERMISSION_TIMEOUT, response_rx).await {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(_)) | Err(_) => {
+                        state.remove_chat_permission(&session_id, &tool_use_id);
+                        PermissionResponsePayload::deny()
+                    }
+                }
+            })
+        });
+    let previous_permission_callback =
+        engine.replace_permission_callback(Some(permission_callback));
+
+    let stream_engine = engine.clone();
     let stream_state = state.clone();
     let stream_session_id = active_session_id.clone();
-    let wrapped_stream = Box::pin(futures::stream::unfold(
-        (stream, stream_state, stream_session_id, false),
-        |(mut stream, state, session_id, done)| async move {
-            if done {
-                return None;
+    tokio::spawn(async move {
+        let mut stream =
+            stream_engine.submit_message_with_overrides(&prompt, QuerySource::Sdk, overrides);
+        while let Some(msg) = stream.next().await {
+            let is_result = matches!(&msg, SdkMessage::Result(_));
+            if sse_tx.send(ChatSseItem::Sdk(msg)).is_err() {
+                break;
             }
-            use futures::StreamExt;
-            match stream.next().await {
-                Some(msg) => {
-                    let is_result = matches!(&msg, SdkMessage::Result(_));
-                    if is_result {
-                        state.set_session_streaming(&session_id, false);
-                    }
-                    Some((msg, (stream, state, session_id, is_result)))
-                }
-                None => {
-                    state.set_session_streaming(&session_id, false);
-                    None
-                }
+            if is_result {
+                break;
             }
-        },
-    ));
+        }
+        stream_state.set_session_streaming(&stream_session_id, false);
+        stream_engine.replace_permission_callback(previous_permission_callback);
+    });
 
-    sdk_stream_to_sse(wrapped_stream).into_response()
+    chat_sse_response(sse_rx).into_response()
+}
+
+/// POST /api/chat/permissions/:tool_use_id/response -- Resolve a pending chat permission request.
+pub async fn chat_permission_response_handler(
+    AxumPath(tool_use_id): AxumPath<String>,
+    State(state): State<WebState>,
+    Json(req): Json<ChatPermissionResponseRequest>,
+) -> impl IntoResponse {
+    let decision = req.decision.trim().to_ascii_lowercase();
+    if !matches!(decision.as_str(), "allow" | "deny" | "always_allow") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                ProtocolApiError::BadRequest {
+                    code: "invalid_permission_decision",
+                    message: "decision must be allow, deny, or always_allow".to_string(),
+                }
+                .into_body(),
+            ),
+        )
+            .into_response();
+    }
+
+    let resolved = state.resolve_chat_permission(
+        &req.session_id,
+        &tool_use_id,
+        PermissionResponsePayload::new(decision, req.feedback),
+    );
+    if !resolved {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "permission request is no longer pending",
+                "code": "stale_permission_response",
+                "details": {
+                    "session_id": req.session_id,
+                    "tool_use_id": tool_use_id,
+                },
+            })),
+        )
+            .into_response();
+    }
+
+    Json(json!({ "status": "ok" })).into_response()
+}
+
+fn chat_sse_response(
+    rx: tokio::sync::mpsc::UnboundedReceiver<ChatSseItem>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        let item = rx.recv().await?;
+        Some((chat_sse_event(item), rx))
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+fn chat_sse_event(item: ChatSseItem) -> Result<Event, Infallible> {
+    let event = match item {
+        ChatSseItem::Sdk(msg) => {
+            let event_name = msg.event_name();
+            let data = serde_json::to_string(&msg)
+                .unwrap_or_else(|error| format!(r#"{{"error":"serialization failed: {error}"}}"#));
+            Event::default().event(event_name).data(data)
+        }
+        ChatSseItem::Permission(event) => {
+            let data = serde_json::to_string(&event)
+                .unwrap_or_else(|error| format!(r#"{{"error":"serialization failed: {error}"}}"#));
+            Event::default().event("permission_request").data(data)
+        }
+    };
+    Ok(event)
 }
 
 /// POST /api/abort -- Abort the current generation.

@@ -8,6 +8,7 @@ use parking_lot::RwLock;
 
 use allthecodes_config::paths;
 use allthecodes_engine::lifecycle::QueryEngine;
+use allthecodes_types::callbacks::PermissionResponsePayload;
 use allthecodes_web_state::WebUiStore;
 
 use crate::serialization::SerializationLayer;
@@ -30,6 +31,10 @@ pub struct WebState {
     pub session_engines: Arc<RwLock<HashMap<String, Arc<QueryEngine>>>>,
     /// Session ids with an active streaming chat turn.
     pub streaming_sessions: Arc<RwLock<HashSet<String>>>,
+    /// Pending tool permission prompts owned by `/api/chat` SSE turns.
+    chat_permissions: Arc<
+        RwLock<HashMap<ChatPermissionKey, tokio::sync::oneshot::Sender<PermissionResponsePayload>>>,
+    >,
     /// PTY diagnostics for the active TUI WebSocket connection.
     pub pty_diagnostics: PtyDiagnostics,
     /// Multi-session PTY manager used by the terminal panel.
@@ -52,6 +57,7 @@ impl WebState {
             is_streaming,
             session_engines: Arc::new(RwLock::new(session_engines)),
             streaming_sessions: Arc::new(RwLock::new(HashSet::new())),
+            chat_permissions: Arc::new(RwLock::new(HashMap::new())),
             pty_diagnostics: PtyDiagnostics::new(terminal_manager.clone()),
             terminal_manager,
             serialization: SerializationLayer::new(),
@@ -100,5 +106,50 @@ impl WebState {
         };
         self.is_streaming
             .store(any_streaming, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn insert_chat_permission(
+        &self,
+        session_id: &str,
+        tool_use_id: &str,
+        sender: tokio::sync::oneshot::Sender<PermissionResponsePayload>,
+    ) {
+        self.chat_permissions
+            .write()
+            .insert(ChatPermissionKey::new(session_id, tool_use_id), sender);
+    }
+
+    pub fn resolve_chat_permission(
+        &self,
+        session_id: &str,
+        tool_use_id: &str,
+        response: PermissionResponsePayload,
+    ) -> bool {
+        self.chat_permissions
+            .write()
+            .remove(&ChatPermissionKey::new(session_id, tool_use_id))
+            .map(|sender| sender.send(response).is_ok())
+            .unwrap_or(false)
+    }
+
+    pub fn remove_chat_permission(&self, session_id: &str, tool_use_id: &str) {
+        self.chat_permissions
+            .write()
+            .remove(&ChatPermissionKey::new(session_id, tool_use_id));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ChatPermissionKey {
+    session_id: String,
+    tool_use_id: String,
+}
+
+impl ChatPermissionKey {
+    fn new(session_id: &str, tool_use_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            tool_use_id: tool_use_id.to_string(),
+        }
     }
 }
