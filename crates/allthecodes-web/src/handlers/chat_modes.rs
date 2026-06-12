@@ -542,7 +542,10 @@ fn built_in_bundles() -> Vec<ChatModeBundle> {
                 "Use the local allthecodes-bridge-cli plugin and the allthecodes-bridge ",
                 "MCP server when bridge coordination is relevant. You may delegate work ",
                 "to Claude Code- and Codex-capable agents through the bridge/plugin, ",
-                "then inspect or summarize terminal and tool results before declaring ",
+                "and when the user asks to open, start, launch, or create workbench ",
+                "Claude Code/Codex agents or terminals, call launch_workbench_agents ",
+                "instead of only creating shared agent records. ",
+                "Then inspect or summarize terminal and tool results before declaring ",
                 "the work complete."
             )
             .into(),

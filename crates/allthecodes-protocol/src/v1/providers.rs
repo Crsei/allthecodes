@@ -62,6 +62,33 @@ pub struct ProviderListResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CodexLocalStatusResponse {
+    pub cli_installed: bool,
+    pub auth_present: bool,
+    pub auth_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    pub settings_path: String,
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CodexApplyLocalResponse {
+    pub cli_installed: bool,
+    pub auth_present: bool,
+    pub auth_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    pub settings_path: String,
+    pub active: bool,
+    pub model: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderCreateRequest {
     pub name: String,
     pub kind: String,

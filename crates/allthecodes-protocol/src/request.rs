@@ -502,6 +502,12 @@ crate::api_definitions! {
         params: v1::providers::ProviderCreateRequest,
         response: Value,
     },
+    ProvidersOpenaiCodexLocalStatus => "GET /api/providers/openai-codex/local-status" {
+        response: v1::providers::CodexLocalStatusResponse,
+    },
+    ProvidersOpenaiCodexApplyLocal => "POST /api/providers/openai-codex/apply-local" {
+        response: v1::providers::CodexApplyLocalResponse,
+    },
     ProvidersUpdate => "PATCH /api/providers/{id}" {
         params: v1::providers::ProviderUpdateRequest,
         response: Value,

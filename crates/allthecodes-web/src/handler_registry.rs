@@ -492,6 +492,14 @@ pub fn provider_handlers() -> HandlerRegistry {
             post(handlers::providers_create_handler),
         )
         .handle(
+            ApiMethod::ProvidersOpenaiCodexLocalStatus,
+            get(handlers::codex_local_status_handler),
+        )
+        .handle(
+            ApiMethod::ProvidersOpenaiCodexApplyLocal,
+            post(handlers::codex_apply_local_handler),
+        )
+        .handle(
             ApiMethod::ProvidersUpdate,
             patch(handlers::providers_update_handler),
         )

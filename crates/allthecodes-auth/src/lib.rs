@@ -169,6 +169,12 @@ pub fn try_resolve_codex_auth_token() -> anyhow::Result<Option<String>> {
     try_resolve_codex_cli()
 }
 
+/// Resolve an OpenAI Codex auth token only from Codex CLI's local
+/// `auth.json`, auto-refreshing when possible.
+pub fn try_resolve_codex_cli_auth_token() -> anyhow::Result<Option<String>> {
+    try_resolve_codex_cli()
+}
+
 /// Resolve an OpenAI Platform API key from allthecodes' provider-scoped keychain.
 ///
 /// `OPENAI_API_KEY` is intentionally not read here; environment variables are
