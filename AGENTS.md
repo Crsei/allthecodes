@@ -124,6 +124,11 @@ This is required for recovery cases where linux-x64 and/or the root wrapper were
 published manually before the full matrix completed; the rerun should publish
 only the missing platform versions.
 
+The npm publish token used by the release workflow must be an npm automation
+token, or the package must use npm trusted publishing. A normal token on an
+account with publish-time 2FA fails with `EOTP` and blocks the platform package
+publish step after the artifacts are built.
+
 Use GitHub's public Windows ARM64 runner label `windows-11-arm` for
 `aarch64-pc-windows-msvc`. The older-looking `windows-2022-arm` label does not
 resolve to a hosted runner and leaves the release matrix queued.
