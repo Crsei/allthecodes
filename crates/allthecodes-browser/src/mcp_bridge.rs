@@ -31,6 +31,8 @@
 
 use std::time::Duration;
 
+#[cfg(windows)]
+use anyhow::Context;
 use anyhow::Result;
 use parking_lot::Mutex as SyncMutex;
 use serde::{Deserialize, Serialize};
