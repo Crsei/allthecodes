@@ -120,6 +120,11 @@ Publish ordering is platform packages first, then the root wrapper. The root
 wrapper declares optional dependencies for every platform package, so publishing
 the root before platform tarballs can make fresh installs fail.
 
+The GitHub Actions publish job must skip versions that already exist on npm.
+This is required for recovery cases where linux-x64 and/or the root wrapper were
+published manually before the full matrix completed; the rerun should publish
+only the missing platform versions.
+
 
 提交本仓库时使用显式路径的手动流程，不要依赖仓库内脚本：
 

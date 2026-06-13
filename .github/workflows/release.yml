@@ -377,14 +377,31 @@ jobs:
           done
 
           # Publish platform packages first, then root wrapper.
+          publish_if_missing() {
+            local version_spec="$1"
+            local tarball="$2"
+            local tag="${3:-}"
+
+            if npm view "allthecodes@${version_spec}" version >/dev/null 2>&1; then
+              echo "Skipping ${version_spec}; already published."
+              return 0
+            fi
+
+            if [[ -n "${tag}" ]]; then
+              npm publish "${tarball}" --tag "${tag}"
+            else
+              npm publish "${tarball}"
+            fi
+          }
+
           for tarball in "${platform_tarballs[@]}"; do
             filename="$(basename "${tarball}")"
             platform="${filename#allthecodes-npm-}"
             platform="${platform%-${VERSION}.tgz}"
             echo "Publishing ${filename} with tag ${platform}..."
-            npm publish "${tarball}" --tag "${platform}"
+            publish_if_missing "${VERSION}-${platform}" "${tarball}" "${platform}"
           done
 
           # Publish root wrapper with the default tag (latest).
           echo "Publishing root wrapper..."
-          npm publish "${root_tarball}"
+          publish_if_missing "${VERSION}" "${root_tarball}"
