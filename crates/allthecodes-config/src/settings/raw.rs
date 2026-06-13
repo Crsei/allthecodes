@@ -159,6 +159,9 @@ pub struct RawSettings {
     pub tts_voice_custom_id: Option<String>,
     pub tts_model: Option<String>,
     pub search_engine: Option<String>,
+    pub web_search_provider: Option<String>,
+    pub web_search_tavily_api_key: Option<String>,
+    pub web_search_brave_api_key: Option<String>,
 
     // -- Data / savings -------------------------------------------------
     pub cloud_sync_enabled: Option<bool>,
@@ -350,6 +353,9 @@ impl RawSettings {
         merge_opt!(tts_voice_custom_id, "ttsVoiceCustomId");
         merge_opt!(tts_model, "ttsModel");
         merge_opt!(search_engine, "searchEngine");
+        merge_opt!(web_search_provider, "webSearchProvider");
+        merge_opt!(web_search_tavily_api_key, "webSearchTavilyApiKey");
+        merge_opt!(web_search_brave_api_key, "webSearchBraveApiKey");
         merge_opt!(cloud_sync_enabled, "cloudSyncEnabled");
         merge_opt!(cloud_sync_path, "cloudSyncPath");
         merge_opt!(token_savings_tracking, "tokenSavingsTracking");

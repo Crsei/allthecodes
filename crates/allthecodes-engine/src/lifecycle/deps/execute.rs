@@ -22,21 +22,25 @@ impl QueryEngineDeps {
         let tool = find_tool(&request.tool_name, tools)
             .ok_or_else(|| anyhow::anyhow!("tool not found: {}", request.tool_name))?;
 
-        let available_tools = {
+        let available_tools = self.submit_tools.clone().unwrap_or_else(|| {
             let state = self.state.read();
+            let app_state = self.get_app_state();
             let capability_filtered = allthecodes_tools::media::filter_tools_for_model_capabilities(
                 state.tools.clone(),
-                &state.app_state.settings,
-                &state.app_state.main_loop_model,
+                &app_state.settings,
+                &app_state.main_loop_model,
             );
-            allthecodes_tools::registry::filter_tools_for_session_gates(
-                capability_filtered,
-                allthecodes_tools::registry::ToolSessionGates {
-                    non_interactive: self.query_source.is_non_interactive(),
-                    subagent: self.query_source.starts_with_agent(),
-                },
-            )
-        };
+            let tools = allthecodes_tools::registry::dedupe_tools_by_name(
+                allthecodes_tools::registry::filter_tools_for_session_gates(
+                    capability_filtered,
+                    allthecodes_tools::registry::ToolSessionGates {
+                        non_interactive: self.query_source.is_non_interactive(),
+                        subagent: self.query_source.starts_with_agent(),
+                    },
+                ),
+            );
+            filter_tools_for_allowed_override(tools, self.submit_overrides.allowed_tools.as_ref())
+        });
         let execute_deferred_tool: crate::types::tool::DeferredToolExecutor = {
             let deps = self.clone();
             let tools = available_tools.clone();
@@ -76,8 +80,8 @@ impl QueryEngineDeps {
         let ctx = crate::types::tool::ToolUseContext {
             options: crate::types::tool::ToolUseOptions {
                 debug: false,
-                main_loop_model: self.state.read().app_state.main_loop_model.clone(),
-                verbose: self.state.read().app_state.verbose,
+                main_loop_model: self.get_app_state().main_loop_model,
+                verbose: self.get_app_state().verbose,
                 is_non_interactive_session: self.query_source.is_non_interactive(),
                 custom_system_prompt: None,
                 append_system_prompt: None,
@@ -93,7 +97,20 @@ impl QueryEngineDeps {
             read_file_state: self.state.read().file_state_cache.clone(),
             get_app_state: {
                 let state = self.state.clone();
-                Arc::new(move || state.read().app_state.to_tool_app_state())
+                let overrides = self.submit_overrides.clone();
+                Arc::new(move || {
+                    let mut app_state = state.read().app_state.clone();
+                    if let Some(model) = overrides.model.as_ref() {
+                        app_state.main_loop_model = model.clone();
+                    }
+                    if overrides.thinking_enabled.is_some() {
+                        app_state.thinking_enabled = overrides.thinking_enabled;
+                    }
+                    if overrides.effort.is_some() {
+                        app_state.effort_value = overrides.effort.clone();
+                    }
+                    app_state.to_tool_app_state()
+                })
             },
             set_app_state: {
                 let state = self.state.clone();
@@ -320,7 +337,7 @@ impl QueryEngineDeps {
             // Normal permission check via tool-local checks and the central rule engine
             let perm_audit_ctx = self.audit_ctx.with_tool_use(&request.tool_use_id);
             let bypass_permissions =
-                self.state.read().app_state.tool_permission_context.mode == PermissionMode::Bypass;
+                self.get_app_state().tool_permission_context.mode == PermissionMode::Bypass;
             let perm_result = if bypass_permissions {
                 PermissionResult::Allow {
                     updated_input: effective_input.clone(),
@@ -329,7 +346,7 @@ impl QueryEngineDeps {
                 match tool.check_permissions(&effective_input, &ctx).await {
                     PermissionResult::Allow { updated_input } => {
                         effective_input = updated_input;
-                        let app_state = self.state.read().app_state.clone();
+                        let app_state = self.get_app_state();
                         let mut decision = central_permission_decision_for_tool(
                             &request.tool_name,
                             &effective_input,
@@ -352,8 +369,8 @@ impl QueryEngineDeps {
                                 .auto_denial_tracker
                                 .should_fallback_to_interactive()
                             {
+                                let app_state = self.get_app_state();
                                 let mut state = self.state.write();
-                                let app_state = state.app_state.clone();
                                 decision = central_permission_decision_for_tool(
                                     &request.tool_name,
                                     &effective_input,
@@ -370,8 +387,8 @@ impl QueryEngineDeps {
                                 )
                                 .await
                             {
+                                let app_state = self.get_app_state();
                                 let mut state = self.state.write();
-                                let app_state = state.app_state.clone();
                                 decision = central_permission_decision_for_tool(
                                     &request.tool_name,
                                     &effective_input,
@@ -891,4 +908,18 @@ impl QueryEngineDeps {
             }
         }
     }
+}
+
+fn filter_tools_for_allowed_override(tools: Tools, allowed_tools: Option<&Vec<String>>) -> Tools {
+    let Some(allowed_tools) = allowed_tools else {
+        return tools;
+    };
+    let allowed: HashSet<String> = allowed_tools
+        .iter()
+        .map(|tool| tool.to_ascii_lowercase())
+        .collect();
+    tools
+        .into_iter()
+        .filter(|tool| allowed.contains(&tool.name().to_ascii_lowercase()))
+        .collect()
 }

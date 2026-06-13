@@ -11,8 +11,9 @@ use serde::Serialize;
 
 use allthecodes_config::paths;
 
-use crate::handlers::{setting_bool, ApiError};
+use crate::handlers::setting_bool;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct ActivityRecorderStatusResponse {
@@ -61,7 +62,7 @@ pub async fn activity_recorder_status_handler(State(state): State<WebState>) -> 
 pub async fn activity_recorder_sessions_handler() -> Response {
     match list_sessions() {
         Ok(sessions) => Json(ActivityRecorderSessionsResponse { sessions }).into_response(),
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
@@ -74,7 +75,7 @@ pub async fn activity_recorder_clear_handler() -> Response {
             sessions: Vec::new(),
         })
         .into_response(),
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
@@ -148,12 +149,7 @@ fn clear_sessions() -> Result<usize, String> {
     Ok(sessions.len())
 }
 
-fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error,
-            code: "internal_error".into(),
-        }),
-    )
+fn internal_error(error: String) -> Response {
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }

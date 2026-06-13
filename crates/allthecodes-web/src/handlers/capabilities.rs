@@ -1,25 +1,28 @@
-//! Capabilities discovery and API fallback handlers.
+//! Capabilities discovery handlers.
 
 use std::collections::HashMap;
 
-use axum::extract::Path as AxumPath;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::Json;
-use serde::Serialize;
+use allthecodes_protocol::ApiError as ProtocolApiError;
+use allthecodes_protocol::ApiMethod;
+use allthecodes_protocol::NoParams;
+use async_trait::async_trait;
+use axum::extract::State;
+use axum::response::Response;
+use axum::routing::get;
 
-use crate::handlers::ApiError;
+use crate::api_dispatcher::rest_processor_response;
+use crate::handler_registry::HandlerRegistry;
+use crate::processors::Processor;
+use crate::serialization::SerializationLayer;
+use crate::state::WebState;
 
-#[derive(Serialize)]
-pub struct CapabilityDiscoveryResponse {
-    pub capabilities: HashMap<String, bool>,
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new().handle(ApiMethod::Capabilities, get(capabilities_handler))
 }
 
-/// GET /api/capabilities -- Return capability discovery map.
-pub async fn capabilities_handler() -> impl IntoResponse {
-    Json(CapabilityDiscoveryResponse {
-        capabilities: capabilities_map(),
-    })
+pub async fn capabilities_handler(State(state): State<WebState>) -> Response {
+    rest_processor_response::<CapabilitiesProcessor>(state, ApiMethod::Capabilities, NoParams {})
+        .await
 }
 
 pub fn capabilities_map() -> HashMap<String, bool> {
@@ -51,7 +54,7 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps.insert("providers".into(), true);
     caps.insert("credentials".into(), true);
     caps.insert("usage".into(), true);
-    caps.insert("skills".into(), false);
+    caps.insert("skills".into(), true);
     caps.insert("memory".into(), true);
     caps.insert("speech".into(), true);
     caps.insert("tts".into(), true);
@@ -59,28 +62,43 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps.insert("network".into(), true);
     caps.insert("data".into(), true);
     caps.insert("token_savings".into(), true);
-    caps.insert("kanban".into(), false);
-    caps.insert("jobs".into(), false);
-    caps.insert("group_chat".into(), false);
-    caps.insert("files".into(), false);
-    caps.insert("logs".into(), false);
-    caps.insert("backend_services".into(), false);
+    caps.insert("kanban".into(), true);
+    caps.insert("jobs".into(), true);
+    caps.insert("group_chat".into(), true);
+    caps.insert("files".into(), true);
+    caps.insert("logs".into(), true);
+    caps.insert("backend_services".into(), true);
     caps
 }
 
-/// Catch-all handler for unregistered /api/* paths.
-/// Returns 501 JSON instead of falling through to static file serving.
-pub async fn api_fallback_handler(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
-    let status = if path.starts_with("api/") {
-        StatusCode::NOT_IMPLEMENTED
-    } else {
-        StatusCode::NOT_FOUND
-    };
-    (
-        status,
-        Json(ApiError {
-            error: "API endpoint not implemented".into(),
-            code: "capability_not_implemented".into(),
-        }),
-    )
+#[derive(Clone)]
+pub struct CapabilitiesProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for CapabilitiesProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for CapabilitiesProcessor {
+    type Request = NoParams;
+    type Response = allthecodes_protocol::v1::capabilities::CapabilityDiscoveryResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "capabilities"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
+        Ok(Self::Response {
+            capabilities: capabilities_map(),
+        })
+    }
 }

@@ -129,6 +129,27 @@ pub fn tool_allowed(policy: ToolPolicy, name: &str) -> bool {
         .unwrap_or(true)
 }
 
+/// Keep the first tool for each name and drop later duplicates.
+///
+/// Tool names are part of the provider request contract. Providers reject
+/// duplicate names, so this function is intentionally conservative: built-ins
+/// or earlier providers win over later runtime/MCP/plugin tools.
+pub fn dedupe_tools_by_name(tools: Tools) -> Tools {
+    let mut seen = HashSet::new();
+    let mut deduped = Tools::with_capacity(tools.len());
+
+    for tool in tools {
+        let name = tool.name().to_string();
+        if seen.insert(name.clone()) {
+            deduped.push(tool);
+        } else {
+            tracing::warn!(tool = %name, "skipping tool with duplicate name");
+        }
+    }
+
+    deduped
+}
+
 const GOAL_TOOL_NAMES: &[&str] = &[
     "GetGoal",
     "get_goal",
@@ -263,7 +284,7 @@ pub fn base_tools_with_providers(providers: &ToolRegistryProviders) -> Tools {
     for provider in &providers.base_tool_providers {
         tools.extend((provider)().into_iter().filter(|tool| tool.is_enabled()));
     }
-    filter_tools_for_feature_gates(tools)
+    dedupe_tools_by_name(filter_tools_for_feature_gates(tools))
 }
 
 /// Get all runtime tools using the supplied external providers.
@@ -282,7 +303,7 @@ pub fn get_all_tools_with_providers(providers: &ToolRegistryProviders) -> Tools 
         }
     }
 
-    filter_tools_for_feature_gates(tools)
+    dedupe_tools_by_name(filter_tools_for_feature_gates(tools))
 }
 
 /// Get all runtime tools currently owned directly by `cc-tools`.
@@ -317,6 +338,44 @@ pub fn filter_tools_for_policy(tools: Tools, policy: ToolPolicy) -> Tools {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::{Tool, ToolResult, ToolUseContext, ValidationResult};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct NamedTestTool(&'static str);
+
+    #[async_trait]
+    impl Tool for NamedTestTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+
+        async fn description(&self, _input: &Value) -> String {
+            format!("{} description", self.0)
+        }
+
+        fn input_json_schema(&self) -> Value {
+            json!({"type": "object", "properties": {}})
+        }
+
+        async fn validate_input(&self, _input: &Value, _ctx: &ToolUseContext) -> ValidationResult {
+            ValidationResult::Ok
+        }
+
+        async fn call(
+            &self,
+            _input: Value,
+            _ctx: &ToolUseContext,
+            _parent_message: &allthecodes_types::message::AssistantMessage,
+            _on_progress: Option<Box<dyn Fn(crate::tool::ToolProgress) + Send + Sync>>,
+        ) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult::default())
+        }
+
+        async fn prompt(&self) -> String {
+            self.0.to_string()
+        }
+    }
 
     #[test]
     fn default_policy_allows_all_tools() {
@@ -405,5 +464,18 @@ mod tests {
         assert!(names.contains(&"Read".to_string()));
         assert!(names.contains(&"SearchExtraTools".to_string()));
         assert!(names.contains(&"ExecuteExtraTool".to_string()));
+    }
+
+    #[test]
+    fn dedupe_tools_by_name_keeps_first_duplicate() {
+        let first: Arc<dyn Tool> = Arc::new(NamedTestTool("Duplicate"));
+        let second: Arc<dyn Tool> = Arc::new(NamedTestTool("Duplicate"));
+        let unique: Arc<dyn Tool> = Arc::new(NamedTestTool("Unique"));
+
+        let tools = dedupe_tools_by_name(vec![first.clone(), second, unique.clone()]);
+
+        assert_eq!(tools.len(), 2);
+        assert!(Arc::ptr_eq(&tools[0], &first));
+        assert!(Arc::ptr_eq(&tools[1], &unique));
     }
 }

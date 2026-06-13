@@ -2,11 +2,11 @@
 //!
 //! Corresponds to TypeScript: tools/WebSearchTool/WebSearchTool.ts
 //!
-//! Supports two providers (checked in order):
-//!   1. Tavily Search API  — `TAVILY_API_KEY` env var
-//!   2. Brave Search API   — `BRAVE_SEARCH_API_KEY` env var
+//! Supports two providers configured through allthecodes settings:
+//!   1. Tavily Search API
+//!   2. Brave Search API
 //!
-//! At least one API key must be set.
+//! At least one provider API key must be saved in settings.
 
 mod providers;
 mod tool;
@@ -28,14 +28,8 @@ use serde::{Deserialize, Serialize};
 /// Tavily Search API endpoint.
 const TAVILY_API_URL: &str = "https://api.tavily.com/search";
 
-/// Tavily API key environment variable.
-const TAVILY_API_KEY_ENV: &str = "TAVILY_API_KEY";
-
 /// Brave Search API endpoint.
 const BRAVE_API_URL: &str = "https://api.search.brave.com/res/v1/web/search";
-
-/// Brave API key environment variable.
-const BRAVE_API_KEY_ENV: &str = "BRAVE_SEARCH_API_KEY";
 
 /// Maximum number of results to request.
 const DEFAULT_MAX_RESULTS: u32 = 5;

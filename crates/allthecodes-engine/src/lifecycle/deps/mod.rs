@@ -29,7 +29,7 @@ use crate::tool_runtime::execution::{
     ToolExecutionResult,
 };
 use crate::types::app_state::AppState;
-use crate::types::config::QuerySource;
+use crate::types::config::{QuerySource, SubmitMessageOverrides};
 use crate::types::message::{Message, MessageContent, StreamEvent, UserMessage};
 use crate::types::state::AutoCompactTracking;
 use crate::types::tool::{
@@ -102,6 +102,10 @@ pub(crate) struct QueryEngineDeps {
     /// when mode is Auto.
     /// Returns `None` if the classifier is unavailable or skipped.
     pub(crate) auto_classifier_fn: Option<AutoClassifierFn>,
+    /// Per-submit overrides supplied by web launchpad/API callers.
+    pub(crate) submit_overrides: SubmitMessageOverrides,
+    /// Tools visible for this submit after any per-turn filtering.
+    pub(crate) submit_tools: Option<Tools>,
 }
 
 /// Tools that are always allowed in Auto mode without classifier classification.
@@ -211,7 +215,17 @@ impl QueryDeps for QueryEngineDeps {
     }
 
     fn get_app_state(&self) -> AppState {
-        self.state.read().app_state.clone()
+        let mut app_state = self.state.read().app_state.clone();
+        if let Some(model) = self.submit_overrides.model.as_ref() {
+            app_state.main_loop_model = model.clone();
+        }
+        if self.submit_overrides.thinking_enabled.is_some() {
+            app_state.thinking_enabled = self.submit_overrides.thinking_enabled;
+        }
+        if self.submit_overrides.effort.is_some() {
+            app_state.effort_value = self.submit_overrides.effort.clone();
+        }
+        app_state
     }
 
     fn uuid(&self) -> String {
@@ -223,7 +237,9 @@ impl QueryDeps for QueryEngineDeps {
     }
 
     fn get_tools(&self) -> Tools {
-        self.state.read().tools.clone()
+        self.submit_tools
+            .clone()
+            .unwrap_or_else(|| self.state.read().tools.clone())
     }
 
     async fn refresh_tools(&self) -> Result<Tools> {

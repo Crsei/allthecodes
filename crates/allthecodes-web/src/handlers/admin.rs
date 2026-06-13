@@ -17,8 +17,8 @@ use allthecodes_config::settings::{
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_engine::types::tool::PermissionMode;
 
-use crate::handlers::ApiError;
-use crate::state::{SessionOwner, WebState};
+use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -75,7 +75,6 @@ pub struct DebugActionResponse {
 pub struct DebugStateResponse {
     pub enabled: bool,
     pub session_id: String,
-    pub ownership: crate::state::SessionOwnership,
     pub is_streaming: bool,
     pub pty: crate::ws::tui::PtyDiagnosticsSnapshot,
 }
@@ -83,7 +82,6 @@ pub struct DebugStateResponse {
 #[derive(Serialize)]
 pub struct SessionTraceResponse {
     pub session_id: String,
-    pub ownership: crate::state::SessionOwnership,
     pub is_streaming: bool,
     pub current_turn: Option<TurnTraceItem>,
     pub pending_permissions: Vec<String>,
@@ -383,7 +381,7 @@ fn action_to_setting_key(action: &str) -> Option<&'static str> {
         "set_show_token_usage" => "show_token_usage",
         "set_markdown" | "set_markdown_rendering" => "markdown_rendering",
         "set_single_dollar_math" => "single_dollar_math",
-        "set_infographic" => "infographic",
+        "set_infographic" | "set_infographic_visualization" => "infographic",
         "set_auto_collapse" | "set_auto_collapse_reasoning" => "auto_collapse_reasoning",
         "set_quick_reply" | "set_quick_reply_suggestions" => "quick_reply_suggestions",
         "set_default_tool_selection" => "default_tool_selection",
@@ -395,6 +393,20 @@ fn action_to_setting_key(action: &str) -> Option<&'static str> {
         "set_hashline_mode" => "hashline_mode",
         "set_effort_level" => "effort_level",
         "set_theme" => "theme",
+        "set_font_family" => "font_family",
+        "set_font_size" => "font_size",
+        "set_density" => "density",
+        "set_sidebar_width" => "sidebar_width",
+        "set_sidebar_mode" => "sidebar_mode",
+        "set_line_numbers" => "line_numbers",
+        "set_word_wrap" => "word_wrap",
+        "set_minimap" => "minimap",
+        "set_use_system_caret" => "use_system_caret",
+        "set_tool_card_expand" => "tool_card_expand",
+        "set_terminal_font" => "terminal_font",
+        "set_terminal_font_size" => "terminal_font_size",
+        "set_persist_terminals" => "persist_terminals",
+        "set_blink_cursor" => "blink_cursor",
         "set_proxy_enabled" => "proxy_enabled",
         "set_proxy_url" => "proxy_url",
         "set_prefer_ipv4" => "prefer_ipv4",
@@ -410,6 +422,9 @@ fn action_to_setting_key(action: &str) -> Option<&'static str> {
         "set_tts_voice_custom_id" => "tts_voice_custom_id",
         "set_tts_model" => "tts_model",
         "set_search_engine" => "search_engine",
+        "set_web_search_provider" => "web_search_provider",
+        "set_web_search_tavily_api_key" => "web_search_tavily_api_key",
+        "set_web_search_brave_api_key" => "web_search_brave_api_key",
         "set_memory_enabled" => "auto_memory_enabled",
         "set_auto_retrieve" | "set_memory_auto_retrieve" => "memory_auto_retrieve",
         "set_query_rewriting" | "set_memory_query_rewriting" => "memory_query_rewriting",
@@ -485,6 +500,20 @@ pub(crate) fn normalize_settings_path(path: &str) -> Option<&'static str> {
         "projects.effort_level" | "effort_level" => "effort_level",
         "fast_mode" => "fast_mode",
         "ui.theme" | "theme" => "theme",
+        "ui.font_family" | "font_family" => "font_family",
+        "ui.font_size" | "font_size" => "font_size",
+        "ui.density" | "density" => "density",
+        "ui.sidebar_width" | "sidebar_width" => "sidebar_width",
+        "ui.sidebar_mode" | "sidebar_mode" => "sidebar_mode",
+        "ui.line_numbers" | "line_numbers" => "line_numbers",
+        "ui.word_wrap" | "word_wrap" => "word_wrap",
+        "ui.minimap" | "minimap" => "minimap",
+        "ui.use_system_caret" | "use_system_caret" => "use_system_caret",
+        "ui.tool_card_expand" | "tool_card_expand" => "tool_card_expand",
+        "ui.terminal_font" | "terminal_font" => "terminal_font",
+        "ui.terminal_font_size" | "terminal_font_size" => "terminal_font_size",
+        "ui.persist_terminals" | "persist_terminals" => "persist_terminals",
+        "ui.blink_cursor" | "blink_cursor" => "blink_cursor",
         "network.proxy_enabled" | "proxy_enabled" => "proxy_enabled",
         "network.proxy_url" | "proxy_url" => "proxy_url",
         "network.prefer_ipv4" | "prefer_ipv4" => "prefer_ipv4",
@@ -502,6 +531,13 @@ pub(crate) fn normalize_settings_path(path: &str) -> Option<&'static str> {
         "tts.voice_custom_id" | "tts_voice_custom_id" => "tts_voice_custom_id",
         "tts.model" | "tts_model" => "tts_model",
         "web_search.search_engine" | "search.search_engine" | "search_engine" => "search_engine",
+        "web_search.provider" | "search.provider" | "web_search_provider" => "web_search_provider",
+        "web_search.tavily_api_key" | "search.tavily_api_key" | "web_search_tavily_api_key" => {
+            "web_search_tavily_api_key"
+        }
+        "web_search.brave_api_key" | "search.brave_api_key" | "web_search_brave_api_key" => {
+            "web_search_brave_api_key"
+        }
         "memory.enabled" | "memory.auto_memory_enabled" | "auto_memory_enabled" => {
             "auto_memory_enabled"
         }
@@ -526,6 +562,11 @@ pub(crate) fn normalize_settings_path(path: &str) -> Option<&'static str> {
 }
 
 fn validate_setting_value(key: &str, value: &Value) -> Result<()> {
+    if key == "backend" {
+        normalize_backend_value(&string_value(key, value)?)?;
+        return Ok(());
+    }
+
     match setting_kind(key) {
         SettingKind::Bool => {
             bool_value(key, value)?;
@@ -552,6 +593,18 @@ fn validate_setting_value(key: &str, value: &Value) -> Result<()> {
     }
     if matches!(key, "tts_api_key") {
         reject_empty_string(key, value)?;
+    }
+    if matches!(
+        key,
+        "web_search_tavily_api_key" | "web_search_brave_api_key"
+    ) {
+        reject_empty_string(key, value)?;
+    }
+    if key == "web_search_provider" {
+        let provider = string_value(key, value)?;
+        if !matches!(provider.as_str(), "tavily" | "brave") {
+            bail!("{key} must be tavily or brave");
+        }
     }
     Ok(())
 }
@@ -600,11 +653,20 @@ fn setting_kind(key: &str) -> SettingKind {
         | "memory_auto_summarize"
         | "memory_nightly"
         | "cloud_sync_enabled"
-        | "token_savings_tracking" => SettingKind::Bool,
+        | "token_savings_tracking"
+        | "line_numbers"
+        | "word_wrap"
+        | "minimap"
+        | "use_system_caret"
+        | "persist_terminals"
+        | "blink_cursor" => SettingKind::Bool,
         "context_window"
         | "max_messages"
         | "max_tokens"
         | "request_timeout"
+        | "font_size"
+        | "sidebar_width"
+        | "terminal_font_size"
         | "memory_temp_ttl"
         | "memory_archive_retention" => SettingKind::U64,
         "retry_attempts"
@@ -613,7 +675,9 @@ fn setting_kind(key: &str) -> SettingKind {
         | "memory_max_retrieved"
         | "memory_similarity_threshold" => SettingKind::U8,
         "temperature" => SettingKind::Temperature,
-        "tts_api_key" => SettingKind::SensitiveString,
+        "tts_api_key" | "web_search_tavily_api_key" | "web_search_brave_api_key" => {
+            SettingKind::SensitiveString
+        }
         _ => SettingKind::String,
     }
 }
@@ -621,7 +685,7 @@ fn setting_kind(key: &str) -> SettingKind {
 fn apply_value_to_raw(raw: &mut RawSettings, key: &str, value: Value) -> Result<()> {
     match key {
         "model" => raw.model = Some(string_value(key, &value)?),
-        "backend" => raw.backend = Some(normalize_backend_value(&string_value(key, &value)?)),
+        "backend" => raw.backend = Some(normalize_backend_value(&string_value(key, &value)?)?),
         "permission_mode" => raw.permission_mode = Some(string_value(key, &value)?),
         "thinking" => raw.thinking = value_to_optional(value),
         "language" => raw.language = Some(string_value(key, &value)?),
@@ -674,6 +738,13 @@ fn apply_value_to_raw(raw: &mut RawSettings, key: &str, value: Value) -> Result<
         "tts_voice_custom_id" => raw.tts_voice_custom_id = Some(string_value(key, &value)?),
         "tts_model" => raw.tts_model = Some(string_value(key, &value)?),
         "search_engine" => raw.search_engine = Some(string_value(key, &value)?),
+        "web_search_provider" => raw.web_search_provider = Some(string_value(key, &value)?),
+        "web_search_tavily_api_key" => {
+            raw.web_search_tavily_api_key = Some(string_value(key, &value)?)
+        }
+        "web_search_brave_api_key" => {
+            raw.web_search_brave_api_key = Some(string_value(key, &value)?)
+        }
         "auto_memory_enabled" => raw.auto_memory_enabled = Some(bool_value(key, &value)?),
         "memory_auto_retrieve" => raw.memory_auto_retrieve = Some(bool_value(key, &value)?),
         "memory_query_rewriting" => raw.memory_query_rewriting = Some(bool_value(key, &value)?),
@@ -706,8 +777,9 @@ fn apply_value_to_app_state(app_state: &mut AppState, key: &str, value: Value) {
             }
         }
         "backend" => {
-            if let Ok(value) = string_value(key, &value) {
-                let normalized = normalize_backend_value(&value);
+            if let Ok(normalized) =
+                string_value(key, &value).and_then(|value| normalize_backend_value(&value))
+            {
                 app_state.main_loop_backend = normalized.clone();
                 settings.backend = Some(normalized);
             }
@@ -787,6 +859,13 @@ fn apply_value_to_app_state(app_state: &mut AppState, key: &str, value: Value) {
         "tts_voice_custom_id" => settings.tts_voice_custom_id = value.as_str().map(str::to_string),
         "tts_model" => settings.tts_model = value.as_str().map(str::to_string),
         "search_engine" => settings.search_engine = value.as_str().map(str::to_string),
+        "web_search_provider" => settings.web_search_provider = value.as_str().map(str::to_string),
+        "web_search_tavily_api_key" => {
+            settings.web_search_tavily_api_key = value.as_str().map(str::to_string)
+        }
+        "web_search_brave_api_key" => {
+            settings.web_search_brave_api_key = value.as_str().map(str::to_string)
+        }
         "auto_memory_enabled" => settings.auto_memory_enabled = value.as_bool(),
         "memory_auto_retrieve" => settings.memory_auto_retrieve = value.as_bool(),
         "memory_query_rewriting" => settings.memory_query_rewriting = value.as_bool(),
@@ -900,11 +979,16 @@ fn parse_permission_mode(value: &str) -> PermissionMode {
     }
 }
 
-fn normalize_backend_value(value: &str) -> String {
+fn normalize_backend_value(value: &str) -> Result<String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "codex" | "openai-codex" => "codex".to_string(),
-        "native" | "claude" | "claude-code" | "auto" => "native".to_string(),
-        other => other.to_string(),
+        "codex" | "openai-codex" => Ok("codex".to_string()),
+        "native" | "allthecodes" | "claude" | "claude-code" | "claude_code" | "auto" => {
+            Ok("native".to_string())
+        }
+        other => bail!(
+            "Unknown backend '{}'. Known backends: native, codex. Claude Code is stored as native.",
+            other
+        ),
     }
 }
 
@@ -1041,7 +1125,6 @@ pub async fn debug_state_handler(State(state): State<WebState>) -> Response {
     Json(DebugStateResponse {
         enabled: true,
         session_id: engine.current_session_id().to_string(),
-        ownership: state.ownership_snapshot(),
         is_streaming: state.is_streaming.load(std::sync::atomic::Ordering::SeqCst),
         pty: state.pty_diagnostics.snapshot(),
     })
@@ -1057,12 +1140,10 @@ pub async fn debug_session_trace_handler(
         return debug_disabled_response();
     }
 
-    let ownership = state.ownership_snapshot();
     let is_streaming = state.is_streaming.load(std::sync::atomic::Ordering::SeqCst);
 
     Json(SessionTraceResponse {
         session_id: id,
-        ownership,
         is_streaming,
         current_turn: if is_streaming {
             Some(TurnTraceItem {
@@ -1106,7 +1187,6 @@ pub async fn debug_action_handler(
             state
                 .is_streaming
                 .store(false, std::sync::atomic::Ordering::SeqCst);
-            state.release_owner(SessionOwner::ChatStream);
         }
         "chat/submit" => {
             ok = false;
@@ -1155,10 +1235,38 @@ fn debug_enabled() -> bool {
 fn debug_disabled_response() -> Response {
     (
         StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error: "Debug API is disabled".into(),
-            code: "debug_disabled".into(),
-        }),
+        Json(
+            ProtocolApiError::Forbidden {
+                code: "debug_disabled",
+                message: "Debug API is disabled".into(),
+            }
+            .into_body(),
+        ),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_backend_value_maps_claude_code_to_native() {
+        assert_eq!(normalize_backend_value("claude_code").unwrap(), "native");
+        assert_eq!(normalize_backend_value("claude-code").unwrap(), "native");
+        assert_eq!(normalize_backend_value("allthecodes").unwrap(), "native");
+    }
+
+    #[test]
+    fn normalize_backend_value_maps_codex_alias() {
+        assert_eq!(normalize_backend_value("openai-codex").unwrap(), "codex");
+    }
+
+    #[test]
+    fn backend_validation_rejects_unknown_values() {
+        let err = validate_setting_value("backend", &serde_json::json!("alma"))
+            .expect_err("unknown backend should be rejected")
+            .to_string();
+        assert!(err.contains("Unknown backend 'alma'"));
+    }
 }

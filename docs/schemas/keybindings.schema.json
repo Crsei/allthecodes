@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://allthecodes/keybindings.schema.json",
+  "title": "allthecodes keybindings",
+  "description": "On-disk shape of keybindings.json (issue #10). Mirrors the Claude Code spec at docs/claude-code-configuration/customize-keyboard-shortcuts.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "$schema": { "type": "string" },
+    "$docs": { "type": "string" },
+    "bindings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/bindingBlock" }
+    }
+  },
+  "$defs": {
+    "bindingBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context"],
+      "properties": {
+        "context": {
+          "type": "string",
+          "description": "Context in which the bindings apply.",
+          "enum": [
+            "Global",
+            "Chat",
+            "Autocomplete",
+            "Settings",
+            "Confirmation",
+            "Tabs",
+            "Help",
+            "Transcript",
+            "HistorySearch",
+            "Task",
+            "ThemePicker",
+            "Attachments",
+            "Footer",
+            "MessageSelector",
+            "DiffDialog",
+            "ModelPicker",
+            "Select",
+            "Plugin",
+            "Scroll",
+            "Doctor"
+          ]
+        },
+        "bindings": {
+          "type": "object",
+          "description": "Map from chord string (e.g. 'ctrl+e' or 'ctrl+x ctrl+k') to action (e.g. 'chat:submit'). Use null to unbind the default.",
+          "additionalProperties": {
+            "type": ["string", "null"],
+            "pattern": "^[a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*$"
+          }
+        }
+      }
+    }
+  }
+}

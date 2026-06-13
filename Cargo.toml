@@ -33,6 +33,7 @@ tokio-util = "0.7"
 # 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+schemars = { version = "0.8", features = ["derive"] }
 
 # 错误处理
 anyhow = "1"
@@ -128,6 +129,7 @@ allthecodes-models = { path = "crates/allthecodes-models" }
 allthecodes-bootstrap = { path = "crates/allthecodes-bootstrap" }
 allthecodes-auth = { path = "crates/allthecodes-auth" }
 allthecodes-api = { path = "crates/allthecodes-api" }
+allthecodes-protocol = { path = "crates/allthecodes-protocol" }
 allthecodes-skills = { path = "crates/allthecodes-skills" }
 allthecodes-config = { path = "crates/allthecodes-config" }
 allthecodes-utils = { path = "crates/allthecodes-utils" }
@@ -161,6 +163,7 @@ allthecodes-ipc-client = { path = "crates/allthecodes-ipc-client" }
 allthecodes-startup = { path = "crates/allthecodes-startup" }
 allthecodes-voice = { path = "crates/allthecodes-voice" }
 allthecodes-web = { path = "crates/allthecodes-web" }
+allthecodes-web-state = { path = "crates/allthecodes-web-state" }
 allthecodes-worktree = { path = "crates/allthecodes-worktree" }
 
 # Daemon HTTP server
@@ -169,6 +172,12 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 hmac = "0.12"
 notify-rust = "4"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "chrono",
+    "uuid",
+] }
 
 # Web UI
 rust-embed = "8"
@@ -192,6 +201,21 @@ portable-pty = "0.9"
 vt100 = "0.15"
 which = "7"
 serial_test = "3"
+
+# ============================================================
+# Workspace-level lint config — warn on unwrap/expect/panic
+# in production code. Test code is exempt via clippy.toml.
+# ------------------------------------------------------------
+# NOTE: These are set to "warn" during cleanup. Once all
+# production-code unwrap/expect/panic calls are addressed,
+# promote individual entries to "deny" as appropriate.
+# ============================================================
+
+[workspace.lints]
+clippy.unwrap_used = "warn"
+clippy.expect_used = "warn"
+clippy.panic = "warn"
+clippy.panic_in_result_fn = "warn"
 
 # ============================================================
 # Profiles (apply to the whole workspace)

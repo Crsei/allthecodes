@@ -1,6 +1,6 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use tracing::warn;
 
@@ -462,7 +462,7 @@ pub fn discover_plugin_mcp_servers_scoped() -> Vec<(String, allthecodes_mcp::Mcp
                 allthecodes_mcp::McpServerConfig {
                     name: mcp.name,
                     transport: "stdio".to_string(),
-                    command: Some(mcp.command),
+                    command: Some(resolve_plugin_mcp_command(&cache_path, mcp.command)),
                     args: Some(mcp.args),
                     url: None,
                     headers: None,
@@ -476,6 +476,17 @@ pub fn discover_plugin_mcp_servers_scoped() -> Vec<(String, allthecodes_mcp::Mcp
     }
 
     out
+}
+
+fn resolve_plugin_mcp_command(plugin_root: &Path, command: String) -> String {
+    let path = Path::new(&command);
+    let has_path_components = command.contains('/') || command.contains('\\');
+
+    if path.is_absolute() || !has_path_components {
+        command
+    } else {
+        plugin_root.join(path).to_string_lossy().to_string()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -518,4 +529,40 @@ pub fn discover_plugin_skill_definitions() -> Vec<PluginSkillDefinition> {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_plugin_mcp_command;
+    use std::path::Path;
+
+    #[test]
+    fn plugin_mcp_command_keeps_bare_command_for_path_lookup() {
+        assert_eq!(
+            resolve_plugin_mcp_command(Path::new("/plugin/root"), "mcp-cli-bridge".into()),
+            "mcp-cli-bridge"
+        );
+    }
+
+    #[test]
+    fn plugin_mcp_command_resolves_relative_path_against_plugin_root() {
+        assert_eq!(
+            resolve_plugin_mcp_command(
+                Path::new("/plugin/root"),
+                "target/release/mcp-cli-bridge".into()
+            ),
+            "/plugin/root/target/release/mcp-cli-bridge"
+        );
+    }
+
+    #[test]
+    fn plugin_mcp_command_keeps_absolute_path() {
+        assert_eq!(
+            resolve_plugin_mcp_command(
+                Path::new("/plugin/root"),
+                "/opt/allthecodes/mcp-cli-bridge".into()
+            ),
+            "/opt/allthecodes/mcp-cli-bridge"
+        );
+    }
 }

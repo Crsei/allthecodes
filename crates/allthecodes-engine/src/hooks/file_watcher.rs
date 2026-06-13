@@ -26,7 +26,9 @@ static NOTIFY_CALLBACK: LazyLock<Mutex<Option<FileChangedCallback>>> =
 
 /// Set the file change notification callback.
 pub fn set_file_changed_notifier(cb: Option<FileChangedCallback>) {
-    *NOTIFY_CALLBACK.lock().expect("NOTIFY_CALLBACK lock poisoned") = cb;
+    *NOTIFY_CALLBACK
+        .lock()
+        .expect("NOTIFY_CALLBACK lock poisoned") = cb;
 }
 
 /// Update the dynamic watch paths from hook output.
@@ -40,20 +42,34 @@ pub fn update_watch_paths(paths: &[String]) {
 
 /// Get current watch paths.
 pub fn get_watch_paths() -> Vec<String> {
-    WATCH_PATHS.lock().expect("WATCH_PATHS lock poisoned").iter().cloned().collect()
+    WATCH_PATHS
+        .lock()
+        .expect("WATCH_PATHS lock poisoned")
+        .iter()
+        .cloned()
+        .collect()
 }
 
 /// Handle a file change event (called by the file watcher).
 pub fn handle_file_event(path: &str, event: &str) {
-    if let Some(cb) = NOTIFY_CALLBACK.lock().expect("NOTIFY_CALLBACK lock poisoned").as_ref() {
+    if let Some(cb) = NOTIFY_CALLBACK
+        .lock()
+        .expect("NOTIFY_CALLBACK lock poisoned")
+        .as_ref()
+    {
         cb(path, event);
     }
 }
 
 /// Reset file changed watcher state (for testing).
 pub fn reset_file_changed_watcher() {
-    WATCH_PATHS.lock().expect("WATCH_PATHS lock poisoned").clear();
-    *NOTIFY_CALLBACK.lock().expect("NOTIFY_CALLBACK lock poisoned") = None;
+    WATCH_PATHS
+        .lock()
+        .expect("WATCH_PATHS lock poisoned")
+        .clear();
+    *NOTIFY_CALLBACK
+        .lock()
+        .expect("NOTIFY_CALLBACK lock poisoned") = None;
 }
 
 /// Initialize the file changed watcher for a given working directory.

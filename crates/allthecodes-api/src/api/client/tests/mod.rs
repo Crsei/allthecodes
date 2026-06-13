@@ -233,6 +233,7 @@ pub(super) fn use_persistent_test_keyring() {
 mod auth_env;
 mod headers;
 mod model_alias;
+mod provider_connectivity;
 mod request_serialization;
 mod sse_parsing;
 mod streaming_retry;

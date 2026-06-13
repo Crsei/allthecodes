@@ -40,6 +40,10 @@ pub struct SessionInfo {
     /// title. Populated by `/rename` and persisted on the `SessionFile`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_title: Option<String>,
+    /// Optional per-session chat mode override. `None` means the session
+    /// follows its workspace default mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_mode_override: Option<String>,
     /// Stable grouping key for the workspace. Sessions sharing the same git
     /// common-dir (or canonical path for non-git dirs) get the same key.
     #[serde(default)]
@@ -63,6 +67,10 @@ pub struct SessionFile {
     /// auto-derived title from the first user message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_title: Option<String>,
+    /// Optional per-session chat mode override. `None` means this session
+    /// follows the workspace default mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_mode_override: Option<String>,
     pub messages: Vec<SerializableMessage>,
 }
 
@@ -94,6 +102,16 @@ pub fn get_session_dir() -> PathBuf {
 /// Return the file path for a specific session.
 pub fn get_session_file(session_id: &str) -> PathBuf {
     get_session_dir().join(format!("{}.json", session_id))
+}
+
+/// Return the directory for archived sessions.
+pub fn get_archived_session_dir() -> PathBuf {
+    get_session_dir().join("archive")
+}
+
+/// Return the primary archive file path for a specific session.
+pub fn get_archived_session_file(session_id: &str) -> PathBuf {
+    get_archived_session_dir().join(format!("{}.json", session_id))
 }
 
 fn normalize_display_path(path: &Path) -> String {
@@ -256,6 +274,7 @@ fn build_session_info(file: SessionFile) -> SessionInfo {
         cwd: file.cwd,
         title,
         custom_title: file.custom_title,
+        chat_mode_override: file.chat_mode_override,
         workspace_key: ws_key,
         workspace_root: ws_root.to_string_lossy().to_string(),
         workspace_name: ws_name,
@@ -302,14 +321,14 @@ pub(crate) fn save_session_to_file(
 
     let now = Utc::now().timestamp();
 
-    // Preserve the original created_at and custom_title when updating.
-    let (created_at, custom_title) = if path.exists() {
+    // Preserve metadata fields when updating.
+    let (created_at, custom_title, chat_mode_override) = if path.exists() {
         match load_session_file_from_path(path) {
-            Ok(f) => (f.created_at, f.custom_title),
-            Err(_) => (now, None),
+            Ok(f) => (f.created_at, f.custom_title, f.chat_mode_override),
+            Err(_) => (now, None, None),
         }
     } else {
-        (now, None)
+        (now, None, None)
     };
 
     let serializable_messages = messages_to_serializable(messages);
@@ -323,6 +342,7 @@ pub(crate) fn save_session_to_file(
         last_modified: now,
         cwd: stable_cwd,
         custom_title,
+        chat_mode_override,
         messages: serializable_messages,
     };
 
@@ -389,6 +409,72 @@ pub(crate) fn set_session_title_in_file(
     Ok(new_title)
 }
 
+/// Set or clear the per-session chat mode override.
+///
+/// `mode = None` clears the override, so callers should treat the session as
+/// following its workspace default mode. When the session file does not yet
+/// exist, a metadata-only file is created with no messages so later saves can
+/// preserve the override.
+pub fn set_session_chat_mode_override(
+    session_id: &str,
+    mode: Option<&str>,
+    cwd: &str,
+) -> Result<Option<String>> {
+    let path = get_session_file(session_id);
+    set_session_chat_mode_override_in_file(session_id, mode, cwd, &path)
+}
+
+pub(crate) fn set_session_chat_mode_override_in_file(
+    session_id: &str,
+    mode: Option<&str>,
+    cwd: &str,
+    path: &Path,
+) -> Result<Option<String>> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create session directory {}", dir.display()))?;
+    }
+
+    let now = Utc::now().timestamp();
+    let mut file = if path.exists() {
+        load_session_file_from_path(path)?
+    } else {
+        SessionFile {
+            session_id: session_id.to_string(),
+            created_at: now,
+            last_modified: now,
+            cwd: normalize_display_path(&stable_workspace_path(Path::new(cwd))),
+            custom_title: None,
+            chat_mode_override: None,
+            messages: Vec::new(),
+        }
+    };
+
+    let new_mode = mode.and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    file.chat_mode_override = new_mode.clone();
+    file.last_modified = now;
+
+    let json = serde_json::to_string_pretty(&file).context("Failed to serialize session")?;
+    std::fs::write(path, json)
+        .with_context(|| format!("Failed to write session file {}", path.display()))?;
+
+    debug!(
+        session_id = session_id,
+        chat_mode_override = ?new_mode,
+        "session chat mode override updated"
+    );
+
+    Ok(new_mode)
+}
+
 /// Truncate the stored session to its first `keep` messages, producing a
 /// backup copy of the pre-truncation file for recovery.
 ///
@@ -433,6 +519,84 @@ pub fn truncate_session(session_id: &str, keep: usize) -> Result<usize> {
 fn rewind_backup_path(session_id: &str) -> PathBuf {
     let ts = Utc::now().timestamp();
     get_session_dir().join(format!("{}.rewind-{}.json", session_id, ts))
+}
+
+fn available_archive_path(session_id: &str) -> PathBuf {
+    let archive_dir = get_archived_session_dir();
+    let primary = get_archived_session_file(session_id);
+    if !primary.exists() {
+        return primary;
+    }
+
+    let ts = Utc::now().timestamp();
+    for suffix in 0.. {
+        let file_name = if suffix == 0 {
+            format!("{}.archived-{}.json", session_id, ts)
+        } else {
+            format!("{}.archived-{}-{}.json", session_id, ts, suffix)
+        };
+        let candidate = archive_dir.join(file_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded archive suffix search should always return");
+}
+
+/// Move a top-level session file into the archive directory.
+///
+/// The archived JSON remains intact for future restore/listing support, but
+/// disappears from [`list_sessions`] because that function only reads the
+/// top-level sessions directory.
+pub fn archive_session(session_id: &str) -> Result<()> {
+    let src = get_session_file(session_id);
+    if !src.exists() {
+        anyhow::bail!(
+            "Session file for {} does not exist at {}",
+            session_id,
+            src.display()
+        );
+    }
+
+    let archive_dir = get_archived_session_dir();
+    std::fs::create_dir_all(&archive_dir).with_context(|| {
+        format!(
+            "Failed to create archived session directory {}",
+            archive_dir.display()
+        )
+    })?;
+
+    let dest = available_archive_path(session_id);
+
+    match std::fs::rename(&src, &dest) {
+        Ok(()) => {}
+        Err(rename_err) => {
+            std::fs::copy(&src, &dest).with_context(|| {
+                format!(
+                    "Failed to archive session {} from {} to {} after rename failed: {}",
+                    session_id,
+                    src.display(),
+                    dest.display(),
+                    rename_err
+                )
+            })?;
+            std::fs::remove_file(&src).with_context(|| {
+                format!(
+                    "Failed to remove original session file {} after copying archive",
+                    src.display()
+                )
+            })?;
+        }
+    }
+
+    debug!(
+        session_id = session_id,
+        archive_path = %dest.display(),
+        "session archived"
+    );
+
+    Ok(())
 }
 
 /// Return the raw on-disk view of a single session file.
@@ -846,6 +1010,7 @@ mod tests {
                 cwd: normalize_display_path(cwd),
                 title: String::new(),
                 custom_title: None,
+                chat_mode_override: None,
                 workspace_key: workspace_key(cwd),
                 workspace_root: workspace_root(cwd).to_string_lossy().to_string(),
                 workspace_name: workspace_name(&workspace_root(cwd)),
@@ -901,6 +1066,7 @@ mod tests {
             last_modified: 1_700_000_000,
             cwd: cwd.into(),
             custom_title: None,
+            chat_mode_override: None,
             messages,
         };
         std::fs::create_dir_all(get_session_dir())?;
@@ -978,6 +1144,48 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn test_set_session_chat_mode_override_roundtrip() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        write_fixture_session(
+            "mode-session",
+            vec![user_sm("hello", "00000000-0000-0000-0000-000000000101")],
+            "/proj",
+        )
+        .unwrap();
+
+        let stored =
+            set_session_chat_mode_override("mode-session", Some("eco-boost"), "/proj").unwrap();
+        assert_eq!(stored.as_deref(), Some("eco-boost"));
+        let info = load_session_info("mode-session").unwrap();
+        assert_eq!(info.chat_mode_override.as_deref(), Some("eco-boost"));
+
+        save_session("mode-session", &[], "/proj").unwrap();
+        let info = load_session_info("mode-session").unwrap();
+        assert_eq!(info.chat_mode_override.as_deref(), Some("eco-boost"));
+
+        let stored = set_session_chat_mode_override("mode-session", None, "/proj").unwrap();
+        assert_eq!(stored, None);
+        let info = load_session_info("mode-session").unwrap();
+        assert_eq!(info.chat_mode_override, None);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_set_session_chat_mode_override_creates_metadata_file() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        set_session_chat_mode_override("new-mode-session", Some("normal"), "/proj").unwrap();
+
+        let info = load_session_info("new-mode-session").unwrap();
+        assert_eq!(info.chat_mode_override.as_deref(), Some("normal"));
+        assert_eq!(info.message_count, 0);
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn test_set_session_title_truncates_long_input() {
         let temp = tempdir().unwrap();
         let _g = HomeGuard::set(temp.path());
@@ -1046,6 +1254,77 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("s4.rewind-"))
             .collect();
         assert!(backups.is_empty(), "expected no backup when no truncation");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_archive_session_moves_file_out_of_default_list() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        write_fixture_session(
+            "archive-move",
+            vec![user_sm(
+                "archive me",
+                "00000000-0000-0000-0000-000000000020",
+            )],
+            "/proj",
+        )
+        .unwrap();
+
+        archive_session("archive-move").unwrap();
+
+        assert!(!get_session_file("archive-move").exists());
+        assert!(get_archived_session_file("archive-move").exists());
+        let listed_ids: Vec<_> = list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
+        assert!(!listed_ids.iter().any(|id| id == "archive-move"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_archive_session_missing_file_returns_error() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        let error = archive_session("missing-archive").unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("missing-archive"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_archive_session_does_not_overwrite_existing_archive() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        write_fixture_session(
+            "archive-conflict",
+            vec![user_sm("top level", "00000000-0000-0000-0000-000000000021")],
+            "/proj",
+        )
+        .unwrap();
+        std::fs::create_dir_all(get_archived_session_dir()).unwrap();
+        std::fs::write(get_archived_session_file("archive-conflict"), "existing").unwrap();
+
+        archive_session("archive-conflict").unwrap();
+
+        assert!(get_archived_session_file("archive-conflict").exists());
+        let archived: Vec<_> = std::fs::read_dir(get_archived_session_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+
+        assert!(archived.iter().any(|name| name == "archive-conflict.json"));
+        assert!(archived.iter().any(|name| {
+            name.starts_with("archive-conflict.archived-") && name.ends_with(".json")
+        }));
+        assert_eq!(archived.len(), 2);
     }
 
     #[test]

@@ -10,8 +10,9 @@ use allthecodes_computer_use::host_adapter::{
     probe_capabilities, CapabilityLevel, OsType, PermissionState,
 };
 
-use crate::handlers::{setting_bool, ApiError};
+use crate::handlers::setting_bool;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct ComputerUseStatusResponse {
@@ -81,13 +82,16 @@ pub async fn computer_use_permission_request_handler(
 ) -> impl IntoResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            error: format!(
-                "Computer Use permission request is not implemented by this backend: {}",
-                permission
-            ),
-            code: "computer_use_permission_request_not_implemented".into(),
-        }),
+        Json(
+            ProtocolApiError::BadRequest {
+                code: "computer_use_permission_request_not_implemented",
+                message: format!(
+                    "Computer Use permission request is not implemented by this backend: {}",
+                    permission
+                ),
+            }
+            .into_body(),
+        ),
     )
 }
 
@@ -95,10 +99,13 @@ pub async fn computer_use_permission_request_handler(
 pub async fn computer_use_test_handler() -> impl IntoResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            error: "Computer Use web test is not implemented by this backend".into(),
-            code: "computer_use_test_not_implemented".into(),
-        }),
+        Json(
+            ProtocolApiError::BadRequest {
+                code: "computer_use_test_not_implemented",
+                message: "Computer Use web test is not implemented by this backend".into(),
+            }
+            .into_body(),
+        ),
     )
 }
 

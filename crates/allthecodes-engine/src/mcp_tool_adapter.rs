@@ -32,6 +32,8 @@ const MCP_SKILL_URI_PREFIX: &str = "skill://";
 pub struct McpToolWrapper {
     /// The tool definition from the MCP server.
     pub def: McpToolDef,
+    /// Model-facing tool name, namespaced to avoid collisions across servers.
+    pub exposed_name: String,
     /// Server name that provides this tool.
     pub server_name: String,
     /// Shared manager for accessing the MCP client at call time.
@@ -41,9 +43,7 @@ pub struct McpToolWrapper {
 #[async_trait]
 impl Tool for McpToolWrapper {
     fn name(&self) -> &str {
-        // MCP tools are namespaced as mcp__{server}__{tool}
-        // But we store the full name in def.name for simplicity
-        &self.def.name
+        &self.exposed_name
     }
 
     async fn description(&self, _input: &Value) -> String {
@@ -73,7 +73,8 @@ impl Tool for McpToolWrapper {
     ) -> Result<ToolResult> {
         debug!(
             server = %self.server_name,
-            tool = %self.def.name,
+            tool = %self.exposed_name,
+            mcp_tool = %self.def.name,
             "MCP tool call"
         );
 
@@ -143,7 +144,7 @@ impl Tool for McpToolWrapper {
     }
 
     fn user_facing_name(&self, _input: Option<&Value>) -> String {
-        format!("mcp__{}__{}", self.server_name, self.def.name)
+        self.exposed_name.clone()
     }
 
     fn mcp_server_name(&self) -> Option<&str> {
@@ -295,13 +296,19 @@ pub fn mcp_tools_to_tools(
     defs.into_iter()
         .map(|def| {
             let server_name = def.server_name.clone();
+            let exposed_name = mcp_exposed_tool_name(&server_name, &def.name);
             Arc::new(McpToolWrapper {
                 def,
+                exposed_name,
                 server_name,
                 manager: manager.clone(),
             }) as Arc<dyn Tool>
         })
         .collect()
+}
+
+fn mcp_exposed_tool_name(server_name: &str, tool_name: &str) -> String {
+    format!("mcp__{server_name}__{tool_name}")
 }
 
 /// Discover skills exposed by connected MCP servers as `skill://` resources.
@@ -483,11 +490,14 @@ mod tests {
                 input_schema: json!({}),
                 server_name: "filesystem".to_string(),
             },
+            exposed_name: "mcp__filesystem__read_file".to_string(),
             server_name: "filesystem".to_string(),
             manager,
         };
 
+        assert_eq!(wrapper.name(), "mcp__filesystem__read_file");
         assert_eq!(wrapper.user_facing_name(None), "mcp__filesystem__read_file");
+        assert_eq!(wrapper.def.name, "read_file");
     }
 
     #[test]
@@ -510,8 +520,8 @@ mod tests {
 
         let tools = mcp_tools_to_tools(defs, manager);
         assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].name(), "tool_a");
-        assert_eq!(tools[1].name(), "tool_b");
+        assert_eq!(tools[0].name(), "mcp__server1__tool_a");
+        assert_eq!(tools[1].name(), "mcp__server1__tool_b");
     }
 
     #[test]

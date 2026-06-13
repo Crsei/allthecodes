@@ -10,12 +10,10 @@ async fn query_refreshes_tools_before_first_model_call() {
         MockDeps::new(vec![make_text_response("done")]).with_refreshed_tools(vec![refreshed_tool]),
     );
 
-    let items: Vec<QueryYield> = query(
-        make_query_params(vec![make_user_message_for_test("use the late tool")]),
-        deps.clone(),
-    )
-    .collect()
-    .await;
+    let mut params = make_query_params(vec![make_user_message_for_test("use the late tool")]);
+    params.gates.deferred_tool_loading = false;
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
     assert_eq!(request_start_count(&items), 1);
 
     let recorded = deps.recorded_params();
@@ -34,6 +32,7 @@ async fn query_shapes_autocompact_with_final_request_context() {
         MockDeps::new(vec![make_text_response("done")]).with_refreshed_tools(vec![refreshed_tool]),
     );
     let mut params = make_query_params(vec![make_user_message_for_test("count the full request")]);
+    params.gates.deferred_tool_loading = false;
     params.system_prompt = vec!["system boundary".to_string()];
     params.max_output_tokens_override = Some(1234);
     params.skip_cache_write = Some(true);
@@ -54,7 +53,7 @@ async fn query_shapes_autocompact_with_final_request_context() {
 }
 
 #[tokio::test]
-async fn deferred_enabled_request_keeps_only_core_tool_schemas_after_discovery() {
+async fn deferred_default_request_keeps_only_core_tool_schemas_after_discovery() {
     let session_id = format!("query-deferred-{}", uuid::Uuid::new_v4());
     allthecodes_tools::deferred_tools::mark_discovered_tools(
         &session_id,
@@ -71,10 +70,9 @@ async fn deferred_enabled_request_keeps_only_core_tool_schemas_after_discovery()
             .with_tools(tools)
             .with_audit_session_id(&session_id),
     );
-    let mut params = make_query_params(vec![make_user_message_for_test(
+    let params = make_query_params(vec![make_user_message_for_test(
         "use the discovered browser",
     )]);
-    params.gates.deferred_tool_loading = true;
 
     let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
     assert_eq!(request_start_count(&items), 1);
@@ -93,6 +91,52 @@ async fn deferred_enabled_request_keeps_only_core_tool_schemas_after_discovery()
     assert!(
         allthecodes_tools::deferred_tools::discovered_tools_for_session(&session_id)
             .contains("WebBrowser")
+    );
+}
+
+#[tokio::test]
+async fn query_request_dedupes_visible_tool_names_before_model_call() {
+    let tools: Tools = vec![
+        Arc::new(LoopTestTool {
+            name: "Sleep",
+            concurrency_safe: true,
+        }),
+        Arc::new(LoopTestTool {
+            name: "Sleep",
+            concurrency_safe: true,
+        }),
+        Arc::new(LoopTestTool {
+            name: "SearchExtraTools",
+            concurrency_safe: true,
+        }),
+        Arc::new(LoopTestTool {
+            name: "SearchExtraTools",
+            concurrency_safe: true,
+        }),
+    ];
+    let deps = Arc::new(MockDeps::new(vec![make_text_response("done")]).with_tools(tools));
+
+    let items: Vec<QueryYield> = query(
+        make_query_params(vec![make_user_message_for_test("dedupe request tools")]),
+        deps.clone(),
+    )
+    .collect()
+    .await;
+    assert_eq!(request_start_count(&items), 1);
+
+    let recorded = deps.recorded_params();
+    let names = recorded[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(names.iter().filter(|name| *name == "Sleep").count(), 1);
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| *name == "SearchExtraTools")
+            .count(),
+        1
     );
 }
 
@@ -179,6 +223,7 @@ async fn agent_session_filters_prompt_and_recursive_tools_from_request_tools() {
     let deps = Arc::new(MockDeps::new(vec![make_text_response("done")]).with_tools(tools));
     let mut params = make_query_params(vec![make_user_message_for_test("continue agent task")]);
     params.query_source = QuerySource::Agent("child-agent".to_string());
+    params.gates.deferred_tool_loading = false;
 
     let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
     assert_eq!(request_start_count(&items), 1);

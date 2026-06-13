@@ -11,7 +11,175 @@ use serde::{Deserialize, Serialize};
 
 use allthecodes_config::paths;
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::ApiError as ProtocolApiError;
+
+use allthecodes_protocol::v1::prompts::PromptMutationResponse as ProtocolPromptMutationResponse;
+use allthecodes_protocol::v1::prompts::PromptsListResponse as ProtocolPromptsListResponse;
+use allthecodes_protocol::ApiMethod;
+use allthecodes_protocol::NoParams;
+use async_trait::async_trait;
+use axum::extract::State;
+use axum::routing::{get, post};
+
+use crate::api_dispatcher::rest_processor_response;
+use crate::handler_registry::HandlerRegistry;
+use crate::processors::Processor;
+use crate::serialization::SerializationLayer;
+use crate::state::WebState;
+
+// ---------------------------------------------------------------------------
+// Processors
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct PromptsListProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for PromptsListProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for PromptsListProcessor {
+    type Request = NoParams;
+    type Response = ProtocolPromptsListResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "prompts.list"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, _request: NoParams) -> Result<Self::Response, Self::Error> {
+        let store = load_store().map_err(|e| ProtocolApiError::Internal { message: e })?;
+        let prompts: Vec<allthecodes_protocol::v1::prompts::QuickPrompt> =
+            sorted_prompts(store.prompts)
+                .into_iter()
+                .map(|p| serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap())
+                .collect();
+        Ok(ProtocolPromptsListResponse { prompts })
+    }
+}
+
+#[derive(Clone)]
+pub struct PromptsCreateProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for PromptsCreateProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for PromptsCreateProcessor {
+    type Request = allthecodes_protocol::v1::prompts::PromptCreateRequest;
+    type Response = ProtocolPromptMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "prompts.create"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, request: Self::Request) -> Result<Self::Response, Self::Error> {
+        use allthecodes_protocol::v1::prompts::QuickPrompt as ProtocolQuickPrompt;
+
+        let trimmed = request.name.trim();
+        if trimmed.is_empty() {
+            return Err(ProtocolApiError::BadRequest {
+                code: "validation_error",
+                message: "Prompt name cannot be empty".to_string(),
+            });
+        }
+        if trimmed.contains('/') {
+            return Err(ProtocolApiError::BadRequest {
+                code: "validation_error",
+                message: "Prompt name must not contain `/`".to_string(),
+            });
+        }
+
+        let mut store = load_store().map_err(|e| ProtocolApiError::Internal { message: e })?;
+        let id = request
+            .id
+            .unwrap_or_else(|| slug_from_name(&request.name, "prompt"));
+        if id.is_empty() {
+            return Err(ProtocolApiError::BadRequest {
+                code: "validation_error",
+                message: "id cannot be empty".to_string(),
+            });
+        }
+        if id
+            .chars()
+            .any(|ch| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_')
+        {
+            return Err(ProtocolApiError::BadRequest {
+                code: "validation_error",
+                message: "id may only contain ASCII letters, digits, `-`, and `_`".to_string(),
+            });
+        }
+        if store.prompts.iter().any(|p| p.id == id) {
+            return Err(ProtocolApiError::Conflict {
+                reason: format!("Prompt '{}' already exists", id),
+            });
+        }
+
+        let now = Utc::now().timestamp();
+        let prompt = ProtocolQuickPrompt {
+            id,
+            name: trimmed.to_string(),
+            content: request.content,
+            description: request.description,
+            created_at: now,
+            updated_at: now,
+        };
+
+        // Bridge to handler type for persistence
+        let handler_prompt: QuickPrompt =
+            serde_json::from_value(serde_json::to_value(&prompt).map_err(|e| {
+                ProtocolApiError::Internal {
+                    message: e.to_string(),
+                }
+            })?)
+            .map_err(|e| ProtocolApiError::Internal {
+                message: e.to_string(),
+            })?;
+
+        store.prompts.push(handler_prompt);
+        store.prompts = sorted_prompts(store.prompts);
+        write_store(&store).map_err(|e| ProtocolApiError::Internal { message: e })?;
+
+        Ok(ProtocolPromptMutationResponse {
+            ok: true,
+            prompt: Some(prompt),
+            error: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler registry
+// ---------------------------------------------------------------------------
+
+pub(crate) fn handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::PromptsList, get(prompts_list_handler))
+        .handle(ApiMethod::PromptsCreate, post(prompts_create_handler))
+}
+
+// ---------------------------------------------------------------------------
+// Handler types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QuickPrompt {
@@ -55,63 +223,31 @@ pub struct PromptUpdateRequest {
 }
 
 /// GET /api/prompts
-pub async fn prompts_list_handler() -> Response {
-    match load_store() {
-        Ok(store) => Json(PromptsListResponse {
-            prompts: sorted_prompts(store.prompts),
-        })
-        .into_response(),
-        Err(error) => internal_error(error).into_response(),
-    }
+pub async fn prompts_list_handler(State(state): State<WebState>) -> Response {
+    rest_processor_response::<PromptsListProcessor>(state, ApiMethod::PromptsList, NoParams {})
+        .await
 }
 
 /// GET /api/prompts/{id}
 pub async fn prompts_detail_handler(AxumPath(id): AxumPath<String>) -> Response {
     if let Err(error) = validate_id(&id) {
-        return validation_error(error).into_response();
+        return validation_error(error);
     }
     match load_store() {
         Ok(store) => match store.prompts.into_iter().find(|prompt| prompt.id == id) {
             Some(prompt) => Json(prompt).into_response(),
-            None => not_found(format!("Prompt '{}' not found", id)).into_response(),
+            None => not_found(format!("Prompt '{}' not found", id)),
         },
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
 /// POST /api/prompts
-pub async fn prompts_create_handler(Json(req): Json<PromptCreateRequest>) -> Response {
-    if let Err(error) = validate_prompt_name(&req.name) {
-        return validation_error(error).into_response();
-    }
-    let mut store = match load_store() {
-        Ok(store) => store,
-        Err(error) => return internal_error(error).into_response(),
-    };
-    let id = req
-        .id
-        .unwrap_or_else(|| slug_from_name(&req.name, "prompt"));
-    if let Err(error) = validate_id(&id) {
-        return validation_error(error).into_response();
-    }
-    if store.prompts.iter().any(|prompt| prompt.id == id) {
-        return conflict(format!("Prompt '{}' already exists", id)).into_response();
-    }
-    let now = Utc::now().timestamp();
-    let prompt = QuickPrompt {
-        id,
-        name: req.name.trim().to_string(),
-        content: req.content,
-        description: req.description,
-        created_at: now,
-        updated_at: now,
-    };
-    store.prompts.push(prompt.clone());
-    store.prompts = sorted_prompts(store.prompts);
-    match write_store(&store) {
-        Ok(()) => Json(prompt).into_response(),
-        Err(error) => internal_error(error).into_response(),
-    }
+pub async fn prompts_create_handler(
+    State(state): State<WebState>,
+    Json(req): Json<allthecodes_protocol::v1::prompts::PromptCreateRequest>,
+) -> Response {
+    rest_processor_response::<PromptsCreateProcessor>(state, ApiMethod::PromptsCreate, req).await
 }
 
 /// PATCH /api/prompts/{id}
@@ -120,18 +256,18 @@ pub async fn prompts_update_handler(
     Json(req): Json<PromptUpdateRequest>,
 ) -> Response {
     if let Err(error) = validate_id(&id) {
-        return validation_error(error).into_response();
+        return validation_error(error);
     }
     let mut store = match load_store() {
         Ok(store) => store,
-        Err(error) => return internal_error(error).into_response(),
+        Err(error) => return internal_error(error),
     };
     let Some(prompt) = store.prompts.iter_mut().find(|prompt| prompt.id == id) else {
-        return not_found(format!("Prompt '{}' not found", id)).into_response();
+        return not_found(format!("Prompt '{}' not found", id));
     };
     if let Some(name) = req.name {
         if let Err(error) = validate_prompt_name(&name) {
-            return validation_error(error).into_response();
+            return validation_error(error);
         }
         prompt.name = name.trim().to_string();
     }
@@ -146,23 +282,23 @@ pub async fn prompts_update_handler(
     store.prompts = sorted_prompts(store.prompts);
     match write_store(&store) {
         Ok(()) => Json(prompt).into_response(),
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
 /// DELETE /api/prompts/{id}
 pub async fn prompts_delete_handler(AxumPath(id): AxumPath<String>) -> Response {
     if let Err(error) = validate_id(&id) {
-        return validation_error(error).into_response();
+        return validation_error(error);
     }
     let mut store = match load_store() {
         Ok(store) => store,
-        Err(error) => return internal_error(error).into_response(),
+        Err(error) => return internal_error(error),
     };
     let before = store.prompts.len();
     store.prompts.retain(|prompt| prompt.id != id);
     if store.prompts.len() == before {
-        return not_found(format!("Prompt '{}' not found", id)).into_response();
+        return not_found(format!("Prompt '{}' not found", id));
     }
     store.prompts = sorted_prompts(store.prompts);
     match write_store(&store) {
@@ -170,7 +306,7 @@ pub async fn prompts_delete_handler(AxumPath(id): AxumPath<String>) -> Response 
             prompts: store.prompts,
         })
         .into_response(),
-        Err(error) => internal_error(error).into_response(),
+        Err(error) => internal_error(error),
     }
 }
 
@@ -251,42 +387,25 @@ fn slug_from_name(name: &str, fallback: &str) -> String {
     }
 }
 
-fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error,
-            code: "validation_error".into(),
-        }),
-    )
+fn validation_error(error: String) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code: "validation_error",
+        message: error,
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-fn conflict(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::CONFLICT,
-        Json(ApiError {
-            error,
-            code: "conflict".into(),
-        }),
-    )
+fn not_found(error: String) -> Response {
+    let body = ProtocolApiError::NotFound {
+        entity: "prompt",
+        id: error,
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
-fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error,
-            code: "not_found".into(),
-        }),
-    )
-}
-
-fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error,
-            code: "internal_error".into(),
-        }),
-    )
+fn internal_error(error: String) -> Response {
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }

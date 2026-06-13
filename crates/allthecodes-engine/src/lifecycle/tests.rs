@@ -369,6 +369,8 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
         hook_runner: hook_runner.clone(),
         command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
         auto_classifier_fn: None,
+        submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
+        submit_tools: None,
     };
     let Message::Assistant(parent) = assistant_message("tool parent") else {
         unreachable!("assistant_message returns an assistant message");

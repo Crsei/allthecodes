@@ -24,7 +24,7 @@ pub struct QueryConfig {
 }
 
 /// 运行时特性开关 (env/statsig 快照)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct QueryGates {
     /// 流式工具执行 (边流式边执行已完成的工具)
     pub streaming_tool_execution: bool,
@@ -35,6 +35,17 @@ pub struct QueryGates {
     /// Deferred tool loading: send only the stable core tool schemas and use
     /// SearchExtraTools/ExecuteExtraTool for hidden tools.
     pub deferred_tool_loading: bool,
+}
+
+impl Default for QueryGates {
+    fn default() -> Self {
+        Self {
+            streaming_tool_execution: false,
+            emit_tool_use_summaries: false,
+            fast_mode_enabled: false,
+            deferred_tool_loading: true,
+        }
+    }
 }
 
 impl QueryGates {
@@ -59,7 +70,7 @@ impl QueryGates {
                 "CC_RUST_EMIT_TOOL_USE_SUMMARIES",
             ),
             fast_mode_enabled,
-            deferred_tool_loading: env_flag_enabled(
+            deferred_tool_loading: env_flag_enabled_by_default(
                 &env,
                 "ALLTHECODES_DEFERRED_TOOL_LOADING",
                 "CC_RUST_DEFERRED_TOOL_LOADING",
@@ -86,6 +97,24 @@ fn flag_value_enabled(value: &str) -> bool {
     )
 }
 
+fn env_flag_enabled_by_default(
+    env: &std::collections::HashMap<String, String>,
+    name: &str,
+    legacy_name: &str,
+) -> bool {
+    env.get(name)
+        .or_else(|| env.get(legacy_name))
+        .map(|value| !flag_value_disabled(value))
+        .unwrap_or(true)
+}
+
+fn flag_value_disabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
 /// query() 函数的参数
 ///
 /// 对应 TypeScript: query.ts 的 QueryParams
@@ -101,6 +130,34 @@ pub struct QueryParams {
     pub skip_cache_write: Option<bool>,
     pub task_budget: Option<TaskBudget>,
     pub gates: QueryGates,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubmitMessageOverrides {
+    pub model: Option<String>,
+    pub thinking_enabled: Option<bool>,
+    pub effort: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub skill_ids: Option<Vec<String>>,
+    pub context_mode: Option<SubmitContextMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitContextMode {
+    Inherit,
+    Compact,
+    Isolated,
+}
+
+impl SubmitContextMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "inherit" => Some(Self::Inherit),
+            "compact" => Some(Self::Compact),
+            "isolated" => Some(Self::Isolated),
+            _ => None,
+        }
+    }
 }
 
 /// 查询来源
@@ -179,13 +236,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn query_gates_default_to_closed() {
+    fn query_gates_default_defer_tools() {
         let gates = QueryGates::default();
 
         assert!(!gates.streaming_tool_execution);
         assert!(!gates.emit_tool_use_summaries);
         assert!(!gates.fast_mode_enabled);
-        assert!(!gates.deferred_tool_loading);
+        assert!(gates.deferred_tool_loading);
     }
 
     #[test]
@@ -233,6 +290,30 @@ mod tests {
         assert!(!gates.streaming_tool_execution);
         assert!(!gates.emit_tool_use_summaries);
         assert!(!gates.fast_mode_enabled);
+        assert!(gates.deferred_tool_loading);
+    }
+
+    #[test]
+    fn query_gates_from_env_iter_can_disable_deferred_loading() {
+        for value in ["0", "false", "off", "no"] {
+            let gates = QueryGates::from_env_iter(
+                false,
+                [(
+                    "ALLTHECODES_DEFERRED_TOOL_LOADING".to_string(),
+                    value.to_string(),
+                )],
+            );
+            assert!(!gates.deferred_tool_loading, "{value} should disable");
+        }
+
+        let legacy = QueryGates::from_env_iter(
+            false,
+            [(
+                "CC_RUST_DEFERRED_TOOL_LOADING".to_string(),
+                "false".to_string(),
+            )],
+        );
+        assert!(!legacy.deferred_tool_loading);
     }
 }
 

@@ -169,7 +169,9 @@ fn map_key_to_applescript(key: &str) -> String {
                 _ => "command down",
             })
             .collect();
-        let key_part = parts.last().expect("key split has at least 2 parts (checked above)");
+        let key_part = parts
+            .last()
+            .expect("key split has at least 2 parts (checked above)");
         let mod_str = modifiers.join(", ");
         return format!(
             r#"tell application "System Events" to key code {} using {{{}}}"#,

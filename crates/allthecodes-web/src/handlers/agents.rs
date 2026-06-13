@@ -13,8 +13,8 @@ use allthecodes_ipc_protocol::subsystem_types::{
 };
 use allthecodes_services::agent_definitions;
 
-use crate::handlers::ApiError;
 use crate::state::WebState;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct AgentsListResponse {
@@ -55,7 +55,7 @@ pub async fn agents_detail_handler(
     let cwd = engine_cwd(&state);
     match find_agent(&cwd, &name) {
         Some(agent) => Json(agent).into_response(),
-        None => not_found(format!("Agent '{}' not found", name)).into_response(),
+        None => not_found(format!("Agent '{}' not found", name)),
     }
 }
 
@@ -77,8 +77,7 @@ pub async fn agents_update_handler(
         return validation_error(format!(
             "Agent name '{}' does not match path '{}'",
             req.entry.name, name
-        ))
-        .into_response();
+        ));
     }
     save_agent(&state, req.entry)
 }
@@ -91,7 +90,7 @@ pub async fn agents_delete_handler(
 ) -> Response {
     let source = match parse_agent_source(&query.source) {
         Ok(source) => source,
-        Err(error) => return validation_error(error).into_response(),
+        Err(error) => return validation_error(error),
     };
     let cwd = engine_cwd(&state);
     match agent_definitions::delete_agent(&cwd, &name, &source) {
@@ -100,7 +99,7 @@ pub async fn agents_delete_handler(
             tools: agent_definitions::available_tools(),
         })
         .into_response(),
-        Err(error) => service_error(error).into_response(),
+        Err(error) => service_error(error),
     }
 }
 
@@ -116,7 +115,7 @@ pub async fn agents_restore_handler(
             agents: agent_definitions::list_all_agents(&cwd),
         })
         .into_response(),
-        Err(error) => validation_error(error).into_response(),
+        Err(error) => validation_error(error),
     }
 }
 
@@ -124,7 +123,7 @@ fn save_agent(state: &WebState, entry: AgentDefinitionEntry) -> Response {
     let cwd = engine_cwd(state);
     match agent_definitions::upsert_agent(&cwd, entry) {
         Ok(saved) => Json(saved).into_response(),
-        Err((_name, error)) => service_error(error).into_response(),
+        Err((_name, error)) => service_error(error),
     }
 }
 
@@ -160,7 +159,7 @@ fn parse_agent_source(raw: &str) -> Result<AgentDefinitionSource, String> {
     }
 }
 
-fn service_error(error: String) -> (StatusCode, Json<ApiError>) {
+fn service_error(error: String) -> Response {
     if error.starts_with("failed to") {
         internal_error(error)
     } else {
@@ -168,32 +167,25 @@ fn service_error(error: String) -> (StatusCode, Json<ApiError>) {
     }
 }
 
-fn validation_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error,
-            code: "validation_error".into(),
-        }),
-    )
+fn validation_error(error: String) -> Response {
+    let body = ProtocolApiError::BadRequest {
+        code: "validation_error",
+        message: error,
+    }
+    .into_body();
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-fn not_found(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError {
-            error,
-            code: "not_found".into(),
-        }),
-    )
+fn not_found(error: String) -> Response {
+    let body = ProtocolApiError::NotFound {
+        entity: "agent",
+        id: error,
+    }
+    .into_body();
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
-fn internal_error(error: String) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error,
-            code: "internal_error".into(),
-        }),
-    )
+fn internal_error(error: String) -> Response {
+    let body = ProtocolApiError::Internal { message: error }.into_body();
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }

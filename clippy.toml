@@ -1,0 +1,5 @@
+# Allow unwrap/expect/panic in test code — tests should fail-fast on error.
+# See also: [workspace.lints] in root Cargo.toml
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true

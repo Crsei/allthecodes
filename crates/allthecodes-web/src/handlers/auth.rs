@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use allthecodes_auth::resolve_auth;
 
-use crate::handlers::ApiError;
+use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize)]
 pub struct AuthStatusResponse {
@@ -98,10 +98,12 @@ pub async fn auth_login_handler(Json(req): Json<LoginRequest>) -> Response {
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiError {
-                            error: format!("Failed to store API key: {}", e),
-                            code: "internal_error".into(),
-                        }),
+                        Json(
+                            ProtocolApiError::Internal {
+                                message: format!("Failed to store API key: {}", e),
+                            }
+                            .into_body(),
+                        ),
                     )
                         .into_response();
                 }
@@ -129,10 +131,12 @@ pub async fn auth_login_handler(Json(req): Json<LoginRequest>) -> Response {
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiError {
-                            error: format!("Failed to store API key: {}", e),
-                            code: "internal_error".into(),
-                        }),
+                        Json(
+                            ProtocolApiError::Internal {
+                                message: format!("Failed to store API key: {}", e),
+                            }
+                            .into_body(),
+                        ),
                     )
                         .into_response();
                 }
@@ -142,10 +146,13 @@ pub async fn auth_login_handler(Json(req): Json<LoginRequest>) -> Response {
 
     (
         StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error: "Invalid API key format".into(),
-            code: "validation_error".into(),
-        }),
+        Json(
+            ProtocolApiError::BadRequest {
+                code: "validation_error",
+                message: "Invalid API key format".into(),
+            }
+            .into_body(),
+        ),
     )
         .into_response()
 }

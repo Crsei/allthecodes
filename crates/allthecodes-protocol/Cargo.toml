@@ -1,0 +1,40 @@
+[package]
+name = "allthecodes-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Shared API protocol definitions for allthecodes transports."
+
+[features]
+default = []
+schema = ["dep:schemars"]
+codegen = ["schema"]
+
+[[bin]]
+name = "codegen"
+path = "src/bin/codegen.rs"
+required-features = ["codegen"]
+
+[[bin]]
+name = "schema-export"
+path = "src/bin/schema-export.rs"
+required-features = ["codegen"]
+
+[[bin]]
+name = "route-doc"
+path = "src/bin/route-doc.rs"
+required-features = ["codegen"]
+
+[[bin]]
+name = "openapi-export"
+path = "src/bin/openapi-export.rs"
+required-features = ["codegen"]
+
+[dependencies]
+async-trait = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

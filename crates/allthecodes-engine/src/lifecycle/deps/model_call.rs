@@ -26,14 +26,20 @@ pub(crate) fn merge_refreshed_mcp_tools(
         if tool.mcp_server_name().is_some() {
             continue;
         }
-        if seen.insert(tool.name().to_string()) {
+        let name = tool.name().to_string();
+        if seen.insert(name.clone()) {
             merged.push(tool);
+        } else {
+            tracing::warn!(tool = %name, "skipping existing tool with duplicate name");
         }
     }
 
     for tool in refreshed_mcp_tools {
-        if seen.insert(tool.name().to_string()) {
+        let name = tool.name().to_string();
+        if seen.insert(name.clone()) {
             merged.push(tool);
+        } else {
+            tracing::warn!(tool = %name, "skipping refreshed MCP tool with duplicate name");
         }
     }
 
@@ -120,7 +126,7 @@ impl QueryEngineDeps {
             )
         })?;
 
-        let app_model = self.state.read().app_state.main_loop_model.clone();
+        let app_model = self.get_app_state().main_loop_model;
         prepare_model_call_params_for_client(&mut params, &app_model, client);
 
         // Strip advisor_model for providers that don't support it (issue #33).
@@ -172,7 +178,7 @@ impl QueryEngineDeps {
             )
         })?;
 
-        let app_model = self.state.read().app_state.main_loop_model.clone();
+        let app_model = self.get_app_state().main_loop_model;
         prepare_model_call_params_for_client(&mut params, &app_model, client);
 
         // Strip advisor_model for providers that don't support it (issue #33).
