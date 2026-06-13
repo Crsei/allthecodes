@@ -58,11 +58,67 @@ inside this repo should follow the repository-selected toolchain.
 
 Known build warnings on this machine:
 
-- `npm` is not installed, so the `allthecodes` build script skips web-ui
-  dependency installation as a warning.
 - `cc-browser/src/mcp_bridge.rs` currently has an unused `Context` import.
 - `crates/allthecodes/src/tools/exec/process_control.rs` currently has an
   unused Unix `CommandExt` import.
+
+## npm Release / Web UI Packaging
+
+The npm release package is backend-only by default:
+
+- Do not build or embed the sibling `../allthecodes-web` repository during npm
+  packaging.
+- Do not pass `--features web-ui` in the npm release workflow or staging script.
+- `allthecodes --web` in npm builds starts the API/WS backend. The browser SPA
+  must run from the standalone `allthecodes-web` repository and connect to this
+  backend.
+
+Full-platform npm releases must be produced by the GitHub Actions `release`
+workflow from the release tag, because macOS, Windows, and Linux ARM artifacts
+come from the workflow matrix. Local manual publishing is only appropriate for
+quick linux-x64 validation or a deliberate linux-x64-only recovery.
+
+For local linux-x64 validation, use:
+
+```bash
+cd /data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes
+
+# The Codex shell may not include cargo/rustc in PATH. If needed:
+export PATH="/home/nzq/.rustup/toolchains/1.91.1-x86_64-unknown-linux-gnu/bin:$PATH"
+
+rm -rf /tmp/allthecodes-npm-dist-0.1.5 /tmp/allthecodes-root-stage-0.1.5
+mkdir -p /tmp/allthecodes-npm-dist-0.1.5
+
+python3 scripts/stage_npm_packages.py \
+  --release-version 0.1.5 \
+  --package allthecodes-linux-x64 \
+  --output-dir /tmp/allthecodes-npm-dist-0.1.5
+
+python3 scripts/build_npm_package.py \
+  --package allthecodes \
+  --release-version 0.1.5 \
+  --staging-dir /tmp/allthecodes-root-stage-0.1.5 \
+  --pack-output /tmp/allthecodes-npm-dist-0.1.5/allthecodes-npm-0.1.5.tgz
+```
+
+Quick local install smoke test:
+
+```bash
+VERIFY=/tmp/allthecodes-npm-verify-0.1.5
+OUT=/tmp/allthecodes-npm-dist-0.1.5
+rm -rf "$VERIFY"
+mkdir -p "$VERIFY"
+cd "$VERIFY"
+npm init -y >/dev/null
+npm install --cache /tmp/npm-cache --ignore-scripts --no-audit --no-fund \
+  "$OUT/allthecodes-npm-0.1.5.tgz" \
+  "allthecodes-linux-x64@file:$OUT/allthecodes-npm-linux-x64-0.1.5.tgz"
+node_modules/.bin/allthecodes --version
+```
+
+Publish ordering is platform packages first, then the root wrapper. The root
+wrapper declares optional dependencies for every platform package, so publishing
+the root before platform tarballs can make fresh installs fail.
 
 
 提交本仓库时使用显式路径的手动流程，不要依赖仓库内脚本：

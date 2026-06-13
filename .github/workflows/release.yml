@@ -214,20 +214,15 @@ jobs:
           VERSION: ${{ steps.release_name.outputs.name }}
         shell: bash
         run: |
+          set -euo pipefail
           version="${VERSION}"
+          mkdir -p dist/npm
+          vendor_root="$(mktemp -d)"
+          trap 'rm -rf "${vendor_root}"' EXIT
 
-          # Build package for each platform
+          # Collect binaries from matrix artifacts into the vendor layout that
+          # scripts/build_npm_package.py expects.
           for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
-            echo "--- Staging allthecodes-${platform} ---"
-
-            staging_dir="$(mktemp -d)"
-            pack_output="dist/npm/allthecodes-npm-${platform}-${version}.tgz"
-
-            # Prepare vendor directory structure
-            vendor_dir="${staging_dir}/vendor"
-            mkdir -p "${vendor_dir}"
-
-            # Map platform to target triple
             case "${platform}" in
               linux-x64)    target="x86_64-unknown-linux-gnu" ;;
               linux-arm64)  target="aarch64-unknown-linux-gnu" ;;
@@ -238,100 +233,49 @@ jobs:
             esac
 
             binary_name="allthecodes"
-            [ "${platform}" = "win32-x64" ] || [ "${platform}" = "win32-arm64" ] && binary_name="allthecodes.exe"
+            if [[ "${platform}" == win32-* ]]; then
+              binary_name="allthecodes.exe"
+            fi
 
-            # Copy binary into vendor layout
-            mkdir -p "${vendor_dir}/${target}/allthecodes"
-            cp "dist/release/${platform}/${binary_name}" "${vendor_dir}/${target}/allthecodes/${binary_name}"
-            chmod 0755 "${vendor_dir}/${target}/allthecodes/${binary_name}"
+            install -d "${vendor_root}/${target}/allthecodes"
+            install -m 0755 \
+              "dist/release/${platform}/${binary_name}" \
+              "${vendor_root}/${target}/allthecodes/${binary_name}"
+          done
 
-            # Write package.json for platform package
-            os="${platform%%-*}"
-            case "${os}" in
-              linux) os="linux" ;;
-              darwin) os="darwin" ;;
-              win32) os="win32" ;;
-            esac
-            cpu="${platform#*-}"
+          packages=(
+            allthecodes-linux-x64
+            allthecodes-linux-arm64
+            allthecodes-darwin-x64
+            allthecodes-darwin-arm64
+            allthecodes-win32-x64
+            allthecodes-win32-arm64
+            allthecodes
+          )
 
-            export PKG_OS="$os" PKG_CPU="$cpu" PLATFORM="$platform" STAGING="$staging_dir"
-            python3 -c "
-            import json, os
-            pkg = {
-                'name': 'allthecodes',
-                'version': os.environ['VERSION'] + '-' + os.environ['PLATFORM'],
-                'license': 'Apache-2.0',
-                'os': [os.environ['PKG_OS']],
-                'cpu': [os.environ['PKG_CPU']],
-                'files': ['vendor'],
-                'repository': {
-                    'type': 'git',
-                    'url': 'git+https://github.com/Crsei/allthecodes.git',
-                    'directory': 'allthecodes'
-                }
-            }
-            with open(os.environ['STAGING'] + '/package.json', 'w') as f:
-                json.dump(pkg, f, indent=2)
-            "
-
-            cp README.md "${staging_dir}/README.md" 2>/dev/null || true
-
-            # npm pack
-            npm pack --json --pack-destination "$(dirname "${pack_output}")" "${staging_dir}" > /dev/null
-            mv "allthecodes-${version//./_}-${platform}".tgz "${pack_output}" 2>/dev/null || \
-            mv *.tgz "${pack_output}" 2>/dev/null || true
-
+          for package in "${packages[@]}"; do
+            echo "--- Staging ${package} ---"
+            staging_dir="$(mktemp -d)"
+            if [[ "${package}" == "allthecodes" ]]; then
+              pack_output="dist/npm/allthecodes-npm-${version}.tgz"
+              python3 scripts/build_npm_package.py \
+                --package "${package}" \
+                --release-version "${version}" \
+                --staging-dir "${staging_dir}" \
+                --pack-output "${pack_output}"
+            else
+              platform="${package#allthecodes-}"
+              pack_output="dist/npm/allthecodes-npm-${platform}-${version}.tgz"
+              python3 scripts/build_npm_package.py \
+                --package "${package}" \
+                --release-version "${version}" \
+                --staging-dir "${staging_dir}" \
+                --pack-output "${pack_output}" \
+                --vendor-src "${vendor_root}"
+            fi
             echo "Created ${pack_output}"
             rm -rf "${staging_dir}"
           done
-
-          # Stage root wrapper package
-          echo "--- Staging allthecodes root wrapper ---"
-          root_staging="$(mktemp -d)"
-          root_pack_output="dist/npm/allthecodes-npm-${version}.tgz"
-
-          mkdir -p "${root_staging}/bin"
-          cp "bin/allthecodes.js" "${root_staging}/bin/allthecodes.js"
-          cp README.md "${root_staging}/README.md" 2>/dev/null || true
-
-          # Generate root package.json
-          export ROOT_STAGING="$root_staging"
-          python3 -c "
-          import json, os
-          ver = os.environ['VERSION']
-          pkg = {
-              'name': 'allthecodes',
-              'version': ver,
-              'description': 'allthecodes CLI - AI-powered coding assistant',
-              'license': 'Apache-2.0',
-              'bin': { 'allthecodes': 'bin/allthecodes.js' },
-              'type': 'module',
-              'engines': { 'node': '>=18' },
-              'files': ['bin'],
-              'repository': {
-                  'type': 'git',
-                  'url': 'git+https://github.com/Crsei/allthecodes.git',
-                  'directory': 'allthecodes'
-              },
-              'optionalDependencies': {
-                  'allthecodes-linux-x64': 'npm:allthecodes@' + ver + '-linux-x64',
-                  'allthecodes-linux-arm64': 'npm:allthecodes@' + ver + '-linux-arm64',
-                  'allthecodes-darwin-x64': 'npm:allthecodes@' + ver + '-darwin-x64',
-                  'allthecodes-darwin-arm64': 'npm:allthecodes@' + ver + '-darwin-arm64',
-                  'allthecodes-win32-x64': 'npm:allthecodes@' + ver + '-win32-x64',
-                  'allthecodes-win32-arm64': 'npm:allthecodes@' + ver + '-win32-arm64',
-              }
-          }
-          with open(os.environ['ROOT_STAGING'] + '/package.json', 'w') as f:
-              json.dump(pkg, f, indent=2)
-          "
-
-          npm pack --json --pack-destination "$(dirname "${root_pack_output}")" "${root_staging}" > /dev/null
-          mv "allthecodes-${version//./_}".tgz "${root_pack_output}" 2>/dev/null || \
-          mv *.tgz "${root_pack_output}" 2>/dev/null || true
-
-          echo "Created ${root_pack_output}"
-          rm -rf "${root_staging}"
 
           echo "=== dist/npm ==="
           ls -lh dist/npm/
