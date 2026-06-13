@@ -1,6 +1,6 @@
 {
   "name": "allthecodes",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "allthecodes CLI — AI-powered coding assistant",
   "license": "Apache-2.0",
   "bin": {
@@ -19,11 +19,11 @@
     "directory": "allthecodes"
   },
   "optionalDependencies": {
-    "allthecodes-linux-x64": "npm:allthecodes@0.1.4-linux-x64",
-    "allthecodes-linux-arm64": "npm:allthecodes@0.1.4-linux-arm64",
-    "allthecodes-darwin-x64": "npm:allthecodes@0.1.4-darwin-x64",
-    "allthecodes-darwin-arm64": "npm:allthecodes@0.1.4-darwin-arm64",
-    "allthecodes-win32-x64": "npm:allthecodes@0.1.4-win32-x64",
-    "allthecodes-win32-arm64": "npm:allthecodes@0.1.4-win32-arm64"
+    "allthecodes-linux-x64": "npm:allthecodes@0.1.5-linux-x64",
+    "allthecodes-linux-arm64": "npm:allthecodes@0.1.5-linux-arm64",
+    "allthecodes-darwin-x64": "npm:allthecodes@0.1.5-darwin-x64",
+    "allthecodes-darwin-arm64": "npm:allthecodes@0.1.5-darwin-arm64",
+    "allthecodes-win32-x64": "npm:allthecodes@0.1.5-win32-x64",
+    "allthecodes-win32-arm64": "npm:allthecodes@0.1.5-win32-arm64"
   }
 }

@@ -11,10 +11,10 @@ use axum::response::{IntoResponse, Response};
 use futures::{Stream, StreamExt};
 
 pub const WEB_UI_UNBUNDLED_MESSAGE: &str =
-    "Web UI assets are not bundled in this build. Rebuild with `--features web-ui` to embed the SPA.";
+    "Web UI assets are not bundled in this build. This server provides API/WS endpoints only; start the standalone allthecodes-web frontend and connect it to this backend.";
 
 pub const WEB_UI_MISSING_ASSETS_MESSAGE: &str =
-    "Web UI assets not found. Build with: cd web-ui && npm install && npm run build";
+    "Web UI assets not found. Build the sibling frontend first: cd ../allthecodes-web && npm install && npm run build";
 
 pub fn normalize_static_path(path: &str) -> &str {
     let path = path.trim_start_matches('/');

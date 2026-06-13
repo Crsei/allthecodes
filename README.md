@@ -62,7 +62,7 @@ npm --version
 Linux:
 
 ```bash
-npm install -g allthecodes@0.1.4
+npm install -g allthecodes@0.1.5
 allthecodes --version
 allthecodes
 ```
@@ -70,7 +70,7 @@ allthecodes
 macOS:
 
 ```bash
-npm install -g allthecodes@0.1.4
+npm install -g allthecodes@0.1.5
 allthecodes --version
 allthecodes
 ```
@@ -78,7 +78,7 @@ allthecodes
 Windows PowerShell:
 
 ```powershell
-npm install -g allthecodes@0.1.4
+npm install -g allthecodes@0.1.5
 allthecodes --version
 allthecodes
 ```
@@ -89,20 +89,39 @@ allthecodes
 allthecodes -p "summarize this repository"
 ```
 
-Web UI 模式：
+Web 后端模式：
 
 ```bash
-allthecodes --web --web-port 17322
+allthecodes --web --web-port 17322 --no-open
 ```
 
-发布到 npm 的 native binary 需要内置 Web UI 资源；如果访问
-`http://127.0.0.1:17322/` 返回 “Web UI assets are not bundled”，说明当前安装的
-平台二进制没有用 `web-ui` feature 构建，需要安装后续修复版本。
+npm 发布包只内置后端 API/WS 服务，不内置浏览器 SPA。需要本地 Web 前端时，
+在独立的 sibling 前端仓库中启动开发服务器：
+
+```bash
+cd ../allthecodes-web
+npm install
+npm run dev
+```
+
+默认前端地址是 `http://127.0.0.1:17321`，它会把 `/api/*` 和 WebSocket 请求
+代理到 `http://127.0.0.1:17322`。
+
+如果后端使用非默认端口，启动前端时同步设置代理目标：
+
+```bash
+# Terminal 1
+allthecodes --web --web-port 18080 --no-open
+
+# Terminal 2
+cd ../allthecodes-web
+ALLTHECODES_BACKEND_PORT=18080 npm run dev
+```
 
 临时运行，不全局安装：
 
 ```bash
-npx allthecodes@0.1.4 --help
+npx allthecodes@0.1.5 --help
 ```
 
 ## 构建
@@ -121,16 +140,7 @@ rustup show active-toolchain
 cargo build --workspace --release
 ```
 
-上面的命令会构建后端和 TUI，但不会把前端 SPA 嵌入二进制。需要“单进程直接打开
-Web UI”的 release binary 时，先构建 sibling 前端仓库，再启用 `web-ui` feature：
-
-```bash
-cd ../allthecodes-web
-npm ci
-npm run build
-cd ../allthecodes
-cargo build --release --bin allthecodes --features web-ui
-```
+上面的命令会构建后端、TUI 和 Web API/WS 服务，但不会把前端 SPA 嵌入二进制。
 
 运行版本检查：
 
@@ -150,11 +160,27 @@ target/release/allthecodes
 target/release/allthecodes -p "summarize this repository"
 ```
 
-Web UI 模式：
+Web 后端模式：
 
 ```bash
-target/release/allthecodes --web --web-port 17322
+target/release/allthecodes --web --web-port 17322 --no-open
 ```
+
+### 高级/可选本地构建：内置 Web UI
+
+npm 发布包不使用这个流程。只有在你明确需要“单进程直接打开 Web UI”的本地
+release binary 时，才先构建 sibling 前端仓库，再启用 Cargo 的 `web-ui` feature：
+
+```bash
+cd ../allthecodes-web
+npm ci
+npm run build
+cd ../allthecodes
+cargo build --release --bin allthecodes --features web-ui
+```
+
+这样编译出的 `target/release/allthecodes --web --web-port 17322` 会同时提供
+后端 API/WS 和内置的前端 SPA。
 
 发布构建使用 GitHub Actions 的 `release` workflow。推送 `vX.Y.Z` tag
 时，tag 版本必须与 `crates/allthecodes/Cargo.toml` 一致；手动
@@ -171,10 +197,9 @@ python3 scripts/stage_npm_packages.py \
   --output-dir /tmp/allthecodes-npm-host-stage
 ```
 
-`stage_npm_packages.py` 会自动构建 `../allthecodes-web/dist`，并用
-`--features web-ui` 构建 native binary；如果只发布 root wrapper 而不发布对应平台
-native 包，用户安装后无法启动本机二进制。`npm_config_cache` 只在当前机器的默认
-npm cache/log 目录不可写时需要。
+`stage_npm_packages.py` 只构建后端 native binary，不构建或嵌入 `../allthecodes-web`。
+如果只发布 root wrapper 而不发布对应平台 native 包，用户安装后无法启动本机二进制。
+`npm_config_cache` 只在当前机器的默认 npm cache/log 目录不可写时需要。
 
 ## 开发说明
 

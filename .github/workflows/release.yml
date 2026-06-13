@@ -90,25 +90,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout Web UI
-        uses: actions/checkout@v4
-        with:
-          repository: Crsei/allthecodes-web
-          path: allthecodes-web-src
-          persist-credentials: false
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.91.1
           targets: ${{ matrix.target }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: allthecodes-web-src/package-lock.json
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -123,16 +109,6 @@ jobs:
           rustc --version
           rustup show active-toolchain
 
-      - name: Build Web UI assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf ../allthecodes-web
-          cp -R allthecodes-web-src ../allthecodes-web
-          cd ../allthecodes-web
-          npm ci
-          npm run build
-
       - name: Build (Linux)
         if: runner.os == 'Linux'
         shell: bash
@@ -140,19 +116,19 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
             pkg-config libssl-dev libcap-dev
-          cargo build --release --target ${{ matrix.target }} --bin allthecodes --features web-ui
+          cargo build --release --target ${{ matrix.target }} --bin allthecodes
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin allthecodes --features web-ui
+          cargo build --release --target ${{ matrix.target }} --bin allthecodes
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin allthecodes --features web-ui
+          cargo build --release --target ${{ matrix.target }} --bin allthecodes
 
       - name: Stage binary (Linux/macOS)
         if: runner.os != 'Windows'

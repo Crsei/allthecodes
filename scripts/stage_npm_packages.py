@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 import os
 import shutil
 import subprocess
@@ -15,9 +14,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_npm_package.py"
-INSTALL_NATIVE_DEPS = REPO_ROOT / "scripts" / "install_native_deps.py"
-WEB_REPO_ROOT = REPO_ROOT.parent / "allthecodes-web"
-WEB_DIST_INDEX = WEB_REPO_ROOT / "dist" / "index.html"
 
 _SPEC = importlib.util.spec_from_file_location("build_npm_package", BUILD_SCRIPT)
 if _SPEC is None or _SPEC.loader is None:
@@ -76,17 +72,13 @@ def expand_packages(packages: list[str]) -> list[str]:
 def install_native_components(
     components: set[str],
     vendor_root: Path,
-    *,
-    release_version: str,
 ) -> None:
     if not components:
         return
 
-    ensure_web_ui_assets()
-
     # Build the native binary for the host platform.
     target = current_target_triple()
-    print(f"Building allthecodes binary for {target} with embedded Web UI...")
+    print(f"Building allthecodes binary for {target}...")
     subprocess.run(
         [
             "cargo",
@@ -94,8 +86,6 @@ def install_native_components(
             "--release",
             "--bin",
             "allthecodes",
-            "--features",
-            "web-ui",
         ],
         cwd=REPO_ROOT,
         check=True,
@@ -110,33 +100,6 @@ def install_native_components(
     target_dir = vendor_root / target / "allthecodes"
     target_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(binary_path, target_dir / binary_name)
-
-
-def ensure_web_ui_assets() -> None:
-    """Build the sibling frontend export that rust-embed bundles."""
-    package_json = WEB_REPO_ROOT / "package.json"
-    if not package_json.exists():
-        raise RuntimeError(
-            "Web UI source not found. Checkout allthecodes-web next to this "
-            f"repository before staging native npm packages: {WEB_REPO_ROOT}"
-        )
-
-    print(f"Building Web UI assets in {WEB_REPO_ROOT}...")
-    if not (WEB_REPO_ROOT / "node_modules").exists():
-        install_cmd = (
-            ["npm", "ci"]
-            if (WEB_REPO_ROOT / "package-lock.json").exists()
-            else ["npm", "install"]
-        )
-        subprocess.run(install_cmd, cwd=WEB_REPO_ROOT, check=True)
-
-    subprocess.run(["npm", "run", "build"], cwd=WEB_REPO_ROOT, check=True)
-
-    if not WEB_DIST_INDEX.exists():
-        raise RuntimeError(
-            "Web UI build finished but dist/index.html was not found: "
-            f"{WEB_DIST_INDEX}"
-        )
 
 
 def current_target_triple() -> str:
@@ -177,7 +140,7 @@ def main() -> int:
         if native_components:
             vendor_temp_root = Path(tempfile.mkdtemp(prefix="allthecodes-vendor-", dir=runner_temp))
             vendor_root = vendor_temp_root / "vendor"
-            install_native_components(native_components, vendor_root, release_version=args.release_version)
+            install_native_components(native_components, vendor_root)
 
         for package in packages:
             staging_dir = Path(tempfile.mkdtemp(prefix=f"allthecodes-stage-{package}-", dir=runner_temp))
