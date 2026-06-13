@@ -73,7 +73,7 @@ dirs = "6"
 regex = "1"
 
 # Git 操作
-git2 = { version = "0.19", default-features = false, features = ["https"] }
+git2 = { version = "0.19", default-features = false, features = ["https", "vendored-openssl"] }
 
 # 文本 Diff
 similar = "2"
@@ -110,7 +110,7 @@ urlencoding = "2"
 semver = "1"
 
 # 网络
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "native-tls-vendored"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 eventsource-stream = "0.2"
 

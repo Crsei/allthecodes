@@ -130,7 +130,9 @@ resolve to a hosted runner and leaves the release matrix queued.
 
 Use `macos-14` for both macOS release targets. `macos-13` provides Intel macOS
 runners but can remain queued long enough to block the entire publish job; Rust
-can build the `x86_64-apple-darwin` target from the `macos-14` runner.
+can build the `x86_64-apple-darwin` target from the `macos-14` runner. Keep
+OpenSSL vendored for release dependencies (`git2` and `reqwest`) so macOS
+cross-builds do not depend on a runner-provided target-architecture OpenSSL.
 
 
 提交本仓库时使用显式路径的手动流程，不要依赖仓库内脚本：
