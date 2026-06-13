@@ -128,6 +128,10 @@ Use GitHub's public Windows ARM64 runner label `windows-11-arm` for
 `aarch64-pc-windows-msvc`. The older-looking `windows-2022-arm` label does not
 resolve to a hosted runner and leaves the release matrix queued.
 
+Use `macos-14` for both macOS release targets. `macos-13` provides Intel macOS
+runners but can remain queued long enough to block the entire publish job; Rust
+can build the `x86_64-apple-darwin` target from the `macos-14` runner.
+
 
 提交本仓库时使用显式路径的手动流程，不要依赖仓库内脚本：
 

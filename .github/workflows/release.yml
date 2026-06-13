@@ -69,7 +69,7 @@ jobs:
             artifact_name: linux-arm64
             binary_name: allthecodes
           - target: x86_64-apple-darwin
-            runs_on: macos-13
+            runs_on: macos-14
             artifact_name: darwin-x64
             binary_name: allthecodes
           - target: aarch64-apple-darwin
