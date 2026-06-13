@@ -58,7 +58,6 @@ inside this repo should follow the repository-selected toolchain.
 
 Known build warnings on this machine:
 
-- `cc-browser/src/mcp_bridge.rs` currently has an unused `Context` import.
 - `crates/allthecodes/src/tools/exec/process_control.rs` currently has an
   unused Unix `CommandExt` import.
 
@@ -124,6 +123,10 @@ The GitHub Actions publish job must skip versions that already exist on npm.
 This is required for recovery cases where linux-x64 and/or the root wrapper were
 published manually before the full matrix completed; the rerun should publish
 only the missing platform versions.
+
+Use GitHub's public Windows ARM64 runner label `windows-11-arm` for
+`aarch64-pc-windows-msvc`. The older-looking `windows-2022-arm` label does not
+resolve to a hosted runner and leaves the release matrix queued.
 
 
 提交本仓库时使用显式路径的手动流程，不要依赖仓库内脚本：

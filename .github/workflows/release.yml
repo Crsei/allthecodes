@@ -81,7 +81,7 @@ jobs:
             artifact_name: win32-x64
             binary_name: allthecodes.exe
           - target: aarch64-pc-windows-msvc
-            runs_on: windows-2022-arm
+            runs_on: windows-11-arm
             artifact_name: win32-arm64
             binary_name: allthecodes.exe
 
