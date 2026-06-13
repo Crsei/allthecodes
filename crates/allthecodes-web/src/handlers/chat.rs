@@ -500,7 +500,7 @@ pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
         commands,
         settings_map,
         effective_system_prompt,
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: state.app_version().to_string(),
         capabilities: crate::handlers::capabilities_map(),
     })
 }

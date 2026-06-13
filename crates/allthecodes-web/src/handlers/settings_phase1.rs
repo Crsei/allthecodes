@@ -263,7 +263,7 @@ pub async fn search_cookies_clear_handler() -> impl IntoResponse {
 
 pub async fn data_export_handler(State(state): State<WebState>) -> impl IntoResponse {
     let export = json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": state.app_version(),
         "exported_at": chrono::Utc::now().to_rfc3339(),
         "settings": state.engine().app_state().settings.settings_map(),
         "memory": {

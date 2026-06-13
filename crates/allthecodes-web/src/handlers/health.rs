@@ -57,7 +57,7 @@ impl Processor for HealthProcessor {
 
         Ok(HealthResponse {
             status: "ok".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: self.state.app_version().to_string(),
             db: "connected".to_string(),
         })
     }

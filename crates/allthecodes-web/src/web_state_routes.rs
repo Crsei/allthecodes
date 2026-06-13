@@ -103,7 +103,7 @@ struct PromptQuery {
 #[derive(Serialize)]
 struct HealthResponse {
     status: &'static str,
-    version: &'static str,
+    version: String,
     db: &'static str,
 }
 
@@ -136,7 +136,7 @@ async fn health(State(state): State<WebState>) -> Response {
     match state.web_ui_store.health().await {
         Ok(()) => Json(HealthResponse {
             status: "ok",
-            version: env!("CARGO_PKG_VERSION"),
+            version: state.app_version().to_string(),
             db: "connected",
         })
         .into_response(),

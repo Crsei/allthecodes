@@ -50,6 +50,61 @@ allthecodes 与 Claude Code/Codex 等工具可以共存在同一台机器上。�
 
 也可以通过 `ALLTHECODES_HOME` 指定全局数据目录。
 
+## 通过 npm 安装
+
+请先确保本机已安装 Node.js 18 或更高版本：
+
+```bash
+node --version
+npm --version
+```
+
+Linux:
+
+```bash
+npm install -g allthecodes@0.1.4
+allthecodes --version
+allthecodes
+```
+
+macOS:
+
+```bash
+npm install -g allthecodes@0.1.4
+allthecodes --version
+allthecodes
+```
+
+Windows PowerShell:
+
+```powershell
+npm install -g allthecodes@0.1.4
+allthecodes --version
+allthecodes
+```
+
+非交互式执行：
+
+```bash
+allthecodes -p "summarize this repository"
+```
+
+Web UI 模式：
+
+```bash
+allthecodes --web --web-port 17322
+```
+
+发布到 npm 的 native binary 需要内置 Web UI 资源；如果访问
+`http://127.0.0.1:17322/` 返回 “Web UI assets are not bundled”，说明当前安装的
+平台二进制没有用 `web-ui` feature 构建，需要安装后续修复版本。
+
+临时运行，不全局安装：
+
+```bash
+npx allthecodes@0.1.4 --help
+```
+
 ## 构建
 
 请先确保本机已安装 Rust toolchain，并且 `cargo`、`rustc`、`rustup` 可在当前 shell 中使用：
@@ -64,6 +119,17 @@ rustup show active-toolchain
 
 ```bash
 cargo build --workspace --release
+```
+
+上面的命令会构建后端和 TUI，但不会把前端 SPA 嵌入二进制。需要“单进程直接打开
+Web UI”的 release binary 时，先构建 sibling 前端仓库，再启用 `web-ui` feature：
+
+```bash
+cd ../allthecodes-web
+npm ci
+npm run build
+cd ../allthecodes
+cargo build --release --bin allthecodes --features web-ui
 ```
 
 运行版本检查：
@@ -105,7 +171,10 @@ python3 scripts/stage_npm_packages.py \
   --output-dir /tmp/allthecodes-npm-host-stage
 ```
 
-`npm_config_cache` 只在当前机器的默认 npm cache/log 目录不可写时需要。
+`stage_npm_packages.py` 会自动构建 `../allthecodes-web/dist`，并用
+`--features web-ui` 构建 native binary；如果只发布 root wrapper 而不发布对应平台
+native 包，用户安装后无法启动本机二进制。`npm_config_cache` 只在当前机器的默认
+npm cache/log 目录不可写时需要。
 
 ## 开发说明
 

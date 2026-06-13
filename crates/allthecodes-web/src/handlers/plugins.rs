@@ -160,7 +160,7 @@ impl Processor for PluginsInstallProcessor {
         match install_plugin(
             &source,
             Some(scope),
-            Some(env!("CARGO_PKG_VERSION")),
+            Some(self.state.app_version()),
             None,
             &available_plugins,
             &manifests,

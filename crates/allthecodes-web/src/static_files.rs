@@ -9,7 +9,9 @@
 use allthecodes_daemon::web::{
     missing_static_assets_response, static_asset_response, static_html_response,
 };
-use allthecodes_daemon::web::{normalize_static_path, unbundled_static_assets_response};
+use allthecodes_daemon::web::normalize_static_path;
+#[cfg(not(feature = "web-ui"))]
+use allthecodes_daemon::web::unbundled_static_assets_response;
 use axum::{http::Uri, response::IntoResponse};
 
 #[cfg(feature = "web-ui")]

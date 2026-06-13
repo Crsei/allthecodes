@@ -23,6 +23,8 @@ use crate::ws::terminal::{PtyDiagnostics, TerminalManager};
 /// swap cannot disturb an in-progress stream.
 #[derive(Clone)]
 pub struct WebState {
+    /// Application version reported to Web API clients.
+    app_version: Arc<str>,
     /// Current engine, swappable between turns.
     pub engine_slot: Arc<RwLock<Arc<QueryEngine>>>,
     /// Flag: is a query currently in progress?
@@ -48,11 +50,21 @@ pub struct WebState {
 impl WebState {
     /// Build a new `WebState` from an initial engine.
     pub fn new(engine: Arc<QueryEngine>, is_streaming: Arc<AtomicBool>) -> Self {
+        Self::new_with_version(engine, is_streaming, env!("CARGO_PKG_VERSION"))
+    }
+
+    /// Build a new `WebState` with an explicit application version.
+    pub fn new_with_version(
+        engine: Arc<QueryEngine>,
+        is_streaming: Arc<AtomicBool>,
+        app_version: impl Into<String>,
+    ) -> Self {
         let terminal_manager = TerminalManager::default();
         let current_session_id = engine.current_session_id().to_string();
         let mut session_engines = HashMap::new();
         session_engines.insert(current_session_id, engine.clone());
         Self {
+            app_version: Arc::from(app_version.into()),
             engine_slot: Arc::new(RwLock::new(engine)),
             is_streaming,
             session_engines: Arc::new(RwLock::new(session_engines)),
@@ -63,6 +75,11 @@ impl WebState {
             serialization: SerializationLayer::new(),
             web_ui_store: WebUiStore::new(paths::data_root().join("web").join("state.db")),
         }
+    }
+
+    /// Application version reported to Web clients.
+    pub fn app_version(&self) -> &str {
+        self.app_version.as_ref()
     }
 
     /// Snapshot the current engine.

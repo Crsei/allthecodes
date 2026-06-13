@@ -90,11 +90,25 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Checkout Web UI
+        uses: actions/checkout@v4
+        with:
+          repository: Crsei/allthecodes-web
+          path: allthecodes-web-src
+          persist-credentials: false
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.91.1
           targets: ${{ matrix.target }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: allthecodes-web-src/package-lock.json
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -109,6 +123,16 @@ jobs:
           rustc --version
           rustup show active-toolchain
 
+      - name: Build Web UI assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ../allthecodes-web
+          cp -R allthecodes-web-src ../allthecodes-web
+          cd ../allthecodes-web
+          npm ci
+          npm run build
+
       - name: Build (Linux)
         if: runner.os == 'Linux'
         shell: bash
@@ -116,19 +140,19 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
             pkg-config libssl-dev libcap-dev
-          cargo build --release --target ${{ matrix.target }} --bin allthecodes
+          cargo build --release --target ${{ matrix.target }} --bin allthecodes --features web-ui
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin allthecodes
+          cargo build --release --target ${{ matrix.target }} --bin allthecodes --features web-ui
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin allthecodes
+          cargo build --release --target ${{ matrix.target }} --bin allthecodes --features web-ui
 
       - name: Stage binary (Linux/macOS)
         if: runner.os != 'Windows'
@@ -254,21 +278,25 @@ jobs:
             esac
             cpu="${platform#*-}"
 
-            cat > "${staging_dir}/package.json" << JSONEOF
-        {
-          "name": "allthecodes",
-          "version": "${version}-${platform}",
-          "license": "Apache-2.0",
-          "os": ["${os}"],
-          "cpu": ["${cpu}"],
-          "files": ["vendor"],
-          "repository": {
-            "type": "git",
-            "url": "git+https://github.com/Crsei/allthecodes.git",
-            "directory": "allthecodes"
-          }
-        }
-        JSONEOF
+            export PKG_OS="$os" PKG_CPU="$cpu" PLATFORM="$platform" STAGING="$staging_dir"
+            python3 -c "
+            import json, os
+            pkg = {
+                'name': 'allthecodes',
+                'version': os.environ['VERSION'] + '-' + os.environ['PLATFORM'],
+                'license': 'Apache-2.0',
+                'os': [os.environ['PKG_OS']],
+                'cpu': [os.environ['PKG_CPU']],
+                'files': ['vendor'],
+                'repository': {
+                    'type': 'git',
+                    'url': 'git+https://github.com/Crsei/allthecodes.git',
+                    'directory': 'allthecodes'
+                }
+            }
+            with open(os.environ['STAGING'] + '/package.json', 'w') as f:
+                json.dump(pkg, f, indent=2)
+            "
 
             cp README.md "${staging_dir}/README.md" 2>/dev/null || true
 
@@ -291,33 +319,36 @@ jobs:
           cp README.md "${root_staging}/README.md" 2>/dev/null || true
 
           # Generate root package.json
-          cat > "${root_staging}/package.json" << JSONEOF
-        {
-          "name": "allthecodes",
-          "version": "${version}",
-          "description": "allthecodes CLI - AI-powered coding assistant",
-          "license": "Apache-2.0",
-          "bin": {
-            "allthecodes": "bin/allthecodes.js"
-          },
-          "type": "module",
-          "engines": { "node": ">=18" },
-          "files": ["bin"],
-          "repository": {
-            "type": "git",
-            "url": "git+https://github.com/Crsei/allthecodes.git",
-            "directory": "allthecodes"
-          },
-          "optionalDependencies": {
-            "allthecodes-linux-x64": "npm:allthecodes@${version}-linux-x64",
-            "allthecodes-linux-arm64": "npm:allthecodes@${version}-linux-arm64",
-            "allthecodes-darwin-x64": "npm:allthecodes@${version}-darwin-x64",
-            "allthecodes-darwin-arm64": "npm:allthecodes@${version}-darwin-arm64",
-            "allthecodes-win32-x64": "npm:allthecodes@${version}-win32-x64",
-            "allthecodes-win32-arm64": "npm:allthecodes@${version}-win32-arm64"
+          export ROOT_STAGING="$root_staging"
+          python3 -c "
+          import json, os
+          ver = os.environ['VERSION']
+          pkg = {
+              'name': 'allthecodes',
+              'version': ver,
+              'description': 'allthecodes CLI - AI-powered coding assistant',
+              'license': 'Apache-2.0',
+              'bin': { 'allthecodes': 'bin/allthecodes.js' },
+              'type': 'module',
+              'engines': { 'node': '>=18' },
+              'files': ['bin'],
+              'repository': {
+                  'type': 'git',
+                  'url': 'git+https://github.com/Crsei/allthecodes.git',
+                  'directory': 'allthecodes'
+              },
+              'optionalDependencies': {
+                  'allthecodes-linux-x64': 'npm:allthecodes@' + ver + '-linux-x64',
+                  'allthecodes-linux-arm64': 'npm:allthecodes@' + ver + '-linux-arm64',
+                  'allthecodes-darwin-x64': 'npm:allthecodes@' + ver + '-darwin-x64',
+                  'allthecodes-darwin-arm64': 'npm:allthecodes@' + ver + '-darwin-arm64',
+                  'allthecodes-win32-x64': 'npm:allthecodes@' + ver + '-win32-x64',
+                  'allthecodes-win32-arm64': 'npm:allthecodes@' + ver + '-win32-arm64',
+              }
           }
-        }
-        JSONEOF
+          with open(os.environ['ROOT_STAGING'] + '/package.json', 'w') as f:
+              json.dump(pkg, f, indent=2)
+          "
 
           npm pack --json --pack-destination "$(dirname "${root_pack_output}")" "${root_staging}" > /dev/null
           mv "allthecodes-${version//./_}".tgz "${root_pack_output}" 2>/dev/null || \

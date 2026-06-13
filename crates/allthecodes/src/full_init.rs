@@ -930,9 +930,10 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
     // B.10: Web UI mode
     if cli.web {
         web::handlers::set_command_provider(allthecodes_commands::get_all_commands);
-        let web_state = web::state::WebState::new(
+        let web_state = web::state::WebState::new_with_version(
             engine.clone(),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            env!("CARGO_PKG_VERSION"),
         );
         return match web::start_server(web_state, cli.web_port, cli.no_open).await {
             Ok(()) => Ok(ExitCode::SUCCESS),
