@@ -31,6 +31,7 @@ pub mod experimental;
 pub mod export;
 pub mod extra_usage;
 pub mod fast;
+pub mod feedback;
 pub mod files;
 pub mod gbranch;
 pub mod goal;
@@ -668,6 +669,12 @@ pub fn get_all_commands() -> Vec<Command> {
             &["v"],
             "Show the current version",
             version::VersionHandler,
+        ),
+        command(
+            "feedback",
+            &[],
+            "Open the allthecodes product feedback page",
+            feedback::FeedbackHandler,
         ),
         command(
             "model",

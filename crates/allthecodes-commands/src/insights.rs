@@ -454,6 +454,7 @@ mod tests {
             last_modified,
             cwd: cwd.into(),
             custom_title: None,
+            chat_mode_override: None,
             messages,
         };
         std::fs::create_dir_all(storage::get_session_dir()).unwrap();
