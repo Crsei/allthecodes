@@ -141,6 +141,7 @@ allthecodes-computer-use = { path = "crates/allthecodes-computer-use" }
 allthecodes-safety = { path = "crates/allthecodes-safety" }
 allthecodes-compact = { path = "crates/allthecodes-compact" }
 allthecodes-sandbox = { path = "crates/allthecodes-sandbox" }
+allthecodes-server = { path = "crates/allthecodes-server" }
 allthecodes-permissions = { path = "crates/allthecodes-permissions" }
 allthecodes-browser = { path = "crates/allthecodes-browser" }
 allthecodes-session = { path = "crates/allthecodes-session" }

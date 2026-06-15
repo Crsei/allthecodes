@@ -24,3 +24,6 @@ pub mod webhook;
 pub(crate) fn protocol_store() -> protocol::DaemonProtocolStore {
     protocol::DaemonProtocolStore::new(process_state::daemon_dir())
 }
+
+// Re-export build_router for use by allthecodes-server integration.
+pub use server::build_router;

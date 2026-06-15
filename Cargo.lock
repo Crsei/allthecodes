@@ -63,6 +63,7 @@ dependencies = [
  "allthecodes-query",
  "allthecodes-safety",
  "allthecodes-sandbox",
+ "allthecodes-server",
  "allthecodes-services",
  "allthecodes-session",
  "allthecodes-skills",
@@ -329,6 +330,7 @@ dependencies = [
  "allthecodes-config",
  "allthecodes-engine",
  "allthecodes-gateway",
+ "allthecodes-server",
  "allthecodes-services",
  "allthecodes-tools",
  "allthecodes-types",
@@ -704,6 +706,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "allthecodes-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "reqwest",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "allthecodes-services"
 version = "0.1.0"
 dependencies = [
@@ -974,6 +988,7 @@ dependencies = [
  "allthecodes-permissions",
  "allthecodes-plugins",
  "allthecodes-protocol",
+ "allthecodes-server",
  "allthecodes-services",
  "allthecodes-session",
  "allthecodes-skills",

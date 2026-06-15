@@ -145,7 +145,8 @@ pub fn router(state: GatewayApiState) -> Router {
         .with_state(state)
 }
 
-async fn capabilities(State(state): State<GatewayApiState>) -> Response {
+async fn capabilities(State(state): State<GatewayApiState>, headers: HeaderMap) -> Response {
+    authorize_or_return!(state, headers);
     Json(capabilities_body(&state)).into_response()
 }
 
@@ -433,4 +434,71 @@ fn adapter_registry(config: &GatewayConfig) -> AdapterRegistry {
     registry.register(TelegramAdapter::new(config.adapters.telegram.clone()));
     registry.register(LarkAdapter::new(config.adapters.lark.clone()));
     registry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        auth::DAEMON_TOKEN_HEADER, GatewayCommand, GatewayCommandReceipt, RemoteGatewayAuth,
+        StaticBusySnapshotProvider,
+    };
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    #[derive(Clone)]
+    struct NoopSink;
+
+    impl GatewayCommandSink for NoopSink {
+        fn dispatch(
+            &self,
+            _command: GatewayCommand,
+        ) -> Result<GatewayCommandReceipt, GatewayError> {
+            Ok(GatewayCommandReceipt {
+                command_id: "noop".to_string(),
+                target: "test".to_string(),
+            })
+        }
+    }
+
+    fn test_router() -> Router {
+        let state = GatewayApiState::with_default_runner(
+            NoopSink,
+            RemoteGatewayAuth::new("secret").unwrap(),
+            StaticBusySnapshotProvider::default(),
+        );
+        router(state)
+    }
+
+    #[tokio::test]
+    async fn capabilities_requires_auth() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(CAPABILITIES_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn capabilities_accepts_allthecodes_daemon_token_header() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(CAPABILITIES_PATH)
+                    .header(DAEMON_TOKEN_HEADER, "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }

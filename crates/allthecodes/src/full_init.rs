@@ -8,6 +8,7 @@ use allthecodes_engine::types::config::QueryEngineConfig;
 use allthecodes_startup as startup;
 use allthecodes_web as web;
 use anyhow::Context;
+use axum::Router;
 use tracing::{debug, error, info, warn};
 
 use crate::cli::Cli;
@@ -927,112 +928,52 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
         return startup::modes::run_print_mode(&engine, &prompt).await;
     }
 
-    // B.10: Web UI mode
-    if cli.web {
-        web::handlers::set_command_provider(allthecodes_commands::get_all_commands);
-        let web_state = web::state::WebState::new_with_version(
-            engine.clone(),
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            env!("CARGO_PKG_VERSION"),
-        );
-        return match web::start_server(web_state, cli.web_port, cli.no_open).await {
-            Ok(()) => Ok(ExitCode::SUCCESS),
-            Err(e) => {
-                error!("Web server error: {:#}", e);
-                Ok(ExitCode::FAILURE)
-            }
-        };
-    }
-
-    // B.11: Check for inline prompt
+    // B.10: Unified server mode
     let initial_prompt = if !cli.prompt.is_empty() {
         Some(cli.prompt.join(" "))
     } else {
         None
     };
 
-    // Daemon mode
-    if cli.daemon {
-        use allthecodes_config::features::{self, Feature};
-        if !features::enabled(Feature::Kairos) {
-            eprintln!("error: --daemon requires FEATURE_KAIROS=1");
-            return Ok(ExitCode::FAILURE);
-        }
-        allthecodes_daemon::process_state::write_started(cli.port, std::path::Path::new(&cwd))?;
-
-        // Set KAIROS state
-        engine.update_app_state(|app| {
-            app.kairos_active = true;
-            app.is_assistant_mode = true;
-            app.autonomous_tick_ms = Some(30_000);
-        });
-
-        let mut daemon_state = allthecodes_daemon::state::DaemonState::new(
-            engine.clone(),
-            Arc::new(features::FLAGS.clone()),
-            cli.port,
-        );
-
-        // Spawn team-memory-server if feature is enabled.
-        let _team_memory_child = if features::enabled(Feature::TeamMemory) {
-            match allthecodes_daemon::team_memory_proxy::spawn_team_memory_server(
-                cli.port,
-                std::path::Path::new(&cwd),
+    let listen = cli
+        .listen
+        .as_deref()
+        .map(allthecodes_server::ListenUrl::parse)
+        .transpose()
+        .with_context(|| {
+            format!(
+                "failed to parse --listen {}",
+                cli.listen.as_deref().unwrap_or_default()
             )
-            .await
-            {
-                Ok((child, tm_port, tm_secret)) => {
-                    daemon_state.team_memory_port = Some(tm_port);
-                    daemon_state.team_memory_secret = Some(tm_secret);
-                    info!(port = tm_port, "team-memory-server started");
-                    Some(child)
-                }
-                Err(e) => {
-                    warn!(error = %e, "failed to start team-memory-server, feature disabled");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        })?;
+    let server_mode = allthecodes_server::ServerMode::from_listen_and_fallback(
+        listen,
+        cli.web,
+        cli.daemon,
+        cli.web_port,
+        cli.port,
+    )?;
 
-        let http_state = daemon_state.clone();
-        let tick_state = daemon_state.clone();
-        let scheduler_state = daemon_state.clone();
-        let tick_enabled = features::enabled(Feature::Proactive);
-        let supervisor_cwd = std::path::PathBuf::from(cwd.clone());
+    if server_mode.is_active() {
+        // Validate Kairos feature for daemon or all modes
+        if matches!(
+            server_mode,
+            allthecodes_server::ServerMode::Daemon { .. }
+                | allthecodes_server::ServerMode::All { .. }
+        ) {
+            use allthecodes_config::features::{self, Feature};
+            if !features::enabled(Feature::Kairos) {
+                eprintln!("error: --daemon requires FEATURE_KAIROS=1");
+                return Ok(ExitCode::FAILURE);
+            }
+        }
 
-        let daemon_result = tokio::select! {
-            result = allthecodes_daemon::server::serve_http(http_state, cli.port) => {
-                result.map(|()| ExitCode::SUCCESS)
-            }
-            _ = allthecodes_daemon::tick::tick_loop(tick_state), if tick_enabled => {
-                Ok(ExitCode::SUCCESS)
-            }
-            _ = allthecodes_daemon::scheduler_loop::scheduler_loop(scheduler_state) => {
-                Ok(ExitCode::SUCCESS)
-            }
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("daemon shutting down");
-                Ok(ExitCode::SUCCESS)
-            }
-            result = allthecodes_daemon::supervisor::run_supervisor_loop(supervisor_cwd, cli.port) => {
-                result.map(|()| ExitCode::SUCCESS)
-            }
-        };
-        if let Err(err) = allthecodes_daemon::supervisor::terminate_known_workers() {
-            warn!(error = %err, "failed to terminate daemon workers");
-        }
-        if let Err(err) =
-            allthecodes_daemon::process_state::write_stopped(cli.port, std::path::Path::new(&cwd))
-        {
-            warn!(error = %err, "failed to write daemon stopped state");
-        }
+        let exit_code = run_server_mode(server_mode, engine, &cli, initial_prompt).await?;
         persist_skill_usage();
-        return daemon_result;
+        return Ok(exit_code);
     }
 
-    // B.12: Enter TUI or headless mode
+    // B.11: Enter TUI or headless mode
     if cli.headless {
         let result = allthecodes_ipc::headless::run_headless(
             crate::app_runtime_adapters::headless_config(engine, model),
@@ -1074,5 +1015,321 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
             error!("TUI error: {:#}", e);
             Ok(ExitCode::FAILURE)
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Server mode helpers
+// ---------------------------------------------------------------------------
+
+/// Start one or both HTTP servers according to [`ServerMode`].
+///
+/// For Web-only mode this runs the server in the foreground (blocking).
+/// For Daemon or All modes it delegates to [`run_daemon_with_server`] which
+/// also runs background loops (tick, scheduler, supervisor).
+async fn run_server_mode(
+    server_mode: allthecodes_server::ServerMode,
+    engine: Arc<QueryEngine>,
+    cli: &Cli,
+    _initial_prompt: Option<String>,
+) -> anyhow::Result<ExitCode> {
+    use std::sync::atomic::AtomicBool;
+
+    // --- Build web router if the mode requires it ---
+    let (web_router, _is_streaming) = if matches!(
+        server_mode,
+        allthecodes_server::ServerMode::Web { .. } | allthecodes_server::ServerMode::All { .. }
+    ) {
+        web::handlers::set_command_provider(allthecodes_commands::get_all_commands);
+        let is_streaming = Arc::new(AtomicBool::new(false));
+        let web_state = web::state::WebState::new_with_version(
+            engine.clone(),
+            is_streaming.clone(),
+            env!("CARGO_PKG_VERSION"),
+        );
+        (Some(web::build_router(web_state)), Some(is_streaming))
+    } else {
+        (None, None)
+    };
+
+    // --- Build daemon router if the mode requires it ---
+    let (daemon_router, daemon_state) = if matches!(
+        server_mode,
+        allthecodes_server::ServerMode::Daemon { .. } | allthecodes_server::ServerMode::All { .. }
+    ) {
+        let daemon_addr = match server_mode {
+            allthecodes_server::ServerMode::Daemon { addr } => addr,
+            allthecodes_server::ServerMode::All { daemon_addr, .. } => daemon_addr,
+            _ => unreachable!(),
+        };
+        let features = Arc::new(allthecodes_config::features::FLAGS.clone());
+        let ds = allthecodes_daemon::state::DaemonState::new(
+            engine.clone(),
+            features,
+            daemon_addr.port(),
+        );
+        let dr = allthecodes_daemon::build_router(ds.clone());
+        (Some(dr), Some(ds))
+    } else {
+        (None, None)
+    };
+
+    // --- Create ServerManager ---
+    let manager = allthecodes_server::ServerManager::new(server_mode.clone());
+
+    match server_mode {
+        allthecodes_server::ServerMode::Web { addr } => {
+            if !cli.no_open {
+                info!("Open http://{addr} in your browser");
+            }
+            let (web_handle, daemon_handle) = manager
+                .start(
+                    web_router.expect("Web mode requires web_router"),
+                    Router::new(),
+                )
+                .await?;
+            wait_for_server_shutdown(&manager, web_handle, daemon_handle).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        allthecodes_server::ServerMode::Daemon { .. }
+        | allthecodes_server::ServerMode::All { .. } => {
+            run_daemon_with_server(
+                manager,
+                web_router.unwrap_or(Router::new()),
+                daemon_router.expect("Daemon mode requires daemon_router"),
+                daemon_state.expect("Daemon mode requires daemon_state"),
+                engine,
+                cli,
+            )
+            .await
+        }
+        allthecodes_server::ServerMode::None => {
+            unreachable!("run_server_mode called with ServerMode::None");
+        }
+    }
+}
+
+/// Start the daemon (background loops + HTTP server(s)) and wait for shutdown.
+async fn run_daemon_with_server(
+    manager: allthecodes_server::ServerManager,
+    web_router: Router,
+    daemon_router: Router,
+    mut daemon_state: allthecodes_daemon::state::DaemonState,
+    engine: Arc<QueryEngine>,
+    cli: &Cli,
+) -> anyhow::Result<ExitCode> {
+    use allthecodes_config::features::{self, Feature};
+
+    let cwd = resolve_cwd(cli);
+
+    // --- Set KAIROS engine state ---
+    engine.update_app_state(|app| {
+        app.kairos_active = true;
+        app.is_assistant_mode = true;
+        app.autonomous_tick_ms = Some(30_000);
+    });
+
+    // --- Write process state ---
+    let daemon_port = match manager.mode() {
+        allthecodes_server::ServerMode::Daemon { addr } => addr.port(),
+        allthecodes_server::ServerMode::All { daemon_addr, .. } => daemon_addr.port(),
+        _ => cli.port,
+    };
+    allthecodes_daemon::process_state::write_started(daemon_port, std::path::Path::new(&cwd))?;
+
+    // --- Spawn team-memory-server if feature is enabled ---
+    let _team_memory_child = if features::enabled(Feature::TeamMemory) {
+        match allthecodes_daemon::team_memory_proxy::spawn_team_memory_server(
+            daemon_port,
+            std::path::Path::new(&cwd),
+        )
+        .await
+        {
+            Ok((child, tm_port, tm_secret)) => {
+                daemon_state.team_memory_port = Some(tm_port);
+                daemon_state.team_memory_secret = Some(tm_secret);
+                info!(port = tm_port, "team-memory-server started");
+                Some(child)
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to start team-memory-server, feature disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // --- Start background loops ---
+    let tick_enabled = features::enabled(Feature::Proactive);
+    let supervisor_cwd = std::path::PathBuf::from(&cwd);
+
+    if tick_enabled {
+        let tick_state = daemon_state.clone();
+        tokio::spawn(async move {
+            allthecodes_daemon::tick::tick_loop(tick_state).await;
+        });
+    }
+    {
+        let scheduler_state = daemon_state.clone();
+        tokio::spawn(async move {
+            allthecodes_daemon::scheduler_loop::scheduler_loop(scheduler_state).await;
+        });
+    }
+    let supervisor_handle = tokio::spawn(async move {
+        allthecodes_daemon::supervisor::run_supervisor_loop(supervisor_cwd, daemon_port).await
+    });
+
+    // --- Start servers ---
+    let (web_handle, daemon_handle) = manager.start(web_router, daemon_router).await?;
+    let server_result = wait_for_server_shutdown(&manager, web_handle, daemon_handle).await;
+
+    drop(supervisor_handle);
+
+    // --- Cleanup ---
+    if let Err(err) = allthecodes_daemon::supervisor::terminate_known_workers() {
+        tracing::warn!(error = %err, "failed to terminate daemon workers");
+    }
+    if let Err(err) =
+        allthecodes_daemon::process_state::write_stopped(daemon_port, std::path::Path::new(&cwd))
+    {
+        tracing::warn!(error = %err, "failed to write daemon stopped state");
+    }
+
+    server_result?;
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn wait_for_server_shutdown(
+    manager: &allthecodes_server::ServerManager,
+    mut web_handle: Option<allthecodes_server::ServerHandle>,
+    mut daemon_handle: Option<allthecodes_server::ServerHandle>,
+) -> anyhow::Result<()> {
+    let cancel = manager.shutdown_token();
+    let mut first_server_error: Option<anyhow::Error> = None;
+
+    tokio::select! {
+        _ = cancel.cancelled() => {
+            tracing::info!("server shutdown signal received");
+        }
+        signal = wait_for_process_shutdown_signal() => {
+            tracing::info!(signal, "server shutdown requested");
+            manager.shutdown();
+        }
+        (label, result) = wait_optional_server("web", &mut web_handle) => {
+            if let Err(err) = result {
+                tracing::error!(error = %err, "{label} server exited unexpectedly");
+                first_server_error = Some(err.context(format!("{label} server exited unexpectedly")));
+            } else {
+                tracing::info!("{label} server exited");
+            }
+            manager.shutdown();
+        }
+        (label, result) = wait_optional_server("daemon", &mut daemon_handle) => {
+            if let Err(err) = result {
+                tracing::error!(error = %err, "{label} server exited unexpectedly");
+                first_server_error = Some(err.context(format!("{label} server exited unexpectedly")));
+            } else {
+                tracing::info!("{label} server exited");
+            }
+            manager.shutdown();
+        }
+    }
+
+    if let Err(err) = wait_remaining_servers_with_grace(
+        web_handle,
+        daemon_handle,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    {
+        if first_server_error.is_none() {
+            first_server_error = Some(err);
+        } else {
+            tracing::warn!(error = %err, "additional server shutdown error");
+        }
+    }
+
+    if let Some(err) = first_server_error {
+        Err(err)
+    } else {
+        Ok(())
+    }
+}
+
+async fn wait_optional_server(
+    label: &'static str,
+    handle: &mut Option<allthecodes_server::ServerHandle>,
+) -> (&'static str, anyhow::Result<()>) {
+    match handle.as_mut() {
+        Some(handle) => (label, handle.wait().await),
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_remaining_servers_with_grace(
+    web_handle: Option<allthecodes_server::ServerHandle>,
+    daemon_handle: Option<allthecodes_server::ServerHandle>,
+    grace_period: std::time::Duration,
+) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + grace_period;
+    let mut first_error: Option<anyhow::Error> = None;
+
+    for (label, handle) in [("web", web_handle), ("daemon", daemon_handle)] {
+        let Some(mut handle) = handle else {
+            continue;
+        };
+
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            tracing::warn!("{label} server did not stop before grace period expired; aborting");
+            handle.abort();
+            continue;
+        }
+
+        match tokio::time::timeout(remaining, handle.wait()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(error = %err, "{label} server returned an error during shutdown");
+                if first_error.is_none() {
+                    first_error = Some(err.context(format!("{label} server shutdown failed")));
+                }
+            }
+            Err(_) => {
+                tracing::warn!("{label} server did not stop within grace period; aborting");
+                handle.abort();
+            }
+        }
+    }
+
+    if let Some(err) = first_error {
+        Err(err)
+    } else {
+        Ok(())
+    }
+}
+
+async fn wait_for_process_shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => "ctrl-c",
+                    _ = sigterm.recv() => "sigterm",
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to install SIGTERM handler; falling back to Ctrl-C");
+                let _ = tokio::signal::ctrl_c().await;
+                "ctrl-c"
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "ctrl-c"
     }
 }

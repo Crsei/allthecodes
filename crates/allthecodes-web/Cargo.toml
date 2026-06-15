@@ -36,6 +36,7 @@ allthecodes-session = { workspace = true }
 allthecodes-skills = { workspace = true }
 allthecodes-types = { workspace = true }
 allthecodes-utils = { workspace = true }
+allthecodes-server = { workspace = true }
 allthecodes-web-state = { workspace = true }
 base64 = { workspace = true }
 futures = { workspace = true }

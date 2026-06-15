@@ -173,6 +173,7 @@ allthecodes-voice = { workspace = true }
 allthecodes-web = { workspace = true }
 allthecodes-worktree = { workspace = true }
 allthecodes-gateway = { workspace = true }
+allthecodes-server = { workspace = true }
 
 # Daemon
 axum = { workspace = true }

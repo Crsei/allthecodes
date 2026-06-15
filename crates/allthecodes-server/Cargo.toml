@@ -1,0 +1,16 @@
+[package]
+name = "allthecodes-server"
+version = "0.1.0"
+edition = "2021"
+description = "Transport abstraction and server lifecycle for allthecodes HTTP servers."
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "net", "time"] }

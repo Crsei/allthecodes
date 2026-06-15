@@ -5,8 +5,10 @@ use std::net::{IpAddr, SocketAddr};
 
 use crate::{GatewayDiagnostic, GatewayError};
 
-pub const DAEMON_TOKEN_HEADER: &str = "x-cc-rust-daemon-token";
-pub const REMOTE_TOKEN_HEADER: &str = "x-cc-rust-remote-token";
+pub const DAEMON_TOKEN_HEADER: &str = "x-allthecodes-daemon-token";
+pub const REMOTE_TOKEN_HEADER: &str = "x-allthecodes-remote-token";
+const LEGACY_DAEMON_TOKEN_HEADER: &str = "x-cc-rust-daemon-token";
+const LEGACY_REMOTE_TOKEN_HEADER: &str = "x-cc-rust-remote-token";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,7 +73,17 @@ pub fn extract_gateway_token(headers: &HeaderMap) -> Option<&str> {
         .and_then(|value| value.to_str().ok())
         .or_else(|| {
             headers
+                .get(LEGACY_REMOTE_TOKEN_HEADER)
+                .and_then(|value| value.to_str().ok())
+        })
+        .or_else(|| {
+            headers
                 .get(DAEMON_TOKEN_HEADER)
+                .and_then(|value| value.to_str().ok())
+        })
+        .or_else(|| {
+            headers
+                .get(LEGACY_DAEMON_TOKEN_HEADER)
                 .and_then(|value| value.to_str().ok())
         })
         .or_else(|| {
@@ -128,7 +140,7 @@ pub fn missing_token_error() -> GatewayError {
     GatewayError::new(GatewayDiagnostic::new(
         "missing_control_token",
         "The remote-control gateway request is missing a daemon control token.",
-        "Send x-cc-rust-daemon-token or Authorization: Bearer with a valid local daemon token.",
+        "Send x-allthecodes-daemon-token or Authorization: Bearer with a valid local daemon token.",
     ))
 }
 
@@ -144,7 +156,7 @@ pub fn missing_remote_token_error() -> GatewayError {
     GatewayError::new(GatewayDiagnostic::new(
         "missing_remote_token",
         "The remote-control gateway request is missing a remote token.",
-        "Send x-cc-rust-remote-token or Authorization: Bearer with the configured remote token.",
+        "Send x-allthecodes-remote-token or Authorization: Bearer with the configured remote token.",
     ))
 }
 

@@ -144,6 +144,18 @@ pub struct Cli {
     #[arg(long = "web-port", default_value_t = 17322)]
     pub web_port: u16,
 
+    /// Unified server listen URL.
+    ///
+    /// Overrides `--web`, `--daemon`, `--web-port`, and `--port`.
+    ///
+    /// Examples:
+    ///   web://127.0.0.1:17322           — Web UI only
+    ///   daemon://127.0.0.1:19836        — Daemon API only
+    ///   all://web=127.0.0.1:17322,daemon=127.0.0.1:19836  — Both
+    ///   off                             — No HTTP server (TUI mode)
+    #[arg(long, hide = true)]
+    pub listen: Option<String>,
+
     /// Do not auto-open browser when starting web UI.
     #[arg(long = "no-open")]
     pub no_open: bool,
