@@ -115,6 +115,28 @@ Phase 0 不决定具体 wire shape，也不改变 daemon handler 行为。
 - Web-only、Daemon-only、All mode 都能正常启动和 shutdown。
 - 无新增 clippy/build warning。
 
+### 执行记录
+
+| 命令/核对项 | 结果 |
+|---|---|
+| `cargo test -p allthecodes-server` | 通过：29 个 unit tests、8 个 integration tests、0 个 doctests |
+| `cargo test -p allthecodes-gateway` | 通过：29 个 unit tests、0 个 doctests |
+| `cargo check -p allthecodes --bin allthecodes` | 通过 |
+| `cargo build --workspace` | 通过 |
+| `cargo clippy --workspace --lib --bins` | 命令通过；仍有既有 workspace warnings，未见 touched crates 新增 warning |
+| `--web --web-port 17331 --no-open` | 通过；`17322` 被已有 release 进程占用，改用 `17331` |
+| `FEATURE_KAIROS=1 --daemon --port 19836` | 通过；`/health` 200，SSE `/events?client_id=phase1` 返回 `text/event-stream` |
+| `--listen web://127.0.0.1:17332` | 通过；Web health 200 |
+| `--listen daemon://127.0.0.1:19837` | 通过；Daemon health 200 |
+| `--listen all://web=127.0.0.1:17333,daemon=127.0.0.1:19838` | 通过；两个 health endpoint 均 200 |
+| `--listen off --headless` | 通过；进入非 server path |
+| invalid `--listen` + legacy fallback flags | 通过；解析失败直接退出 |
+| duplicate All addresses | 通过；显式 `all://` 与 legacy fallback 同端口均失败 |
+| Gateway capabilities auth | 通过；无 token 401，`x-allthecodes-daemon-token` 200 |
+| Ctrl-C / SIGTERM | 通过；端口释放，SIGTERM 后 daemon state 为 `stopped` |
+| backend-only static fallback | 通过；默认构建 `/` 返回 unbundled/static fallback |
+| `web-ui` feature static assets | `cargo build -p allthecodes --bin allthecodes --features web-ui` 通过；运行时 embedded HTML 验证受阻：feature-built debug binary 未在 15s 内 bind 验证端口 |
+
 ---
 
 ## Phase 2：TransportEvent 与连接抽象

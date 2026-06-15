@@ -49,7 +49,7 @@ Codex 的 `app-server-transport` crate 使用 `AppServerTransport` enum + `Trans
 
 ## 当前实现状态（2026-06-16）
 
-本节记录当前工作区事实，用于区分“已经落地的 Phase 1 基础设施”和“仍需验收或后续实现的内容”。手动验证清单仍保留在测试策略中；未实际手动验证的项不在这里提前勾选。
+本节记录当前工作区事实，用于区分“已经落地的 Phase 1 基础设施”和“仍需验收或后续实现的内容”。
 
 ### 已完成
 
@@ -60,16 +60,39 @@ Codex 的 `app-server-transport` crate 使用 `AppServerTransport` enum + `Trans
 - daemon 侧已提取并导出 `build_router()`。
 - `full_init` 已归并到统一 server path。
 - server lifecycle 已接入 graceful shutdown。
+- `All` 模式已拒绝相同非零 Web/Daemon 地址；`:0` 仍允许由 OS 分配实际端口。
+- `All` 模式先完成两个 listener bind 再 spawn/serve，避免第二个 bind 失败时留下部分启动的 server。
+- `--listen` 传入但解析失败时直接报错，不再静默 fallback 到 legacy flags。
+- Gateway `/remote-control/v1/capabilities` 已恢复控制令牌认证，支持 `x-allthecodes-daemon-token`，并保留旧 `x-cc-rust-daemon-token` 兼容。
 - `allthecodes-server` integration tests 已加入。
 - `development/docs/allthecodes-server-architecture.md` 已补充架构说明。
 
-### 待验收
+### 验收记录
 
-- 手动启动矩阵：`--web`、`--daemon`、`--listen web://...`、`--listen daemon://...`、`--listen all://...`、`--listen off`。
-- Web static assets 在 backend-only npm 构建和 `web-ui` feature 构建下的服务行为。
-- Daemon SSE `/events`、Gateway routes、控制令牌认证在新 lifecycle 下的行为。
-- workspace build：`cargo build --workspace`。
-- clippy：`cargo clippy --workspace --lib --bins`。
+使用隔离状态目录 `ALLTHECODES_HOME=/tmp/allthecodes-phase1-verify` 和空 cwd `/tmp/allthecodes-phase1-verify-cwd` 验证。
+
+| 项目 | 结果 |
+|---|---|
+| `cargo test -p allthecodes-server` | 通过：29 个 unit tests、8 个 integration tests、0 个 doctests |
+| `cargo test -p allthecodes-gateway` | 通过：29 个 unit tests、0 个 doctests |
+| `cargo check -p allthecodes --bin allthecodes` | 通过 |
+| `cargo build --workspace` | 通过 |
+| `cargo clippy --workspace --lib --bins` | 命令通过；workspace 仍有既有 clippy warnings， touched crates 未新增 warning |
+| `--web --web-port 17331 --no-open` | `/` 返回 backend-only static fallback，`/api/web/health` 返回 200 |
+| 默认 `--web` 端口 `17322` | 环境中已有 `target/release/allthecodes --web --web-port 17322 --no-open` 占用，改用 `17331` 验证 |
+| `FEATURE_KAIROS=1 --daemon --port 19836` | `/health` 返回 200，`/events?client_id=phase1` 返回 `text/event-stream` |
+| Gateway capabilities | 无 token 返回 401；从隔离 `control-token.json` 读取 token 后带 `x-allthecodes-daemon-token` 返回 200 |
+| `--listen web://127.0.0.1:17332` | `/api/web/health` 返回 200 |
+| `--listen daemon://127.0.0.1:19837` | `/health` 返回 200 |
+| `--listen all://web=127.0.0.1:17333,daemon=127.0.0.1:19838` | Web `/api/web/health` 和 daemon `/health` 均返回 200 |
+| `--listen off --headless` | 进入非 server path，输出 headless `ready` 后在 stdin EOF 时退出 |
+| `--listen garbage://xyz --web` | 明确解析失败，不 fallback 到 `--web` |
+| `all://web=127.0.0.1:17334,daemon=127.0.0.1:17334` | 明确解析失败 |
+| `--web --daemon --web-port 17335 --port 17335` | 明确 mode 校验失败 |
+| Ctrl-C shutdown | Web、Daemon、All 手动验证通过，端口释放 |
+| SIGTERM shutdown | Daemon PID 收到 SIGTERM 后退出，`19836` 端口释放，`supervisor.json` 状态为 `stopped` |
+| backend-only static assets | 默认构建 `/` 返回 “Web UI assets are not bundled...” fallback |
+| `web-ui` feature static assets | `cargo build -p allthecodes --bin allthecodes --features web-ui` 通过；运行时验证受阻：feature-built debug binary 在本机验证中未在 15s 内 bind `17336` |
 
 ### 未实现后续项
 
