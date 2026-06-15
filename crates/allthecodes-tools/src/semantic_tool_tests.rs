@@ -27,6 +27,7 @@ mod tests {
     };
     use crate::notifications::PushNotificationTool;
     use crate::skills::DiscoverSkillsTool;
+    use crate::tasks::{TaskCreateTool, TaskListTool, TaskOutputTool, TaskUpdateTool};
     use crate::tool::{FileCacheEntry, FileStateCache, ToolAppState, ToolUseOptions};
     use crate::tool::{PermissionResult, Tool, ToolUseContext, Tools, ValidationResult};
     use crate::workflow::{VerifyPlanExecutionTool, WorkflowAliasTool, WorkflowTool};
@@ -42,6 +43,12 @@ mod tests {
         fn set_path(key: &'static str, value: &Path) -> Self {
             let old = std::env::var_os(key);
             std::env::set_var(key, value);
+            Self { key, old }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let old = std::env::var_os(key);
+            std::env::remove_var(key);
             Self { key, old }
         }
     }
@@ -143,6 +150,18 @@ mod tests {
         );
     }
 
+    fn safe_task_file_stem(id: &str) -> String {
+        id.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
     fn test_skill(
         name: &str,
         source: allthecodes_skills::SkillSource,
@@ -177,6 +196,100 @@ mod tests {
             supports_image_detail_original: supports_original_detail,
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn semantic_task_tool_chain_uses_sqlite_default_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tmp.path());
+        let _storage = EnvGuard::unset("ALLTHECODES_TASK_STORAGE");
+        let _sqlite_path = EnvGuard::unset("ALLTHECODES_TASK_SQLITE_PATH");
+        let _task_list = EnvGuard::unset("ALLTHECODES_TASK_LIST_ID");
+        let _cc_task_list = EnvGuard::unset("CC_RUST_TASK_LIST_ID");
+        let _claude_task_list = EnvGuard::unset("CLAUDE_CODE_TASK_LIST_ID");
+        let _team = EnvGuard::unset("ALLTHECODES_TEAM_NAME");
+        let _claude_team = EnvGuard::unset("CLAUDE_CODE_TEAM_NAME");
+
+        let session_id = format!("task-sqlite-chain-{}", Uuid::new_v4());
+        let ctx = test_context(&session_id);
+        let parent = parent_message();
+
+        let created = TaskCreateTool
+            .call(
+                json!({
+                    "subject": "SQLite tool chain",
+                    "description": "verify task tools use sqlite by default"
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .unwrap();
+        let task_id = created.data["task"]["id"]
+            .as_str()
+            .expect("created task id")
+            .to_string();
+
+        let listed = TaskListTool
+            .call(json!({}), &ctx, &parent, None)
+            .await
+            .unwrap();
+        assert_eq!(listed.data["count"], 1);
+        assert_eq!(
+            listed.data["tasks"][0]["id"].as_str(),
+            Some(task_id.as_str())
+        );
+
+        let updated = TaskUpdateTool
+            .call(
+                json!({
+                    "task_id": &task_id,
+                    "status": "completed",
+                    "metadata": { "verified": true }
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.data["task"]["status"], "completed");
+        assert_eq!(updated.data["task"]["metadata"]["verified"], true);
+
+        let task_store = allthecodes_tasks::store_for_task_list_id(&session_id);
+        let appended = task_store
+            .append_output(&task_id, "agent output from sqlite-backed task store")
+            .expect("append task output");
+        assert_eq!(
+            appended.output_summary,
+            "agent output from sqlite-backed task store"
+        );
+
+        let output = TaskOutputTool
+            .call(
+                json!({
+                    "task_id": &task_id,
+                    "block": false
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(output.data["retrieval_status"], "success");
+        assert_eq!(
+            output.data["task"]["output"],
+            "agent output from sqlite-backed task store"
+        );
+
+        let task_dir = tmp.path().join("tasks").join(&session_id);
+        let file_stem = safe_task_file_stem(&task_id);
+        assert!(tmp.path().join("state").join("state_5.sqlite").exists());
+        assert!(!task_dir.join(format!("{file_stem}.json")).exists());
+        assert!(task_dir.join(format!("{file_stem}.output.log")).exists());
     }
 
     #[tokio::test]

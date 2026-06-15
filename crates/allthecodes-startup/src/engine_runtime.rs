@@ -91,3 +91,96 @@ impl AgentTaskStore for RootAgentTaskStore {
         allthecodes_tasks::unassign_teammate_tasks(team_name, teammate_id, teammate_name, reason)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serial_test::serial;
+
+    use super::*;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn safe_task_file_stem(id: &str) -> String {
+        id.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    #[serial]
+    fn root_agent_task_store_uses_sqlite_default_store() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tmp.path());
+        let _storage = EnvGuard::unset("ALLTHECODES_TASK_STORAGE");
+        let _sqlite_path = EnvGuard::unset("ALLTHECODES_TASK_SQLITE_PATH");
+        let _task_list = EnvGuard::unset("ALLTHECODES_TASK_LIST_ID");
+        let _cc_task_list = EnvGuard::unset("CC_RUST_TASK_LIST_ID");
+        let _claude_task_list = EnvGuard::unset("CLAUDE_CODE_TASK_LIST_ID");
+        let _team = EnvGuard::unset("ALLTHECODES_TEAM_NAME");
+        let _claude_team = EnvGuard::unset("CLAUDE_CODE_TEAM_NAME");
+
+        let store = RootAgentTaskStore;
+        let created = store
+            .try_create_with_options(
+                "Runtime adapter SQLite task",
+                "verify root agent adapter storage",
+                TaskCreateOptions {
+                    agent_id: Some("runtime-agent".to_string()),
+                    ..TaskCreateOptions::default()
+                },
+            )
+            .expect("create task through root adapter");
+        let appended = store
+            .append_output(&created.id, "runtime adapter output")
+            .expect("append output through root adapter");
+        let updated = store
+            .try_update_status(&created.id, TaskStatus::Completed)
+            .expect("update task through root adapter")
+            .expect("updated task");
+
+        assert_eq!(appended.output_summary, "runtime adapter output");
+        assert_eq!(updated.status, TaskStatus::Completed);
+
+        let task_dir = tmp
+            .path()
+            .join("tasks")
+            .join(allthecodes_tasks::DEFAULT_TASK_LIST_ID);
+        let file_stem = safe_task_file_stem(&created.id);
+        assert!(tmp.path().join("state").join("state_5.sqlite").exists());
+        assert!(!task_dir.join(format!("{file_stem}.json")).exists());
+        assert!(task_dir.join(format!("{file_stem}.output.log")).exists());
+    }
+}
