@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "Task domain types, parsing, errors, and persistence shapes."
 
+[features]
+default = ["sqlite-storage"]
+sqlite-storage = ["dep:sqlx"]
+json-storage = []
+
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -11,7 +16,11 @@ dirs = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sqlx = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

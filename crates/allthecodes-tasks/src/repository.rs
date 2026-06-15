@@ -1,10 +1,14 @@
 use super::*;
+#[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+use crate::sqlite::SqliteTaskRepository;
 
 #[derive(Debug)]
 pub(super) struct TaskRepository {
     pub(super) dir: PathBuf,
     pub(super) output_limit_bytes: usize,
     id_reservation_lock: Mutex<()>,
+    #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+    sqlite: Option<SqliteTaskRepository>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,10 +32,34 @@ enum TaskFileOnDisk {
 
 impl TaskRepository {
     pub(super) fn new(dir: PathBuf, output_limit_bytes: usize) -> Self {
+        #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+        let sqlite = if task_sqlite_disabled_by_env() {
+            None
+        } else {
+            Some(SqliteTaskRepository::new(
+                dir.clone(),
+                output_limit_bytes.max(1),
+            ))
+        };
+
         Self {
             dir,
             output_limit_bytes: output_limit_bytes.max(1),
             id_reservation_lock: Mutex::new(()),
+            #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+            sqlite,
+        }
+    }
+
+    pub(super) fn uses_sqlite(&self) -> bool {
+        #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+        {
+            return self.sqlite.is_some();
+        }
+
+        #[cfg(any(not(feature = "sqlite-storage"), feature = "json-storage"))]
+        {
+            false
         }
     }
 
@@ -47,6 +75,19 @@ impl TaskRepository {
         &self,
         recover_on_startup: bool,
     ) -> Result<HashMap<String, TaskEntry>> {
+        #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+        if let Some(sqlite) = &self.sqlite {
+            match self.load_from_sqlite(sqlite, recover_on_startup) {
+                Ok(tasks) => return Ok(tasks),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "failed to load tasks from sqlite; falling back to JSON task files"
+                    );
+                }
+            }
+        }
+
         let mut tasks = HashMap::new();
         if !self.dir.exists() {
             return Ok(tasks);
@@ -78,10 +119,47 @@ impl TaskRepository {
         Ok(tasks)
     }
 
+    #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+    fn load_from_sqlite(
+        &self,
+        sqlite: &SqliteTaskRepository,
+        recover_on_startup: bool,
+    ) -> Result<HashMap<String, TaskEntry>> {
+        let mut tasks = HashMap::new();
+        let records = sqlite.load_records()?;
+        for record in records {
+            let mut task = self.record_to_entry(record)?;
+            let now = chrono::Utc::now();
+            let was_recovered = recover_on_startup
+                && recover_task_after_restart(&mut task, now.timestamp(), now.timestamp_millis());
+            refresh_output_metadata(&mut task);
+
+            if was_recovered {
+                self.persist_entry(&task)?;
+            }
+
+            tasks.insert(task.id.clone(), task);
+        }
+        Ok(tasks)
+    }
+
     pub(super) fn reserve_next_task_id(
         &self,
         tasks: &HashMap<String, TaskEntry>,
     ) -> Result<String> {
+        #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+        if let Some(sqlite) = &self.sqlite {
+            match sqlite.reserve_next_task_id() {
+                Ok(id) => return Ok(id),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "failed to reserve sqlite task id; falling back to JSON high watermark"
+                    );
+                }
+            }
+        }
+
         let _process_guard = self.id_reservation_lock.lock();
         fs::create_dir_all(&self.dir)
             .with_context(|| format!("failed to create task dir {}", self.dir.display()))?;
@@ -241,6 +319,20 @@ impl TaskRepository {
         let output_path = self.dir.join(output_file_name(&to_write.id));
         write_text_atomic(&output_path, &to_write.output)?;
 
+        #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+        if let Some(sqlite) = &self.sqlite {
+            match sqlite.persist_record(&persisted_record_from_entry(&to_write)) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    tracing::warn!(
+                        task_id = %to_write.id,
+                        error = %err,
+                        "failed to persist task to sqlite; falling back to JSON task file"
+                    );
+                }
+            }
+        }
+
         let file = PersistedTaskFile {
             schema_version: TASK_SCHEMA_VERSION,
             task: persisted_record_from_entry(&to_write),
@@ -251,6 +343,24 @@ impl TaskRepository {
     }
 
     pub(super) fn delete(&self, id: &str) -> Result<()> {
+        #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+        if let Some(sqlite) = &self.sqlite {
+            match sqlite.delete(id) {
+                Ok(()) => {
+                    let output_path = self.dir.join(output_file_name(id));
+                    remove_if_exists(&output_path)?;
+                    return Ok(());
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        task_id = %id,
+                        error = %err,
+                        "failed to delete task from sqlite; falling back to JSON task file delete"
+                    );
+                }
+            }
+        }
+
         let json_path = self.task_json_path(id);
         let output_path = self.dir.join(output_file_name(id));
         remove_if_exists(&json_path)?;
@@ -340,4 +450,17 @@ fn persisted_record_from_entry(entry: &TaskEntry) -> PersistedTaskRecord {
         updated_at: entry.updated_at,
         legacy_inline_output: None,
     }
+}
+
+#[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+fn task_sqlite_disabled_by_env() -> bool {
+    std::env::var("ALLTHECODES_TASK_STORAGE")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "json" | "file" | "files"
+            )
+        })
+        .unwrap_or(false)
 }

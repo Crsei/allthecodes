@@ -295,13 +295,13 @@ pub enum TaskOutputWaitResult {
     TimedOut(Option<TaskEntry>),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedTaskFile {
     pub schema_version: u32,
     pub task: PersistedTaskRecord,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedTaskRecord {
     pub id: String,
     #[serde(default = "default_task_kind")]

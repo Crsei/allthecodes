@@ -2,10 +2,14 @@ use super::*;
 
 #[derive(Debug)]
 pub(crate) struct TaskListLock {
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 impl TaskListLock {
+    pub(crate) fn disabled() -> Self {
+        Self { path: None }
+    }
+
     pub(crate) fn acquire(dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create task dir {}", dir.display()))?;
@@ -16,7 +20,7 @@ impl TaskListLock {
                 .create_new(true)
                 .open(&path)
             {
-                Ok(_) => return Ok(Self { path }),
+                Ok(_) => return Ok(Self { path: Some(path) }),
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                     let backoff_ms = (5_u64 << attempt.min(8)).min(250);
                     std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
@@ -46,10 +50,13 @@ impl TaskListLock {
 
 impl Drop for TaskListLock {
     fn drop(&mut self) {
-        if let Err(err) = fs::remove_file(&self.path) {
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        if let Err(err) = fs::remove_file(path) {
             if err.kind() != std::io::ErrorKind::NotFound {
                 tracing::warn!(
-                    path = %self.path.display(),
+                    path = %path.display(),
                     error = %err,
                     "failed to remove task-list lock"
                 );

@@ -22,6 +22,8 @@ pub mod lifecycle;
 pub mod lists;
 pub mod output;
 mod repository;
+#[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
+mod sqlite;
 pub mod store;
 pub mod todo;
 pub mod tool_requests;

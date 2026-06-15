@@ -485,6 +485,10 @@ impl TaskStore {
     }
 
     pub(super) fn acquire_task_list_lock(&self, operation: &str) -> Result<TaskListLock> {
+        if self.repository.uses_sqlite() {
+            return Ok(TaskListLock::disabled());
+        }
+
         TaskListLock::acquire(self.repository.dir.clone()).with_context(|| {
             format!(
                 "failed to acquire task-list lock for {operation} in {}",
@@ -573,5 +577,271 @@ impl TaskStore {
         drop(tasks);
         self.persist_entry(&cloned);
         Some(cloned)
+    }
+}
+
+#[cfg(all(test, feature = "sqlite-storage", not(feature = "json-storage")))]
+mod tests {
+    use super::*;
+
+    static SQLITE_ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn sqlite_store_persists_task_rows_and_file_backed_output() {
+        let _lock = SQLITE_ENV_LOCK.lock().expect("sqlite env lock");
+        let _storage_guard = EnvVarGuard::unset("ALLTHECODES_TASK_STORAGE");
+        let _path_guard = EnvVarGuard::unset("ALLTHECODES_TASK_SQLITE_PATH");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().join("tasks").join("phase-one");
+        let store = TaskStore::with_dir_and_output_limit(&dir, 1024);
+
+        let created = store
+            .try_create_with_options(
+                "SQLite phase",
+                "Persist task metadata in sqlite",
+                TaskCreateOptions {
+                    depends_on: vec!["missing-dependency".to_string()],
+                    owner: Some("agent-1".to_string()),
+                    metadata: Some(json!({"source": "test"})),
+                    ..TaskCreateOptions::default()
+                },
+            )
+            .expect("create task");
+        let updated = store
+            .append_output(&created.id, "large text stays in an output file")
+            .expect("append output");
+
+        assert_eq!(updated.output_summary, "large text stays in an output file");
+        assert!(dir.join(output_file_name(&created.id)).exists());
+        assert!(!dir
+            .join(format!("{}.json", safe_file_stem(&created.id)))
+            .exists());
+        assert!(temp.path().join("state").join("state_5.sqlite").exists());
+
+        let reloaded = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        let loaded = reloaded.get(&created.id).expect("load task from sqlite");
+        assert_eq!(loaded.subject, "SQLite phase");
+        assert_eq!(loaded.depends_on, vec!["missing-dependency"]);
+        assert_eq!(loaded.owner.as_deref(), Some("agent-1"));
+        assert_eq!(loaded.output, "large text stays in an output file");
+        assert_eq!(
+            loaded
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("source")),
+            Some(&json!("test"))
+        );
+    }
+
+    #[test]
+    fn sqlite_store_persists_core_task_mutations() {
+        let _lock = SQLITE_ENV_LOCK.lock().expect("sqlite env lock");
+        let _storage_guard = EnvVarGuard::unset("ALLTHECODES_TASK_STORAGE");
+        let _path_guard = EnvVarGuard::unset("ALLTHECODES_TASK_SQLITE_PATH");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().join("tasks").join("mutations");
+        let store = TaskStore::with_dir_and_output_limit(&dir, 1024);
+
+        let dependency = store.create("Dependency", "finish first");
+        let blocked = store.create_with_options(
+            "Blocked",
+            "waits for dependency",
+            TaskCreateOptions {
+                depends_on: vec![dependency.id.clone()],
+                metadata: Some(json!({"priority": "normal"})),
+                ..TaskCreateOptions::default()
+            },
+        );
+        let other_blocked = store.create("Other blocked", "updated through add_blocks");
+
+        assert_eq!(
+            store
+                .claim_task(&blocked.id, "agent-a", false)
+                .expect_err("dependency should block claim")
+                .reason,
+            TaskClaimFailureReason::Blocked
+        );
+
+        let dependency = store
+            .update_status(&dependency.id, TaskStatus::Completed)
+            .expect("complete dependency");
+        assert_eq!(dependency.status, TaskStatus::Completed);
+
+        let claimed = store
+            .claim_task(&blocked.id, "agent-a", false)
+            .expect("claim unblocked task");
+        assert_eq!(claimed.owner.as_deref(), Some("agent-a"));
+        assert_eq!(claimed.status, TaskStatus::InProgress);
+
+        let updated = store
+            .try_update_fields(
+                &blocked.id,
+                TaskUpdateFields {
+                    subject: Some("Blocked updated".to_string()),
+                    description: Some("new description".to_string()),
+                    active_form: Some(Some("working".to_string())),
+                    owner: Some(Some("agent-b".to_string())),
+                    metadata_patch: Some(json!({"priority": "high", "stale": null})),
+                    add_blocks: vec![other_blocked.id.clone()],
+                    status: Some(TaskStatus::Failed),
+                    ..TaskUpdateFields::default()
+                },
+            )
+            .expect("update fields")
+            .expect("updated task");
+        assert_eq!(updated.subject, "Blocked updated");
+        assert_eq!(updated.description, "new description");
+        assert_eq!(updated.active_form.as_deref(), Some("working"));
+        assert_eq!(updated.owner.as_deref(), Some("agent-b"));
+        assert_eq!(updated.status, TaskStatus::Failed);
+        assert_eq!(
+            updated
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("priority")),
+            Some(&json!("high"))
+        );
+        assert!(updated
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("stale"))
+            .is_none());
+
+        let reloaded = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        let loaded_blocked = reloaded.get(&blocked.id).expect("reload updated task");
+        assert_eq!(loaded_blocked.subject, "Blocked updated");
+        assert_eq!(loaded_blocked.owner.as_deref(), Some("agent-b"));
+        assert_eq!(loaded_blocked.status, TaskStatus::Failed);
+        assert_eq!(
+            reloaded
+                .get(&other_blocked.id)
+                .expect("reload dependent task")
+                .depends_on,
+            vec![blocked.id.clone()]
+        );
+
+        let removed = reloaded.delete(&blocked.id).expect("delete task");
+        assert_eq!(removed.id, blocked.id);
+
+        let after_delete = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        assert!(after_delete.get(&blocked.id).is_none());
+        assert!(after_delete
+            .get(&other_blocked.id)
+            .expect("dependent task remains")
+            .depends_on
+            .is_empty());
+    }
+
+    #[test]
+    fn sqlite_store_unassigns_teammate_tasks() {
+        let _lock = SQLITE_ENV_LOCK.lock().expect("sqlite env lock");
+        let _storage_guard = EnvVarGuard::unset("ALLTHECODES_TASK_STORAGE");
+        let _path_guard = EnvVarGuard::unset("ALLTHECODES_TASK_SQLITE_PATH");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().join("tasks").join("unassign");
+        let store = TaskStore::with_dir_and_output_limit(&dir, 1024);
+
+        let active = store.create_with_options(
+            "Active teammate task",
+            "should be unassigned",
+            TaskCreateOptions {
+                owner: Some("teammate-1".to_string()),
+                ..TaskCreateOptions::default()
+            },
+        );
+        store
+            .update_status(&active.id, TaskStatus::InProgress)
+            .expect("mark active");
+        let completed = store.create_with_options(
+            "Completed teammate task",
+            "should remain assigned",
+            TaskCreateOptions {
+                owner: Some("teammate-1".to_string()),
+                ..TaskCreateOptions::default()
+            },
+        );
+        store
+            .update_status(&completed.id, TaskStatus::Completed)
+            .expect("mark completed");
+
+        let summaries = store.unassign_teammate_tasks("teammate-1", "Teammate One");
+        assert_eq!(
+            summaries,
+            vec![UnassignedTaskSummary {
+                id: active.id.clone(),
+                subject: "Active teammate task".to_string(),
+            }]
+        );
+
+        let active_now = store.get(&active.id).expect("load active");
+        assert_eq!(active_now.owner, None);
+        assert_eq!(active_now.status, TaskStatus::Pending);
+
+        let reloaded = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        let active = reloaded.get(&active.id).expect("reload active");
+        assert_eq!(active.owner, None);
+        assert_eq!(active.status, TaskStatus::Interrupted);
+        let completed = reloaded.get(&completed.id).expect("reload completed");
+        assert_eq!(completed.owner.as_deref(), Some("teammate-1"));
+        assert_eq!(completed.status, TaskStatus::Completed);
+    }
+
+    #[test]
+    fn sqlite_store_falls_back_to_json_when_sqlite_is_unavailable() {
+        let _lock = SQLITE_ENV_LOCK.lock().expect("sqlite env lock");
+        let _storage_guard = EnvVarGuard::unset("ALLTHECODES_TASK_STORAGE");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().join("tasks").join("fallback");
+        let blocked_db_path = temp.path().join("state").join("state_5.sqlite");
+        fs::create_dir_all(&blocked_db_path).expect("create directory at sqlite path");
+        let _path_guard = EnvVarGuard::set("ALLTHECODES_TASK_SQLITE_PATH", &blocked_db_path);
+
+        let store = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        let created = store.create("JSON fallback", "sqlite cannot open");
+        let updated = store
+            .append_output(&created.id, "fallback output")
+            .expect("append output through fallback");
+
+        assert_eq!(updated.output_summary, "fallback output");
+        assert!(dir.join(output_file_name(&created.id)).exists());
+        assert!(dir
+            .join(format!("{}.json", safe_file_stem(&created.id)))
+            .exists());
+        assert!(blocked_db_path.is_dir());
+
+        let reloaded = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        let loaded = reloaded.get(&created.id).expect("load json fallback task");
+        assert_eq!(loaded.subject, "JSON fallback");
+        assert_eq!(loaded.output, "fallback output");
     }
 }
