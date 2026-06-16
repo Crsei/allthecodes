@@ -730,6 +730,7 @@ dependencies = [
 name = "allthecodes-server"
 version = "0.1.0"
 dependencies = [
+ "allthecodes-types",
  "anyhow",
  "axum",
  "reqwest",
@@ -875,6 +876,7 @@ name = "allthecodes-tasks"
 version = "0.1.0"
 dependencies = [
  "allthecodes-db",
+ "allthecodes-types",
  "anyhow",
  "chrono",
  "dirs",

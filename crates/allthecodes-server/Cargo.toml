@@ -5,6 +5,7 @@ edition = "2021"
 description = "Transport abstraction and server lifecycle for allthecodes HTTP servers."
 
 [dependencies]
+allthecodes-types = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }

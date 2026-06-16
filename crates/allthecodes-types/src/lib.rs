@@ -17,6 +17,7 @@ pub mod commands;
 pub mod hooks;
 pub mod mcp;
 pub mod message;
+pub mod output;
 pub mod permission_events;
 #[cfg(feature = "runtime-types")]
 pub mod permissions;
@@ -27,3 +28,8 @@ pub mod state;
 pub mod status_line;
 pub mod teams;
 pub mod transitions;
+
+pub use output::{
+    EventSeq, OutputEvent, OutputLifecycleState, OutputReadBatch, OutputStream,
+    DEFAULT_DETACH_RESUME_TTL, DEFAULT_EXITED_OUTPUT_RETENTION_TTL, DEFAULT_OUTPUT_RETENTION_BYTES,
+};

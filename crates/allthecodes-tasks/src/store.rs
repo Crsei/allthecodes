@@ -316,6 +316,21 @@ impl TaskStore {
         };
         let mut tasks = self.load_repository_tasks();
         if let Some(entry) = tasks.get_mut(id) {
+            if let Err(err) = self
+                .repository
+                .ensure_output_events_seeded(id, &entry.output)
+            {
+                tracing::warn!(
+                    task_id = %id,
+                    error = %err,
+                    "failed to seed task output event log"
+                );
+            }
+            let event_chunk = if !entry.output.is_empty() && !output.is_empty() {
+                format!("\n{output}")
+            } else {
+                output.to_string()
+            };
             if !entry.output.is_empty() && !output.is_empty() {
                 entry.output.push('\n');
             }
@@ -328,11 +343,44 @@ impl TaskStore {
             refresh_output_metadata(entry);
             let cloned = entry.clone();
             self.persist_entry(&cloned);
+            if !event_chunk.is_empty() {
+                if let Err(err) =
+                    self.repository
+                        .append_output_event(id, OutputStream::Stdout, &event_chunk)
+                {
+                    tracing::warn!(
+                        task_id = %id,
+                        error = %err,
+                        "failed to append task output event"
+                    );
+                }
+            }
             self.replace_tasks(tasks);
             Some(cloned)
         } else {
             None
         }
+    }
+
+    pub fn read_output_events(
+        &self,
+        id: &str,
+        after_seq: Option<EventSeq>,
+        limit_bytes: usize,
+    ) -> Result<Option<OutputReadBatch>> {
+        let _guard = self.acquire_task_list_lock("read task output events")?;
+        let tasks = self.load_repository_tasks_strict()?;
+        let Some(entry) = tasks.get(id) else {
+            self.replace_tasks(tasks);
+            return Ok(None);
+        };
+        self.repository
+            .ensure_output_events_seeded(id, &entry.output)?;
+        let events = self.repository.read_output_events(id)?;
+        let state = output_state_for_task(entry.status);
+        let batch = output_read_batch_from_events(events, after_seq, limit_bytes, state);
+        self.replace_tasks(tasks);
+        Ok(Some(batch))
     }
 
     pub fn list(&self) -> Vec<TaskEntry> {
@@ -760,6 +808,70 @@ mod tests {
             .expect("dependent task remains")
             .depends_on
             .is_empty());
+    }
+
+    #[test]
+    fn task_output_events_support_incremental_replay_and_legacy_seed() {
+        let _lock = SQLITE_ENV_LOCK.lock().expect("sqlite env lock");
+        let _storage_guard = EnvVarGuard::set("ALLTHECODES_TASK_STORAGE", "json");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().join("tasks").join("output-events");
+        let store = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        let created = store.create("Output events", "record task output events");
+
+        store
+            .append_output(&created.id, "first")
+            .expect("append first output");
+        store
+            .append_output(&created.id, "second")
+            .expect("append second output");
+
+        let batch = store
+            .read_output_events(&created.id, Some(0), 1024)
+            .expect("read output events")
+            .expect("task output events");
+        assert_eq!(batch.first_available_seq, 1);
+        assert_eq!(batch.next_seq, 3);
+        assert!(!batch.truncated);
+        assert_eq!(batch.events.len(), 2);
+        assert_eq!(batch.events[0].seq, 1);
+        assert_eq!(batch.events[0].chunk, "first");
+        assert_eq!(batch.events[1].seq, 2);
+        assert_eq!(batch.events[1].chunk, "\nsecond");
+
+        let incremental = store
+            .read_output_events(&created.id, Some(1), 1024)
+            .expect("read incremental events")
+            .expect("task output events");
+        assert_eq!(incremental.events.len(), 1);
+        assert_eq!(incremental.events[0].chunk, "\nsecond");
+    }
+
+    #[test]
+    fn task_output_event_retention_is_bounded() {
+        let _lock = SQLITE_ENV_LOCK.lock().expect("sqlite env lock");
+        let _storage_guard = EnvVarGuard::set("ALLTHECODES_TASK_STORAGE", "json");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().join("tasks").join("bounded-output-events");
+        let store = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        let created = store.create("Bounded output", "large event chunks are compacted");
+
+        let large = "x".repeat((TASK_OUTPUT_EVENT_LIMIT_BYTES / 2) + 16);
+        store
+            .append_output(&created.id, &large)
+            .expect("append first large output");
+        store
+            .append_output(&created.id, &large)
+            .expect("append second large output");
+
+        let batch = store
+            .read_output_events(&created.id, Some(0), TASK_OUTPUT_EVENT_LIMIT_BYTES)
+            .expect("read output events")
+            .expect("task output events");
+        assert!(batch.truncated);
+        assert_eq!(batch.first_available_seq, 2);
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.events[0].seq, 2);
     }
 
     #[test]

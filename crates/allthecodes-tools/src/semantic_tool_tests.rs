@@ -285,6 +285,26 @@ mod tests {
             "agent output from sqlite-backed task store"
         );
 
+        let output_events = TaskOutputTool
+            .call(
+                json!({
+                    "task_id": &task_id,
+                    "block": false,
+                    "after_seq": 0
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(output_events.data["retrieval_status"], "success");
+        assert_eq!(output_events.data["output_next_seq"], 2);
+        assert_eq!(
+            output_events.data["output_events"][0]["chunk"],
+            "agent output from sqlite-backed task store"
+        );
+
         let task_dir = tmp.path().join("tasks").join(&session_id);
         let file_stem = safe_task_file_stem(&task_id);
         assert!(tmp.path().join("state").join("state_5.sqlite").exists());

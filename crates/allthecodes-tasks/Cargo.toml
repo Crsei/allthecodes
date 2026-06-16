@@ -11,6 +11,7 @@ json-storage = []
 
 [dependencies]
 allthecodes-db = { workspace = true, optional = true }
+allthecodes-types = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }

@@ -10,10 +10,11 @@ use serde_json::{json, Value};
 
 use crate::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, Tools, ValidationResult};
 use allthecodes_tasks::{
-    parse_task_create, parse_task_id, parse_task_output_timeout_ms, parse_task_update,
-    replace_todos_for_key, task_list_id_from_parts, task_output_payload, task_to_json_from_store,
-    todo_owner_key, wait_for_task_output, TaskEntry, TaskError, TaskListScope,
-    TaskOutputRetrievalStatus, TaskOutputWaitResult, TaskStatus, TaskStore, TaskUpdateAction,
+    parse_task_create, parse_task_id, parse_task_output_limit_bytes, parse_task_output_timeout_ms,
+    parse_task_update, replace_todos_for_key, task_list_id_from_parts, task_output_payload,
+    task_output_payload_with_events, task_to_json_from_store, todo_owner_key, wait_for_task_output,
+    TaskEntry, TaskError, TaskListScope, TaskOutputRetrievalStatus, TaskOutputWaitResult,
+    TaskStatus, TaskStore, TaskUpdateAction,
 };
 use allthecodes_types::message::AssistantMessage;
 
@@ -571,6 +572,27 @@ impl Tool for TaskStopTool {
 
 pub struct TaskOutputTool;
 
+fn task_output_payload_for_tool(
+    task_store: &TaskStore,
+    entry: &TaskEntry,
+    retrieval_status: TaskOutputRetrievalStatus,
+    after_seq: Option<u64>,
+    limit_bytes: usize,
+) -> Result<Value> {
+    if after_seq.is_some() {
+        let Some(events) = task_store.read_output_events(&entry.id, after_seq, limit_bytes)? else {
+            return Ok(task_output_payload(entry, retrieval_status));
+        };
+        Ok(task_output_payload_with_events(
+            entry,
+            retrieval_status,
+            Some(events),
+        ))
+    } else {
+        Ok(task_output_payload(entry, retrieval_status))
+    }
+}
+
 #[async_trait]
 impl Tool for TaskOutputTool {
     fn name(&self) -> &str {
@@ -603,6 +625,11 @@ impl Tool for TaskOutputTool {
         let id = input.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
         let block = input.get("block").and_then(|v| v.as_bool()).unwrap_or(true);
         let timeout_ms = parse_task_output_timeout_ms(&input)?;
+        let after_seq = input
+            .get("after_seq")
+            .or_else(|| input.get("afterSeq"))
+            .and_then(|value| value.as_u64());
+        let limit_bytes = parse_task_output_limit_bytes(&input)?;
 
         let task_store = store_for_context(ctx);
         let initial = task_store.get(id);
@@ -614,9 +641,21 @@ impl Tool for TaskOutputTool {
                     } else {
                         TaskOutputRetrievalStatus::Success
                     };
-                    task_output_payload(&entry, retrieval_status)
+                    task_output_payload_for_tool(
+                        &task_store,
+                        &entry,
+                        retrieval_status,
+                        after_seq,
+                        limit_bytes,
+                    )?
                 } else if !entry.status.is_active_for_output_wait() {
-                    task_output_payload(&entry, TaskOutputRetrievalStatus::Success)
+                    task_output_payload_for_tool(
+                        &task_store,
+                        &entry,
+                        TaskOutputRetrievalStatus::Success,
+                        after_seq,
+                        limit_bytes,
+                    )?
                 } else {
                     match wait_for_task_output(
                         task_store.clone(),
@@ -626,11 +665,21 @@ impl Tool for TaskOutputTool {
                     )
                     .await?
                     {
-                        TaskOutputWaitResult::Ready(entry) => {
-                            task_output_payload(&entry, TaskOutputRetrievalStatus::Success)
-                        }
+                        TaskOutputWaitResult::Ready(entry) => task_output_payload_for_tool(
+                            &task_store,
+                            &entry,
+                            TaskOutputRetrievalStatus::Success,
+                            after_seq,
+                            limit_bytes,
+                        )?,
                         TaskOutputWaitResult::TimedOut(Some(entry)) => {
-                            task_output_payload(&entry, TaskOutputRetrievalStatus::Timeout)
+                            task_output_payload_for_tool(
+                                &task_store,
+                                &entry,
+                                TaskOutputRetrievalStatus::Timeout,
+                                after_seq,
+                                limit_bytes,
+                            )?
                         }
                         TaskOutputWaitResult::TimedOut(None) => json!({
                             "retrieval_status": TaskOutputRetrievalStatus::Timeout.as_str(),

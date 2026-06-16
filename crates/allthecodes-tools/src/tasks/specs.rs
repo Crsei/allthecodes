@@ -223,6 +223,18 @@ pub fn task_output_schema() -> Value {
                 "maximum": TASK_OUTPUT_MAX_TIMEOUT_MS,
                 "description": "Maximum wait time in milliseconds when block=true",
                 "default": TASK_OUTPUT_DEFAULT_TIMEOUT_MS
+            },
+            "after_seq": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "When set, return incremental output_events after this sequence"
+            },
+            "limit_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1048576,
+                "description": "Maximum retained output event bytes to return when after_seq is set",
+                "default": 1048576
             }
         },
         "required": ["task_id"]

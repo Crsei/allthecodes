@@ -3,6 +3,10 @@
 //! This crate owns the task domain and durable task store. Tool adapters and
 //! UI rendering stay in their respective runtime crates.
 
+use allthecodes_types::{
+    EventSeq, OutputEvent, OutputLifecycleState, OutputReadBatch, OutputStream,
+    DEFAULT_OUTPUT_RETENTION_BYTES,
+};
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -49,8 +53,9 @@ pub use lists::{
     task_list_id_from_parts, unassign_teammate_tasks, TaskListScope,
 };
 pub use output::{
-    parse_task_output_timeout_ms, task_output_payload, wait_for_task_output,
-    DEFAULT_TASK_OUTPUT_TIMEOUT_MS, MAX_TASK_OUTPUT_TIMEOUT_MS,
+    parse_task_output_limit_bytes, parse_task_output_timeout_ms, task_output_payload,
+    task_output_payload_with_events, wait_for_task_output, DEFAULT_TASK_OUTPUT_TIMEOUT_MS,
+    MAX_TASK_OUTPUT_LIMIT_BYTES, MAX_TASK_OUTPUT_TIMEOUT_MS,
 };
 pub use store::TaskStore;
 pub use todo::{parse_todo_items, replace_todos_for_key, todo_owner_key, todos_for_key};
@@ -70,6 +75,7 @@ pub use types::{
 const TASK_SCHEMA_VERSION: u32 = 5;
 const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
 const OUTPUT_SUMMARY_MAX_CHARS: usize = 2_000;
+const TASK_OUTPUT_EVENT_LIMIT_BYTES: usize = DEFAULT_OUTPUT_RETENTION_BYTES;
 const TASK_OUTPUT_POLL_INTERVAL_MS: u64 = 100;
 const TASK_HIGHWATERMARK_FILE: &str = ".highwatermark";
 const TASK_HIGHWATERMARK_LOCK_FILE: &str = ".highwatermark.lock";
@@ -115,6 +121,62 @@ fn trim_output_to_limit(output: &str, limit: usize) -> (String, bool) {
         start += 1;
     }
     (output[start..].to_string(), true)
+}
+
+fn output_state_for_task(status: TaskStatus) -> OutputLifecycleState {
+    match status {
+        TaskStatus::Pending => OutputLifecycleState::Starting,
+        TaskStatus::InProgress | TaskStatus::Recoverable => OutputLifecycleState::Running,
+        TaskStatus::Completed | TaskStatus::Stopped => OutputLifecycleState::Exited,
+        TaskStatus::Failed | TaskStatus::Interrupted => OutputLifecycleState::Failed,
+        TaskStatus::Cancelled => OutputLifecycleState::Expired,
+    }
+}
+
+fn output_read_batch_from_events(
+    events: Vec<OutputEvent>,
+    after_seq: Option<EventSeq>,
+    limit_bytes: usize,
+    state: OutputLifecycleState,
+) -> OutputReadBatch {
+    let first_available_seq = events.first().map(|event| event.seq).unwrap_or(1);
+    let latest_seq = events.last().map(|event| event.seq).unwrap_or(0);
+    let requested_after_seq = after_seq.unwrap_or(first_available_seq.saturating_sub(1));
+    let mut truncated = requested_after_seq.saturating_add(1) < first_available_seq;
+    let limit_bytes = limit_bytes.max(1);
+    let mut bytes = 0usize;
+    let mut retained = Vec::new();
+
+    for event in events
+        .iter()
+        .filter(|event| event.seq > requested_after_seq)
+    {
+        let chunk_len = event.chunk.len();
+        if !retained.is_empty() && bytes.saturating_add(chunk_len) > limit_bytes {
+            truncated = true;
+            break;
+        }
+        bytes = bytes.saturating_add(chunk_len);
+        retained.push(event.clone());
+        if bytes >= limit_bytes {
+            truncated = events.iter().any(|candidate| candidate.seq > event.seq);
+            break;
+        }
+    }
+
+    let next_seq = retained
+        .last()
+        .map(|event| event.seq.saturating_add(1))
+        .unwrap_or_else(|| latest_seq.saturating_add(1))
+        .max(requested_after_seq.saturating_add(1));
+
+    OutputReadBatch {
+        events: retained,
+        next_seq,
+        truncated,
+        first_available_seq,
+        state,
+    }
 }
 
 fn blocked_dependencies_with_tasks(
@@ -224,6 +286,10 @@ fn safe_file_stem(id: &str) -> String {
 
 fn output_file_name(id: &str) -> String {
     format!("{}.output.log", safe_file_stem(id))
+}
+
+fn output_events_file_name(id: &str) -> String {
+    format!("{}.output.events.ndjson", safe_file_stem(id))
 }
 
 fn write_text_atomic(path: &Path, contents: &str) -> Result<()> {

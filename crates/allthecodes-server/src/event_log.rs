@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub type EventSeq = u64;
+use allthecodes_types::EventSeq;
 
 pub const DEFAULT_EVENT_LOG_CAPACITY: usize = 1000;
 

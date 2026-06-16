@@ -54,7 +54,7 @@ impl TaskRepository {
     pub(super) fn uses_sqlite(&self) -> bool {
         #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
         {
-            return self.sqlite.is_some();
+            self.sqlite.is_some()
         }
 
         #[cfg(any(not(feature = "sqlite-storage"), feature = "json-storage"))]
@@ -363,13 +363,101 @@ impl TaskRepository {
 
         let json_path = self.task_json_path(id);
         let output_path = self.dir.join(output_file_name(id));
+        let output_events_path = self.dir.join(output_events_file_name(id));
         remove_if_exists(&json_path)?;
         remove_if_exists(&output_path)?;
+        remove_if_exists(&output_events_path)?;
         Ok(())
     }
 
     pub(super) fn task_json_path(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{}.json", safe_file_stem(id)))
+    }
+
+    pub(super) fn ensure_output_events_seeded(&self, id: &str, output: &str) -> Result<()> {
+        if output.is_empty() {
+            return Ok(());
+        }
+        let path = self.dir.join(output_events_file_name(id));
+        if path.exists() {
+            return Ok(());
+        }
+        let event = OutputEvent {
+            seq: 1,
+            stream: OutputStream::Stdout,
+            chunk: output.to_string(),
+            timestamp_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+            process_or_run_id: id.to_string(),
+        };
+        self.write_output_events(id, &[event])
+    }
+
+    pub(super) fn append_output_event(
+        &self,
+        id: &str,
+        stream: OutputStream,
+        chunk: &str,
+    ) -> Result<OutputEvent> {
+        fs::create_dir_all(&self.dir)
+            .with_context(|| format!("failed to create task dir {}", self.dir.display()))?;
+
+        let mut events = self.read_output_events(id)?;
+        let seq = events
+            .last()
+            .map(|event| event.seq.saturating_add(1))
+            .unwrap_or(1);
+        let event = OutputEvent {
+            seq,
+            stream,
+            chunk: chunk.to_string(),
+            timestamp_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+            process_or_run_id: id.to_string(),
+        };
+        events.push(event.clone());
+        compact_output_events(&mut events, TASK_OUTPUT_EVENT_LIMIT_BYTES);
+        self.write_output_events(id, &events)?;
+        Ok(event)
+    }
+
+    pub(super) fn read_output_events(&self, id: &str) -> Result<Vec<OutputEvent>> {
+        let path = self.dir.join(output_events_file_name(id));
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to read task output events {}", path.display())
+                });
+            }
+        };
+
+        raw.lines()
+            .enumerate()
+            .filter(|(_, line)| !line.trim().is_empty())
+            .map(|(idx, line)| {
+                serde_json::from_str::<OutputEvent>(line).with_context(|| {
+                    format!(
+                        "failed to parse task output event {} line {}",
+                        path.display(),
+                        idx + 1
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn write_output_events(&self, id: &str, events: &[OutputEvent]) -> Result<()> {
+        if let Some(parent) = self.dir.join(output_events_file_name(id)).parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+
+        let mut text = String::new();
+        for event in events {
+            text.push_str(&serde_json::to_string(event)?);
+            text.push('\n');
+        }
+        write_text_atomic(&self.dir.join(output_events_file_name(id)), &text)
     }
 }
 
@@ -449,6 +537,22 @@ fn persisted_record_from_entry(entry: &TaskEntry) -> PersistedTaskRecord {
         created_at: entry.created_at,
         updated_at: entry.updated_at,
         legacy_inline_output: None,
+    }
+}
+
+fn compact_output_events(events: &mut Vec<OutputEvent>, max_bytes: usize) {
+    if max_bytes == 0 {
+        events.clear();
+        return;
+    }
+
+    let mut total: usize = events.iter().map(|event| event.chunk.len()).sum();
+    while total > max_bytes {
+        if events.is_empty() {
+            break;
+        }
+        let removed = events.remove(0);
+        total = total.saturating_sub(removed.chunk.len());
     }
 }
 
