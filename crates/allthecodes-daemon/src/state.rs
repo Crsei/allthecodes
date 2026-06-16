@@ -3,8 +3,8 @@
 //! Wraps the [`QueryEngine`] and provides SSE client management, event
 //! buffering for re-attach, and notification dispatch.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
@@ -13,21 +13,10 @@ use tokio::sync::mpsc;
 
 use allthecodes_config::features::FeatureFlags;
 use allthecodes_engine::lifecycle::QueryEngine;
-
-// ---------------------------------------------------------------------------
-// Monotonic event ID counter
-// ---------------------------------------------------------------------------
-
-static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Returns a monotonically increasing event ID string.
-pub(super) fn next_event_id() -> String {
-    EVENT_COUNTER.fetch_add(1, Ordering::Relaxed).to_string()
-}
-
-// ---------------------------------------------------------------------------
-// SseEvent
-// ---------------------------------------------------------------------------
+use allthecodes_server::{
+    ConnectionId, EventLog, EventSeq, OutboundRouter, ReplayBatch, ReplayStatus, SequencedEvent,
+    DEFAULT_EVENT_LOG_CAPACITY, DEFAULT_WRITER_CHANNEL_CAPACITY,
+};
 
 /// A single Server-Sent Event destined for connected frontends.
 #[derive(Debug, Clone, Serialize)]
@@ -44,7 +33,7 @@ pub struct SseEvent {
 /// A connected SSE frontend client.
 pub struct SseClient {
     pub client_id: String,
-    pub tx: mpsc::UnboundedSender<SseEvent>,
+    pub connection_id: ConnectionId,
     pub connected_at: std::time::Instant,
 }
 
@@ -65,9 +54,6 @@ pub struct Notification {
 // DaemonState
 // ---------------------------------------------------------------------------
 
-/// Maximum number of events retained in the ring buffer for re-attach.
-const MAX_EVENT_BUFFER: usize = 1000;
-
 /// Shared state for the KAIROS daemon, passed to all axum handlers.
 ///
 /// All fields are `Arc`-wrapped or `Copy`, so the struct is cheaply cloneable.
@@ -79,7 +65,8 @@ pub struct DaemonState {
     pub is_query_running: Arc<AtomicBool>,
     pub notification_tx: mpsc::UnboundedSender<Notification>,
     pub notification_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<Notification>>>>,
-    pub event_buffer: Arc<Mutex<VecDeque<SseEvent>>>,
+    pub event_log: EventLog<SseEvent>,
+    pub event_router: OutboundRouter<SseEvent>,
     pub port: u16,
     // Team memory proxy (populated when Feature::TeamMemory is enabled)
     pub team_memory_port: Option<u16>,
@@ -97,7 +84,8 @@ impl DaemonState {
             is_query_running: Arc::new(AtomicBool::new(false)),
             notification_tx,
             notification_rx: Arc::new(Mutex::new(Some(notification_rx))),
-            event_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_EVENT_BUFFER))),
+            event_log: EventLog::new(DEFAULT_EVENT_LOG_CAPACITY),
+            event_router: OutboundRouter::new(DEFAULT_WRITER_CHANNEL_CAPACITY),
             port,
             team_memory_port: None,
             team_memory_secret: None,
@@ -109,35 +97,74 @@ impl DaemonState {
     ///
     /// The event is assigned a monotonic ID before dispatch. Disconnected
     /// clients (whose channel has been dropped) are silently skipped.
-    pub fn broadcast(&self, mut event: SseEvent) {
-        event.id = next_event_id();
-
-        // Buffer for re-attach (ring buffer, capped at MAX_EVENT_BUFFER).
-        {
-            let mut buf = self.event_buffer.lock();
-            if buf.len() >= MAX_EVENT_BUFFER {
-                buf.pop_front();
-            }
-            buf.push_back(event.clone());
-        }
-
-        // Fan out to all connected clients.
-        let clients = self.clients.read();
-        for client in clients.values() {
-            // Ignore send errors -- the client may have disconnected.
-            let _ = client.tx.send(event.clone());
-        }
+    pub fn broadcast(&self, event: SseEvent) {
+        let event = self.event_log.append_with(|seq| SseEvent {
+            id: seq.to_string(),
+            event_type: event.event_type,
+            data: event.data,
+        });
+        self.event_router.broadcast(event);
     }
 
     /// Return all buffered events whose numeric ID is strictly greater than
     /// `last_id`. Used by frontends re-attaching after a disconnect.
     pub fn events_since(&self, last_id: &str) -> Vec<SseEvent> {
-        let last: u64 = last_id.parse().unwrap_or(0);
-        let buf = self.event_buffer.lock();
-        buf.iter()
-            .filter(|e| e.id.parse::<u64>().unwrap_or(0) > last)
-            .cloned()
+        self.replay_after(last_id.parse().ok())
+            .events
+            .into_iter()
+            .map(|event| event.message)
             .collect()
+    }
+
+    pub fn replay_after(&self, after_seq: Option<EventSeq>) -> ReplayBatch<SseEvent> {
+        self.event_log.replay_after(after_seq)
+    }
+
+    pub fn register_sse_client(
+        &self,
+        client_id: String,
+        connection_id: ConnectionId,
+    ) -> tokio::sync::mpsc::Receiver<SequencedEvent<SseEvent>> {
+        let receiver = self.event_router.register(connection_id.clone());
+        self.clients.write().insert(
+            client_id.clone(),
+            SseClient {
+                client_id,
+                connection_id,
+                connected_at: std::time::Instant::now(),
+            },
+        );
+        receiver
+    }
+
+    pub fn unregister_sse_client(&self, client_id: &str, connection_id: &ConnectionId) {
+        self.event_router.unregister(connection_id);
+        self.clients.write().remove(client_id);
+    }
+
+    pub fn latest_seq(&self) -> EventSeq {
+        self.event_log.latest_seq()
+    }
+
+    pub fn lagged_event(&self, status: &ReplayStatus) -> Option<SseEvent> {
+        let ReplayStatus::Compacted {
+            requested_after_seq,
+            oldest_seq,
+        } = status
+        else {
+            return None;
+        };
+        let latest_seq = self.latest_seq();
+        Some(SseEvent {
+            id: latest_seq.to_string(),
+            event_type: "lagged".to_string(),
+            data: serde_json::json!({
+                "requested_after_seq": requested_after_seq,
+                "oldest_seq": oldest_seq,
+                "latest_seq": latest_seq,
+                "skipped": oldest_seq.saturating_sub(*requested_after_seq + 1),
+            }),
+        })
     }
 
     /// Whether any frontend SSE client is currently connected.
@@ -162,70 +189,55 @@ impl DaemonState {
 mod tests {
     use super::*;
 
-    /// Verify monotonic ID generation.
     #[test]
-    fn next_event_id_is_monotonic() {
-        let a: u64 = next_event_id().parse().unwrap();
-        let b: u64 = next_event_id().parse().unwrap();
-        let c: u64 = next_event_id().parse().unwrap();
-        assert!(a < b);
-        assert!(b < c);
+    fn event_log_assigns_sse_ids_and_caps() {
+        let log = EventLog::new(2);
+
+        let first = log.append_with(|seq| SseEvent {
+            id: seq.to_string(),
+            event_type: "test".into(),
+            data: serde_json::json!({}),
+        });
+        log.append_with(|seq| SseEvent {
+            id: seq.to_string(),
+            event_type: "test".into(),
+            data: serde_json::json!({}),
+        });
+        let third = log.append_with(|seq| SseEvent {
+            id: seq.to_string(),
+            event_type: "test".into(),
+            data: serde_json::json!({}),
+        });
+
+        assert_eq!(first.seq, 1);
+        assert_eq!(third.seq, 3);
+        assert_eq!(log.oldest_seq(), Some(2));
+        let replay = log.replay_after(Some(0));
+        assert!(matches!(replay.status, ReplayStatus::Compacted { .. }));
+        assert_eq!(replay.events.len(), 2);
+        assert_eq!(replay.events[0].message.id, "2");
     }
 
-    /// Broadcast should buffer events and respect ring buffer cap.
     #[test]
-    fn broadcast_buffers_and_caps() {
-        // We can't easily construct a real QueryEngine in a unit test, so we
-        // test the buffering logic directly via the event_buffer field.
-        let buf: Arc<Mutex<VecDeque<SseEvent>>> =
-            Arc::new(Mutex::new(VecDeque::with_capacity(MAX_EVENT_BUFFER)));
-
-        // Fill beyond capacity.
-        for i in 0..MAX_EVENT_BUFFER + 50 {
-            let event = SseEvent {
-                id: i.to_string(),
+    fn event_log_replay_filters_by_numeric_seq() {
+        let log = EventLog::new(10);
+        for i in 0..5u64 {
+            log.append_with(|seq| SseEvent {
+                id: seq.to_string(),
                 event_type: "test".into(),
-                data: serde_json::json!({}),
-            };
-            let mut b = buf.lock();
-            if b.len() >= MAX_EVENT_BUFFER {
-                b.pop_front();
-            }
-            b.push_back(event);
+                data: serde_json::json!({"n": i}),
+            });
         }
 
-        let b = buf.lock();
-        assert_eq!(b.len(), MAX_EVENT_BUFFER);
-        // The oldest remaining should be event #50 (0..49 were evicted).
-        assert_eq!(b.front().unwrap().id, "50");
-    }
-
-    /// events_since should filter by numeric ID.
-    #[test]
-    fn events_since_filters_correctly() {
-        let buf: Arc<Mutex<VecDeque<SseEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
-        {
-            let mut b = buf.lock();
-            for i in 10..15u64 {
-                b.push_back(SseEvent {
-                    id: i.to_string(),
-                    event_type: "test".into(),
-                    data: serde_json::json!({"n": i}),
-                });
-            }
-        }
-
-        // Simulate events_since logic.
-        let last: u64 = "12".parse().unwrap();
-        let result: Vec<SseEvent> = buf
-            .lock()
-            .iter()
-            .filter(|e| e.id.parse::<u64>().unwrap_or(0) > last)
-            .cloned()
+        let result: Vec<SseEvent> = log
+            .replay_after(Some(3))
+            .events
+            .into_iter()
+            .map(|event| event.message)
             .collect();
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].id, "13");
-        assert_eq!(result[1].id, "14");
+        assert_eq!(result[0].id, "4");
+        assert_eq!(result[1].id, "5");
     }
 }

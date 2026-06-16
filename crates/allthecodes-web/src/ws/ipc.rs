@@ -37,10 +37,9 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use allthecodes_engine::lifecycle::QueryEngine;
-use allthecodes_ipc::runtime::IpcRuntime;
 use allthecodes_ipc_protocol::{BackendMessage, FrontendMessage};
 use allthecodes_server::{
-    ConnectionClosedReason, ConnectionId, ConnectionOrigin, OriginRejection, OutboundEnvelope,
+    ConnectionClosedReason, ConnectionId, ConnectionOrigin, EventSeq, OriginRejection,
     TransportEvent, TransportKind,
 };
 use allthecodes_types::callbacks::{
@@ -49,12 +48,14 @@ use allthecodes_types::callbacks::{
 use allthecodes_types::message::{ContentBlock, StreamEvent, ToolResultContent};
 use allthecodes_types::sdk::{SdkMessage, SdkStreamEvent};
 
+use crate::ipc_streams::{ipc_seq_marker, IpcSessionHub};
 use crate::state::WebState;
 
 /// Query parameters for the IPC WebSocket endpoint.
 #[derive(Deserialize, Default)]
 pub struct IpcWsParams {
     pub session_id: Option<String>,
+    pub after_seq: Option<EventSeq>,
 }
 
 fn parse_legacy_frontend_text(text: &str) -> Result<FrontendMessage, Box<BackendMessage>> {
@@ -97,14 +98,6 @@ pub async fn ipc_ws_handler(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| engine.current_session_id().to_string());
 
-    if state.is_session_streaming(&_active_session_id) {
-        return (
-            axum::http::StatusCode::CONFLICT,
-            "A query is already in progress",
-        )
-            .into_response();
-    }
-
     let connection_id = ConnectionId::next();
     ws.on_upgrade(move |socket| {
         handle_ipc_socket(
@@ -112,6 +105,7 @@ pub async fn ipc_ws_handler(
             state,
             engine,
             params.session_id,
+            params.after_seq,
             connection_id,
             origin,
         )
@@ -125,12 +119,22 @@ async fn handle_ipc_socket(
     state: WebState,
     engine: Arc<QueryEngine>,
     session_id: Option<String>,
+    after_seq: Option<EventSeq>,
     connection_id: ConnectionId,
     origin: ConnectionOrigin,
 ) {
     let actual_session_id = session_id
         .clone()
         .unwrap_or_else(|| engine.current_session_id().to_string());
+    let hub = state.ipc_session_hub(&actual_session_id);
+    if let Some(mut bridge_rx) = hub.take_bridge_receiver() {
+        let bridge_hub = hub.clone();
+        tokio::spawn(async move {
+            while let Some(message) = bridge_rx.recv().await {
+                bridge_hub.publish(message);
+            }
+        });
+    }
 
     log_transport_event(TransportEvent::<FrontendMessage>::ConnectionOpened {
         connection_id: connection_id.clone(),
@@ -141,31 +145,6 @@ async fn handle_ipc_socket(
     // Split WebSocket into sender/receiver
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    let (ipc_runtime, mut outbound_rx) = IpcRuntime::new(actual_session_id.clone(), 256);
-    // ── Install permission callback ───────────────────────────────
-    let runtime_permissions = ipc_runtime.clone();
-    let permission_cb: allthecodes_types::callbacks::PermissionCallback =
-        Arc::new(move |req: PermissionRequestPayload| {
-            let runtime = runtime_permissions.clone();
-            Box::pin(async move {
-                runtime
-                    .request_permission(req)
-                    .await
-                    .unwrap_or_else(|_| PermissionResponsePayload::deny())
-            })
-        });
-    engine.set_permission_callback(permission_cb);
-
-    // ── Install ask_user callback ─────────────────────────────────
-    let runtime_questions = ipc_runtime.clone();
-    let ask_user_cb: allthecodes_types::callbacks::AskUserCallback =
-        Arc::new(move |req: AskUserRequestPayload| {
-            let runtime = runtime_questions.clone();
-            Box::pin(async move { runtime.request_question(req).await.unwrap_or_default() })
-        });
-    engine.set_ask_user_callback(ask_user_cb);
-
-    // ── Send Ready message ────────────────────────────────────────
     let app_state = engine.app_state();
     let ready = BackendMessage::Ready {
         session_id: actual_session_id.clone(),
@@ -178,15 +157,67 @@ async fn handle_ipc_socket(
         view_mode: None,
         keybindings: None,
     };
-    let _ = ipc_runtime.send_backend(ready).await;
+    let mut outbound_rx = hub.register_connection(connection_id.clone());
 
     // ── Task: forward outbound messages to WebSocket ──────────────
-    let outbound_connection_id = connection_id.clone();
-    let outbound_handle = tokio::spawn(async move {
-        while let Some(message) = outbound_rx.recv().await {
-            let envelope = OutboundEnvelope::new(outbound_connection_id.clone(), message);
-            let json = serde_json::to_string(&envelope.message).unwrap_or_default();
-            if ws_sender.send(Message::Text(json.into())).await.is_err() {
+    let writer_session_id = actual_session_id.clone();
+    let writer_hub = hub.clone();
+    let mut outbound_handle = tokio::spawn(async move {
+        if send_backend_ws_message(&mut ws_sender, &ready)
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        let replay = writer_hub.replay_after(after_seq);
+        if let Some(lagged) =
+            IpcSessionHub::replay_lagged_message(&replay.status, writer_hub.latest_seq())
+        {
+            if send_backend_ws_message(&mut ws_sender, &lagged)
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        if replay.events.is_empty() {
+            let marker = ipc_seq_marker(&writer_session_id, writer_hub.latest_seq());
+            if send_backend_ws_message(&mut ws_sender, &marker)
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        for event in replay.events {
+            if send_backend_ws_message(&mut ws_sender, &event.message)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let marker = ipc_seq_marker(&writer_session_id, event.seq);
+            if send_backend_ws_message(&mut ws_sender, &marker)
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+
+        while let Some(event) = outbound_rx.recv().await {
+            if send_backend_ws_message(&mut ws_sender, &event.message)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            let marker = ipc_seq_marker(&writer_session_id, event.seq);
+            if send_backend_ws_message(&mut ws_sender, &marker)
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -195,11 +226,11 @@ async fn handle_ipc_socket(
     // ── Task: handle incoming FrontendMessages ────────────────────
     let state_for_tasks = state.clone();
     let engine_for_tasks = engine.clone();
-    let runtime_inner = ipc_runtime.clone();
+    let hub_inner = hub.clone();
     let sid = actual_session_id.clone();
     let inbound_connection_id = connection_id.clone();
 
-    let inbound_handle = tokio::spawn(async move {
+    let mut inbound_handle = tokio::spawn(async move {
         let close_reason = loop {
             tokio::select! {
                 msg = ws_receiver.next() => {
@@ -208,7 +239,7 @@ async fn handle_ipc_socket(
                             let frontend = match ipc_text_to_transport_event(&inbound_connection_id, &text) {
                                 Ok(TransportEvent::IncomingMessage { message, .. }) => message,
                                 Err(err) => {
-                                    let _ = runtime_inner.send_backend(*err).await;
+                                    hub_inner.send_control_to(&inbound_connection_id, *err);
                                     continue;
                                 }
                                 Ok(_) => continue,
@@ -216,9 +247,10 @@ async fn handle_ipc_socket(
 
                             if !handle_frontend_message(
                                 frontend,
+                                &inbound_connection_id,
                                 &state_for_tasks,
                                 &engine_for_tasks,
-                                &runtime_inner,
+                                &hub_inner,
                                 &sid,
                             ).await {
                                 break ConnectionClosedReason::ProtocolQuit;
@@ -249,31 +281,54 @@ async fn handle_ipc_socket(
             &inbound_connection_id,
             close_reason,
         ));
-
-        // Cleanup: abort any running query
-        engine_for_tasks.abort();
-        state_for_tasks.set_session_streaming(&sid, false);
     });
 
     // Wait for either task to complete (connection closed)
     tokio::select! {
-        _ = outbound_handle => {}
-        _ = inbound_handle => {}
+        _ = &mut outbound_handle => {}
+        _ = &mut inbound_handle => {}
     }
+    outbound_handle.abort();
+    inbound_handle.abort();
 
     // ── Cleanup ───────────────────────────────────────────────────
-    let cleanup = ipc_runtime.cleanup_pending();
-    if cleanup.permissions > 0 || cleanup.questions > 0 {
+    cleanup_ipc_connection_owner(&hub, &connection_id, &state, &engine, &actual_session_id);
+    hub.unregister_connection(&connection_id);
+    info!("IPC WebSocket connection closed");
+}
+
+async fn send_backend_ws_message(
+    ws_sender: &mut futures::stream::SplitSink<WebSocket, Message>,
+    message: &BackendMessage,
+) -> Result<(), axum::Error> {
+    let json = serde_json::to_string(message).unwrap_or_default();
+    ws_sender.send(Message::Text(json.into())).await
+}
+
+fn cleanup_ipc_connection_owner(
+    hub: &IpcSessionHub,
+    connection_id: &ConnectionId,
+    state: &WebState,
+    engine: &Arc<QueryEngine>,
+    session_id: &str,
+) {
+    if !hub.release_turn_if_owner(connection_id) {
+        return;
+    }
+
+    engine.abort();
+    let cleanup = hub.runtime().cleanup_pending();
+    if cleanup.permissions > 0 || cleanup.questions > 0 || cleanup.server_requests > 0 {
         info!(
             permissions = cleanup.permissions,
             questions = cleanup.questions,
+            server_requests = cleanup.server_requests,
             "IPC WebSocket cleaned up pending interactions"
         );
     }
     engine.clear_permission_callback();
     engine.clear_ask_user_callback();
-    state.set_session_streaming(&actual_session_id, false);
-    info!("IPC WebSocket connection closed");
+    state.set_session_streaming(session_id, false);
 }
 
 fn websocket_origin_from_headers(headers: &HeaderMap) -> Result<ConnectionOrigin, OriginRejection> {
@@ -343,36 +398,38 @@ fn log_transport_event<T: std::fmt::Debug>(event: TransportEvent<T>) {
 /// Handle a single FrontendMessage, returning false if the loop should exit.
 async fn handle_frontend_message(
     msg: FrontendMessage,
+    connection_id: &ConnectionId,
     state: &WebState,
     engine: &Arc<QueryEngine>,
-    runtime: &IpcRuntime,
+    hub: &Arc<IpcSessionHub>,
     session_id: &str,
 ) -> bool {
     match msg {
         FrontendMessage::SubmitPrompt { text, id } => {
-            submit_prompt_via_ipc(text, id, state, engine, runtime, session_id).await;
+            submit_prompt_via_ipc(text, id, connection_id, state, engine, hub, session_id).await;
             true
         }
         FrontendMessage::AbortQuery => {
             engine.abort();
             state.set_session_streaming(session_id, false);
+            hub.release_turn_if_owner(connection_id);
             let msg = BackendMessage::SystemInfo {
                 text: "Query aborted".to_string(),
                 level: "info".to_string(),
             };
-            let _ = runtime.send_backend(msg).await;
+            let _ = hub.runtime().send_backend(msg).await;
             true
         }
         FrontendMessage::PermissionResponse { .. } => {
-            runtime.resolve_legacy_client_response(&msg);
+            hub.runtime().resolve_legacy_client_response(&msg);
             true
         }
         FrontendMessage::QuestionResponse { .. } => {
-            runtime.resolve_legacy_client_response(&msg);
+            hub.runtime().resolve_legacy_client_response(&msg);
             true
         }
         FrontendMessage::SlashCommand { raw } => {
-            let result = execute_slash_command(raw, state, runtime, session_id).await;
+            let result = execute_slash_command(raw, state, hub, session_id).await;
             result
         }
         FrontendMessage::Resize { cols: _, rows: _ } => {
@@ -389,7 +446,7 @@ async fn handle_frontend_message(
                 text: "Subsystem status query not yet implemented".to_string(),
                 level: "info".to_string(),
             };
-            let _ = runtime.send_backend(msg).await;
+            let _ = hub.runtime().send_backend(msg).await;
             true
         }
         FrontendMessage::RequestCompletions {
@@ -402,7 +459,7 @@ async fn handle_frontend_message(
                 items: vec![],
                 request_id,
             };
-            let _ = runtime.send_backend(msg).await;
+            let _ = hub.runtime().send_backend(msg).await;
             true
         }
         // Agent/team commands — forward to engine
@@ -412,7 +469,7 @@ async fn handle_frontend_message(
                 text: format!("Agent command: {command:?}"),
                 level: "info".to_string(),
             };
-            let _ = runtime.send_backend(msg).await;
+            let _ = hub.runtime().send_backend(msg).await;
             true
         }
         FrontendMessage::TeamCommand { command } => {
@@ -420,7 +477,7 @@ async fn handle_frontend_message(
                 text: format!("Team command: {command:?}"),
                 level: "info".to_string(),
             };
-            let _ = runtime.send_backend(msg).await;
+            let _ = hub.runtime().send_backend(msg).await;
             true
         }
         // Subsystem commands — TODO
@@ -434,7 +491,7 @@ async fn handle_frontend_message(
                 text: "Subsystem commands not yet implemented via IPC WebSocket".to_string(),
                 level: "info".to_string(),
             };
-            let _ = runtime.send_backend(msg).await;
+            let _ = hub.runtime().send_backend(msg).await;
             true
         }
         // File search — TODO
@@ -445,7 +502,7 @@ async fn handle_frontend_message(
                 truncated: false,
                 error: Some("File search not yet implemented via IPC WebSocket".to_string()),
             };
-            let _ = runtime.send_backend(msg).await;
+            let _ = hub.runtime().send_backend(msg).await;
             true
         }
         // Completions acceptance — no-op for now
@@ -461,11 +518,44 @@ async fn handle_frontend_message(
 async fn submit_prompt_via_ipc(
     text: String,
     _id: String,
+    connection_id: &ConnectionId,
     state: &WebState,
     engine: &Arc<QueryEngine>,
-    runtime: &IpcRuntime,
+    hub: &Arc<IpcSessionHub>,
     _session_id: &str,
 ) {
+    if !hub.claim_turn(connection_id) {
+        hub.send_control_to(
+            connection_id,
+            BackendMessage::Error {
+                message: "A query is already in progress".to_string(),
+                recoverable: true,
+            },
+        );
+        return;
+    }
+
+    let runtime_permissions = hub.runtime().clone();
+    let permission_cb: allthecodes_types::callbacks::PermissionCallback =
+        Arc::new(move |req: PermissionRequestPayload| {
+            let runtime = runtime_permissions.clone();
+            Box::pin(async move {
+                runtime
+                    .request_permission(req)
+                    .await
+                    .unwrap_or_else(|_| PermissionResponsePayload::deny())
+            })
+        });
+    engine.set_permission_callback(permission_cb);
+
+    let runtime_questions = hub.runtime().clone();
+    let ask_user_cb: allthecodes_types::callbacks::AskUserCallback =
+        Arc::new(move |req: AskUserRequestPayload| {
+            let runtime = runtime_questions.clone();
+            Box::pin(async move { runtime.request_question(req).await.unwrap_or_default() })
+        });
+    engine.set_ask_user_callback(ask_user_cb);
+
     state.set_session_streaming(_session_id, true);
 
     let stream = engine.submit_message(&text, allthecodes_engine::types::config::QuerySource::Sdk);
@@ -478,14 +568,20 @@ async fn submit_prompt_via_ipc(
     while let Some(sdk_msg) = stream.next().await {
         let backend_msgs = sdk_to_backend_messages(sdk_msg, &mut draft_id);
         for backend_msg in backend_msgs {
-            if runtime.send_backend(backend_msg).await.is_err() {
+            if hub.runtime().send_backend(backend_msg).await.is_err() {
                 state.set_session_streaming(_session_id, false);
+                hub.release_turn_if_owner(connection_id);
+                engine.clear_permission_callback();
+                engine.clear_ask_user_callback();
                 return;
             }
         }
     }
 
     state.set_session_streaming(_session_id, false);
+    hub.release_turn_if_owner(connection_id);
+    engine.clear_permission_callback();
+    engine.clear_ask_user_callback();
 }
 
 /// Convert an SdkMessage to zero or more BackendMessage events.
@@ -701,7 +797,7 @@ fn tool_result_content_to_string(content: &ToolResultContent) -> String {
 async fn execute_slash_command(
     raw: String,
     _state: &WebState,
-    runtime: &IpcRuntime,
+    hub: &IpcSessionHub,
     _session_id: &str,
 ) -> bool {
     let trimmed = raw.trim().trim_start_matches('/');
@@ -716,7 +812,7 @@ async fn execute_slash_command(
         text: format!("Slash command /{cmd_name} {args}"),
         level: "info".to_string(),
     };
-    let _ = runtime.send_backend(msg).await;
+    let _ = hub.runtime().send_backend(msg).await;
 
     // Note: Full slash command execution via IPC is a future enhancement.
     // For now, clients should use the POST /api/command REST endpoint.

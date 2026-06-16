@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 use allthecodes_engine::types::config::QuerySource;
 use allthecodes_services::scheduler::{SchedulerStore, TaskPayload};
 
-use super::state::{next_event_id, DaemonState, SseEvent};
+use super::state::{DaemonState, SseEvent};
 
 const SCHEDULER_TICK_INTERVAL_MS: u64 = 15_000;
 
@@ -56,7 +56,7 @@ pub async fn scheduler_loop(state: DaemonState) {
             let payload_kind = task.payload.kind_label();
 
             state.broadcast(SseEvent {
-                id: next_event_id(),
+                id: String::new(),
                 event_type: "scheduled_task_start".to_string(),
                 data: json!({
                     "task_id": task_id.as_str(),
@@ -82,7 +82,7 @@ pub async fn scheduler_loop(state: DaemonState) {
                 match SchedulerStore::open_default().record_fired(&task_id) {
                     Ok(updated) => {
                         state_clone.broadcast(SseEvent {
-                            id: next_event_id(),
+                            id: String::new(),
                             event_type: "scheduled_task_complete".to_string(),
                             data: json!({
                                 "task_id": task_id.as_str(),
@@ -93,7 +93,7 @@ pub async fn scheduler_loop(state: DaemonState) {
                     Err(err) => {
                         warn!(task_id = %task_id, error = %err, "failed to record scheduled task fire");
                         state_clone.broadcast(SseEvent {
-                            id: next_event_id(),
+                            id: String::new(),
                             event_type: "scheduled_task_error".to_string(),
                             data: json!({
                                 "task_id": task_id.as_str(),

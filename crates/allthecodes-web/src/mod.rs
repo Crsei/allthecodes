@@ -4,6 +4,7 @@ pub mod api_dispatcher;
 pub mod api_errors;
 pub mod handler_registry;
 pub mod handlers;
+pub mod ipc_streams;
 pub mod processors;
 pub mod serialization;
 pub mod state;

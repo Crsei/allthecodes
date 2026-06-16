@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use allthecodes_engine::types::config::QuerySource;
 
 use super::memory_log::append_log_entry;
-use super::state::{next_event_id, DaemonState, SseEvent};
+use super::state::{DaemonState, SseEvent};
 
 const DEFAULT_TICK_INTERVAL_MS: u64 = 30_000;
 
@@ -71,7 +71,7 @@ pub async fn tick_loop(state: DaemonState) {
 
         // Notify frontend
         state.broadcast(SseEvent {
-            id: next_event_id(),
+            id: String::new(),
             event_type: "autonomous_start".to_string(),
             data: json!({"source": "proactive_tick", "time": now.to_rfc3339()}),
         });

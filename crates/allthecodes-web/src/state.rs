@@ -11,6 +11,7 @@ use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_types::callbacks::PermissionResponsePayload;
 use allthecodes_web_state::WebUiStore;
 
+use crate::ipc_streams::IpcSessionHub;
 use crate::serialization::SerializationLayer;
 use crate::ws::terminal::{PtyDiagnostics, TerminalManager};
 
@@ -33,6 +34,8 @@ pub struct WebState {
     pub session_engines: Arc<RwLock<HashMap<String, Arc<QueryEngine>>>>,
     /// Session ids with an active streaming chat turn.
     pub streaming_sessions: Arc<RwLock<HashSet<String>>>,
+    /// Session-scoped IPC WebSocket stream hubs.
+    pub ipc_session_hubs: Arc<RwLock<HashMap<String, Arc<IpcSessionHub>>>>,
     /// Pending tool permission prompts owned by `/api/chat` SSE turns.
     chat_permissions: Arc<
         RwLock<HashMap<ChatPermissionKey, tokio::sync::oneshot::Sender<PermissionResponsePayload>>>,
@@ -69,6 +72,7 @@ impl WebState {
             is_streaming,
             session_engines: Arc::new(RwLock::new(session_engines)),
             streaming_sessions: Arc::new(RwLock::new(HashSet::new())),
+            ipc_session_hubs: Arc::new(RwLock::new(HashMap::new())),
             chat_permissions: Arc::new(RwLock::new(HashMap::new())),
             pty_diagnostics: PtyDiagnostics::new(terminal_manager.clone()),
             terminal_manager,
@@ -123,6 +127,17 @@ impl WebState {
         };
         self.is_streaming
             .store(any_streaming, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn ipc_session_hub(&self, session_id: &str) -> Arc<IpcSessionHub> {
+        if let Some(hub) = self.ipc_session_hubs.read().get(session_id).cloned() {
+            return hub;
+        }
+
+        let mut hubs = self.ipc_session_hubs.write();
+        hubs.entry(session_id.to_string())
+            .or_insert_with(|| IpcSessionHub::new(session_id))
+            .clone()
     }
 
     pub fn insert_chat_permission(

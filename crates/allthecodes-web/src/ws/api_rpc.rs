@@ -10,8 +10,8 @@ use tracing::{info, warn};
 
 use allthecodes_protocol::{ApiError, JsonRpcFrame, TransportRequestId};
 use allthecodes_server::{
-    ConnectionClosedReason, ConnectionId, ConnectionOrigin, OriginRejection, OutboundEnvelope,
-    TransportEvent, TransportKind,
+    ConnectionClosedReason, ConnectionId, ConnectionOrigin, OriginRejection, OutboundRouter,
+    RouterSendError, SequencedEvent, TransportEvent, TransportKind,
 };
 
 use crate::api_dispatcher::{ApiConnectionId, ApiDispatcher, ApiRequestContext};
@@ -56,50 +56,78 @@ async fn handle_api_rpc_socket(
     let dispatcher = ApiDispatcher::new(state);
     let context = ApiRequestContext::json_rpc_websocket(api_connection_id.clone());
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let mut close_reason = ConnectionClosedReason::ClientClosed;
+    let router = OutboundRouter::<String>::default();
+    let mut outbound_rx = router.register(connection_id.clone());
+    let (writer_closed_tx, mut writer_closed_rx) = tokio::sync::oneshot::channel::<()>();
+    let writer_connection_id = connection_id.clone();
+    let writer_handle = tokio::spawn(async move {
+        while let Some(event) = outbound_rx.recv().await {
+            if ws_sender
+                .send(Message::Text(event.message.into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        let _ = writer_closed_tx.send(());
+    });
+    let mut next_seq = 1;
 
-    while let Some(message) = ws_receiver.next().await {
-        match message {
-            Ok(message) => {
-                match handle_api_rpc_message(&dispatcher, &context, &connection_id, message).await {
+    let close_reason = loop {
+        tokio::select! {
+            message = ws_receiver.next() => {
+                let Some(message) = message else {
+                    break ConnectionClosedReason::ClientClosed;
+                };
+                match message {
+                    Ok(message) => match handle_api_rpc_message(&dispatcher, &context, &connection_id, message).await {
                     ApiRpcSocketAction::Respond(response) => {
                         match encode_frame(response.as_ref()) {
                             Ok(text) => {
-                                let envelope = OutboundEnvelope::new(connection_id.clone(), text);
-                                if ws_sender
-                                    .send(Message::Text(envelope.message.into()))
-                                    .await
-                                    .is_err()
-                                {
-                                    close_reason = ConnectionClosedReason::TransportError(
-                                        "failed to send JSON-RPC response".to_string(),
-                                    );
-                                    break;
+                                let event = SequencedEvent::new(next_seq, text);
+                                next_seq += 1;
+                                if let Err(error) = router.send_to(&connection_id, event) {
+                                    break match error {
+                                        RouterSendError::Full { .. } => ConnectionClosedReason::TransportError(
+                                            "JSON-RPC WebSocket outbound queue is full".to_string(),
+                                        ),
+                                        RouterSendError::Closed { .. }
+                                        | RouterSendError::UnknownConnection { .. } => {
+                                            ConnectionClosedReason::TransportError(
+                                                "JSON-RPC WebSocket writer closed".to_string(),
+                                            )
+                                        }
+                                    };
                                 }
                             }
                             Err(error) => {
                                 warn!(connection_id = %api_connection_id.0, "failed to encode JSON-RPC response: {error}");
-                                close_reason =
-                                    ConnectionClosedReason::TransportError(error.to_string());
-                                break;
+                                break ConnectionClosedReason::TransportError(error.to_string());
                             }
                         }
                     }
                     ApiRpcSocketAction::Close => {
-                        close_reason = ConnectionClosedReason::ClientClosed;
-                        break;
+                        break ConnectionClosedReason::ClientClosed;
                     }
                     ApiRpcSocketAction::Ignore => {}
-                }
+                    },
+                    Err(error) => {
+                        warn!(connection_id = %api_connection_id.0, "API JSON-RPC WebSocket error: {error}");
+                        break ConnectionClosedReason::TransportError(error.to_string());
+                    }
+                };
             }
-            Err(error) => {
-                warn!(connection_id = %api_connection_id.0, "API JSON-RPC WebSocket error: {error}");
-                close_reason = ConnectionClosedReason::TransportError(error.to_string());
-                break;
+            _ = &mut writer_closed_rx => {
+                break ConnectionClosedReason::TransportError(
+                    "JSON-RPC WebSocket writer closed".to_string(),
+                );
             }
         }
-    }
+    };
 
+    router.unregister(&writer_connection_id);
+    writer_handle.abort();
     log_transport_event(TransportEvent::<String>::ConnectionClosed {
         connection_id,
         kind: TransportKind::ApiRpcWebSocket,
