@@ -5,6 +5,11 @@ edition = "2021"
 description = "Session persistence for allthecodes — conversation state, transcripts, memdir, exports"
 build = "build.rs"
 
+[features]
+default = ["sqlite-storage", "json-storage"]
+sqlite-storage = ["dep:allthecodes-db", "dep:sqlx"]
+json-storage = []
+
 [dependencies]
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -20,7 +25,9 @@ dirs = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 git2 = { workspace = true }
+sqlx = { workspace = true, optional = true }
 
+allthecodes-db = { workspace = true, optional = true }
 allthecodes-types = { workspace = true }
 allthecodes-config = { workspace = true }
 allthecodes-models = { workspace = true }

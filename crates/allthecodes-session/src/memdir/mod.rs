@@ -225,11 +225,22 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_build_memory_context_empty() {
         let cwd = make_temp_dir();
+        let home = make_temp_dir();
+        let previous = std::env::var("ALLTHECODES_HOME").ok();
+        std::env::set_var("ALLTHECODES_HOME", &home);
+
         let ctx = build_memory_context(&cwd).unwrap();
         assert!(ctx.is_empty());
+
+        match previous {
+            Some(value) => std::env::set_var("ALLTHECODES_HOME", value),
+            None => std::env::remove_var("ALLTHECODES_HOME"),
+        }
         cleanup(&cwd);
+        cleanup(&home);
     }
 
     #[test]

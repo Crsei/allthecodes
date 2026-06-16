@@ -1,14 +1,14 @@
 use super::*;
 
-use anyhow::{anyhow, Context, Result};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use allthecodes_db::{Migration, MigrationRunner};
+use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool};
-use std::future::Future;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
-const MIGRATIONS: &[&str] = &[
-    r#"
+const MIGRATIONS: &[Migration] = &[
+    Migration::new(
+        1,
+        r#"
     CREATE TABLE IF NOT EXISTS tasks (
         task_list_id TEXT NOT NULL,
         id TEXT NOT NULL,
@@ -42,7 +42,10 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (task_list_id, id)
     )
     "#,
-    r#"
+    ),
+    Migration::new(
+        2,
+        r#"
     CREATE TABLE IF NOT EXISTS task_dependencies (
         task_list_id TEXT NOT NULL,
         task_id TEXT NOT NULL,
@@ -54,28 +57,44 @@ const MIGRATIONS: &[&str] = &[
             ON DELETE CASCADE
     )
     "#,
-    r#"
+    ),
+    Migration::new(
+        3,
+        r#"
     CREATE TABLE IF NOT EXISTS task_id_counters (
         task_list_id TEXT PRIMARY KEY NOT NULL,
         high_watermark INTEGER NOT NULL DEFAULT 0
     )
     "#,
-    r#"
+    ),
+    Migration::new(
+        4,
+        r#"
     CREATE INDEX IF NOT EXISTS idx_tasks_status
         ON tasks(task_list_id, status, updated_at DESC)
     "#,
-    r#"
+    ),
+    Migration::new(
+        5,
+        r#"
     CREATE INDEX IF NOT EXISTS idx_tasks_owner
         ON tasks(task_list_id, owner, status)
     "#,
-    r#"
+    ),
+    Migration::new(
+        6,
+        r#"
     CREATE INDEX IF NOT EXISTS idx_tasks_parent
         ON tasks(task_list_id, parent_id)
     "#,
-    r#"
+    ),
+    Migration::new(
+        7,
+        r#"
     CREATE INDEX IF NOT EXISTS idx_task_dependencies_task
         ON task_dependencies(task_list_id, task_id, position)
     "#,
+    ),
 ];
 
 #[derive(Debug, Clone)]
@@ -101,7 +120,7 @@ impl SqliteTaskRepository {
         let task_list_id = self.task_list_id.clone();
         self.ensure_ready()?;
         run_sqlite(async move {
-            let pool = open_pool(db_path);
+            let pool = open_pool(db_path)?;
             let rows = sqlx::query(
                 r#"
                 SELECT
@@ -210,7 +229,7 @@ impl SqliteTaskRepository {
         let task_list_id = self.task_list_id.clone();
         self.ensure_ready()?;
         run_sqlite(async move {
-            let pool = open_pool(db_path);
+            let pool = open_pool(db_path)?;
             let mut tx = pool
                 .begin()
                 .await
@@ -274,7 +293,7 @@ impl SqliteTaskRepository {
         let record = record.clone();
         self.ensure_ready()?;
         run_sqlite(async move {
-            let pool = open_pool(db_path);
+            let pool = open_pool(db_path)?;
             let mut tx = pool
                 .begin()
                 .await
@@ -418,7 +437,7 @@ impl SqliteTaskRepository {
         let id = id.to_string();
         self.ensure_ready()?;
         run_sqlite(async move {
-            let pool = open_pool(db_path);
+            let pool = open_pool(db_path)?;
             let mut tx = pool
                 .begin()
                 .await
@@ -460,18 +479,8 @@ impl SqliteTaskRepository {
 
         let db_path = self.db_path.clone();
         let result = run_sqlite(async move {
-            if let Some(parent) = db_path.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create sqlite state dir {}", parent.display())
-                })?;
-            }
-            let pool = open_pool(db_path);
-            for migration in MIGRATIONS {
-                sqlx::raw_sql(migration)
-                    .execute(&pool)
-                    .await
-                    .context("failed to run sqlite task migration")?;
-            }
+            let pool = open_pool(db_path)?;
+            MigrationRunner::new("tasks", MIGRATIONS).run(&pool).await?;
             Ok(())
         })
         .map_err(|err| err.to_string());
@@ -480,17 +489,8 @@ impl SqliteTaskRepository {
     }
 }
 
-fn open_pool(db_path: PathBuf) -> SqlitePool {
-    let options = SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(true)
-        .foreign_keys(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(Duration::from_secs(5));
-    SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect_lazy_with(options)
+fn open_pool(db_path: PathBuf) -> Result<SqlitePool> {
+    allthecodes_db::pool_for_path(db_path)
 }
 
 fn db_path_for_task_dir(dir: &Path) -> PathBuf {
@@ -524,21 +524,10 @@ fn task_list_id_for_dir(dir: &Path) -> String {
 
 fn run_sqlite<F, T>(future: F) -> Result<T>
 where
-    F: Future<Output = Result<T>> + Send + 'static,
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
     T: Send + 'static,
 {
-    let join = std::thread::Builder::new()
-        .name("allthecodes-task-sqlite".to_string())
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("failed to create sqlite runtime")?;
-            runtime.block_on(future)
-        })
-        .context("failed to spawn sqlite worker thread")?;
-    join.join()
-        .map_err(|_| anyhow!("sqlite worker thread panicked"))?
+    allthecodes_db::run_sqlite_sync("allthecodes-task-sqlite", future)
 }
 
 fn parse_json_value(raw: Option<String>) -> Result<Option<Value>> {

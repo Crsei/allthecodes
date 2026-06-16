@@ -1,0 +1,16 @@
+[package]
+name = "allthecodes-db"
+version = "0.1.0"
+edition = "2021"
+description = "Shared SQLite paths, pools, migrations, and health checks for allthecodes."
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
+
+allthecodes-config = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

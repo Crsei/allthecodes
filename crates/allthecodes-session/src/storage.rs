@@ -1,16 +1,17 @@
-//! Session storage -- persisting conversation state to disk.
+//! Session storage -- persisting conversation state to SQLite and JSON.
 //!
-//! Sessions are stored as JSON files under `~/.allthecodes/sessions/`.
-//! Each session is identified by a UUID and contains the full message history
-//! along with metadata (creation time, working directory, etc.).
+//! New writes prefer the shared SQLite state database while retaining JSON
+//! files under `~/.allthecodes/sessions/` for migration compatibility and
+//! file-based tooling.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use git2::Repository;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use allthecodes_types::message::Message;
 
@@ -314,22 +315,14 @@ pub(crate) fn save_session_to_file(
     cwd: &str,
     path: &Path,
 ) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("Failed to create session directory {}", dir.display()))?;
-    }
-
     let now = Utc::now().timestamp();
 
     // Preserve metadata fields when updating.
-    let (created_at, custom_title, chat_mode_override) = if path.exists() {
-        match load_session_file_from_path(path) {
-            Ok(f) => (f.created_at, f.custom_title, f.chat_mode_override),
-            Err(_) => (now, None, None),
-        }
-    } else {
-        (now, None, None)
-    };
+    let (created_at, custom_title, chat_mode_override) =
+        match load_existing_session_file_for_path(session_id, path) {
+            Some(file) => (file.created_at, file.custom_title, file.chat_mode_override),
+            None => (now, None, None),
+        };
 
     let serializable_messages = messages_to_serializable(messages);
     let msg_count = serializable_messages.len();
@@ -346,11 +339,7 @@ pub(crate) fn save_session_to_file(
         messages: serializable_messages,
     };
 
-    let json =
-        serde_json::to_string_pretty(&session_file).context("Failed to serialize session")?;
-
-    std::fs::write(path, json)
-        .with_context(|| format!("Failed to write session file {}", path.display()))?;
+    persist_session_file_for_path(session_id, &session_file, path)?;
 
     debug!(
         session_id = session_id,
@@ -382,7 +371,7 @@ pub(crate) fn set_session_title_in_file(
     title: Option<&str>,
     path: &Path,
 ) -> Result<Option<String>> {
-    let mut file = load_session_file_from_path(path)?;
+    let mut file = load_session_file_for_path(session_id, path)?;
 
     let new_title = title.and_then(|raw| {
         let trimmed = raw.trim();
@@ -396,9 +385,7 @@ pub(crate) fn set_session_title_in_file(
     file.custom_title = new_title.clone();
     file.last_modified = Utc::now().timestamp();
 
-    let json = serde_json::to_string_pretty(&file).context("Failed to serialize session")?;
-    std::fs::write(path, json)
-        .with_context(|| format!("Failed to write session file {}", path.display()))?;
+    persist_session_file_for_path(session_id, &file, path)?;
 
     debug!(
         session_id = session_id,
@@ -436,10 +423,9 @@ pub(crate) fn set_session_chat_mode_override_in_file(
     }
 
     let now = Utc::now().timestamp();
-    let mut file = if path.exists() {
-        load_session_file_from_path(path)?
-    } else {
-        SessionFile {
+    let mut file = match load_existing_session_file_for_path(session_id, path) {
+        Some(file) => file,
+        None => SessionFile {
             session_id: session_id.to_string(),
             created_at: now,
             last_modified: now,
@@ -447,7 +433,7 @@ pub(crate) fn set_session_chat_mode_override_in_file(
             custom_title: None,
             chat_mode_override: None,
             messages: Vec::new(),
-        }
+        },
     };
 
     let new_mode = mode.and_then(|raw| {
@@ -462,9 +448,7 @@ pub(crate) fn set_session_chat_mode_override_in_file(
     file.chat_mode_override = new_mode.clone();
     file.last_modified = now;
 
-    let json = serde_json::to_string_pretty(&file).context("Failed to serialize session")?;
-    std::fs::write(path, json)
-        .with_context(|| format!("Failed to write session file {}", path.display()))?;
+    persist_session_file_for_path(session_id, &file, path)?;
 
     debug!(
         session_id = session_id,
@@ -502,9 +486,7 @@ pub fn truncate_session(session_id: &str, keep: usize) -> Result<usize> {
     let new_len = file.messages.len();
 
     let path = get_session_file(session_id);
-    let json = serde_json::to_string_pretty(&file).context("Failed to serialize session")?;
-    std::fs::write(&path, json)
-        .with_context(|| format!("Failed to write session file {}", path.display()))?;
+    persist_session_file_for_path(session_id, &file, &path)?;
 
     debug!(
         session_id = session_id,
@@ -551,12 +533,17 @@ fn available_archive_path(session_id: &str) -> PathBuf {
 /// top-level sessions directory.
 pub fn archive_session(session_id: &str) -> Result<()> {
     let src = get_session_file(session_id);
-    if !src.exists() {
+    let archived_in_sqlite = archive_session_in_sqlite(session_id);
+    if !src.exists() && !archived_in_sqlite {
         anyhow::bail!(
             "Session file for {} does not exist at {}",
             session_id,
             src.display()
         );
+    }
+    if !src.exists() {
+        debug!(session_id = session_id, "session archived in sqlite");
+        return Ok(());
     }
 
     let archive_dir = get_archived_session_dir();
@@ -628,7 +615,33 @@ pub fn load_session(session_id: &str) -> Result<Vec<Message>> {
 /// Load the raw session file.
 fn load_session_file(session_id: &str) -> Result<SessionFile> {
     let path = get_session_file(session_id);
-    load_session_file_from_path(&path)
+    load_session_file_for_path(session_id, &path)
+}
+
+fn load_session_file_for_path(session_id: &str, path: &Path) -> Result<SessionFile> {
+    if is_default_session_path(session_id, path) {
+        #[cfg(feature = "sqlite-storage")]
+        match sqlite_store::lookup_session_file(session_id) {
+            Ok(sqlite_store::SessionLookup::Active(file)) => return Ok(file),
+            Ok(sqlite_store::SessionLookup::Archived) => {
+                anyhow::bail!("Session {} is archived", session_id);
+            }
+            Ok(sqlite_store::SessionLookup::Missing) => {}
+            Err(err) => {
+                warn!(
+                    session_id,
+                    error = %err,
+                    "failed to load session from sqlite; falling back to JSON session file"
+                );
+            }
+        }
+    }
+
+    load_session_file_from_path(path)
+}
+
+fn load_existing_session_file_for_path(session_id: &str, path: &Path) -> Option<SessionFile> {
+    load_session_file_for_path(session_id, path).ok()
 }
 
 fn load_session_file_from_path(path: &Path) -> Result<SessionFile> {
@@ -641,6 +654,40 @@ fn load_session_file_from_path(path: &Path) -> Result<SessionFile> {
 
 /// List all available sessions, sorted by last_modified (most recent first).
 pub fn list_sessions() -> Result<Vec<SessionInfo>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::list_session_index() {
+        Ok(index) => {
+            let mut sessions = index.sessions;
+            let mut excluded_ids: HashSet<String> = sessions
+                .iter()
+                .map(|session| session.session_id.clone())
+                .collect();
+            excluded_ids.extend(index.archived_ids);
+
+            sessions.extend(list_json_sessions_excluding(&excluded_ids)?);
+            sort_session_infos(&mut sessions);
+
+            debug!(
+                count = sessions.len(),
+                "sessions listed from sqlite and JSON fallback"
+            );
+            return Ok(sessions);
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                "failed to list sessions from sqlite; falling back to JSON session directory"
+            );
+        }
+    }
+
+    let mut sessions = list_json_sessions_excluding(&HashSet::new())?;
+    sort_session_infos(&mut sessions);
+    debug!(count = sessions.len(), "sessions listed from JSON");
+    Ok(sessions)
+}
+
+fn list_json_sessions_excluding(excluded_ids: &HashSet<String>) -> Result<Vec<SessionInfo>> {
     let dir = get_session_dir();
     if !dir.exists() {
         return Ok(Vec::new());
@@ -668,15 +715,69 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>> {
             Err(_) => continue,
         };
 
+        if excluded_ids.contains(&file.session_id) {
+            continue;
+        }
+
         sessions.push(build_session_info(file));
     }
 
-    // Most recently modified first.
-    sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
-
-    debug!(count = sessions.len(), "sessions listed");
-
     Ok(sessions)
+}
+
+fn sort_session_infos(sessions: &mut [SessionInfo]) {
+    sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+}
+
+fn persist_session_file_for_path(
+    session_id: &str,
+    session_file: &SessionFile,
+    path: &Path,
+) -> Result<()> {
+    if is_default_session_path(session_id, path) {
+        #[cfg(feature = "sqlite-storage")]
+        if let Err(err) = sqlite_store::save_session_file(session_file) {
+            warn!(
+                session_id,
+                error = %err,
+                "failed to save session to sqlite; falling back to JSON session file"
+            );
+        }
+    }
+
+    write_session_file_to_path(session_file, path)
+}
+
+fn write_session_file_to_path(session_file: &SessionFile, path: &Path) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create session directory {}", dir.display()))?;
+    }
+
+    let json = serde_json::to_string_pretty(session_file).context("Failed to serialize session")?;
+    std::fs::write(path, json)
+        .with_context(|| format!("Failed to write session file {}", path.display()))
+}
+
+fn is_default_session_path(session_id: &str, path: &Path) -> bool {
+    path == get_session_file(session_id)
+}
+
+fn archive_session_in_sqlite(session_id: &str) -> bool {
+    #[cfg(feature = "sqlite-storage")]
+    {
+        match sqlite_store::archive_session(session_id) {
+            Ok(archived) => return archived,
+            Err(err) => {
+                warn!(
+                    session_id,
+                    error = %err,
+                    "failed to archive session in sqlite; falling back to JSON archive"
+                );
+            }
+        }
+    }
+    false
 }
 
 /// List sessions that belong to the same workspace/repository as `cwd`.
@@ -686,6 +787,416 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>> {
 /// stable workspace path (repo root if inside git, otherwise the exact path).
 pub fn list_workspace_sessions(cwd: &Path) -> Result<Vec<SessionInfo>> {
     Ok(filter_sessions_for_workspace(list_sessions()?, cwd))
+}
+
+#[cfg(feature = "sqlite-storage")]
+mod sqlite_store {
+    use super::*;
+    use allthecodes_db::{Migration, MigrationRunner};
+    use sqlx::{Row, SqlitePool};
+
+    const MIGRATIONS: &[Migration] = &[
+        Migration::new(
+            1,
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_modified INTEGER NOT NULL,
+                cwd TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                custom_title TEXT,
+                chat_mode_override TEXT,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                workspace_key TEXT NOT NULL DEFAULT '',
+                workspace_root TEXT NOT NULL DEFAULT '',
+                workspace_name TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER
+            )
+            "#,
+        ),
+        Migration::new(
+            2,
+            r#"
+            CREATE TABLE IF NOT EXISTS session_messages (
+                session_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                role TEXT,
+                msg_type TEXT NOT NULL,
+                uuid TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                PRIMARY KEY (session_id, position),
+                FOREIGN KEY (session_id)
+                    REFERENCES sessions(session_id)
+                    ON DELETE CASCADE
+            )
+            "#,
+        ),
+        Migration::new(
+            3,
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_sessions_list
+                ON sessions(archived, last_modified DESC, created_at DESC)
+            "#,
+        ),
+        Migration::new(
+            4,
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_session_messages_session
+                ON session_messages(session_id, position)
+            "#,
+        ),
+    ];
+
+    pub(super) struct SessionIndex {
+        pub(super) sessions: Vec<SessionInfo>,
+        pub(super) archived_ids: HashSet<String>,
+    }
+
+    pub(super) fn save_session_file(file: &SessionFile) -> Result<()> {
+        let file = file.clone();
+        allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
+            let pool = migrated_pool().await?;
+            let mut tx = pool
+                .begin()
+                .await
+                .context("failed to begin sqlite session save transaction")?;
+
+            let cwd_path = Path::new(&file.cwd);
+            let ws_root = workspace_root(cwd_path);
+            let ws_key = workspace_key(cwd_path);
+            let ws_name = workspace_name(&ws_root);
+            let title = display_title(&file);
+
+            sqlx::query(
+                r#"
+                INSERT INTO sessions (
+                    session_id,
+                    created_at,
+                    last_modified,
+                    cwd,
+                    title,
+                    custom_title,
+                    chat_mode_override,
+                    message_count,
+                    workspace_key,
+                    workspace_root,
+                    workspace_name,
+                    archived,
+                    archived_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    created_at = excluded.created_at,
+                    last_modified = excluded.last_modified,
+                    cwd = excluded.cwd,
+                    title = excluded.title,
+                    custom_title = excluded.custom_title,
+                    chat_mode_override = excluded.chat_mode_override,
+                    message_count = excluded.message_count,
+                    workspace_key = excluded.workspace_key,
+                    workspace_root = excluded.workspace_root,
+                    workspace_name = excluded.workspace_name,
+                    archived = 0,
+                    archived_at = NULL
+                "#,
+            )
+            .bind(&file.session_id)
+            .bind(file.created_at)
+            .bind(file.last_modified)
+            .bind(&file.cwd)
+            .bind(&title)
+            .bind(&file.custom_title)
+            .bind(&file.chat_mode_override)
+            .bind(usize_to_i64(file.messages.len()))
+            .bind(&ws_key)
+            .bind(ws_root.to_string_lossy().to_string())
+            .bind(&ws_name)
+            .execute(&mut *tx)
+            .await
+            .context("failed to upsert sqlite session")?;
+
+            sqlx::query("DELETE FROM session_messages WHERE session_id = ?")
+                .bind(&file.session_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to clear sqlite session messages")?;
+
+            for (position, message) in file.messages.iter().enumerate() {
+                sqlx::query(
+                    r#"
+                    INSERT INTO session_messages (
+                        session_id,
+                        position,
+                        role,
+                        msg_type,
+                        uuid,
+                        timestamp,
+                        content
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                )
+                .bind(&file.session_id)
+                .bind(usize_to_i64(position))
+                .bind(role_for_message(message))
+                .bind(&message.msg_type)
+                .bind(&message.uuid)
+                .bind(message.timestamp)
+                .bind(
+                    serde_json::to_string(&message.data)
+                        .context("failed to serialize sqlite session message JSON")?,
+                )
+                .execute(&mut *tx)
+                .await
+                .context("failed to insert sqlite session message")?;
+            }
+
+            tx.commit()
+                .await
+                .context("failed to commit sqlite session save transaction")?;
+            Ok(())
+        })
+    }
+
+    pub(super) enum SessionLookup {
+        Active(SessionFile),
+        Archived,
+        Missing,
+    }
+
+    pub(super) fn lookup_session_file(session_id: &str) -> Result<SessionLookup> {
+        let session_id = session_id.to_string();
+        allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
+            let pool = migrated_pool().await?;
+            let session_row = sqlx::query(
+                r#"
+                SELECT
+                    session_id,
+                    created_at,
+                    last_modified,
+                    cwd,
+                    custom_title,
+                    chat_mode_override,
+                    archived
+                FROM sessions
+                WHERE session_id = ?
+                "#,
+            )
+            .bind(&session_id)
+            .fetch_optional(&pool)
+            .await
+            .context("failed to query sqlite session")?;
+
+            let Some(session_row) = session_row else {
+                return Ok(SessionLookup::Missing);
+            };
+
+            if session_row.try_get::<i64, _>("archived")? != 0 {
+                return Ok(SessionLookup::Archived);
+            }
+
+            let message_rows = sqlx::query(
+                r#"
+                SELECT msg_type, uuid, timestamp, content
+                FROM session_messages
+                WHERE session_id = ?
+                ORDER BY position ASC
+                "#,
+            )
+            .bind(&session_id)
+            .fetch_all(&pool)
+            .await
+            .context("failed to query sqlite session messages")?;
+
+            let mut messages = Vec::with_capacity(message_rows.len());
+            for row in message_rows {
+                let content: String = row.try_get("content")?;
+                messages.push(SerializableMessage {
+                    msg_type: row.try_get("msg_type")?,
+                    uuid: row.try_get("uuid")?,
+                    timestamp: row.try_get("timestamp")?,
+                    data: serde_json::from_str(&content)
+                        .context("failed to parse sqlite session message JSON")?,
+                });
+            }
+
+            Ok(SessionLookup::Active(SessionFile {
+                session_id: session_row.try_get("session_id")?,
+                created_at: session_row.try_get("created_at")?,
+                last_modified: session_row.try_get("last_modified")?,
+                cwd: session_row.try_get("cwd")?,
+                custom_title: session_row.try_get("custom_title")?,
+                chat_mode_override: session_row.try_get("chat_mode_override")?,
+                messages,
+            }))
+        })
+    }
+
+    pub(super) fn list_session_index() -> Result<SessionIndex> {
+        allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
+            let pool = migrated_pool().await?;
+            let rows = sqlx::query(
+                r#"
+                SELECT
+                    session_id,
+                    created_at,
+                    last_modified,
+                    message_count,
+                    cwd,
+                    title,
+                    custom_title,
+                    chat_mode_override,
+                    workspace_key,
+                    workspace_root,
+                    workspace_name
+                FROM sessions
+                WHERE archived = 0
+                ORDER BY last_modified DESC, created_at DESC, session_id ASC
+                "#,
+            )
+            .fetch_all(&pool)
+            .await
+            .context("failed to list sqlite sessions")?;
+
+            let archived_rows = sqlx::query(
+                r#"
+                SELECT session_id
+                FROM sessions
+                WHERE archived != 0
+                "#,
+            )
+            .fetch_all(&pool)
+            .await
+            .context("failed to list archived sqlite sessions")?;
+
+            let sessions = rows
+                .into_iter()
+                .map(session_info_from_row)
+                .collect::<Result<Vec<_>>>()?;
+            let archived_ids = archived_rows
+                .into_iter()
+                .map(|row| row.try_get::<String, _>("session_id"))
+                .collect::<std::result::Result<HashSet<_>, _>>()
+                .context("failed to decode archived sqlite session ids")?;
+
+            Ok(SessionIndex {
+                sessions,
+                archived_ids,
+            })
+        })
+    }
+
+    pub(super) fn archive_session(session_id: &str) -> Result<bool> {
+        let session_id = session_id.to_string();
+        allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
+            let pool = migrated_pool().await?;
+            let now = Utc::now().timestamp();
+            let result = sqlx::query(
+                r#"
+                UPDATE sessions
+                SET archived = 1,
+                    archived_at = ?,
+                    last_modified = ?
+                WHERE session_id = ? AND archived = 0
+                "#,
+            )
+            .bind(now)
+            .bind(now)
+            .bind(&session_id)
+            .execute(&pool)
+            .await
+            .context("failed to archive sqlite session")?;
+
+            if result.rows_affected() > 0 {
+                return Ok(true);
+            }
+
+            let archived_row = sqlx::query(
+                r#"
+                SELECT 1
+                FROM sessions
+                WHERE session_id = ? AND archived != 0
+                "#,
+            )
+            .bind(&session_id)
+            .fetch_optional(&pool)
+            .await
+            .context("failed to query archived sqlite session")?;
+
+            Ok(archived_row.is_some())
+        })
+    }
+
+    async fn migrated_pool() -> Result<SqlitePool> {
+        let pool = allthecodes_db::DbPoolManager::new().state_pool()?;
+        MigrationRunner::new("sessions", MIGRATIONS)
+            .run(&pool)
+            .await?;
+        Ok(pool)
+    }
+
+    fn session_info_from_row(row: sqlx::sqlite::SqliteRow) -> Result<SessionInfo> {
+        let cwd: String = row.try_get("cwd")?;
+        let workspace_root_value: String = row.try_get("workspace_root")?;
+        let workspace_name_value: String = row.try_get("workspace_name")?;
+        let cwd_path = Path::new(&cwd);
+        let computed_root = workspace_root(cwd_path);
+        let computed_key = workspace_key(cwd_path);
+        let computed_name = workspace_name(&computed_root);
+        Ok(SessionInfo {
+            session_id: row.try_get("session_id")?,
+            created_at: row.try_get("created_at")?,
+            last_modified: row.try_get("last_modified")?,
+            message_count: i64_to_usize(row.try_get("message_count")?),
+            cwd,
+            title: row.try_get("title")?,
+            custom_title: row.try_get("custom_title")?,
+            chat_mode_override: row.try_get("chat_mode_override")?,
+            workspace_key: row
+                .try_get::<String, _>("workspace_key")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or(computed_key),
+            workspace_root: if workspace_root_value.is_empty() {
+                computed_root.to_string_lossy().to_string()
+            } else {
+                workspace_root_value
+            },
+            workspace_name: if workspace_name_value.is_empty() {
+                computed_name
+            } else {
+                workspace_name_value
+            },
+        })
+    }
+
+    fn display_title(file: &SessionFile) -> String {
+        file.custom_title
+            .as_ref()
+            .filter(|title| !title.is_empty())
+            .cloned()
+            .unwrap_or_else(|| derive_title(&file.messages))
+    }
+
+    fn role_for_message(message: &SerializableMessage) -> Option<&str> {
+        match message.msg_type.as_str() {
+            "user" => Some("user"),
+            "assistant" => Some("assistant"),
+            "system" => Some("system"),
+            _ => None,
+        }
+    }
+
+    fn i64_to_usize(value: i64) -> usize {
+        usize::try_from(value.max(0)).unwrap_or(usize::MAX)
+    }
+
+    fn usize_to_i64(value: usize) -> i64 {
+        i64::try_from(value).unwrap_or(i64::MAX)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -963,6 +1474,8 @@ fn string_vec_from_value(value: &serde_json::Value) -> Option<Vec<String>> {
 mod tests {
     use super::*;
     use allthecodes_types::message::{Message, MessageContent, SystemSubtype, UserMessage};
+    #[cfg(feature = "sqlite-storage")]
+    use sqlx::Row;
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -1094,6 +1607,299 @@ mod tests {
             tool_use_result: None,
             source_tool_assistant_uuid: None,
         })
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    fn query_sqlite_counts() -> Result<(i64, i64)> {
+        allthecodes_db::run_sqlite_sync("allthecodes-session-test-sqlite", async move {
+            let pool = allthecodes_db::DbPoolManager::new().state_pool()?;
+            let sessions: i64 = sqlx::query("SELECT COUNT(*) FROM sessions")
+                .fetch_one(&pool)
+                .await?
+                .try_get(0)?;
+            let messages: i64 = sqlx::query("SELECT COUNT(*) FROM session_messages")
+                .fetch_one(&pool)
+                .await?
+                .try_get(0)?;
+            Ok((sessions, messages))
+        })
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_sqlite_session_save_creates_rows_and_load_roundtrips() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        save_session("sqlite-roundtrip", &[user_message("hello sqlite")], "/proj").unwrap();
+
+        assert!(temp.path().join("state").join("state_5.sqlite").exists());
+        let (sessions, messages) = query_sqlite_counts().unwrap();
+        assert_eq!(sessions, 1);
+        assert_eq!(messages, 1);
+
+        let loaded = load_session("sqlite-roundtrip").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(matches!(
+            &loaded[0],
+            Message::User(UserMessage {
+                content: MessageContent::Text(text),
+                ..
+            }) if text == "hello sqlite"
+        ));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_sqlite_list_sessions_uses_last_modified_order() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        let older = SessionFile {
+            session_id: "older-sqlite".into(),
+            created_at: 10,
+            last_modified: 10,
+            cwd: "/proj".into(),
+            custom_title: Some("Older".into()),
+            chat_mode_override: None,
+            messages: vec![user_sm("older", "00000000-0000-0000-0000-000000000201")],
+        };
+        let newer = SessionFile {
+            session_id: "newer-sqlite".into(),
+            created_at: 20,
+            last_modified: 20,
+            cwd: "/proj".into(),
+            custom_title: Some("Newer".into()),
+            chat_mode_override: None,
+            messages: vec![user_sm("newer", "00000000-0000-0000-0000-000000000202")],
+        };
+        persist_session_file_for_path("older-sqlite", &older, &get_session_file("older-sqlite"))
+            .unwrap();
+        persist_session_file_for_path("newer-sqlite", &newer, &get_session_file("newer-sqlite"))
+            .unwrap();
+
+        let ids: Vec<_> = list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
+        assert_eq!(ids, vec!["newer-sqlite", "older-sqlite"]);
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_list_sessions_includes_json_only_sessions_when_sqlite_exists() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        save_session("sqlite-listed", &[user_message("sqlite")], "/proj").unwrap();
+        write_fixture_session(
+            "json-listed",
+            vec![user_sm("json", "00000000-0000-0000-0000-000000000204")],
+            "/proj",
+        )
+        .unwrap();
+
+        let ids: Vec<_> = list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
+        assert!(ids.iter().any(|id| id == "sqlite-listed"));
+        assert!(ids.iter().any(|id| id == "json-listed"));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_list_sessions_prefers_sqlite_metadata_for_duplicate_json_id() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        let sql_file = SessionFile {
+            session_id: "duplicate-session".into(),
+            created_at: 10,
+            last_modified: 20,
+            cwd: "/proj".into(),
+            custom_title: Some("SQLite title".into()),
+            chat_mode_override: Some("sqlite-mode".into()),
+            messages: vec![user_sm(
+                "sqlite text",
+                "00000000-0000-0000-0000-000000000205",
+            )],
+        };
+        persist_session_file_for_path(
+            "duplicate-session",
+            &sql_file,
+            &get_session_file("duplicate-session"),
+        )
+        .unwrap();
+
+        let json_file = SessionFile {
+            session_id: "duplicate-session".into(),
+            created_at: 1,
+            last_modified: 1,
+            cwd: "/proj".into(),
+            custom_title: Some("JSON title".into()),
+            chat_mode_override: Some("json-mode".into()),
+            messages: vec![user_sm("json text", "00000000-0000-0000-0000-000000000206")],
+        };
+        write_session_file_to_path(&json_file, &get_session_file("duplicate-session")).unwrap();
+
+        let listed: Vec<_> = list_sessions()
+            .unwrap()
+            .into_iter()
+            .filter(|session| session.session_id == "duplicate-session")
+            .collect();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title, "SQLite title");
+        assert_eq!(listed[0].chat_mode_override.as_deref(), Some("sqlite-mode"));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_list_sessions_skips_json_when_sqlite_marks_session_archived() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        save_session(
+            "archived-with-json",
+            &[user_message("still has json")],
+            "/proj",
+        )
+        .unwrap();
+        sqlite_store::archive_session("archived-with-json").unwrap();
+
+        assert!(get_session_file("archived-with-json").exists());
+        let ids: Vec<_> = list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
+        assert!(!ids.iter().any(|id| id == "archived-with-json"));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_load_session_skips_json_when_sqlite_marks_session_archived() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        save_session(
+            "archived-load-with-json",
+            &[user_message("still has json")],
+            "/proj",
+        )
+        .unwrap();
+        sqlite_store::archive_session("archived-load-with-json").unwrap();
+
+        assert!(get_session_file("archived-load-with-json").exists());
+        let error = load_session("archived-load-with-json").unwrap_err();
+        assert!(error.to_string().contains("archived-load-with-json"));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_list_workspace_sessions_merges_sqlite_and_json_only_sessions() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let cwd = project.to_string_lossy().to_string();
+
+        save_session("workspace-sqlite", &[user_message("sqlite")], &cwd).unwrap();
+        write_fixture_session(
+            "workspace-json",
+            vec![user_sm("json", "00000000-0000-0000-0000-000000000207")],
+            &normalize_display_path(&project),
+        )
+        .unwrap();
+
+        let ids: Vec<_> = list_workspace_sessions(&project)
+            .unwrap()
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
+        assert!(ids.iter().any(|id| id == "workspace-sqlite"));
+        assert!(ids.iter().any(|id| id == "workspace-json"));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_list_sessions_falls_back_to_json_when_sqlite_path_is_blocked() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        std::fs::create_dir_all(temp.path().join("state").join("state_5.sqlite")).unwrap();
+        write_fixture_session(
+            "json-list-fallback",
+            vec![user_sm("fallback", "00000000-0000-0000-0000-000000000208")],
+            "/proj",
+        )
+        .unwrap();
+
+        let ids: Vec<_> = list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
+        assert_eq!(ids, vec!["json-list-fallback"]);
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_json_only_session_loads_when_sqlite_misses() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        write_fixture_session(
+            "json-only",
+            vec![user_sm(
+                "legacy json",
+                "00000000-0000-0000-0000-000000000203",
+            )],
+            "/proj",
+        )
+        .unwrap();
+
+        let loaded = load_session("json-only").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(matches!(
+            &loaded[0],
+            Message::User(UserMessage {
+                content: MessageContent::Text(text),
+                ..
+            }) if text == "legacy json"
+        ));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_session_save_falls_back_to_json_when_sqlite_path_is_blocked() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        std::fs::create_dir_all(temp.path().join("state").join("state_5.sqlite")).unwrap();
+
+        save_session("blocked-sqlite", &[user_message("json survives")], "/proj").unwrap();
+
+        assert!(get_session_file("blocked-sqlite").exists());
+        let loaded = load_session("blocked-sqlite").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(matches!(
+            &loaded[0],
+            Message::User(UserMessage {
+                content: MessageContent::Text(text),
+                ..
+            }) if text == "json survives"
+        ));
     }
 
     #[test]
@@ -1282,6 +2088,26 @@ mod tests {
             .map(|session| session.session_id)
             .collect();
         assert!(!listed_ids.iter().any(|id| id == "archive-move"));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_archive_session_hides_sqlite_session_and_keeps_archive_json() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        save_session("archive-sqlite", &[user_message("archive")], "/proj").unwrap();
+        archive_session("archive-sqlite").unwrap();
+
+        assert!(!get_session_file("archive-sqlite").exists());
+        assert!(get_archived_session_file("archive-sqlite").exists());
+        let listed_ids: Vec<_> = list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
+        assert!(!listed_ids.iter().any(|id| id == "archive-sqlite"));
     }
 
     #[test]

@@ -363,6 +363,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "allthecodes-db"
+version = "0.1.0"
+dependencies = [
+ "allthecodes-config",
+ "anyhow",
+ "chrono",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "allthecodes-engine"
 version = "0.1.0"
 dependencies = [
@@ -763,6 +775,7 @@ dependencies = [
  "allthecodes-bootstrap",
  "allthecodes-compact",
  "allthecodes-config",
+ "allthecodes-db",
  "allthecodes-models",
  "allthecodes-types",
  "allthecodes-utils",
@@ -777,6 +790,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2",
+ "sqlx",
  "tempfile",
  "tokio",
  "tracing",
@@ -852,6 +866,7 @@ dependencies = [
 name = "allthecodes-tasks"
 version = "0.1.0"
 dependencies = [
+ "allthecodes-db",
  "anyhow",
  "chrono",
  "dirs",

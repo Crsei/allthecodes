@@ -6,10 +6,11 @@ description = "Task domain types, parsing, errors, and persistence shapes."
 
 [features]
 default = ["sqlite-storage"]
-sqlite-storage = ["dep:sqlx"]
+sqlite-storage = ["dep:allthecodes-db", "dep:sqlx"]
 json-storage = []
 
 [dependencies]
+allthecodes-db = { workspace = true, optional = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
