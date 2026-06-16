@@ -10,6 +10,7 @@ allthecodes-ipc-protocol = { workspace = true }
 allthecodes-ipc-client = { workspace = true }
 allthecodes-ipc-transport = { workspace = true }
 allthecodes-protocol = { workspace = true }
+allthecodes-server = { workspace = true }
 allthecodes-types = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }

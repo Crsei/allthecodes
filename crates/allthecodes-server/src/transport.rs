@@ -16,6 +16,138 @@
 
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Internal transport family for connection lifecycle events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportKind {
+    HeadlessStdio,
+    IpcWebSocket,
+    ApiRpcWebSocket,
+}
+
+/// Opaque internal connection identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConnectionId(String);
+
+impl ConnectionId {
+    pub fn next() -> Self {
+        Self(format!(
+            "connection-{}",
+            NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    pub fn from_static(value: &'static str) -> Self {
+        Self(value.to_string())
+    }
+
+    pub fn from_string(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ConnectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Origin metadata captured at connection open time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionOrigin {
+    /// Non-browser/native client. WebSocket clients that omit Origin fall here.
+    LocalNative,
+    /// Browser WebSocket with an accepted loopback Origin header.
+    Browser { origin: String },
+}
+
+impl ConnectionOrigin {
+    pub fn local_native() -> Self {
+        Self::LocalNative
+    }
+
+    pub fn browser(origin: impl Into<String>) -> Self {
+        Self::Browser {
+            origin: origin.into(),
+        }
+    }
+
+    pub fn from_websocket_origin(origin: Option<&str>) -> Result<Self, OriginRejection> {
+        match origin {
+            None => Ok(Self::LocalNative),
+            Some(origin) if websocket_origin_is_allowed(origin) => Ok(Self::browser(origin)),
+            Some(origin) => Err(OriginRejection {
+                origin: origin.to_string(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginRejection {
+    pub origin: String,
+}
+
+impl std::fmt::Display for OriginRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "websocket origin is not allowed: {}", self.origin)
+    }
+}
+
+impl std::error::Error for OriginRejection {}
+
+/// Reason a transport connection closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionClosedReason {
+    ClientClosed,
+    StdinEof,
+    ProtocolQuit,
+    ServerShutdown,
+    TransportError(String),
+}
+
+/// Transport-neutral inbound connection event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportEvent<T> {
+    ConnectionOpened {
+        connection_id: ConnectionId,
+        kind: TransportKind,
+        origin: ConnectionOrigin,
+    },
+    IncomingMessage {
+        connection_id: ConnectionId,
+        kind: TransportKind,
+        message: T,
+    },
+    ConnectionClosed {
+        connection_id: ConnectionId,
+        kind: TransportKind,
+        reason: ConnectionClosedReason,
+    },
+}
+
+/// Transport-neutral outbound message addressed to one connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundEnvelope<T> {
+    pub connection_id: ConnectionId,
+    pub message: T,
+}
+
+impl<T> OutboundEnvelope<T> {
+    pub fn new(connection_id: ConnectionId, message: T) -> Self {
+        Self {
+            connection_id,
+            message,
+        }
+    }
+}
 
 /// A parsed `--listen` value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +269,33 @@ fn parse_socket_addr(value: &str, label: &str) -> anyhow::Result<SocketAddr> {
         .map_err(|err| anyhow::anyhow!("invalid {label} listen address `{value}`: {err}"))
 }
 
+fn websocket_origin_is_allowed(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = if let Some(ipv6) = authority.strip_prefix('[') {
+        let Some((host, _)) = ipv6.split_once(']') else {
+            return false;
+        };
+        host
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    host.parse::<std::net::IpAddr>()
+        .map(|addr| addr.is_loopback())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +393,62 @@ mod tests {
     fn parse_all_missing_key() {
         // Only "web" given, missing "daemon"
         assert!(ListenUrl::parse("all://web=127.0.0.1:17322").is_err());
+    }
+
+    #[test]
+    fn connection_ids_are_unique_and_displayable() {
+        let first = ConnectionId::next();
+        let second = ConnectionId::next();
+
+        assert_ne!(first, second);
+        assert!(first.as_str().starts_with("connection-"));
+        assert_eq!(first.to_string(), first.as_str());
+    }
+
+    #[test]
+    fn connection_origin_allows_missing_and_loopback_origins() {
+        assert_eq!(
+            ConnectionOrigin::from_websocket_origin(None).unwrap(),
+            ConnectionOrigin::LocalNative
+        );
+        assert_eq!(
+            ConnectionOrigin::from_websocket_origin(Some("http://localhost:17322")).unwrap(),
+            ConnectionOrigin::browser("http://localhost:17322")
+        );
+        assert!(ConnectionOrigin::from_websocket_origin(Some("https://127.0.0.1:17322")).is_ok());
+        assert!(ConnectionOrigin::from_websocket_origin(Some("http://[::1]:17322")).is_ok());
+    }
+
+    #[test]
+    fn connection_origin_rejects_non_loopback_browser_origins() {
+        assert!(ConnectionOrigin::from_websocket_origin(Some("https://example.com")).is_err());
+        assert!(ConnectionOrigin::from_websocket_origin(Some("file://local")).is_err());
+        assert!(ConnectionOrigin::from_websocket_origin(Some("null")).is_err());
+    }
+
+    #[test]
+    fn transport_event_and_outbound_envelope_are_plain_values() {
+        let id = ConnectionId::from_static("test-connection");
+        let opened: TransportEvent<&str> = TransportEvent::ConnectionOpened {
+            connection_id: id.clone(),
+            kind: TransportKind::HeadlessStdio,
+            origin: ConnectionOrigin::local_native(),
+        };
+        let incoming = TransportEvent::IncomingMessage {
+            connection_id: id.clone(),
+            kind: TransportKind::HeadlessStdio,
+            message: "hello",
+        };
+        let closed: TransportEvent<&str> = TransportEvent::ConnectionClosed {
+            connection_id: id.clone(),
+            kind: TransportKind::HeadlessStdio,
+            reason: ConnectionClosedReason::StdinEof,
+        };
+        let outbound = OutboundEnvelope::new(id, "world");
+
+        assert_eq!(opened.clone(), opened);
+        assert!(format!("{incoming:?}").contains("IncomingMessage"));
+        assert_eq!(closed.clone(), closed);
+        assert_eq!(outbound.message, "world");
     }
 }

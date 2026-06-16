@@ -11,6 +11,9 @@ use std::sync::Arc;
 use allthecodes_ipc_client::sink::FrontendSink;
 use allthecodes_ipc_protocol::{BackendMessage, FrontendMessage};
 use allthecodes_ipc_transport::{IpcReader, IpcTransport, JsonlStdioTransport, ParsedFrontendLine};
+use allthecodes_server::{
+    ConnectionClosedReason, ConnectionId, ConnectionOrigin, TransportEvent, TransportKind,
+};
 use tracing::{debug, error, warn};
 
 pub use crate::runtime::{
@@ -76,6 +79,13 @@ impl HeadlessRuntimeConfig {
 }
 
 pub async fn run_headless(config: HeadlessRuntimeConfig) -> anyhow::Result<()> {
+    let connection_id = ConnectionId::next();
+    log_transport_event(TransportEvent::<FrontendMessage>::ConnectionOpened {
+        connection_id: connection_id.clone(),
+        kind: TransportKind::HeadlessStdio,
+        origin: ConnectionOrigin::local_native(),
+    });
+
     let sink = config.sink.clone();
     let ready_message = config.host.ready_message(config.model);
     let runtime = SessionRuntime::from_ready_message(&ready_message);
@@ -98,23 +108,27 @@ pub async fn run_headless(config: HeadlessRuntimeConfig) -> anyhow::Result<()> {
 
     let (mut reader, _writer) = JsonlStdioTransport::new().split();
 
-    loop {
+    let close_reason = loop {
         tokio::select! {
             frame = reader.read_frame() => {
                 let line = match frame {
                     Ok(Some(frame)) => frame.line,
                     Ok(None) => {
                         debug!("headless: stdin closed, exiting");
-                        break;
+                        break ConnectionClosedReason::StdinEof;
                     }
                     Err(e) => {
                         error!("headless: error reading stdin: {}", e);
-                        break;
+                        break ConnectionClosedReason::TransportError(e.to_string());
                     }
                 };
 
-                let msg = match allthecodes_ipc_transport::parse_frontend_line(&line) {
-                    ParsedFrontendLine::Message(msg) => msg,
+                let event = match allthecodes_ipc_transport::parse_frontend_line(&line) {
+                    ParsedFrontendLine::Message(msg) => TransportEvent::IncomingMessage {
+                        connection_id: connection_id.clone(),
+                        kind: TransportKind::HeadlessStdio,
+                        message: msg,
+                    },
                     ParsedFrontendLine::Diagnostic(diagnostic) => {
                         warn!(
                             "headless: failed to parse FrontendMessage - line: {}",
@@ -125,12 +139,16 @@ pub async fn run_headless(config: HeadlessRuntimeConfig) -> anyhow::Result<()> {
                     }
                 };
 
+                let TransportEvent::IncomingMessage { message: msg, .. } = event else {
+                    continue;
+                };
+
                 if !config
                     .host
                     .dispatch_frontend(msg, &runtime, &sink)
                     .await
                 {
-                    break;
+                    break ConnectionClosedReason::ProtocolQuit;
                 }
             }
 
@@ -202,7 +220,13 @@ pub async fn run_headless(config: HeadlessRuntimeConfig) -> anyhow::Result<()> {
                 let _ = sink.send(&msg);
             }
         }
-    }
+    };
+
+    log_transport_event(TransportEvent::<FrontendMessage>::ConnectionClosed {
+        connection_id,
+        kind: TransportKind::HeadlessStdio,
+        reason: close_reason,
+    });
 
     let cancelled = config
         .host
@@ -219,4 +243,39 @@ pub async fn run_headless(config: HeadlessRuntimeConfig) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn log_transport_event<T: std::fmt::Debug>(event: TransportEvent<T>) {
+    match event {
+        TransportEvent::ConnectionOpened {
+            connection_id,
+            kind,
+            origin,
+        } => debug!(
+            connection_id = %connection_id,
+            kind = ?kind,
+            origin = ?origin,
+            "transport connection opened"
+        ),
+        TransportEvent::IncomingMessage {
+            connection_id,
+            kind,
+            message,
+        } => debug!(
+            connection_id = %connection_id,
+            kind = ?kind,
+            message = ?message,
+            "transport incoming message"
+        ),
+        TransportEvent::ConnectionClosed {
+            connection_id,
+            kind,
+            reason,
+        } => debug!(
+            connection_id = %connection_id,
+            kind = ?kind,
+            reason = ?reason,
+            "transport connection closed"
+        ),
+    }
 }

@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -38,6 +39,10 @@ use tracing::{info, warn};
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_ipc::runtime::IpcRuntime;
 use allthecodes_ipc_protocol::{BackendMessage, FrontendMessage};
+use allthecodes_server::{
+    ConnectionClosedReason, ConnectionId, ConnectionOrigin, OriginRejection, OutboundEnvelope,
+    TransportEvent, TransportKind,
+};
 use allthecodes_types::callbacks::{
     AskUserRequestPayload, PermissionRequestPayload, PermissionResponsePayload,
 };
@@ -52,16 +57,19 @@ pub struct IpcWsParams {
     pub session_id: Option<String>,
 }
 
-fn parse_legacy_frontend_text(text: &str) -> Result<FrontendMessage, BackendMessage> {
-    serde_json::from_str::<FrontendMessage>(text).map_err(|error| BackendMessage::Error {
-        message: format!("Invalid FrontendMessage: {error}"),
-        recoverable: true,
+fn parse_legacy_frontend_text(text: &str) -> Result<FrontendMessage, Box<BackendMessage>> {
+    serde_json::from_str::<FrontendMessage>(text).map_err(|error| {
+        Box::new(BackendMessage::Error {
+            message: format!("Invalid FrontendMessage: {error}"),
+            recoverable: true,
+        })
     })
 }
 
 /// GET /api/ipc/ws — Upgrade to WebSocket IPC bridge.
 pub async fn ipc_ws_handler(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     State(state): State<WebState>,
     Query(params): Query<IpcWsParams>,
 ) -> axum::response::Response {
@@ -69,6 +77,14 @@ pub async fn ipc_ws_handler(
         session_id = ?params.session_id,
         "GET /api/ipc/ws — WebSocket upgrade"
     );
+
+    let origin = match websocket_origin_from_headers(&headers) {
+        Ok(origin) => origin,
+        Err(rejection) => {
+            warn!(origin = %rejection.origin, "rejecting IPC WebSocket origin");
+            return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+        }
+    };
 
     let engine = params
         .session_id
@@ -89,8 +105,18 @@ pub async fn ipc_ws_handler(
             .into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_ipc_socket(socket, state, engine, params.session_id))
-        .into_response()
+    let connection_id = ConnectionId::next();
+    ws.on_upgrade(move |socket| {
+        handle_ipc_socket(
+            socket,
+            state,
+            engine,
+            params.session_id,
+            connection_id,
+            origin,
+        )
+    })
+    .into_response()
 }
 
 /// Drive the IPC WebSocket for the lifetime of the connection.
@@ -99,10 +125,18 @@ async fn handle_ipc_socket(
     state: WebState,
     engine: Arc<QueryEngine>,
     session_id: Option<String>,
+    connection_id: ConnectionId,
+    origin: ConnectionOrigin,
 ) {
     let actual_session_id = session_id
         .clone()
         .unwrap_or_else(|| engine.current_session_id().to_string());
+
+    log_transport_event(TransportEvent::<FrontendMessage>::ConnectionOpened {
+        connection_id: connection_id.clone(),
+        kind: TransportKind::IpcWebSocket,
+        origin,
+    });
 
     // Split WebSocket into sender/receiver
     let (mut ws_sender, mut ws_receiver) = socket.split();
@@ -147,9 +181,11 @@ async fn handle_ipc_socket(
     let _ = ipc_runtime.send_backend(ready).await;
 
     // ── Task: forward outbound messages to WebSocket ──────────────
+    let outbound_connection_id = connection_id.clone();
     let outbound_handle = tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
-            let json = serde_json::to_string(&message).unwrap_or_default();
+            let envelope = OutboundEnvelope::new(outbound_connection_id.clone(), message);
+            let json = serde_json::to_string(&envelope.message).unwrap_or_default();
             if ws_sender.send(Message::Text(json.into())).await.is_err() {
                 break;
             }
@@ -161,19 +197,21 @@ async fn handle_ipc_socket(
     let engine_for_tasks = engine.clone();
     let runtime_inner = ipc_runtime.clone();
     let sid = actual_session_id.clone();
+    let inbound_connection_id = connection_id.clone();
 
     let inbound_handle = tokio::spawn(async move {
-        loop {
+        let close_reason = loop {
             tokio::select! {
                 msg = ws_receiver.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            let frontend: FrontendMessage = match parse_legacy_frontend_text(&text) {
-                                Ok(msg) => msg,
+                            let frontend = match ipc_text_to_transport_event(&inbound_connection_id, &text) {
+                                Ok(TransportEvent::IncomingMessage { message, .. }) => message,
                                 Err(err) => {
-                                    let _ = runtime_inner.send_backend(err).await;
+                                    let _ = runtime_inner.send_backend(*err).await;
                                     continue;
                                 }
+                                Ok(_) => continue,
                             };
 
                             if !handle_frontend_message(
@@ -183,12 +221,12 @@ async fn handle_ipc_socket(
                                 &runtime_inner,
                                 &sid,
                             ).await {
-                                break;
+                                break ConnectionClosedReason::ProtocolQuit;
                             }
                         }
                         Some(Ok(Message::Close(_))) => {
                             info!("IPC WebSocket closed by client");
-                            break;
+                            break ConnectionClosedReason::ClientClosed;
                         }
                         Some(Ok(Message::Ping(_))) => {
                             // handled automatically by axum
@@ -197,13 +235,20 @@ async fn handle_ipc_socket(
                         Some(Ok(Message::Binary(_))) => {}
                         Some(Err(e)) => {
                             warn!("IPC WebSocket error: {e}");
-                            break;
+                            break ConnectionClosedReason::TransportError(e.to_string());
                         }
-                        None => break,
+                        None => {
+                            break ConnectionClosedReason::ClientClosed;
+                        }
                     }
                 }
             }
-        }
+        };
+
+        log_transport_event(ipc_close_transport_event(
+            &inbound_connection_id,
+            close_reason,
+        ));
 
         // Cleanup: abort any running query
         engine_for_tasks.abort();
@@ -229,6 +274,70 @@ async fn handle_ipc_socket(
     engine.clear_ask_user_callback();
     state.set_session_streaming(&actual_session_id, false);
     info!("IPC WebSocket connection closed");
+}
+
+fn websocket_origin_from_headers(headers: &HeaderMap) -> Result<ConnectionOrigin, OriginRejection> {
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    ConnectionOrigin::from_websocket_origin(origin)
+}
+
+fn ipc_text_to_transport_event(
+    connection_id: &ConnectionId,
+    text: &str,
+) -> Result<TransportEvent<FrontendMessage>, Box<BackendMessage>> {
+    parse_legacy_frontend_text(text).map(|message| TransportEvent::IncomingMessage {
+        connection_id: connection_id.clone(),
+        kind: TransportKind::IpcWebSocket,
+        message,
+    })
+}
+
+fn ipc_close_transport_event(
+    connection_id: &ConnectionId,
+    reason: ConnectionClosedReason,
+) -> TransportEvent<FrontendMessage> {
+    TransportEvent::ConnectionClosed {
+        connection_id: connection_id.clone(),
+        kind: TransportKind::IpcWebSocket,
+        reason,
+    }
+}
+
+fn log_transport_event<T: std::fmt::Debug>(event: TransportEvent<T>) {
+    match event {
+        TransportEvent::ConnectionOpened {
+            connection_id,
+            kind,
+            origin,
+        } => info!(
+            connection_id = %connection_id,
+            kind = ?kind,
+            origin = ?origin,
+            "transport connection opened"
+        ),
+        TransportEvent::IncomingMessage {
+            connection_id,
+            kind,
+            message,
+        } => info!(
+            connection_id = %connection_id,
+            kind = ?kind,
+            message = ?message,
+            "transport incoming message"
+        ),
+        TransportEvent::ConnectionClosed {
+            connection_id,
+            kind,
+            reason,
+        } => info!(
+            connection_id = %connection_id,
+            kind = ?kind,
+            reason = ?reason,
+            "transport connection closed"
+        ),
+    }
 }
 
 /// Handle a single FrontendMessage, returning false if the loop should exit.
@@ -366,18 +475,13 @@ async fn submit_prompt_via_ipc(
 
     let mut draft_id: Option<String> = None;
 
-    loop {
-        match stream.next().await {
-            Some(sdk_msg) => {
-                let backend_msgs = sdk_to_backend_messages(sdk_msg, &mut draft_id);
-                for backend_msg in backend_msgs {
-                    if runtime.send_backend(backend_msg).await.is_err() {
-                        state.set_session_streaming(_session_id, false);
-                        return;
-                    }
-                }
+    while let Some(sdk_msg) = stream.next().await {
+        let backend_msgs = sdk_to_backend_messages(sdk_msg, &mut draft_id);
+        for backend_msg in backend_msgs {
+            if runtime.send_backend(backend_msg).await.is_err() {
+                state.set_session_streaming(_session_id, false);
+                return;
             }
-            None => break,
         }
     }
 
@@ -620,6 +724,88 @@ async fn execute_slash_command(
 }
 
 #[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    fn test_connection_id() -> ConnectionId {
+        ConnectionId::from_static("test-ipc")
+    }
+
+    #[test]
+    fn origin_headers_allow_missing_and_loopback() {
+        let headers = HeaderMap::new();
+        assert_eq!(
+            websocket_origin_from_headers(&headers).unwrap(),
+            ConnectionOrigin::LocalNative
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::ORIGIN,
+            "http://localhost:17322".parse().unwrap(),
+        );
+        assert_eq!(
+            websocket_origin_from_headers(&headers).unwrap(),
+            ConnectionOrigin::browser("http://localhost:17322")
+        );
+    }
+
+    #[test]
+    fn origin_headers_reject_non_loopback() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::ORIGIN,
+            "https://example.com".parse().unwrap(),
+        );
+
+        assert!(websocket_origin_from_headers(&headers).is_err());
+    }
+
+    #[test]
+    fn valid_text_frame_becomes_incoming_message_event() {
+        let id = test_connection_id();
+        let event = ipc_text_to_transport_event(&id, r#"{"type":"quit"}"#).unwrap();
+
+        assert!(matches!(
+            event,
+            TransportEvent::IncomingMessage {
+                connection_id,
+                kind: TransportKind::IpcWebSocket,
+                message: FrontendMessage::Quit,
+            } if connection_id == id
+        ));
+    }
+
+    #[test]
+    fn invalid_text_frame_keeps_recoverable_error_behavior() {
+        let err = ipc_text_to_transport_event(&test_connection_id(), "{bad json").unwrap_err();
+
+        assert!(matches!(
+            *err,
+            BackendMessage::Error {
+                recoverable: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn close_frame_becomes_connection_closed_event() {
+        let id = test_connection_id();
+        let event = ipc_close_transport_event(&id, ConnectionClosedReason::ClientClosed);
+
+        assert!(matches!(
+            event,
+            TransportEvent::ConnectionClosed {
+                connection_id,
+                kind: TransportKind::IpcWebSocket,
+                reason: ConnectionClosedReason::ClientClosed,
+            } if connection_id == id
+        ));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -629,7 +815,7 @@ mod tests {
 
         let encoded = serde_json::to_string(&error).unwrap();
         assert!(matches!(
-            error,
+            *error,
             BackendMessage::Error {
                 recoverable: true,
                 ..

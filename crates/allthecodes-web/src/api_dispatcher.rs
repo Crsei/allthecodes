@@ -925,8 +925,38 @@ mod tests {
     use allthecodes_engine::types::config::QueryEngineConfig;
     use allthecodes_protocol::{DirectTransport, Transport};
     use axum::http::StatusCode;
+    use tempfile::TempDir;
 
     use super::*;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn temp_home() -> (TempDir, EnvGuard) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let guard = EnvGuard::set_path("ALLTHECODES_HOME", temp.path());
+        (temp, guard)
+    }
 
     fn make_web_state() -> WebState {
         make_web_state_with_cwd(Path::new("."))
@@ -976,7 +1006,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn dispatcher_handles_health_request() {
+        let (_home, _guard) = temp_home();
         let response = dispatch(
             make_web_state(),
             ApiRequestContext::direct(),

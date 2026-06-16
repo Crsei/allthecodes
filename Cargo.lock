@@ -433,6 +433,7 @@ dependencies = [
  "allthecodes-ipc-protocol",
  "allthecodes-ipc-transport",
  "allthecodes-protocol",
+ "allthecodes-server",
  "allthecodes-types",
  "anyhow",
  "chrono",

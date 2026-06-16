@@ -14,4 +14,7 @@ mod transport;
 
 pub use server_manager::{ServerHandle, ServerManager};
 pub use server_mode::ServerMode;
-pub use transport::ListenUrl;
+pub use transport::{
+    ConnectionClosedReason, ConnectionId, ConnectionOrigin, ListenUrl, OriginRejection,
+    OutboundEnvelope, TransportEvent, TransportKind,
+};

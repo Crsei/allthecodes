@@ -1,71 +1,115 @@
 //! `/api/rpc/ws` — JSON-RPC WebSocket adapter for dispatcher-backed API operations.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use tracing::{info, warn};
 
 use allthecodes_protocol::{ApiError, JsonRpcFrame, TransportRequestId};
+use allthecodes_server::{
+    ConnectionClosedReason, ConnectionId, ConnectionOrigin, OriginRejection, OutboundEnvelope,
+    TransportEvent, TransportKind,
+};
 
 use crate::api_dispatcher::{ApiConnectionId, ApiDispatcher, ApiRequestContext};
 use crate::state::WebState;
 
-static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
-
 /// GET /api/rpc/ws — Upgrade to the API JSON-RPC WebSocket transport.
 pub async fn api_rpc_ws_handler(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     State(state): State<WebState>,
 ) -> axum::response::Response {
-    let connection_id = ApiConnectionId(format!(
-        "api-rpc-{}",
-        NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed)
-    ));
+    let origin = match websocket_origin_from_headers(&headers) {
+        Ok(origin) => origin,
+        Err(rejection) => {
+            warn!(origin = %rejection.origin, "rejecting API JSON-RPC WebSocket origin");
+            return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+        }
+    };
+    let connection_id = ConnectionId::next();
+    let api_connection_id = ApiConnectionId(format!("api-rpc-{}", connection_id.as_str()));
 
-    info!(connection_id = %connection_id.0, "GET /api/rpc/ws — WebSocket upgrade");
+    info!(connection_id = %api_connection_id.0, "GET /api/rpc/ws — WebSocket upgrade");
 
-    ws.on_upgrade(move |socket| handle_api_rpc_socket(socket, state, connection_id))
-        .into_response()
+    ws.on_upgrade(move |socket| {
+        handle_api_rpc_socket(socket, state, connection_id, api_connection_id, origin)
+    })
+    .into_response()
 }
 
-async fn handle_api_rpc_socket(socket: WebSocket, state: WebState, connection_id: ApiConnectionId) {
+async fn handle_api_rpc_socket(
+    socket: WebSocket,
+    state: WebState,
+    connection_id: ConnectionId,
+    api_connection_id: ApiConnectionId,
+    origin: ConnectionOrigin,
+) {
+    log_transport_event(TransportEvent::<String>::ConnectionOpened {
+        connection_id: connection_id.clone(),
+        kind: TransportKind::ApiRpcWebSocket,
+        origin,
+    });
     let dispatcher = ApiDispatcher::new(state);
-    let context = ApiRequestContext::json_rpc_websocket(connection_id.clone());
+    let context = ApiRequestContext::json_rpc_websocket(api_connection_id.clone());
     let (mut ws_sender, mut ws_receiver) = socket.split();
+    let mut close_reason = ConnectionClosedReason::ClientClosed;
 
     while let Some(message) = ws_receiver.next().await {
         match message {
-            Ok(message) => match handle_api_rpc_message(&dispatcher, &context, message).await {
-                ApiRpcSocketAction::Respond(response) => match encode_frame(&response) {
-                    Ok(text) => {
-                        if ws_sender.send(Message::Text(text.into())).await.is_err() {
-                            break;
+            Ok(message) => {
+                match handle_api_rpc_message(&dispatcher, &context, &connection_id, message).await {
+                    ApiRpcSocketAction::Respond(response) => {
+                        match encode_frame(response.as_ref()) {
+                            Ok(text) => {
+                                let envelope = OutboundEnvelope::new(connection_id.clone(), text);
+                                if ws_sender
+                                    .send(Message::Text(envelope.message.into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    close_reason = ConnectionClosedReason::TransportError(
+                                        "failed to send JSON-RPC response".to_string(),
+                                    );
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                warn!(connection_id = %api_connection_id.0, "failed to encode JSON-RPC response: {error}");
+                                close_reason =
+                                    ConnectionClosedReason::TransportError(error.to_string());
+                                break;
+                            }
                         }
                     }
-                    Err(error) => {
-                        warn!(connection_id = %connection_id.0, "failed to encode JSON-RPC response: {error}");
+                    ApiRpcSocketAction::Close => {
+                        close_reason = ConnectionClosedReason::ClientClosed;
                         break;
                     }
-                },
-                ApiRpcSocketAction::Close => break,
-                ApiRpcSocketAction::Ignore => {}
-            },
+                    ApiRpcSocketAction::Ignore => {}
+                }
+            }
             Err(error) => {
-                warn!(connection_id = %connection_id.0, "API JSON-RPC WebSocket error: {error}");
+                warn!(connection_id = %api_connection_id.0, "API JSON-RPC WebSocket error: {error}");
+                close_reason = ConnectionClosedReason::TransportError(error.to_string());
                 break;
             }
         }
     }
 
-    info!(connection_id = %connection_id.0, "API JSON-RPC WebSocket closed");
+    log_transport_event(TransportEvent::<String>::ConnectionClosed {
+        connection_id,
+        kind: TransportKind::ApiRpcWebSocket,
+        reason: close_reason,
+    });
+    info!(connection_id = %api_connection_id.0, "API JSON-RPC WebSocket closed");
 }
 
 enum ApiRpcSocketAction {
-    Respond(JsonRpcFrame),
+    Respond(Box<JsonRpcFrame>),
     Close,
     Ignore,
 }
@@ -73,14 +117,74 @@ enum ApiRpcSocketAction {
 async fn handle_api_rpc_message(
     dispatcher: &ApiDispatcher,
     context: &ApiRequestContext,
+    connection_id: &ConnectionId,
     message: Message,
 ) -> ApiRpcSocketAction {
     match message {
         Message::Text(text) => {
-            ApiRpcSocketAction::Respond(handle_api_rpc_text(dispatcher, context, &text).await)
+            let text = match api_rpc_text_to_transport_event(connection_id, &text) {
+                TransportEvent::IncomingMessage { message, .. } => message,
+                _ => String::new(),
+            };
+            ApiRpcSocketAction::Respond(Box::new(
+                handle_api_rpc_text(dispatcher, context, &text).await,
+            ))
         }
         Message::Close(_) => ApiRpcSocketAction::Close,
         Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => ApiRpcSocketAction::Ignore,
+    }
+}
+
+fn websocket_origin_from_headers(headers: &HeaderMap) -> Result<ConnectionOrigin, OriginRejection> {
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    ConnectionOrigin::from_websocket_origin(origin)
+}
+
+fn api_rpc_text_to_transport_event(
+    connection_id: &ConnectionId,
+    text: &str,
+) -> TransportEvent<String> {
+    TransportEvent::IncomingMessage {
+        connection_id: connection_id.clone(),
+        kind: TransportKind::ApiRpcWebSocket,
+        message: text.to_string(),
+    }
+}
+
+fn log_transport_event<T: std::fmt::Debug>(event: TransportEvent<T>) {
+    match event {
+        TransportEvent::ConnectionOpened {
+            connection_id,
+            kind,
+            origin,
+        } => info!(
+            connection_id = %connection_id,
+            kind = ?kind,
+            origin = ?origin,
+            "transport connection opened"
+        ),
+        TransportEvent::IncomingMessage {
+            connection_id,
+            kind,
+            message,
+        } => info!(
+            connection_id = %connection_id,
+            kind = ?kind,
+            message = ?message,
+            "transport incoming message"
+        ),
+        TransportEvent::ConnectionClosed {
+            connection_id,
+            kind,
+            reason,
+        } => info!(
+            connection_id = %connection_id,
+            kind = ?kind,
+            reason = ?reason,
+            "transport connection closed"
+        ),
     }
 }
 
@@ -173,6 +277,10 @@ mod tests {
         ApiRequestContext::json_rpc_websocket(ApiConnectionId("test-rpc".to_string()))
     }
 
+    fn test_connection_id() -> ConnectionId {
+        ConnectionId::from_static("test-connection")
+    }
+
     #[tokio::test]
     async fn valid_capabilities_request_returns_response_frame() {
         let dispatcher = ApiDispatcher::new(make_web_state());
@@ -254,9 +362,59 @@ mod tests {
     #[tokio::test]
     async fn close_frame_terminates_without_response() {
         let dispatcher = ApiDispatcher::new(make_web_state());
-        let action =
-            handle_api_rpc_message(&dispatcher, &test_context(), Message::Close(None)).await;
+        let action = handle_api_rpc_message(
+            &dispatcher,
+            &test_context(),
+            &test_connection_id(),
+            Message::Close(None),
+        )
+        .await;
 
         assert!(matches!(action, ApiRpcSocketAction::Close));
+    }
+
+    #[test]
+    fn origin_headers_allow_missing_and_loopback() {
+        let headers = HeaderMap::new();
+        assert_eq!(
+            websocket_origin_from_headers(&headers).unwrap(),
+            ConnectionOrigin::LocalNative
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::ORIGIN,
+            "http://127.0.0.1:17322".parse().unwrap(),
+        );
+        assert_eq!(
+            websocket_origin_from_headers(&headers).unwrap(),
+            ConnectionOrigin::browser("http://127.0.0.1:17322")
+        );
+    }
+
+    #[test]
+    fn origin_headers_reject_non_loopback() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::ORIGIN,
+            "https://example.com".parse().unwrap(),
+        );
+
+        assert!(websocket_origin_from_headers(&headers).is_err());
+    }
+
+    #[test]
+    fn text_frame_is_wrapped_as_transport_event() {
+        let id = test_connection_id();
+        let event = api_rpc_text_to_transport_event(&id, r#"{"jsonrpc":"2.0","id":1}"#);
+
+        assert!(matches!(
+            event,
+            TransportEvent::IncomingMessage {
+                connection_id,
+                kind: TransportKind::ApiRpcWebSocket,
+                message,
+            } if connection_id == id && message.contains("\"jsonrpc\"")
+        ));
     }
 }
