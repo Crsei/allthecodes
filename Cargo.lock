@@ -326,6 +326,7 @@ dependencies = [
 name = "allthecodes-daemon"
 version = "0.1.0"
 dependencies = [
+ "allthecodes-auth",
  "allthecodes-commands",
  "allthecodes-config",
  "allthecodes-engine",
@@ -341,6 +342,7 @@ dependencies = [
  "futures",
  "hex",
  "hmac",
+ "keyring",
  "libc",
  "mime_guess",
  "notify-rust",
@@ -355,6 +357,7 @@ dependencies = [
  "tokio-stream",
  "tower-http",
  "tracing",
+ "url",
  "urlencoding",
  "uuid",
 ]

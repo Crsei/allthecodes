@@ -8,6 +8,7 @@ description = "KAIROS daemon: HTTP/SSE server, proactive tick, webhooks, team-me
 anyhow = { workspace = true }
 axum = { workspace = true }
 allthecodes-commands = { workspace = true }
+allthecodes-auth = { workspace = true }
 allthecodes-config = { workspace = true }
 allthecodes-engine = { workspace = true }
 allthecodes-services = { workspace = true }
@@ -20,6 +21,7 @@ futures = { workspace = true }
 allthecodes-gateway = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
+keyring = { workspace = true }
 mime_guess = { workspace = true }
 notify-rust = { workspace = true }
 parking_lot = { workspace = true }
@@ -31,6 +33,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 urlencoding = { workspace = true }
 uuid = { workspace = true }
 

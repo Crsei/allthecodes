@@ -61,6 +61,7 @@ pub struct Notification {
 pub struct DaemonState {
     pub engine: Arc<QueryEngine>,
     pub features: Arc<FeatureFlags>,
+    pub account_auth: Arc<Mutex<crate::account_auth::AccountAuthMemory>>,
     pub clients: Arc<RwLock<HashMap<String, SseClient>>>,
     pub is_query_running: Arc<AtomicBool>,
     pub notification_tx: mpsc::UnboundedSender<Notification>,
@@ -81,6 +82,7 @@ impl DaemonState {
         Self {
             engine,
             features,
+            account_auth: Arc::new(Mutex::new(crate::account_auth::AccountAuthMemory::default())),
             clients: Arc::new(RwLock::new(HashMap::new())),
             is_query_running: Arc::new(AtomicBool::new(false)),
             notification_tx,

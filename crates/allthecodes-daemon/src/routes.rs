@@ -245,6 +245,23 @@ pub fn api_routes() -> Router<DaemonState> {
         .route("/api/detach", post(detach))
         .route("/api/resize", post(resize))
         .route("/api/history", get(history))
+        .route(
+            "/api/account-auth/login/start",
+            post(crate::account_auth::login_start),
+        )
+        .route(
+            "/api/account-auth/login/complete",
+            post(crate::account_auth::login_complete),
+        )
+        .route("/api/account-auth/status", get(crate::account_auth::status))
+        .route(
+            "/api/account-auth/refresh",
+            post(crate::account_auth::refresh),
+        )
+        .route(
+            "/api/account-auth/logout",
+            post(crate::account_auth::logout),
+        )
 }
 
 fn require_control_token(headers: &HeaderMap) -> Result<(), Json<Value>> {
