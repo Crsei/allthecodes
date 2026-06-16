@@ -150,23 +150,26 @@ CREATE INDEX idx_memories_category ON memories(category);
 
 ```sql
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
-    id          TEXT PRIMARY KEY,
-    kind        TEXT NOT NULL,       -- "cron" | "once" | "interval"
-    name        TEXT NOT NULL,
-    schedule    TEXT,                 -- cron expression "*/5 * * * *"
-    interval_ms INTEGER,
-    payload_json TEXT,
-    next_run_at TEXT,
-    last_run_at TEXT,
-    paused      INTEGER NOT NULL DEFAULT 0,
-    run_count   INTEGER DEFAULT 0,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    id               TEXT PRIMARY KEY NOT NULL,
+    kind             TEXT NOT NULL,  -- "local_cron" | "remote_trigger"
+    name             TEXT NOT NULL,
+    schedule         TEXT NOT NULL,
+    schedule_kind    TEXT NOT NULL,  -- "interval" | "cron"
+    timezone         TEXT,
+    interval_seconds INTEGER NOT NULL,
+    payload_json     TEXT NOT NULL,
+    created_at       INTEGER NOT NULL, -- UTC nanoseconds
+    last_run_at      INTEGER,          -- UTC nanoseconds
+    next_run_at      INTEGER NOT NULL, -- UTC nanoseconds
+    paused           INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)
-    WHERE paused = 0 AND next_run_at IS NOT NULL;
+CREATE INDEX idx_scheduled_tasks_due ON scheduled_tasks(paused, next_run_at);
 ```
+
+实现状态：已落地在 `allthecodes-services::scheduler::SchedulerStore`。首次使用 SQLite 时从
+`scheduled_tasks.json` 幂等导入缺失 task；SQLite 写成功后 best-effort 刷新 JSON backup；
+SQLite 不可用时完整回退 JSON store + lockfile。
 
 ### 1.7 daemon_state
 
@@ -176,7 +179,7 @@ CREATE INDEX idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)
 CREATE TABLE IF NOT EXISTS daemon_state (
     key         TEXT PRIMARY KEY,    -- "supervisor" | "shutdown-request" | "control-token" | "sleep-state"
     value_json  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    updated_at  INTEGER NOT NULL
 );
 ```
 
@@ -188,21 +191,20 @@ CREATE TABLE IF NOT EXISTS daemon_state (
 
 ```sql
 CREATE TABLE IF NOT EXISTS daemon_workers (
-    id              TEXT PRIMARY KEY,
-    kind            TEXT NOT NULL,    -- "supervisor" | "worker" | "webhook"
-    status          TEXT NOT NULL,    -- "running" | "stopped" | "crashed"
-    pid             INTEGER,
-    port            INTEGER,
-    metadata_json   TEXT,
-    started_at      TEXT,
-    stopped_at      TEXT,
-    last_heartbeat  TEXT,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
+    worker_id  TEXT PRIMARY KEY NOT NULL,
+    kind       TEXT NOT NULL,
+    pid        INTEGER,
+    status     TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    value_json TEXT NOT NULL
 );
 
-CREATE INDEX idx_daemon_workers_status ON daemon_workers(status);
+CREATE INDEX idx_daemon_workers_status ON daemon_workers(status, updated_at);
 ```
+
+实现状态：已落地在 `allthecodes-daemon::process_state`。`daemon_state` 保存 supervisor、
+shutdown request、control token、sleep state；`daemon_workers` 保存 worker JSON 与查询索引字段。
+worker log 仍保留文件存储，不进入 SQLite。
 
 ---
 

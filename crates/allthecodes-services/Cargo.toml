@@ -5,7 +5,9 @@ edition = "2021"
 description = "Background services for allthecodes: LSP lifecycle, prompt suggestions, session memory, tool-use summaries"
 
 [features]
-default = []
+default = ["sqlite-storage", "json-storage"]
+sqlite-storage = ["dep:allthecodes-db", "dep:sqlx"]
+json-storage = []
 telemetry = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
@@ -34,9 +36,11 @@ parking_lot = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
+sqlx = { workspace = true, optional = true }
 
 allthecodes-api = { workspace = true }
 allthecodes-config = { workspace = true }
+allthecodes-db = { workspace = true, optional = true }
 allthecodes-engine = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
 allthecodes-langfuse = { workspace = true }

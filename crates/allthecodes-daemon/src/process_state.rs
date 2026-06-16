@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::{operation_lock, protocol, readiness};
 
@@ -345,6 +346,17 @@ pub fn write_worker_stale(worker_id: &str, reason: &str) -> Result<()> {
 }
 
 pub fn read_worker_state(worker_id: &str) -> Result<Option<DaemonWorkerState>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::read_worker(worker_id) {
+        Ok(Some(state)) => return Ok(Some(state)),
+        Ok(None) => {}
+        Err(err) => warn!(
+            worker_id,
+            error = %err,
+            "failed to read daemon worker from sqlite; falling back to JSON"
+        ),
+    }
+
     let path = worker_state_path(worker_id);
     if !path.exists() {
         return Ok(None);
@@ -353,6 +365,15 @@ pub fn read_worker_state(worker_id: &str) -> Result<Option<DaemonWorkerState>> {
 }
 
 pub fn read_worker_states() -> Result<Vec<DaemonWorkerState>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::read_workers() {
+        Ok(states) => return Ok(states),
+        Err(err) => warn!(
+            error = %err,
+            "failed to read daemon workers from sqlite; falling back to JSON"
+        ),
+    }
+
     let dir = workers_dir();
     if !dir.exists() {
         return Ok(Vec::new());
@@ -385,6 +406,15 @@ pub fn worker_summaries() -> Result<Vec<DaemonWorkerSummary>> {
 }
 
 pub fn read_state() -> Result<Option<DaemonProcessState>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::read_state_value::<DaemonProcessState>("supervisor") {
+        Ok(state) => return Ok(state),
+        Err(err) => warn!(
+            error = %err,
+            "failed to read daemon supervisor from sqlite; falling back to JSON"
+        ),
+    }
+
     let path = state_path();
     if !path.exists() {
         return Ok(None);
@@ -423,12 +453,16 @@ pub fn cleanup_stale_state_before_start() -> Result<StaleStateCleanupReport> {
     }
 
     report.supervisor_pid = Some(state.pid);
-    report.supervisor_state_removed = remove_file_if_exists(&state_path())?;
-    report.control_token_removed = remove_file_if_exists(&control_token_path())?;
-    report.shutdown_request_removed = remove_file_if_exists(&shutdown_request_path())?;
+    report.supervisor_state_removed = remove_state_value("supervisor", &state_path())?;
+    report.control_token_removed = remove_state_value("control-token", &control_token_path())?;
+    report.shutdown_request_removed =
+        remove_state_value("shutdown-request", &shutdown_request_path())?;
     if read_sleep_state()?.is_some_and(|sleep| sleep.sleeping_until <= Utc::now()) {
-        report.expired_sleep_state_removed = remove_file_if_exists(&sleep_state_path())?;
+        report.expired_sleep_state_removed =
+            remove_state_value("sleep-state", &sleep_state_path())?;
     }
+    #[cfg(feature = "sqlite-storage")]
+    cleanup_worker_state_records(&mut report)?;
     cleanup_worker_state_files(&mut report)?;
     Ok(report)
 }
@@ -440,7 +474,7 @@ pub fn request_shutdown(reason: &str) -> Result<()> {
         requested_at: Utc::now(),
         reason: reason.to_string(),
     };
-    atomic_write_json(&shutdown_request_path(), &req)?;
+    write_state_value("shutdown-request", &shutdown_request_path(), &req)?;
 
     if let Some(mut state) = read_state()? {
         state.shutdown_requested = true;
@@ -451,15 +485,20 @@ pub fn request_shutdown(reason: &str) -> Result<()> {
 }
 
 pub fn shutdown_requested() -> bool {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::state_value_exists("shutdown-request") {
+        Ok(true) => return true,
+        Ok(false) => {}
+        Err(err) => warn!(
+            error = %err,
+            "failed to check daemon shutdown request in sqlite; falling back to JSON"
+        ),
+    }
     shutdown_request_path().is_file()
 }
 
 pub fn clear_shutdown_request() -> Result<()> {
-    let path = shutdown_request_path();
-    if path.exists() {
-        fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
-    }
-    Ok(())
+    remove_state_value("shutdown-request", &shutdown_request_path()).map(|_| ())
 }
 
 pub fn write_control_token() -> Result<DaemonControlToken> {
@@ -469,11 +508,20 @@ pub fn write_control_token() -> Result<DaemonControlToken> {
         token: uuid::Uuid::new_v4().to_string(),
         created_at: Utc::now(),
     };
-    atomic_write_json(&control_token_path(), &token)?;
+    write_state_value("control-token", &control_token_path(), &token)?;
     Ok(token)
 }
 
 pub fn read_control_token() -> Result<Option<DaemonControlToken>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::read_state_value::<DaemonControlToken>("control-token") {
+        Ok(token) => return Ok(token),
+        Err(err) => warn!(
+            error = %err,
+            "failed to read daemon control token from sqlite; falling back to JSON"
+        ),
+    }
+
     let path = control_token_path();
     if !path.exists() {
         return Ok(None);
@@ -492,11 +540,7 @@ pub fn verify_control_token(candidate: &str) -> Result<bool> {
 }
 
 pub fn clear_control_token() -> Result<()> {
-    let path = control_token_path();
-    if path.exists() {
-        fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
-    }
-    Ok(())
+    remove_state_value("control-token", &control_token_path()).map(|_| ())
 }
 
 pub fn write_sleep_state(duration_seconds: u64, reason: &str) -> Result<DaemonSleepState> {
@@ -519,11 +563,20 @@ pub fn write_sleep_state_until(
         },
         updated_at: Utc::now(),
     };
-    atomic_write_json(&sleep_state_path(), &state)?;
+    write_state_value("sleep-state", &sleep_state_path(), &state)?;
     Ok(state)
 }
 
 pub fn read_sleep_state() -> Result<Option<DaemonSleepState>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::read_state_value::<DaemonSleepState>("sleep-state") {
+        Ok(state) => return Ok(state),
+        Err(err) => warn!(
+            error = %err,
+            "failed to read daemon sleep state from sqlite; falling back to JSON"
+        ),
+    }
+
     let path = sleep_state_path();
     if !path.exists() {
         return Ok(None);
@@ -547,11 +600,7 @@ pub fn active_sleep_state() -> Result<Option<DaemonSleepState>> {
 }
 
 pub fn clear_sleep_state() -> Result<()> {
-    let path = sleep_state_path();
-    if path.exists() {
-        fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
-    }
-    Ok(())
+    remove_state_value("sleep-state", &sleep_state_path()).map(|_| ())
 }
 
 fn cleanup_worker_state_files(report: &mut StaleStateCleanupReport) -> Result<()> {
@@ -609,6 +658,53 @@ fn cleanup_worker_state_files(report: &mut StaleStateCleanupReport) -> Result<()
             }
         }
     }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite-storage")]
+fn cleanup_worker_state_records(report: &mut StaleStateCleanupReport) -> Result<()> {
+    let states = match sqlite_store::read_workers() {
+        Ok(states) => states,
+        Err(err) => {
+            warn!(
+                error = %err,
+                "failed to read daemon worker records from sqlite for stale cleanup"
+            );
+            return Ok(());
+        }
+    };
+
+    for state in states {
+        let path = worker_state_path(&state.worker_id);
+        match state.pid {
+            Some(pid) if process_is_alive(pid) => {
+                if !path.exists() {
+                    report
+                        .live_worker_states_retained
+                        .push(DaemonWorkerSummary {
+                            worker_id: state.worker_id,
+                            kind: state.kind,
+                            pid: state.pid,
+                            status: state.status.as_str().to_string(),
+                            updated_at: state.updated_at,
+                        });
+                }
+            }
+            Some(_) | None => {
+                if let Err(err) = sqlite_store::remove_worker(&state.worker_id) {
+                    warn!(
+                        worker_id = %state.worker_id,
+                        error = %err,
+                        "failed to remove stale daemon worker from sqlite"
+                    );
+                }
+                if !path.exists() {
+                    report.worker_states_removed.push(path);
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -947,13 +1043,48 @@ fn remove_file_if_exists(path: &Path) -> Result<bool> {
 }
 
 fn write_state(state: &DaemonProcessState) -> Result<()> {
-    ensure_daemon_dir()?;
-    atomic_write_json(&state_path(), state)
+    write_state_value("supervisor", &state_path(), state)
 }
 
 fn write_worker_state(state: &DaemonWorkerState) -> Result<()> {
     ensure_daemon_dir()?;
+    #[cfg(feature = "sqlite-storage")]
+    if let Err(err) = sqlite_store::write_worker(state) {
+        warn!(
+            worker_id = %state.worker_id,
+            error = %err,
+            "failed to write daemon worker to sqlite; keeping JSON backup"
+        );
+    }
     atomic_write_json(&worker_state_path(&state.worker_id), state)
+}
+
+fn write_state_value<T: Serialize>(key: &'static str, path: &Path, value: &T) -> Result<()> {
+    ensure_daemon_dir()?;
+    #[cfg(feature = "sqlite-storage")]
+    if let Err(err) = sqlite_store::write_state_value(key, value) {
+        warn!(
+            key,
+            error = %err,
+            "failed to write daemon state to sqlite; keeping JSON backup"
+        );
+    }
+    atomic_write_json(path, value)
+}
+
+fn remove_state_value(key: &'static str, path: &Path) -> Result<bool> {
+    let mut removed = false;
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::remove_state_value(key) {
+        Ok(sqlite_removed) => removed |= sqlite_removed,
+        Err(err) => warn!(
+            key,
+            error = %err,
+            "failed to remove daemon state from sqlite; removing JSON backup"
+        ),
+    }
+    removed |= remove_file_if_exists(path)?;
+    Ok(removed)
 }
 
 fn read_worker_state_file(path: &Path) -> Result<DaemonWorkerState> {
@@ -1006,6 +1137,317 @@ pub(crate) fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<
         }
         Err(err) => Err(err)
             .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display())),
+    }
+}
+
+#[cfg(feature = "sqlite-storage")]
+mod sqlite_store {
+    use super::*;
+    use allthecodes_db::{Migration, MigrationRunner};
+    use serde::de::DeserializeOwned;
+    use sqlx::{Row, SqlitePool};
+
+    const MIGRATIONS: &[Migration] = &[
+        Migration::new(
+            1,
+            r#"
+            CREATE TABLE IF NOT EXISTS daemon_state (
+                key TEXT PRIMARY KEY NOT NULL,
+                value_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        ),
+        Migration::new(
+            2,
+            r#"
+            CREATE TABLE IF NOT EXISTS daemon_workers (
+                worker_id TEXT PRIMARY KEY NOT NULL,
+                kind TEXT NOT NULL,
+                pid INTEGER,
+                status TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                value_json TEXT NOT NULL
+            )
+            "#,
+        ),
+        Migration::new(
+            3,
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_daemon_workers_status
+                ON daemon_workers(status, updated_at)
+            "#,
+        ),
+    ];
+
+    pub(super) fn write_state_value<T>(key: &'static str, value: &T) -> Result<()>
+    where
+        T: Serialize,
+    {
+        let value_json = serde_json::to_string(value)?;
+        run(move |pool| async move {
+            sqlx::query(
+                r#"
+                INSERT INTO daemon_state (key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                "#,
+            )
+            .bind(key)
+            .bind(value_json)
+            .bind(Utc::now().timestamp())
+            .execute(&pool)
+            .await
+            .context("failed to upsert daemon state")?;
+            Ok(())
+        })
+    }
+
+    pub(super) fn read_state_value<T>(key: &'static str) -> Result<Option<T>>
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
+        run(move |pool| async move {
+            import_legacy_json(&pool).await?;
+            let row = sqlx::query("SELECT value_json FROM daemon_state WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&pool)
+                .await
+                .context("failed to read daemon state")?;
+            row.map(|row| {
+                let value_json: String = row.try_get("value_json")?;
+                serde_json::from_str(&value_json).context("failed to decode daemon state JSON")
+            })
+            .transpose()
+        })
+    }
+
+    pub(super) fn state_value_exists(key: &'static str) -> Result<bool> {
+        run(move |pool| async move {
+            import_legacy_json(&pool).await?;
+            Ok(sqlx::query("SELECT 1 FROM daemon_state WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&pool)
+                .await
+                .context("failed to check daemon state")?
+                .is_some())
+        })
+    }
+
+    pub(super) fn remove_state_value(key: &'static str) -> Result<bool> {
+        run(move |pool| async move {
+            let result = sqlx::query("DELETE FROM daemon_state WHERE key = ?")
+                .bind(key)
+                .execute(&pool)
+                .await
+                .context("failed to delete daemon state")?;
+            Ok(result.rows_affected() > 0)
+        })
+    }
+
+    pub(super) fn write_worker(state: &DaemonWorkerState) -> Result<()> {
+        let state = state.clone();
+        run(move |pool| async move { upsert_worker(&pool, &state).await })
+    }
+
+    pub(super) fn read_worker(worker_id: &str) -> Result<Option<DaemonWorkerState>> {
+        let worker_id = worker_id.to_string();
+        run(move |pool| async move {
+            import_legacy_json(&pool).await?;
+            read_worker_from_pool(&pool, &worker_id).await
+        })
+    }
+
+    pub(super) fn read_workers() -> Result<Vec<DaemonWorkerState>> {
+        run(move |pool| async move {
+            import_legacy_json(&pool).await?;
+            let rows = sqlx::query(
+                r#"
+                SELECT value_json
+                FROM daemon_workers
+                ORDER BY worker_id ASC
+                "#,
+            )
+            .fetch_all(&pool)
+            .await
+            .context("failed to read daemon worker rows")?;
+            rows.into_iter()
+                .map(|row| {
+                    let value_json: String = row.try_get("value_json")?;
+                    serde_json::from_str(&value_json).context("failed to decode daemon worker JSON")
+                })
+                .collect()
+        })
+    }
+
+    pub(super) fn remove_worker(worker_id: &str) -> Result<bool> {
+        let worker_id = worker_id.to_string();
+        run(move |pool| async move {
+            let result = sqlx::query("DELETE FROM daemon_workers WHERE worker_id = ?")
+                .bind(&worker_id)
+                .execute(&pool)
+                .await
+                .context("failed to delete daemon worker")?;
+            Ok(result.rows_affected() > 0)
+        })
+    }
+
+    fn run<F, Fut, T>(op: F) -> Result<T>
+    where
+        F: FnOnce(SqlitePool) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        allthecodes_db::run_sqlite_sync("allthecodes-daemon-sqlite", async move {
+            let pool = migrated_pool().await?;
+            op(pool).await
+        })
+    }
+
+    async fn migrated_pool() -> Result<SqlitePool> {
+        let pool = allthecodes_db::DbPoolManager::new().state_pool()?;
+        MigrationRunner::new("daemon", MIGRATIONS)
+            .run(&pool)
+            .await?;
+        Ok(pool)
+    }
+
+    async fn import_legacy_json(pool: &SqlitePool) -> Result<()> {
+        import_state_file::<DaemonProcessState>(pool, "supervisor", &state_path()).await?;
+        import_state_file::<DaemonShutdownRequest>(
+            pool,
+            "shutdown-request",
+            &shutdown_request_path(),
+        )
+        .await?;
+        import_state_file::<DaemonControlToken>(pool, "control-token", &control_token_path())
+            .await?;
+        import_state_file::<DaemonSleepState>(pool, "sleep-state", &sleep_state_path()).await?;
+        import_worker_files(pool).await?;
+        Ok(())
+    }
+
+    async fn import_state_file<T>(pool: &SqlitePool, key: &'static str, path: &Path) -> Result<()>
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        if !path.exists()
+            || sqlx::query("SELECT 1 FROM daemon_state WHERE key = ?")
+                .bind(key)
+                .fetch_optional(pool)
+                .await
+                .context("failed to check daemon state before import")?
+                .is_some()
+        {
+            return Ok(());
+        }
+
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("failed to read daemon JSON {}", path.display()))?;
+        let value: T = serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse daemon JSON {}", path.display()))?;
+        let value_json = serde_json::to_string(&value)?;
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO daemon_state (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            "#,
+        )
+        .bind(key)
+        .bind(value_json)
+        .bind(Utc::now().timestamp())
+        .execute(pool)
+        .await
+        .context("failed to import daemon state JSON")?;
+        Ok(())
+    }
+
+    async fn import_worker_files(pool: &SqlitePool) -> Result<()> {
+        let dir = workers_dir();
+        if !dir.exists() {
+            return Ok(());
+        }
+
+        for entry in
+            fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+        {
+            let entry =
+                entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let state = match read_worker_state_file(&path) {
+                Ok(state) => state,
+                Err(err) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "skipping invalid daemon worker JSON during sqlite import"
+                    );
+                    continue;
+                }
+            };
+            if read_worker_from_pool(pool, &state.worker_id)
+                .await?
+                .is_none()
+            {
+                upsert_worker(pool, &state).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn read_worker_from_pool(
+        pool: &SqlitePool,
+        worker_id: &str,
+    ) -> Result<Option<DaemonWorkerState>> {
+        sqlx::query("SELECT value_json FROM daemon_workers WHERE worker_id = ?")
+            .bind(worker_id)
+            .fetch_optional(pool)
+            .await
+            .context("failed to read daemon worker")?
+            .map(|row| {
+                let value_json: String = row.try_get("value_json")?;
+                serde_json::from_str(&value_json).context("failed to decode daemon worker JSON")
+            })
+            .transpose()
+    }
+
+    async fn upsert_worker(pool: &SqlitePool, state: &DaemonWorkerState) -> Result<()> {
+        let value_json = serde_json::to_string(state)?;
+        sqlx::query(
+            r#"
+            INSERT INTO daemon_workers (
+                worker_id,
+                kind,
+                pid,
+                status,
+                updated_at,
+                value_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(worker_id) DO UPDATE SET
+                kind = excluded.kind,
+                pid = excluded.pid,
+                status = excluded.status,
+                updated_at = excluded.updated_at,
+                value_json = excluded.value_json
+            "#,
+        )
+        .bind(&state.worker_id)
+        .bind(&state.kind)
+        .bind(state.pid.map(i64::from))
+        .bind(state.status.as_str())
+        .bind(state.updated_at.timestamp())
+        .bind(value_json)
+        .execute(pool)
+        .await
+        .context("failed to upsert daemon worker")?;
+        Ok(())
     }
 }
 
@@ -1155,6 +1597,53 @@ mod tests {
         assert_eq!(read_back.port, 19999);
         assert_eq!(read_back.cwd, cwd);
         assert!(state_path().starts_with(temp.path()));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial]
+    fn read_state_imports_legacy_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        let now = Utc::now();
+        let state = DaemonProcessState {
+            schema_version: SCHEMA_VERSION,
+            status: DaemonRunStatus::Running,
+            pid: std::process::id(),
+            cwd: cwd.clone(),
+            port: DEFAULT_DAEMON_PORT,
+            health_url: health_url(DEFAULT_DAEMON_PORT),
+            started_at: now,
+            updated_at: now,
+            shutdown_requested: false,
+            workers: Vec::new(),
+        };
+        atomic_write_json(&state_path(), &state).unwrap();
+
+        let read_back = read_state().unwrap().unwrap();
+        assert_eq!(read_back.cwd, cwd);
+        assert_eq!(read_back.port, DEFAULT_DAEMON_PORT);
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial]
+    fn daemon_state_falls_back_to_json_when_sqlite_path_is_blocked() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        fs::create_dir_all(
+            temp.path()
+                .join(".allthecodes")
+                .join("state")
+                .join("state_5.sqlite"),
+        )
+        .unwrap();
+
+        let token = write_control_token().unwrap();
+        assert!(control_token_path().exists());
+        assert_eq!(read_control_token().unwrap().unwrap().token, token.token);
     }
 
     #[test]

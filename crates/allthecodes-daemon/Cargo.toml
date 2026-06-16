@@ -4,12 +4,18 @@ version = "0.1.0"
 edition = "2021"
 description = "KAIROS daemon: HTTP/SSE server, proactive tick, webhooks, team-memory proxy. Phase 7 workspace split (scaffold)."
 
+[features]
+default = ["sqlite-storage", "json-storage"]
+sqlite-storage = ["dep:allthecodes-db", "dep:sqlx"]
+json-storage = []
+
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
 allthecodes-commands = { workspace = true }
 allthecodes-auth = { workspace = true }
 allthecodes-config = { workspace = true }
+allthecodes-db = { workspace = true, optional = true }
 allthecodes-engine = { workspace = true }
 allthecodes-services = { workspace = true }
 allthecodes-tools = { workspace = true }
@@ -33,6 +39,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
+sqlx = { workspace = true, optional = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 uuid = { workspace = true }

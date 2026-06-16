@@ -312,18 +312,18 @@ let metadata: serde_json::Value = serde_json::from_str(row.get("metadata"))?;
 
 ### Phase 2 — Session 迁移（估算：3–5 天）
 
-- 在 `allthecodes-db` 或 `allthecodes-db-session` 中实现 `SqliteSessionStore`
-- 表：`sessions`, `session_messages`
-- 更改 `allthecodes-session` 的 `storage.rs`，在 sqlite 可用时使用 sqlite，否则 fallback 到 JSON 文件
-- 实现 session 列表的分页查询
-- 保留 JSON 文件作为只读 fallback（旧 session 可读）
-- 初期不做旧 JSON session 数据 backfill，后续单独设计导入命令
+- ✅ 已在 `allthecodes-session::storage` 中落地 SQLite 优先读写。
+- ✅ 表：`sessions`, `session_messages`。
+- ✅ `save/load/list/archive/rename/chat_mode/truncate` 保持现有 public API，并在 SQLite 不可用时 fallback 到 JSON 文件。
+- ✅ 新增 `list_sessions_page(limit, cursor)` 与 `list_workspace_sessions_page(cwd, limit, cursor)`，排序固定为 `last_modified DESC, created_at DESC, session_id ASC`。
+- ✅ 分页/list 前幂等导入顶层 legacy `sessions/*.json`；损坏 JSON 跳过并记录 warning。
+- ✅ JSON 文件继续作为兼容备份，不删除旧数据。
 
 ### Phase 3 — 其余 Domain 迁移（估算：5–7 天）
 
 - MemoryStore（替换 memdir 文件）
-- SchedulerStore（替换 `scheduled_tasks.json`）
-- DaemonStateStore（替换 `daemon/*.json`）
+- ✅ SchedulerStore（SQLite 优先，`scheduled_tasks.json` 作为导入源与 backup/fallback）
+- ✅ DaemonStateStore（SQLite 优先，`daemon/*.json` 与 worker JSON 作为导入源与 backup/fallback）
 - GoalStore, WorkflowStore（替换 `goals/*.json`, `workflows/*.json`）
 
 ### Phase 4 — 增强功能（估算：3–5 天）

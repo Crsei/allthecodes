@@ -57,6 +57,22 @@ pub struct SessionInfo {
     pub workspace_name: String,
 }
 
+/// Opaque keyset cursor for paginated session listing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionListCursor {
+    pub last_modified: i64,
+    pub created_at: i64,
+    pub session_id: String,
+}
+
+/// One page of session metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListPage {
+    pub sessions: Vec<SessionInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<SessionListCursor>,
+}
+
 /// On-disk representation of a saved session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionFile {
@@ -687,6 +703,55 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>> {
     Ok(sessions)
 }
 
+/// List one page of active sessions using stable keyset ordering.
+///
+/// Ordering is always `last_modified DESC, created_at DESC, session_id ASC`.
+/// `limit` is clamped to `1..=200`.
+pub fn list_sessions_page(
+    limit: usize,
+    cursor: Option<SessionListCursor>,
+) -> Result<SessionListPage> {
+    let limit = clamp_session_page_limit(limit);
+
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::list_session_page(limit, cursor.clone()) {
+        Ok(page) => return Ok(page),
+        Err(err) => {
+            warn!(
+                error = %err,
+                "failed to page sessions from sqlite; falling back to JSON session directory"
+            );
+        }
+    }
+
+    let sessions = list_sessions()?;
+    Ok(page_sessions_in_memory(sessions, limit, cursor.as_ref()))
+}
+
+/// List one page of sessions in the same workspace/repository as `cwd`.
+pub fn list_workspace_sessions_page(
+    cwd: &Path,
+    limit: usize,
+    cursor: Option<SessionListCursor>,
+) -> Result<SessionListPage> {
+    let limit = clamp_session_page_limit(limit);
+
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::list_workspace_session_page(cwd, limit, cursor.clone()) {
+        Ok(page) => return Ok(page),
+        Err(err) => {
+            warn!(
+                error = %err,
+                cwd = %cwd.display(),
+                "failed to page workspace sessions from sqlite; falling back to JSON session directory"
+            );
+        }
+    }
+
+    let sessions = filter_sessions_for_workspace(list_sessions()?, cwd);
+    Ok(page_sessions_in_memory(sessions, limit, cursor.as_ref()))
+}
+
 fn list_json_sessions_excluding(excluded_ids: &HashSet<String>) -> Result<Vec<SessionInfo>> {
     let dir = get_session_dir();
     if !dir.exists() {
@@ -707,12 +772,26 @@ fn list_json_sessions_excluding(excluded_ids: &HashSet<String>) -> Result<Vec<Se
 
         let contents = match std::fs::read_to_string(&path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(err) => {
+                warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "skipping unreadable legacy session JSON"
+                );
+                continue;
+            }
         };
 
         let file: SessionFile = match serde_json::from_str(&contents) {
             Ok(f) => f,
-            Err(_) => continue,
+            Err(err) => {
+                warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "skipping invalid legacy session JSON"
+                );
+                continue;
+            }
         };
 
         if excluded_ids.contains(&file.session_id) {
@@ -726,7 +805,53 @@ fn list_json_sessions_excluding(excluded_ids: &HashSet<String>) -> Result<Vec<Se
 }
 
 fn sort_session_infos(sessions: &mut [SessionInfo]) {
-    sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    sessions.sort_by(|a, b| {
+        b.last_modified
+            .cmp(&a.last_modified)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+}
+
+fn clamp_session_page_limit(limit: usize) -> usize {
+    limit.clamp(1, 200)
+}
+
+fn cursor_for_session(session: &SessionInfo) -> SessionListCursor {
+    SessionListCursor {
+        last_modified: session.last_modified,
+        created_at: session.created_at,
+        session_id: session.session_id.clone(),
+    }
+}
+
+fn session_is_after_cursor(session: &SessionInfo, cursor: &SessionListCursor) -> bool {
+    session.last_modified < cursor.last_modified
+        || (session.last_modified == cursor.last_modified && session.created_at < cursor.created_at)
+        || (session.last_modified == cursor.last_modified
+            && session.created_at == cursor.created_at
+            && session.session_id > cursor.session_id)
+}
+
+fn page_sessions_in_memory(
+    mut sessions: Vec<SessionInfo>,
+    limit: usize,
+    cursor: Option<&SessionListCursor>,
+) -> SessionListPage {
+    sort_session_infos(&mut sessions);
+    if let Some(cursor) = cursor {
+        sessions.retain(|session| session_is_after_cursor(session, cursor));
+    }
+    let next_cursor = if sessions.len() > limit {
+        Some(cursor_for_session(&sessions[limit - 1]))
+    } else {
+        None
+    };
+    sessions.truncate(limit);
+    SessionListPage {
+        sessions,
+        next_cursor,
+    }
 }
 
 fn persist_session_file_for_path(
@@ -838,7 +963,7 @@ mod sqlite_store {
             3,
             r#"
             CREATE INDEX IF NOT EXISTS idx_sessions_list
-                ON sessions(archived, last_modified DESC, created_at DESC)
+                ON sessions(archived, last_modified DESC, created_at DESC, session_id ASC)
             "#,
         ),
         Migration::new(
@@ -1038,6 +1163,7 @@ mod sqlite_store {
     pub(super) fn list_session_index() -> Result<SessionIndex> {
         allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
             let pool = migrated_pool().await?;
+            import_legacy_json_sessions(&pool).await?;
             let rows = sqlx::query(
                 r#"
                 SELECT
@@ -1089,6 +1215,30 @@ mod sqlite_store {
         })
     }
 
+    pub(super) fn list_session_page(
+        limit: usize,
+        cursor: Option<SessionListCursor>,
+    ) -> Result<SessionListPage> {
+        allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
+            let pool = migrated_pool().await?;
+            import_legacy_json_sessions(&pool).await?;
+            list_session_page_from_pool(&pool, limit, cursor, None).await
+        })
+    }
+
+    pub(super) fn list_workspace_session_page(
+        cwd: &Path,
+        limit: usize,
+        cursor: Option<SessionListCursor>,
+    ) -> Result<SessionListPage> {
+        let workspace_key = workspace_key(cwd);
+        allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
+            let pool = migrated_pool().await?;
+            import_legacy_json_sessions(&pool).await?;
+            list_session_page_from_pool(&pool, limit, cursor, Some(workspace_key)).await
+        })
+    }
+
     pub(super) fn archive_session(session_id: &str) -> Result<bool> {
         let session_id = session_id.to_string();
         allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
@@ -1136,6 +1286,287 @@ mod sqlite_store {
             .run(&pool)
             .await?;
         Ok(pool)
+    }
+
+    async fn import_legacy_json_sessions(pool: &SqlitePool) -> Result<()> {
+        let dir = get_session_dir();
+        if !dir.exists() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(&dir)
+            .with_context(|| format!("Failed to read session directory {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+
+            let file = match load_session_file_from_path(&path) {
+                Ok(file) => file,
+                Err(err) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "skipping invalid legacy session JSON during sqlite import"
+                    );
+                    continue;
+                }
+            };
+
+            let exists = sqlx::query("SELECT 1 FROM sessions WHERE session_id = ?")
+                .bind(&file.session_id)
+                .fetch_optional(pool)
+                .await
+                .context("failed to check sqlite session before legacy import")?
+                .is_some();
+            if exists {
+                continue;
+            }
+
+            save_session_file_to_pool(pool, &file)
+                .await
+                .with_context(|| format!("failed to import legacy session {}", file.session_id))?;
+        }
+
+        Ok(())
+    }
+
+    async fn save_session_file_to_pool(pool: &SqlitePool, file: &SessionFile) -> Result<()> {
+        let mut tx = pool
+            .begin()
+            .await
+            .context("failed to begin sqlite session save transaction")?;
+
+        let cwd_path = Path::new(&file.cwd);
+        let ws_root = workspace_root(cwd_path);
+        let ws_key = workspace_key(cwd_path);
+        let ws_name = workspace_name(&ws_root);
+        let title = display_title(file);
+
+        sqlx::query(
+            r#"
+            INSERT INTO sessions (
+                session_id,
+                created_at,
+                last_modified,
+                cwd,
+                title,
+                custom_title,
+                chat_mode_override,
+                message_count,
+                workspace_key,
+                workspace_root,
+                workspace_name,
+                archived,
+                archived_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+            ON CONFLICT(session_id) DO NOTHING
+            "#,
+        )
+        .bind(&file.session_id)
+        .bind(file.created_at)
+        .bind(file.last_modified)
+        .bind(&file.cwd)
+        .bind(&title)
+        .bind(&file.custom_title)
+        .bind(&file.chat_mode_override)
+        .bind(usize_to_i64(file.messages.len()))
+        .bind(&ws_key)
+        .bind(ws_root.to_string_lossy().to_string())
+        .bind(&ws_name)
+        .execute(&mut *tx)
+        .await
+        .context("failed to insert sqlite legacy session")?;
+
+        for (position, message) in file.messages.iter().enumerate() {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO session_messages (
+                    session_id,
+                    position,
+                    role,
+                    msg_type,
+                    uuid,
+                    timestamp,
+                    content
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&file.session_id)
+            .bind(usize_to_i64(position))
+            .bind(role_for_message(message))
+            .bind(&message.msg_type)
+            .bind(&message.uuid)
+            .bind(message.timestamp)
+            .bind(
+                serde_json::to_string(&message.data)
+                    .context("failed to serialize sqlite session message JSON")?,
+            )
+            .execute(&mut *tx)
+            .await
+            .context("failed to insert sqlite legacy session message")?;
+        }
+
+        tx.commit()
+            .await
+            .context("failed to commit sqlite legacy session import")?;
+        Ok(())
+    }
+
+    async fn list_session_page_from_pool(
+        pool: &SqlitePool,
+        limit: usize,
+        cursor: Option<SessionListCursor>,
+        workspace_key_filter: Option<String>,
+    ) -> Result<SessionListPage> {
+        let fetch_limit = usize_to_i64(limit.saturating_add(1));
+        let rows = match (cursor, workspace_key_filter) {
+            (Some(cursor), Some(workspace_key)) => {
+                sqlx::query(
+                    r#"
+                    SELECT
+                        session_id,
+                        created_at,
+                        last_modified,
+                        message_count,
+                        cwd,
+                        title,
+                        custom_title,
+                        chat_mode_override,
+                        workspace_key,
+                        workspace_root,
+                        workspace_name
+                    FROM sessions
+                    WHERE archived = 0
+                      AND workspace_key = ?
+                      AND (
+                          last_modified < ?
+                          OR (last_modified = ? AND created_at < ?)
+                          OR (last_modified = ? AND created_at = ? AND session_id > ?)
+                      )
+                    ORDER BY last_modified DESC, created_at DESC, session_id ASC
+                    LIMIT ?
+                    "#,
+                )
+                .bind(workspace_key)
+                .bind(cursor.last_modified)
+                .bind(cursor.last_modified)
+                .bind(cursor.created_at)
+                .bind(cursor.last_modified)
+                .bind(cursor.created_at)
+                .bind(cursor.session_id)
+                .bind(fetch_limit)
+                .fetch_all(pool)
+                .await
+            }
+            (Some(cursor), None) => {
+                sqlx::query(
+                    r#"
+                    SELECT
+                        session_id,
+                        created_at,
+                        last_modified,
+                        message_count,
+                        cwd,
+                        title,
+                        custom_title,
+                        chat_mode_override,
+                        workspace_key,
+                        workspace_root,
+                        workspace_name
+                    FROM sessions
+                    WHERE archived = 0
+                      AND (
+                          last_modified < ?
+                          OR (last_modified = ? AND created_at < ?)
+                          OR (last_modified = ? AND created_at = ? AND session_id > ?)
+                      )
+                    ORDER BY last_modified DESC, created_at DESC, session_id ASC
+                    LIMIT ?
+                    "#,
+                )
+                .bind(cursor.last_modified)
+                .bind(cursor.last_modified)
+                .bind(cursor.created_at)
+                .bind(cursor.last_modified)
+                .bind(cursor.created_at)
+                .bind(cursor.session_id)
+                .bind(fetch_limit)
+                .fetch_all(pool)
+                .await
+            }
+            (None, Some(workspace_key)) => {
+                sqlx::query(
+                    r#"
+                    SELECT
+                        session_id,
+                        created_at,
+                        last_modified,
+                        message_count,
+                        cwd,
+                        title,
+                        custom_title,
+                        chat_mode_override,
+                        workspace_key,
+                        workspace_root,
+                        workspace_name
+                    FROM sessions
+                    WHERE archived = 0 AND workspace_key = ?
+                    ORDER BY last_modified DESC, created_at DESC, session_id ASC
+                    LIMIT ?
+                    "#,
+                )
+                .bind(workspace_key)
+                .bind(fetch_limit)
+                .fetch_all(pool)
+                .await
+            }
+            (None, None) => {
+                sqlx::query(
+                    r#"
+                    SELECT
+                        session_id,
+                        created_at,
+                        last_modified,
+                        message_count,
+                        cwd,
+                        title,
+                        custom_title,
+                        chat_mode_override,
+                        workspace_key,
+                        workspace_root,
+                        workspace_name
+                    FROM sessions
+                    WHERE archived = 0
+                    ORDER BY last_modified DESC, created_at DESC, session_id ASC
+                    LIMIT ?
+                    "#,
+                )
+                .bind(fetch_limit)
+                .fetch_all(pool)
+                .await
+            }
+        }
+        .context("failed to page sqlite sessions")?;
+
+        let mut sessions = rows
+            .into_iter()
+            .map(session_info_from_row)
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if sessions.len() > limit {
+            Some(cursor_for_session(&sessions[limit - 1]))
+        } else {
+            None
+        };
+        sessions.truncate(limit);
+        Ok(SessionListPage {
+            sessions,
+            next_cursor,
+        })
     }
 
     fn session_info_from_row(row: sqlx::sqlite::SqliteRow) -> Result<SessionInfo> {
@@ -1828,6 +2259,93 @@ mod tests {
             .collect();
         assert!(ids.iter().any(|id| id == "workspace-sqlite"));
         assert!(ids.iter().any(|id| id == "workspace-json"));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_list_sessions_page_imports_legacy_json_and_uses_cursor_order() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        for (id, created_at, last_modified) in
+            [("page-c", 30, 30), ("page-a", 10, 20), ("page-b", 15, 20)]
+        {
+            let file = SessionFile {
+                session_id: id.into(),
+                created_at,
+                last_modified,
+                cwd: "/proj".into(),
+                custom_title: Some(id.into()),
+                chat_mode_override: None,
+                messages: vec![user_sm(id, "00000000-0000-0000-0000-000000000301")],
+            };
+            write_session_file_to_path(&file, &get_session_file(id)).unwrap();
+        }
+        std::fs::write(get_session_dir().join("broken.json"), "{").unwrap();
+
+        let first = list_sessions_page(2, None).unwrap();
+        let first_ids: Vec<_> = first
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect();
+        assert_eq!(first_ids, vec!["page-c", "page-b"]);
+        assert!(first.next_cursor.is_some());
+
+        let second = list_sessions_page(2000, first.next_cursor).unwrap();
+        let second_ids: Vec<_> = second
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect();
+        assert_eq!(second_ids, vec!["page-a"]);
+        assert!(second.next_cursor.is_none());
+
+        let (sessions, messages) = query_sqlite_counts().unwrap();
+        assert_eq!(sessions, 3);
+        assert_eq!(messages, 3);
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_list_workspace_sessions_page_filters_before_cursoring() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        let project = temp.path().join("project");
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+
+        save_session(
+            "workspace-page-1",
+            &[user_message("one")],
+            &project.to_string_lossy(),
+        )
+        .unwrap();
+        save_session(
+            "workspace-page-2",
+            &[user_message("two")],
+            &project.to_string_lossy(),
+        )
+        .unwrap();
+        save_session(
+            "workspace-page-other",
+            &[user_message("other")],
+            &other.to_string_lossy(),
+        )
+        .unwrap();
+
+        let page = list_workspace_sessions_page(&project, 10, None).unwrap();
+        let ids: Vec<_> = page
+            .sessions
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.iter().all(|id| id.starts_with("workspace-page-")));
+        assert!(!ids.iter().any(|id| id == "workspace-page-other"));
     }
 
     #[cfg(feature = "sqlite-storage")]

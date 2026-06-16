@@ -74,17 +74,17 @@ session_store.ensure_ready().await?;
 ### 迁移步骤
 
 ```
-Phase A: storage.rs 中新增 SqliteSessionStore 引用（feature-gated）
-        原有 JSON save/load 不变
-        在 save_session 末尾追加 SQLite 写入
+Phase A/B: 已完成。storage.rs 在 sqlite-storage feature 下 SQLite 优先；
+           JSON 继续写入作为兼容 backup，SQLite 不可用时完整 fallback。
 
-Phase B: 读取优先从 SQLite，未命中时 fallback 到 JSON
-        list_sessions 改为 SQLite 查询（更快）
+Phase B.1: 已完成。list_sessions_page / list_workspace_sessions_page
+           使用 keyset 分页：
+           last_modified DESC, created_at DESC, session_id ASC。
 
-Phase C: 删除 JSON 写入逻辑
-        删除 fallback 读取
+Phase B.2: 已完成。分页/list 前幂等扫描顶层 sessions/*.json，
+           只导入 SQLite 缺失且可解析的 legacy session；损坏 JSON 跳过并 warning。
 
-Phase D: 可选：后续单独运行全量迁移脚本，将旧 JSON session 导入 SQLite
+Phase C: 暂不执行。当前策略是兼容优先，不删除 JSON 写入逻辑。
 ```
 
 ### 回滚方案
@@ -186,7 +186,20 @@ Phase D: 可选：后续单独运行全量迁移脚本，将旧 JSON task 导入
 
 ### 迁移步骤
 
-直接切换：`scheduled_tasks.json` 数据量小，不考虑双写。启动时检测 SQLite 模式是否启用，启用则从 SQLite 读，否则从 JSON 读。
+已按兼容优先策略实现：
+
+```
+Phase A/B: 已完成。SchedulerStore public API 保持同步不变；
+           sqlite-storage + json-storage feature 默认启用。
+
+Phase B.1: 首次 SQLite 使用时从 scheduled_tasks.json 幂等导入缺失 task。
+           SQLite 不可用时回退原 JSON store + lockfile 路径。
+
+Phase B.2: SQLite 写成功后 best-effort 刷新 scheduled_tasks.json backup。
+           删除后 backup 只从当前 SQLite rows 生成，避免旧 JSON 重新导入已删除 task。
+
+Phase C: 暂不执行。scheduled_tasks.json 保留为 backup/fallback。
+```
 
 ---
 
@@ -210,6 +223,26 @@ Phase D: 可选：后续单独运行全量迁移脚本，将旧 JSON task 导入
 ### 不需要替换的操作
 
 - `logs/{worker_id}.log` → 保持文件存储（非结构化日志，适合 tail/查看）
+
+### 迁移步骤
+
+已按兼容优先策略实现：
+
+```
+Phase A/B: 已完成。process_state.rs public API 保持不变；
+           sqlite-storage + json-storage feature 默认启用。
+
+Phase B.1: 首次 SQLite 读取时从 supervisor/shutdown/control/sleep JSON
+           和 workers/*.json 幂等导入缺失记录。
+
+Phase B.2: 写入优先尝试 SQLite，同时保留 JSON backup；
+           SQLite blocked/不可用时继续使用原 JSON 文件。
+
+Phase B.3: cleanup_stale_state_before_start 同时清理 SQLite key/row
+           和 JSON backup；worker log 文件仍保持文件存储。
+
+Phase C: 暂不执行。daemon JSON 文件保留为 backup/fallback。
+```
 
 ---
 
