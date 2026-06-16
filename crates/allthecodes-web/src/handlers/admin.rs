@@ -12,7 +12,8 @@ use serde_json::Value;
 use tracing::info;
 
 use allthecodes_config::settings::{
-    load_global_config, write_user_settings, RawSettings, SettingsSource,
+    load_global_config, validate_user_settings_candidate, write_user_settings, RawSettings,
+    SettingsSource,
 };
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_engine::types::tool::PermissionMode;
@@ -324,6 +325,7 @@ pub(crate) fn persist_setting(state: &WebState, key: &str, value: Value) -> Resu
 
     let mut raw = load_global_config().context("failed to load user settings")?;
     apply_value_to_raw(&mut raw, key, value.clone())?;
+    validate_user_settings_candidate(std::path::Path::new(state.engine().cwd()), raw.clone())?;
     let written = write_user_settings(&raw).context("failed to write user settings")?;
 
     state.engine().update_app_state(|app_state| {
@@ -342,6 +344,7 @@ fn persist_extra_setting(state: &WebState, path: &str, value: Value) -> Result<S
     let mut raw = load_global_config().context("failed to load user settings")?;
     raw.set_extra_path(path, value)
         .with_context(|| format!("invalid settings path: {path}"))?;
+    validate_user_settings_candidate(std::path::Path::new(state.engine().cwd()), raw.clone())?;
     let extra = raw.extra.clone();
     let written = write_user_settings(&raw).context("failed to write user settings")?;
 

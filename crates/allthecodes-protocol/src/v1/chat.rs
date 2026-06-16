@@ -85,6 +85,10 @@ pub struct StateResponse {
     pub usage: UsageResponse,
     pub commands: Vec<CommandInfo>,
     pub settings_map: HashMap<String, Value>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub settings_sources: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings_diagnostics: Vec<String>,
     pub effective_system_prompt: String,
     pub version: String,
     pub capabilities: HashMap<String, bool>,

@@ -825,6 +825,7 @@ Webhook 秘密令牌来源：
 | 端点 | 方法 | 用途 |
 |---|---|---|
 | /api/settings | POST | 应用设置（SettingsApply） |
+| /api/settings/layers | GET | 返回 effective settings、source map、layer entries、requirements diagnostics |
 | /api/command | POST | 执行命令（CommandRun） |
 | /api/providers | GET/POST/PATCH/DELETE | 模型提供商配置 |
 | /api/models | GET/PATCH | 模型配置 |

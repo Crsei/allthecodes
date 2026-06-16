@@ -30,10 +30,12 @@
 
 mod effective;
 mod first_run;
+mod layers;
 mod load;
 mod paths;
 mod providers;
 mod raw;
+mod requirements;
 mod schema;
 mod source;
 #[cfg(test)]
@@ -43,10 +45,12 @@ mod write;
 
 pub use effective::*;
 pub use first_run::*;
+pub use layers::*;
 pub use load::*;
 pub use paths::*;
 pub use providers::*;
 pub use raw::*;
+pub use requirements::*;
 pub use schema::*;
 pub use source::*;
 pub use types::*;

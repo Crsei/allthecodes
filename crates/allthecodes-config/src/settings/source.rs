@@ -19,6 +19,9 @@ pub enum SettingsSource {
     Managed,
     /// User-level settings (`~/.allthecodes/settings.json`).
     User,
+    /// Named profile from user-level `configProfiles`.
+    #[serde(rename = "user_profile")]
+    UserProfile,
     /// Project-level settings (`.allthecodes/settings.json`).
     Project,
     /// Project-local overrides (`.allthecodes/settings.local.json`).
@@ -27,6 +30,8 @@ pub enum SettingsSource {
     Env,
     /// CLI flag override (set by `main.rs` after loading).
     Cli,
+    /// Runtime override applied after CLI flags.
+    Runtime,
 }
 
 impl SettingsSource {
@@ -39,10 +44,12 @@ impl SettingsSource {
             SettingsSource::Default => 0,
             SettingsSource::Managed => 1,
             SettingsSource::User => 2,
-            SettingsSource::Project => 3,
-            SettingsSource::Local => 4,
-            SettingsSource::Env => 5,
-            SettingsSource::Cli => 6,
+            SettingsSource::UserProfile => 3,
+            SettingsSource::Project => 4,
+            SettingsSource::Local => 5,
+            SettingsSource::Env => 6,
+            SettingsSource::Cli => 7,
+            SettingsSource::Runtime => 8,
         }
     }
 
@@ -51,10 +58,12 @@ impl SettingsSource {
             SettingsSource::Default => "default",
             SettingsSource::Managed => "managed",
             SettingsSource::User => "user",
+            SettingsSource::UserProfile => "user_profile",
             SettingsSource::Project => "project",
             SettingsSource::Local => "local",
             SettingsSource::Env => "env",
             SettingsSource::Cli => "cli",
+            SettingsSource::Runtime => "runtime",
         }
     }
 }

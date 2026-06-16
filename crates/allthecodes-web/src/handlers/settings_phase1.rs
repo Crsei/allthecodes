@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use allthecodes_config::paths;
-use allthecodes_config::settings::{write_user_settings, RawSettings};
+use allthecodes_config::settings::{
+    load_effective_with_options, validate_user_settings_candidate, write_user_settings,
+    ConfigLayer, ConfigLayerEntry, LoadOptions, ProjectTrustPolicy, RawSettings,
+    RequirementViolation, SourceMap,
+};
 use allthecodes_session::memdir::{self, MemoryScope};
 
 use crate::handlers::admin::{normalize_settings_path, persist_setting};
@@ -89,6 +93,16 @@ pub struct DataImportRequest {
 pub struct DataImportResponse {
     pub ok: bool,
     pub imported_settings: bool,
+}
+
+#[derive(Serialize)]
+pub struct SettingsLayersResponse {
+    pub effective_map: HashMap<String, Value>,
+    pub source_map: SourceMap,
+    pub layers: Vec<ConfigLayer>,
+    pub entries: Vec<ConfigLayerEntry>,
+    pub requirement_violations: Vec<RequirementViolation>,
+    pub diagnostics: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -293,7 +307,10 @@ pub async fn data_export_handler(State(state): State<WebState>) -> impl IntoResp
     .into_response()
 }
 
-pub async fn data_import_handler(Json(req): Json<DataImportRequest>) -> impl IntoResponse {
+pub async fn data_import_handler(
+    State(state): State<WebState>,
+    Json(req): Json<DataImportRequest>,
+) -> impl IntoResponse {
     let mut imported_settings = false;
     if let Some(settings) = req.settings {
         if contains_sensitive_key(&settings) {
@@ -303,6 +320,11 @@ pub async fn data_import_handler(Json(req): Json<DataImportRequest>) -> impl Int
             Ok(raw) => raw,
             Err(err) => return bad_request(err.to_string()),
         };
+        if let Err(err) =
+            validate_user_settings_candidate(Path::new(state.engine().cwd()), raw.clone())
+        {
+            return bad_request(err.to_string());
+        }
         if let Err(err) = write_user_settings(&raw) {
             return internal_error(err.to_string());
         }
@@ -314,6 +336,36 @@ pub async fn data_import_handler(Json(req): Json<DataImportRequest>) -> impl Int
         imported_settings,
     })
     .into_response()
+}
+
+pub async fn settings_layers_handler(State(state): State<WebState>) -> impl IntoResponse {
+    let cwd = PathBuf::from(state.engine().cwd());
+    match load_effective_with_options(
+        &cwd,
+        LoadOptions {
+            trust_policy: ProjectTrustPolicy::TrustConfiguredOnly,
+            enforce_requirements: false,
+            ..Default::default()
+        },
+    ) {
+        Ok(loaded) => {
+            let diagnostics = loaded
+                .requirement_violations
+                .iter()
+                .map(|violation| violation.message.clone())
+                .collect();
+            Json(SettingsLayersResponse {
+                effective_map: state.engine().app_state().settings.settings_map(),
+                source_map: loaded.sources,
+                layers: loaded.layers,
+                entries: loaded.entries,
+                requirement_violations: loaded.requirement_violations,
+                diagnostics,
+            })
+            .into_response()
+        }
+        Err(err) => internal_error(err.to_string()),
+    }
 }
 
 pub async fn token_savings_handler(State(state): State<WebState>) -> impl IntoResponse {

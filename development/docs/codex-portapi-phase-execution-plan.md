@@ -476,6 +476,19 @@ Phase 5 已闭环到代码与测试：
 - requirements 能阻止不允许的 sandbox/permission/provider 设置。
 - 现有 `.allthecodes/settings.json` 不被破坏，提供迁移/兼容读取。
 
+### 执行记录
+
+| 命令/核对项 | 结果 |
+|---|---|
+| `cargo test -p allthecodes-config` | 通过：159 个 unit tests、0 个 doctests |
+| `cargo test -p allthecodes-protocol --features codegen` | 通过；同步更新 sibling `allthecodes-web/src/lib/generated/*` |
+| `cargo test -p allthecodes-web settings` | 通过：10 个 settings/provider 相关 tests |
+| `cargo check -p allthecodes-config -p allthecodes-protocol` | 通过 |
+| `/api/settings/layers` | 已加入协议元数据、Web handler、generated API docs |
+| `/api/state` | 保持 `settings_map`，追加 `settings_sources` 与 `settings_diagnostics` |
+| requirements | 支持 `ALLTHECODES_REQUIREMENTS` 指向 JSON/TOML；首批约束覆盖 `permissions.defaultMode`、`sandbox.mode`、`apiProvider`、`backend` |
+| trust gate | `TrustConfiguredOnly` 下未信任 project/local config 不参与 effective merge，并返回 disabled layer/entry |
+
 ---
 
 ## Phase 8：PID / Process Lifecycle 管理

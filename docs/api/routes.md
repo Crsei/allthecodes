@@ -82,6 +82,7 @@ Generated from `allthecodes-protocol` metadata.
 | `ActivityRecorderSessions` | `GET` | `/api/activity-recorder/sessions` | - | `JsonValue` | `concurrent` | - | - |
 | `ActivityRecorderClear` | `POST` | `/api/activity-recorder/clear` | - | `JsonValue` | `concurrent` | - | - |
 | `SettingsApply` | `POST` | `/api/settings` | `JsonValue` | `JsonValue` | `concurrent` | - | - |
+| `SettingsLayers` | `GET` | `/api/settings/layers` | - | `JsonValue` | `concurrent` | - | - |
 | `CommandRun` | `POST` | `/api/command` | `JsonValue` | `JsonValue` | `concurrent` | - | - |
 | `MemoryConfigGet` | `GET` | `/api/memory/config` | - | `JsonValue` | `concurrent` | - | - |
 | `MemoryConfigPatch` | `PATCH` | `/api/memory/config` | `JsonValue` | `JsonValue` | `concurrent` | - | - |

@@ -113,6 +113,8 @@ pub struct StateResponse {
     pub usage: UsageResponse,
     pub commands: Vec<CommandInfo>,
     pub settings_map: HashMap<String, Value>,
+    pub settings_sources: HashMap<String, String>,
+    pub settings_diagnostics: Vec<String>,
     pub effective_system_prompt: String,
     pub version: String,
     pub capabilities: HashMap<String, bool>,
@@ -472,6 +474,13 @@ pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
         .collect();
 
     let settings_map = app_state.settings.settings_map();
+    let settings_sources = app_state
+        .settings
+        .sources
+        .iter()
+        .map(|(key, source)| (key.clone(), source.as_str().to_string()))
+        .collect::<HashMap<_, _>>();
+    let settings_diagnostics = settings_diagnostics_for_state(&state);
     let effective_system_prompt = effective_system_prompt_from_map(&settings_map);
     let session_id = state.engine().current_session_id().to_string();
     let chat_mode_preference =
@@ -499,10 +508,31 @@ pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
         },
         commands,
         settings_map,
+        settings_sources,
+        settings_diagnostics,
         effective_system_prompt,
         version: state.app_version().to_string(),
         capabilities: crate::handlers::capabilities_map(),
     })
+}
+
+fn settings_diagnostics_for_state(state: &WebState) -> Vec<String> {
+    let cwd = std::path::PathBuf::from(state.engine().cwd());
+    match allthecodes_config::settings::load_effective_with_options(
+        &cwd,
+        allthecodes_config::settings::LoadOptions {
+            trust_policy: allthecodes_config::settings::ProjectTrustPolicy::TrustConfiguredOnly,
+            enforce_requirements: false,
+            ..Default::default()
+        },
+    ) {
+        Ok(loaded) => loaded
+            .requirement_violations
+            .iter()
+            .map(|violation| violation.message.clone())
+            .collect(),
+        Err(err) => vec![err.to_string()],
+    }
 }
 
 /// GET /api/system-prompt -- Return the prompt text currently exposed to chat.

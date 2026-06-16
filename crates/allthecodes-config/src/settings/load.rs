@@ -1,14 +1,21 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use serde::Deserialize;
+use serde_json::Value;
 
 use super::effective::{EffectiveSettings, LoadedSettings};
+use super::layers::{
+    attach_effective_values, flatten_layer_entries, ConfigLayer, ConfigLayerDisabledReason,
+    ConfigLayerEntry, ConfigLayerStatus,
+};
 use super::paths::{
     find_local_config, find_project_config, managed_settings_path, user_settings_path,
 };
 use super::providers::{normalize_api_provider, API_PROVIDER_OPENAI_CODEX};
 use super::raw::{GlobalConfig, MergedConfig, ProjectConfig, RawSettings};
+use super::requirements::{evaluate_requirements, load_requirements};
 use super::source::{SettingsSource, SourceMap};
 
 // ---------------------------------------------------------------------------
@@ -24,6 +31,24 @@ fn load_raw_from(path: &Path) -> Result<Option<RawSettings>> {
     let raw: RawSettings = serde_json::from_str(&contents)
         .with_context(|| format!("Failed to parse {}", path.display()))?;
     Ok(Some(raw))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProjectTrustPolicy {
+    #[default]
+    TrustAll,
+    TrustConfiguredOnly,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    pub profile: Option<String>,
+    pub cli_overrides: Option<RawSettings>,
+    pub runtime_overrides: Option<RawSettings>,
+    pub trust_policy: ProjectTrustPolicy,
+    pub enforce_requirements: bool,
+    #[doc(hidden)]
+    pub user_settings_override: Option<RawSettings>,
 }
 
 /// Load the user-level settings. Returns `Ok(RawSettings::default())` if
@@ -103,17 +128,26 @@ pub(crate) fn apply_active_auth_profile(merged: &mut EffectiveSettings, sources:
         })
         || active.eq_ignore_ascii_case("codex");
 
-    if let Some(backend) = profile.backend {
+    if let Some(backend) = profile
+        .backend
+        .filter(|_| should_profile_override(sources, "backend", source))
+    {
         merged.backend = Some(backend);
         sources.insert("backend".to_string(), source);
         sources.insert(profile_key("backend"), source);
     }
-    if let Some(api_provider) = profile.api_provider {
+    if let Some(api_provider) = profile
+        .api_provider
+        .filter(|_| should_profile_override(sources, "apiProvider", source))
+    {
         merged.api_provider = Some(api_provider);
         sources.insert("apiProvider".to_string(), source);
         sources.insert(profile_key("apiProvider"), source);
     }
-    if let Some(model) = profile.model {
+    if let Some(model) = profile
+        .model
+        .filter(|_| should_profile_override(sources, "model", source))
+    {
         merged.model = Some(model);
         sources.insert("model".to_string(), source);
         sources.insert(profile_key("model"), source);
@@ -133,7 +167,10 @@ pub(crate) fn apply_active_auth_profile(merged: &mut EffectiveSettings, sources:
         sources.insert("model_reasoning_effort".to_string(), source);
         sources.insert(profile_key("modelReasoningEffort"), source);
     }
-    if let Some(api_key) = profile.api_key {
+    if let Some(api_key) = profile
+        .api_key
+        .filter(|_| should_profile_override(sources, "apiKey", source))
+    {
         merged.api_key = Some(api_key.clone());
         let env_key = if is_codex {
             "OPENAI_CODEX_AUTH_TOKEN"
@@ -191,6 +228,14 @@ pub(crate) fn apply_active_auth_profile(merged: &mut EffectiveSettings, sources:
     }
 }
 
+fn should_profile_override(sources: &SourceMap, key: &str, source: SettingsSource) -> bool {
+    sources
+        .get(key)
+        .copied()
+        .map(|existing| existing.rank() <= source.rank())
+        .unwrap_or(true)
+}
+
 /// Apply environment-variable overrides in place.
 fn apply_env_overrides(merged: &mut EffectiveSettings, sources: &mut SourceMap) {
     let set_src = |key: &str, sources: &mut SourceMap| {
@@ -234,6 +279,54 @@ fn apply_env_overrides(merged: &mut EffectiveSettings, sources: &mut SourceMap) 
         merged.theme = Some(theme);
         set_src("theme", sources);
     }
+}
+
+fn collect_env_overrides_raw() -> Option<RawSettings> {
+    let mut raw = RawSettings::default();
+    let mut found = false;
+
+    if let Ok(model) = std::env::var("CLAUDE_MODEL") {
+        raw.model = Some(model);
+        found = true;
+    }
+    if let Ok(backend) = std::env::var("CC_BACKEND").or_else(|_| std::env::var("CLAUDE_BACKEND")) {
+        raw.backend = Some(backend);
+        found = true;
+    }
+    if let Ok(provider) = std::env::var("CC_API_PROVIDER") {
+        raw.api_provider = Some(provider);
+        found = true;
+    }
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        raw.api_key = Some(key);
+        found = true;
+    }
+    if let Ok(v) = std::env::var("CLAUDE_VERBOSE") {
+        raw.verbose = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+        found = true;
+    }
+    if let Ok(mode) = std::env::var("CLAUDE_PERMISSION_MODE") {
+        raw.permission_mode = Some(mode.clone());
+        raw.permissions = Some(super::types::PermissionsSettings {
+            default_mode: Some(mode),
+            ..Default::default()
+        });
+        found = true;
+    }
+    if let Ok(lang) = std::env::var("CLAUDE_LANGUAGE") {
+        raw.language = Some(lang);
+        found = true;
+    }
+    if let Ok(style) = std::env::var("CLAUDE_OUTPUT_STYLE") {
+        raw.output_style = Some(style);
+        found = true;
+    }
+    if let Ok(theme) = std::env::var("CLAUDE_THEME") {
+        raw.theme = Some(theme);
+        found = true;
+    }
+
+    found.then_some(raw)
 }
 
 /// Re-read process environment overrides into an already-loaded settings
@@ -425,14 +518,190 @@ pub(crate) fn apply_managed_non_overridable(
     }
 }
 
+pub fn validate_user_settings_candidate(cwd: &Path, raw: RawSettings) -> Result<()> {
+    load_effective_with_options(
+        cwd,
+        LoadOptions {
+            enforce_requirements: true,
+            user_settings_override: Some(raw),
+            ..Default::default()
+        },
+    )
+    .map(|_| ())
+}
+
+fn apply_layer(
+    acc: &mut RawSettings,
+    sources: &mut SourceMap,
+    layers: &mut Vec<ConfigLayer>,
+    entries: &mut Vec<ConfigLayerEntry>,
+    raw: RawSettings,
+    source: SettingsSource,
+    path: Option<PathBuf>,
+) {
+    let value = serde_json::to_value(&raw).unwrap_or(Value::Null);
+    entries.extend(flatten_layer_entries(&value, source, path.as_deref(), None));
+    acc.merge_from(raw, source, sources);
+    layers.push(ConfigLayer {
+        source,
+        source_path: path,
+        status: ConfigLayerStatus::Applied,
+        disabled_reason: None,
+    });
+}
+
+fn record_disabled_layer(
+    layers: &mut Vec<ConfigLayer>,
+    entries: &mut Vec<ConfigLayerEntry>,
+    raw: RawSettings,
+    source: SettingsSource,
+    path: PathBuf,
+    reason: ConfigLayerDisabledReason,
+) {
+    let value = serde_json::to_value(&raw).unwrap_or(Value::Null);
+    entries.extend(flatten_layer_entries(
+        &value,
+        source,
+        Some(&path),
+        Some(reason.clone()),
+    ));
+    layers.push(ConfigLayer {
+        source,
+        source_path: Some(path),
+        status: ConfigLayerStatus::Disabled,
+        disabled_reason: Some(reason),
+    });
+}
+
+fn resolve_paths_for_file(mut raw: RawSettings, path: &Path) -> RawSettings {
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    if let Some(cloud_sync_path) = raw.cloud_sync_path.as_mut() {
+        *cloud_sync_path = resolve_config_path(base, cloud_sync_path);
+    }
+    if let Some(permissions) = raw.permissions.as_mut() {
+        resolve_string_paths(base, &mut permissions.additional_directories);
+    }
+    if let Some(sandbox) = raw.sandbox.as_mut() {
+        resolve_string_paths(base, &mut sandbox.filesystem.allow_read);
+        resolve_string_paths(base, &mut sandbox.filesystem.deny_read);
+        resolve_string_paths(base, &mut sandbox.filesystem.allow_write);
+        resolve_string_paths(base, &mut sandbox.filesystem.deny_write);
+    }
+    raw
+}
+
+fn resolve_string_paths(base: &Path, values: &mut [String]) {
+    for value in values {
+        *value = resolve_config_path(base, value);
+    }
+}
+
+fn resolve_config_path(base: &Path, value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return value.to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).display().to_string();
+        }
+    }
+    let path = Path::new(trimmed);
+    if path.is_absolute() {
+        trimmed.to_string()
+    } else {
+        base.join(path).display().to_string()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TrustedWorkspacesFile {
+    List(Vec<String>),
+    Wrapped { workspaces: Vec<String> },
+}
+
+fn is_workspace_trusted(config_path: &Path) -> bool {
+    let workspace = config_path
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(config_path);
+    let Ok(workspace) = workspace.canonicalize() else {
+        return false;
+    };
+    let path = crate::paths::data_root().join("trusted-workspaces.json");
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(file) = serde_json::from_str::<TrustedWorkspacesFile>(&contents) else {
+        return false;
+    };
+    let entries = match file {
+        TrustedWorkspacesFile::List(entries) => entries,
+        TrustedWorkspacesFile::Wrapped { workspaces } => workspaces,
+    };
+    entries.iter().any(|entry| {
+        let path = PathBuf::from(entry);
+        path.canonicalize()
+            .map(|candidate| candidate == workspace)
+            .unwrap_or(false)
+    })
+}
+
+fn apply_profile(
+    acc: &mut RawSettings,
+    sources: &mut SourceMap,
+    layers: &mut Vec<ConfigLayer>,
+    entries: &mut Vec<ConfigLayerEntry>,
+    user: &RawSettings,
+    profile: &str,
+    source_path: Option<&Path>,
+) -> Result<()> {
+    let profiles = user.config_profiles.as_ref().with_context(|| {
+        format!("config profile `{profile}` was requested but no configProfiles are configured")
+    })?;
+    let mut raw = profiles
+        .get(profile)
+        .cloned()
+        .with_context(|| format!("config profile `{profile}` does not exist"))?;
+    if let Some(path) = source_path {
+        raw = resolve_paths_for_file(raw, path);
+    }
+    apply_layer(
+        acc,
+        sources,
+        layers,
+        entries,
+        raw,
+        SettingsSource::UserProfile,
+        source_path.map(Path::to_path_buf),
+    );
+    Ok(())
+}
+
+fn enforce_loaded_requirements(loaded: &LoadedSettings) -> Result<()> {
+    if loaded.requirement_violations.is_empty() {
+        return Ok(());
+    }
+    let messages = loaded
+        .requirement_violations
+        .iter()
+        .map(|violation| violation.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    bail!("settings requirements violated: {messages}")
+}
+
 /// Load the full four-layer stack (managed/user/project/local) plus env.
 ///
 /// This is the preferred entry point for new code. The legacy
 /// [`load_and_merge`] wraps this and returns only [`EffectiveSettings`].
-pub fn load_effective(cwd: &Path) -> Result<LoadedSettings> {
+pub fn load_effective_with_options(cwd: &Path, options: LoadOptions) -> Result<LoadedSettings> {
     let mut acc = RawSettings::default();
     let mut sources = SourceMap::new();
     let mut loaded_paths = Vec::new();
+    let mut layers = Vec::new();
+    let mut entries = Vec::new();
     let mut managed = None;
     let mut user = None;
     let mut project = None;
@@ -441,23 +710,81 @@ pub fn load_effective(cwd: &Path) -> Result<LoadedSettings> {
     // 1. managed
     let managed_path = managed_settings_path();
     if let Some(raw) = load_raw_from(&managed_path)? {
-        acc.merge_from(raw.clone(), SettingsSource::Managed, &mut sources);
+        let raw = resolve_paths_for_file(raw, &managed_path);
+        apply_layer(
+            &mut acc,
+            &mut sources,
+            &mut layers,
+            &mut entries,
+            raw.clone(),
+            SettingsSource::Managed,
+            Some(managed_path.clone()),
+        );
         managed = Some(raw);
         loaded_paths.push((SettingsSource::Managed, managed_path));
     }
 
     // 2. user
     let user_path = user_settings_path();
-    if let Some(raw) = load_raw_from(&user_path)? {
-        acc.merge_from(raw.clone(), SettingsSource::User, &mut sources);
+    let user_raw = if let Some(raw) = options.user_settings_override.clone() {
+        Some(raw)
+    } else {
+        load_raw_from(&user_path)?
+    };
+    if let Some(raw) = user_raw {
+        let raw = resolve_paths_for_file(raw, &user_path);
+        apply_layer(
+            &mut acc,
+            &mut sources,
+            &mut layers,
+            &mut entries,
+            raw.clone(),
+            SettingsSource::User,
+            Some(user_path.clone()),
+        );
+        if let Some(profile) = options.profile.as_deref() {
+            apply_profile(
+                &mut acc,
+                &mut sources,
+                &mut layers,
+                &mut entries,
+                &raw,
+                profile,
+                Some(&user_path),
+            )?;
+        }
         user = Some(raw);
         loaded_paths.push((SettingsSource::User, user_path));
+    } else if let Some(profile) = options.profile.as_deref() {
+        bail!("config profile `{profile}` was requested but user settings do not exist");
     }
 
     // 3. project
     if let Some(p) = find_project_config(cwd) {
         if let Some(raw) = load_raw_from(&p)? {
-            acc.merge_from(raw.clone(), SettingsSource::Project, &mut sources);
+            let raw = resolve_paths_for_file(raw, &p);
+            if options.trust_policy == ProjectTrustPolicy::TrustConfiguredOnly
+                && !is_workspace_trusted(&p)
+            {
+                record_disabled_layer(
+                    &mut layers,
+                    &mut entries,
+                    raw.clone(),
+                    SettingsSource::Project,
+                    p.clone(),
+                    ConfigLayerDisabledReason::ProjectNotTrusted,
+                );
+            } else {
+                apply_layer(
+                    &mut acc,
+                    &mut sources,
+                    &mut layers,
+                    &mut entries,
+                    raw.clone(),
+                    SettingsSource::Project,
+                    Some(p.clone()),
+                );
+            }
             project = Some(raw);
             loaded_paths.push((SettingsSource::Project, p));
         }
@@ -466,30 +793,109 @@ pub fn load_effective(cwd: &Path) -> Result<LoadedSettings> {
     // 4. local
     if let Some(p) = find_local_config(cwd) {
         if let Some(raw) = load_raw_from(&p)? {
-            acc.merge_from(raw.clone(), SettingsSource::Local, &mut sources);
+            let raw = resolve_paths_for_file(raw, &p);
+            if options.trust_policy == ProjectTrustPolicy::TrustConfiguredOnly
+                && !is_workspace_trusted(&p)
+            {
+                record_disabled_layer(
+                    &mut layers,
+                    &mut entries,
+                    raw.clone(),
+                    SettingsSource::Local,
+                    p.clone(),
+                    ConfigLayerDisabledReason::ProjectNotTrusted,
+                );
+            } else {
+                apply_layer(
+                    &mut acc,
+                    &mut sources,
+                    &mut layers,
+                    &mut entries,
+                    raw.clone(),
+                    SettingsSource::Local,
+                    Some(p.clone()),
+                );
+            }
             local = Some(raw);
             loaded_paths.push((SettingsSource::Local, p));
         }
     }
 
+    if let Some(raw) = collect_env_overrides_raw() {
+        apply_layer(
+            &mut acc,
+            &mut sources,
+            &mut layers,
+            &mut entries,
+            raw,
+            SettingsSource::Env,
+            None,
+        );
+    }
+
+    if let Some(raw) = options.cli_overrides.clone() {
+        apply_layer(
+            &mut acc,
+            &mut sources,
+            &mut layers,
+            &mut entries,
+            raw,
+            SettingsSource::Cli,
+            None,
+        );
+    }
+
+    if let Some(raw) = options.runtime_overrides.clone() {
+        apply_layer(
+            &mut acc,
+            &mut sources,
+            &mut layers,
+            &mut entries,
+            raw,
+            SettingsSource::Runtime,
+            None,
+        );
+    }
+
+    let effective_raw_value = serde_json::to_value(&acc).unwrap_or(Value::Null);
     let mut effective = EffectiveSettings::from_raw(acc);
     apply_active_auth_profile(&mut effective, &mut sources);
 
-    // 5. env
-    apply_env_overrides(&mut effective, &mut sources);
     if let Some(raw) = managed.as_ref() {
         apply_managed_non_overridable(&mut effective, &mut sources, raw);
     }
+    attach_effective_values(&mut entries, &effective_raw_value);
 
-    Ok(LoadedSettings {
+    let (_requirements_path, requirements) = load_requirements()?;
+    let requirement_violations = evaluate_requirements(&effective, &requirements);
+
+    let loaded = LoadedSettings {
         effective,
         sources,
+        layers,
+        entries,
+        requirement_violations,
         managed,
         user,
         project,
         local,
         loaded_paths,
-    })
+    };
+    if options.enforce_requirements {
+        enforce_loaded_requirements(&loaded)?;
+    }
+    Ok(loaded)
+}
+
+pub fn load_effective(cwd: &Path) -> Result<LoadedSettings> {
+    load_effective_with_options(
+        cwd,
+        LoadOptions {
+            trust_policy: ProjectTrustPolicy::TrustAll,
+            enforce_requirements: true,
+            ..Default::default()
+        },
+    )
 }
 
 /// Convenience wrapper — loads the full stack and returns the merged

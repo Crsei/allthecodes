@@ -546,6 +546,313 @@ fn loaders_sources_prompt_and_extra_use_allthecodes_paths() {
 }
 
 #[test]
+#[serial]
+fn strict_trust_disables_untrusted_project_and_local_layers() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let data_root = temp.path().join("home");
+    let project_root = temp.path().join("project");
+    let config_dir = project_root.join(".allthecodes");
+    std::fs::create_dir_all(&data_root).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", &data_root);
+    let _requirements =
+        EnvGuard::set_path("ALLTHECODES_REQUIREMENTS", &temp.path().join("none.toml"));
+    std::fs::write(
+        data_root.join("settings.json"),
+        serde_json::to_vec(&RawSettings {
+            model: Some("user-model".to_string()),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.join("settings.json"),
+        serde_json::to_vec(&RawSettings {
+            model: Some("project-model".to_string()),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.join("settings.local.json"),
+        serde_json::to_vec(&RawSettings {
+            theme: Some("local-theme".to_string()),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let loaded = load_effective_with_options(
+        &project_root,
+        LoadOptions {
+            trust_policy: ProjectTrustPolicy::TrustConfiguredOnly,
+            enforce_requirements: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(loaded.effective.model.as_deref(), Some("user-model"));
+    assert!(loaded.effective.theme.is_none());
+    assert_eq!(loaded.source_of("model"), SettingsSource::User);
+    assert!(loaded
+        .layers
+        .iter()
+        .any(|layer| layer.source == SettingsSource::Project
+            && layer.status == ConfigLayerStatus::Disabled));
+    assert!(loaded.entries.iter().any(|entry| entry.path == "model"
+        && entry.disabled_reason == Some(ConfigLayerDisabledReason::ProjectNotTrusted)));
+}
+
+#[test]
+#[serial]
+fn profile_partial_override_inherits_user_settings() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let data_root = temp.path().join("home");
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&data_root).unwrap();
+    std::fs::create_dir_all(&project_root).unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", &data_root);
+    let _requirements =
+        EnvGuard::set_path("ALLTHECODES_REQUIREMENTS", &temp.path().join("none.toml"));
+
+    std::fs::write(
+        data_root.join("settings.json"),
+        serde_json::to_vec(&RawSettings {
+            model: Some("base-model".to_string()),
+            theme: Some("base-theme".to_string()),
+            config_profiles: Some(HashMap::from([(
+                "work".to_string(),
+                RawSettings {
+                    theme: Some("profile-theme".to_string()),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let loaded = load_effective_with_options(
+        &project_root,
+        LoadOptions {
+            profile: Some("work".to_string()),
+            enforce_requirements: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(loaded.effective.model.as_deref(), Some("base-model"));
+    assert_eq!(loaded.effective.theme.as_deref(), Some("profile-theme"));
+    assert_eq!(loaded.source_of("theme"), SettingsSource::UserProfile);
+}
+
+#[test]
+fn extra_values_merge_recursively() {
+    let mut acc = RawSettings {
+        extra: HashMap::from([(
+            "nested".to_string(),
+            json!({ "one": true, "shared": { "a": 1, "b": 1 }, "array": [1] }),
+        )]),
+        ..Default::default()
+    };
+    let mut sources = SourceMap::new();
+    acc.merge_from(
+        RawSettings {
+            extra: HashMap::from([(
+                "nested".to_string(),
+                json!({ "two": true, "shared": { "b": 2 }, "array": [2] }),
+            )]),
+            ..Default::default()
+        },
+        SettingsSource::Project,
+        &mut sources,
+    );
+
+    assert_eq!(
+        acc.extra.get("nested"),
+        Some(&json!({
+            "one": true,
+            "two": true,
+            "shared": { "a": 1, "b": 2 },
+            "array": [2],
+        }))
+    );
+}
+
+#[test]
+#[serial]
+fn path_fields_resolve_relative_to_config_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let data_root = temp.path().join("home");
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&data_root).unwrap();
+    std::fs::create_dir_all(&project_root).unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", &data_root);
+    let _requirements =
+        EnvGuard::set_path("ALLTHECODES_REQUIREMENTS", &temp.path().join("none.toml"));
+
+    std::fs::write(
+        data_root.join("settings.json"),
+        serde_json::to_vec(&RawSettings {
+            cloud_sync_path: Some("sync".to_string()),
+            permissions: Some(PermissionsSettings {
+                additional_directories: vec!["extra".to_string()],
+                ..Default::default()
+            }),
+            sandbox: Some(SandboxSettings {
+                filesystem: SandboxFilesystemSettings {
+                    allow_write: vec!["writes".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let loaded = load_effective_with_options(
+        &project_root,
+        LoadOptions {
+            enforce_requirements: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        loaded.effective.cloud_sync_path.as_deref(),
+        Some(data_root.join("sync").to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        loaded.effective.permissions.additional_directories,
+        vec![data_root.join("extra").to_string_lossy().to_string()]
+    );
+    assert_eq!(
+        loaded.effective.sandbox.filesystem.allow_write,
+        vec![data_root.join("writes").to_string_lossy().to_string()]
+    );
+}
+
+#[test]
+#[serial]
+fn requirements_report_diagnostics_and_can_enforce() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let data_root = temp.path().join("home");
+    let project_root = temp.path().join("project");
+    let requirements = temp.path().join("requirements.toml");
+    std::fs::create_dir_all(&data_root).unwrap();
+    std::fs::create_dir_all(&project_root).unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", &data_root);
+    let _requirements = EnvGuard::set_path("ALLTHECODES_REQUIREMENTS", &requirements);
+
+    std::fs::write(
+        &requirements,
+        r#"
+[requirements.backend]
+allowedValues = ["codex"]
+
+[requirements."permissions.defaultMode"]
+deniedValues = ["bypass"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        data_root.join("settings.json"),
+        serde_json::to_vec(&RawSettings {
+            backend: Some("native".to_string()),
+            permissions: Some(PermissionsSettings {
+                default_mode: Some("bypass".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let loaded = load_effective_with_options(
+        &project_root,
+        LoadOptions {
+            enforce_requirements: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(loaded.requirement_violations.len(), 2);
+
+    let err = load_effective_with_options(
+        &project_root,
+        LoadOptions {
+            enforce_requirements: true,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("settings requirements violated"));
+}
+
+#[test]
+#[serial]
+fn env_cli_runtime_layers_follow_declared_precedence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let data_root = temp.path().join("home");
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&data_root).unwrap();
+    std::fs::create_dir_all(&project_root).unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", &data_root);
+    let _requirements =
+        EnvGuard::set_path("ALLTHECODES_REQUIREMENTS", &temp.path().join("none.toml"));
+    let _env_model = EnvGuard::set_value("CLAUDE_MODEL", "env-model");
+
+    std::fs::write(
+        data_root.join("settings.json"),
+        serde_json::to_vec(&RawSettings {
+            model: Some("user-model".to_string()),
+            backend: Some("user-backend".to_string()),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let loaded = load_effective_with_options(
+        &project_root,
+        LoadOptions {
+            cli_overrides: Some(RawSettings {
+                model: Some("cli-model".to_string()),
+                backend: Some("cli-backend".to_string()),
+                ..Default::default()
+            }),
+            runtime_overrides: Some(RawSettings {
+                backend: Some("runtime-backend".to_string()),
+                ..Default::default()
+            }),
+            enforce_requirements: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(loaded.effective.model.as_deref(), Some("cli-model"));
+    assert_eq!(loaded.effective.backend.as_deref(), Some("runtime-backend"));
+    assert_eq!(loaded.source_of("model"), SettingsSource::Cli);
+    assert_eq!(loaded.source_of("backend"), SettingsSource::Runtime);
+    assert!(loaded
+        .layers
+        .iter()
+        .any(|layer| layer.source == SettingsSource::Env));
+}
+
+#[test]
 fn unknown_keys_land_in_extra() {
     let raw: RawSettings = serde_json::from_str(
         r#"{ "model": "opus", "customFlag": true, "anotherNested": {"a":1} }"#,

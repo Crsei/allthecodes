@@ -3,9 +3,11 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use super::layers::{ConfigLayer, ConfigLayerEntry};
 use super::providers::ModelCapabilitySettings;
 use super::providers::ProviderProfileSettings;
 use super::raw::{merge_str_lists, RawSettings};
+use super::requirements::RequirementViolation;
 use super::source::{SettingsSource, SourceMap};
 use super::types::{PermissionsSettings, SandboxSettings, SpinnerTipsSettings, StatusLineSettings};
 
@@ -263,6 +265,9 @@ impl EffectiveSettings {
 pub struct LoadedSettings {
     pub effective: EffectiveSettings,
     pub sources: SourceMap,
+    pub layers: Vec<ConfigLayer>,
+    pub entries: Vec<ConfigLayerEntry>,
+    pub requirement_violations: Vec<RequirementViolation>,
     pub managed: Option<RawSettings>,
     pub user: Option<RawSettings>,
     pub project: Option<RawSettings>,

@@ -364,6 +364,10 @@ pub fn integration_handlers() -> HandlerRegistry {
 pub fn settings_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
         .handle(ApiMethod::SettingsApply, post(handlers::settings_handler))
+        .handle(
+            ApiMethod::SettingsLayers,
+            get(handlers::settings_layers_handler),
+        )
         .handle(ApiMethod::CommandRun, post(handlers::command_handler))
         .handle(
             ApiMethod::MemoryConfigGet,

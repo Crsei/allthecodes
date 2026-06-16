@@ -30,6 +30,7 @@ pub struct RawSettings {
     pub api_provider: Option<String>,
     pub active_auth_profile: Option<String>,
     pub auth_profiles: Option<HashMap<String, ProviderProfileSettings>>,
+    pub config_profiles: Option<HashMap<String, RawSettings>>,
     pub theme: Option<String>,
     pub verbose: Option<bool>,
 
@@ -239,6 +240,15 @@ impl RawSettings {
             sources.insert("authProfiles".to_string(), source);
         }
 
+        if let Some(profiles) = other.config_profiles {
+            let mut merged = self.config_profiles.take().unwrap_or_default();
+            for (name, profile) in profiles {
+                merged.insert(name, profile);
+            }
+            self.config_profiles = Some(merged);
+            sources.insert("configProfiles".to_string(), source);
+        }
+
         if let Some(list) = other.allowed_tools {
             let merged = merge_str_lists(self.allowed_tools.as_deref(), Some(&list));
             self.allowed_tools = Some(merged);
@@ -373,9 +383,20 @@ impl RawSettings {
         }
 
         for (k, v) in other.extra {
-            self.extra.insert(k.clone(), v);
+            merge_json_value(self.extra.entry(k.clone()).or_insert(Value::Null), v);
             sources.insert(k, source);
         }
+    }
+}
+
+pub(crate) fn merge_json_value(base: &mut Value, over: Value) {
+    match (base, over) {
+        (Value::Object(base), Value::Object(over)) => {
+            for (key, value) in over {
+                merge_json_value(base.entry(key).or_insert(Value::Null), value);
+            }
+        }
+        (slot, value) => *slot = value,
     }
 }
 
@@ -461,7 +482,7 @@ pub(crate) fn merge_permissions(
         out.auto_mode = Some(merge_auto_mode(out.auto_mode.take(), auto_mode));
     }
     for (k, v) in over.extra {
-        out.extra.insert(k, v);
+        merge_json_value(out.extra.entry(k).or_insert(Value::Null), v);
     }
     out
 }
@@ -472,7 +493,7 @@ fn merge_auto_mode(base: Option<AutoModeSettings>, over: AutoModeSettings) -> Au
     out.allow = merge_str_lists(Some(&out.allow), Some(&over.allow));
     out.soft_deny = merge_str_lists(Some(&out.soft_deny), Some(&over.soft_deny));
     for (k, v) in over.extra {
-        out.extra.insert(k, v);
+        merge_json_value(out.extra.entry(k).or_insert(Value::Null), v);
     }
     out
 }
@@ -508,7 +529,7 @@ fn merge_sandbox(base: Option<SandboxSettings>, over: SandboxSettings) -> Sandbo
     out.filesystem = merge_sandbox_fs(out.filesystem, over.filesystem);
     out.network = merge_sandbox_net(out.network, over.network);
     for (k, v) in over.extra {
-        out.extra.insert(k, v);
+        merge_json_value(out.extra.entry(k).or_insert(Value::Null), v);
     }
     out
 }
@@ -523,7 +544,7 @@ fn merge_sandbox_fs(
     out.allow_write = merge_str_lists(Some(&out.allow_write), Some(&over.allow_write));
     out.deny_write = merge_str_lists(Some(&out.deny_write), Some(&over.deny_write));
     for (k, v) in over.extra {
-        out.extra.insert(k, v);
+        merge_json_value(out.extra.entry(k).or_insert(Value::Null), v);
     }
     out
 }
@@ -544,7 +565,7 @@ fn merge_sandbox_net(
         out.socks_proxy_port = over.socks_proxy_port;
     }
     for (k, v) in over.extra {
-        out.extra.insert(k, v);
+        merge_json_value(out.extra.entry(k).or_insert(Value::Null), v);
     }
     out
 }

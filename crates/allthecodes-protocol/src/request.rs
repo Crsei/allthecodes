@@ -376,6 +376,9 @@ crate::api_definitions! {
         params: Value,
         response: Value,
     },
+    SettingsLayers => "GET /api/settings/layers" {
+        response: Value,
+    },
     CommandRun => "POST /api/command" {
         params: Value,
         response: Value,
