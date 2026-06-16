@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -20,6 +21,7 @@ pub struct IpcSessionHub {
     event_log: EventLog<BackendMessage>,
     router: OutboundRouter<BackendMessage>,
     active_owner: Mutex<Option<ConnectionId>>,
+    lagged_disconnects: Mutex<HashMap<ConnectionId, u64>>,
 }
 
 impl IpcSessionHub {
@@ -33,6 +35,7 @@ impl IpcSessionHub {
             event_log: EventLog::new(DEFAULT_EVENT_LOG_CAPACITY),
             router: OutboundRouter::new(DEFAULT_WRITER_CHANNEL_CAPACITY),
             active_owner: Mutex::new(None),
+            lagged_disconnects: Mutex::new(HashMap::new()),
         })
     }
 
@@ -54,6 +57,7 @@ impl IpcSessionHub {
     pub fn unregister_connection(&self, connection_id: &ConnectionId) {
         self.router.unregister(connection_id);
         self.release_turn_if_owner(connection_id);
+        self.lagged_disconnects.lock().remove(connection_id);
     }
 
     pub fn take_bridge_receiver(&self) -> Option<mpsc::Receiver<BackendMessage>> {
@@ -63,6 +67,13 @@ impl IpcSessionHub {
     pub fn publish(&self, message: BackendMessage) -> SequencedEvent<BackendMessage> {
         let event = self.event_log.append(message);
         let report = self.router.broadcast(event.clone());
+        for connection_id in &report.full_connections {
+            *self
+                .lagged_disconnects
+                .lock()
+                .entry(connection_id.clone())
+                .or_insert(0) += 1;
+        }
         if report.full > 0 || report.closed > 0 {
             warn!(
                 session_id = %self.session_id,
@@ -122,6 +133,10 @@ impl IpcSessionHub {
             }
             Err(RouterSendError::UnknownConnection { .. }) => {}
         }
+    }
+
+    pub fn take_disconnect_lag(&self, connection_id: &ConnectionId) -> Option<u64> {
+        self.lagged_disconnects.lock().remove(connection_id)
     }
 
     pub fn lagged_message(skipped: u64, last_dropped_type: Option<String>) -> BackendMessage {
@@ -197,6 +212,19 @@ mod tests {
             BackendMessage::SystemInfo { text, .. } if text == "hello"
         ));
         assert_eq!(hub.replay_after(Some(0)).events.len(), 1);
+    }
+
+    #[test]
+    fn full_writer_channel_records_lagged_disconnect() {
+        let hub = IpcSessionHub::new("session-1");
+        let connection_id = ConnectionId::from_static("lagged");
+        let _rx = hub.register_connection(connection_id.clone());
+
+        for index in 0..=DEFAULT_WRITER_CHANNEL_CAPACITY {
+            hub.publish(info(&format!("event-{index}")));
+        }
+
+        assert_eq!(hub.take_disconnect_lag(&connection_id), Some(1));
     }
 
     #[test]

@@ -67,6 +67,7 @@ pub struct DaemonState {
     pub notification_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<Notification>>>>,
     pub event_log: EventLog<SseEvent>,
     pub event_router: OutboundRouter<SseEvent>,
+    lagged_disconnects: Arc<Mutex<HashMap<ConnectionId, u64>>>,
     pub port: u16,
     // Team memory proxy (populated when Feature::TeamMemory is enabled)
     pub team_memory_port: Option<u16>,
@@ -86,6 +87,7 @@ impl DaemonState {
             notification_rx: Arc::new(Mutex::new(Some(notification_rx))),
             event_log: EventLog::new(DEFAULT_EVENT_LOG_CAPACITY),
             event_router: OutboundRouter::new(DEFAULT_WRITER_CHANNEL_CAPACITY),
+            lagged_disconnects: Arc::new(Mutex::new(HashMap::new())),
             port,
             team_memory_port: None,
             team_memory_secret: None,
@@ -103,7 +105,22 @@ impl DaemonState {
             event_type: event.event_type,
             data: event.data,
         });
-        self.event_router.broadcast(event);
+        let report = self.event_router.broadcast(event);
+        for connection_id in &report.full_connections {
+            *self
+                .lagged_disconnects
+                .lock()
+                .entry(connection_id.clone())
+                .or_insert(0) += 1;
+        }
+        if report.full > 0 || report.closed > 0 {
+            tracing::warn!(
+                delivered = report.delivered,
+                full = report.full,
+                closed = report.closed,
+                "daemon SSE fanout skipped lagging connections"
+            );
+        }
     }
 
     /// Return all buffered events whose numeric ID is strictly greater than
@@ -140,6 +157,7 @@ impl DaemonState {
     pub fn unregister_sse_client(&self, client_id: &str, connection_id: &ConnectionId) {
         self.event_router.unregister(connection_id);
         self.clients.write().remove(client_id);
+        self.lagged_disconnects.lock().remove(connection_id);
     }
 
     pub fn latest_seq(&self) -> EventSeq {
@@ -147,24 +165,22 @@ impl DaemonState {
     }
 
     pub fn lagged_event(&self, status: &ReplayStatus) -> Option<SseEvent> {
-        let ReplayStatus::Compacted {
-            requested_after_seq,
-            oldest_seq,
-        } = status
-        else {
-            return None;
-        };
-        let latest_seq = self.latest_seq();
-        Some(SseEvent {
-            id: latest_seq.to_string(),
+        lagged_sse_event(status, self.latest_seq())
+    }
+
+    pub fn live_lagged_event(&self, skipped: u64) -> SseEvent {
+        SseEvent {
+            id: String::new(),
             event_type: "lagged".to_string(),
             data: serde_json::json!({
-                "requested_after_seq": requested_after_seq,
-                "oldest_seq": oldest_seq,
-                "latest_seq": latest_seq,
-                "skipped": oldest_seq.saturating_sub(*requested_after_seq + 1),
+                "skipped": skipped,
+                "latest_seq": self.latest_seq(),
             }),
-        })
+        }
+    }
+
+    pub fn take_disconnect_lag(&self, connection_id: &ConnectionId) -> Option<u64> {
+        self.lagged_disconnects.lock().remove(connection_id)
     }
 
     /// Whether any frontend SSE client is currently connected.
@@ -179,6 +195,26 @@ impl DaemonState {
     pub fn terminal_focus(&self) -> bool {
         self.has_clients()
     }
+}
+
+fn lagged_sse_event(status: &ReplayStatus, latest_seq: EventSeq) -> Option<SseEvent> {
+    let ReplayStatus::Compacted {
+        requested_after_seq,
+        oldest_seq,
+    } = status
+    else {
+        return None;
+    };
+    Some(SseEvent {
+        id: String::new(),
+        event_type: "lagged".to_string(),
+        data: serde_json::json!({
+            "requested_after_seq": requested_after_seq,
+            "oldest_seq": oldest_seq,
+            "latest_seq": latest_seq,
+            "skipped": oldest_seq.saturating_sub(*requested_after_seq + 1),
+        }),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -239,5 +275,22 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].id, "4");
         assert_eq!(result[1].id, "5");
+    }
+
+    #[test]
+    fn lagged_sse_event_does_not_advance_last_event_id() {
+        let event = lagged_sse_event(
+            &ReplayStatus::Compacted {
+                requested_after_seq: 1,
+                oldest_seq: 5,
+            },
+            10,
+        )
+        .expect("compacted replay should produce lag event");
+
+        assert!(event.id.is_empty());
+        assert_eq!(event.event_type, "lagged");
+        assert_eq!(event.data["latest_seq"], serde_json::json!(10));
+        assert_eq!(event.data["skipped"], serde_json::json!(3));
     }
 }

@@ -30,6 +30,8 @@ pub enum ReplayStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayBatch<T> {
     pub status: ReplayStatus,
+    pub requested_after_seq: EventSeq,
+    pub high_watermark: EventSeq,
     pub events: Vec<SequencedEvent<T>>,
 }
 
@@ -67,22 +69,28 @@ where
     where
         F: FnOnce(EventSeq) -> T,
     {
-        let seq = self.inner.next_seq.fetch_add(1, Ordering::SeqCst);
-        let message = build(seq);
-        let event = SequencedEvent::new(seq, message);
-        if self.inner.capacity > 0 {
-            let mut events = self.inner.events.lock().expect("event log mutex poisoned");
-            if events.len() >= self.inner.capacity {
-                events.pop_front();
-            }
-            events.push_back(event.clone());
+        if self.inner.capacity == 0 {
+            let seq = self.inner.next_seq.fetch_add(1, Ordering::SeqCst);
+            return SequencedEvent::new(seq, build(seq));
         }
+
+        let mut events = self.inner.events.lock().expect("event log mutex poisoned");
+        let seq = self.inner.next_seq.fetch_add(1, Ordering::SeqCst);
+        let event = SequencedEvent::new(seq, build(seq));
+        if events.len() >= self.inner.capacity {
+            events.pop_front();
+        }
+        events.push_back(event.clone());
         event
     }
 
     pub fn replay_after(&self, after_seq: Option<EventSeq>) -> ReplayBatch<T> {
-        let requested_after_seq = after_seq.unwrap_or_else(|| self.latest_seq());
         let events = self.inner.events.lock().expect("event log mutex poisoned");
+        let high_watermark = events
+            .back()
+            .map(|event| event.seq)
+            .unwrap_or_else(|| self.latest_seq());
+        let requested_after_seq = after_seq.unwrap_or(high_watermark);
         let oldest_seq = events.front().map(|event| event.seq);
         let status = match oldest_seq {
             Some(oldest) if requested_after_seq + 1 < oldest => ReplayStatus::Compacted {
@@ -96,7 +104,12 @@ where
             .filter(|event| event.seq > requested_after_seq)
             .cloned()
             .collect();
-        ReplayBatch { status, events }
+        ReplayBatch {
+            status,
+            requested_after_seq,
+            high_watermark,
+            events,
+        }
     }
 
     pub fn oldest_seq(&self) -> Option<EventSeq> {
@@ -152,6 +165,8 @@ mod tests {
         let replay = log.replay_after(Some(first.seq));
 
         assert_eq!(replay.status, ReplayStatus::Complete);
+        assert_eq!(replay.requested_after_seq, first.seq);
+        assert_eq!(replay.high_watermark, third.seq);
         assert_eq!(replay.events, vec![second, third]);
     }
 
@@ -163,6 +178,8 @@ mod tests {
         let replay = log.replay_after(None);
 
         assert_eq!(replay.status, ReplayStatus::Complete);
+        assert_eq!(replay.requested_after_seq, log.latest_seq());
+        assert_eq!(replay.high_watermark, log.latest_seq());
         assert!(replay.events.is_empty());
     }
 

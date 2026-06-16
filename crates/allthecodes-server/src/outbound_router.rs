@@ -14,11 +14,13 @@ pub enum RouterSendError<T> {
     Closed { event: SequencedEvent<T> },
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RouterBroadcastReport {
     pub delivered: usize,
     pub full: usize,
     pub closed: usize,
+    pub full_connections: Vec<ConnectionId>,
+    pub closed_connections: Vec<ConnectionId>,
 }
 
 #[derive(Debug)]
@@ -106,10 +108,12 @@ where
                 Ok(()) => report.delivered += 1,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     report.full += 1;
+                    report.full_connections.push(connection_id.clone());
                     stale.push(connection_id);
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     report.closed += 1;
+                    report.closed_connections.push(connection_id.clone());
                     stale.push(connection_id);
                 }
             }
@@ -192,6 +196,23 @@ mod tests {
         assert_eq!(router.len(), 1);
     }
 
+    #[test]
+    fn broadcast_reports_lagging_connection_ids() {
+        let router = OutboundRouter::new(1);
+        let full = ConnectionId::from_static("full");
+        let mut live = router.register(ConnectionId::from_static("live"));
+        let _blocked = router.register(full.clone());
+
+        router.send_to(&full, event(1, "queued")).unwrap();
+        let report = router.broadcast(event(2, "next"));
+
+        assert_eq!(report.delivered, 1);
+        assert_eq!(report.full, 1);
+        assert_eq!(report.full_connections, vec![full]);
+        assert_eq!(router.len(), 1);
+        assert_eq!(live.try_recv().unwrap(), event(2, "next"));
+    }
+
     #[tokio::test]
     async fn broadcasts_to_all_registered_connections() {
         let router = OutboundRouter::new(1);
@@ -205,7 +226,9 @@ mod tests {
             RouterBroadcastReport {
                 delivered: 2,
                 full: 0,
-                closed: 0
+                closed: 0,
+                full_connections: Vec::new(),
+                closed_connections: Vec::new(),
             }
         );
         assert_eq!(one.recv().await.unwrap(), event(1, "a"));

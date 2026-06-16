@@ -162,6 +162,7 @@ async fn handle_ipc_socket(
     // ── Task: forward outbound messages to WebSocket ──────────────
     let writer_session_id = actual_session_id.clone();
     let writer_hub = hub.clone();
+    let writer_connection_id = connection_id.clone();
     let mut outbound_handle = tokio::spawn(async move {
         if send_backend_ws_message(&mut ws_sender, &ready)
             .await
@@ -171,6 +172,7 @@ async fn handle_ipc_socket(
         }
 
         let replay = writer_hub.replay_after(after_seq);
+        let replay_high_watermark = replay.high_watermark;
         if let Some(lagged) =
             IpcSessionHub::replay_lagged_message(&replay.status, writer_hub.latest_seq())
         {
@@ -207,6 +209,9 @@ async fn handle_ipc_socket(
         }
 
         while let Some(event) = outbound_rx.recv().await {
+            if event.seq <= replay_high_watermark {
+                continue;
+            }
             if send_backend_ws_message(&mut ws_sender, &event.message)
                 .await
                 .is_err()
@@ -220,6 +225,11 @@ async fn handle_ipc_socket(
             {
                 break;
             }
+        }
+
+        if let Some(skipped) = writer_hub.take_disconnect_lag(&writer_connection_id) {
+            let lagged = IpcSessionHub::lagged_message(skipped, None);
+            let _ = send_backend_ws_message(&mut ws_sender, &lagged).await;
         }
     });
 

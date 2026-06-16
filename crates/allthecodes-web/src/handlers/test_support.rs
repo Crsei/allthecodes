@@ -12,7 +12,6 @@ use allthecodes_engine::types::config::QueryEngineConfig;
 use allthecodes_ipc_protocol::subsystem_types::{
     AgentDefinitionEntry, AgentDefinitionSource, ConfigScope, McpServerConfigEntry,
 };
-use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
 use axum::body::to_bytes;
 use serde_json::Value;
 use std::path::Path;
@@ -130,19 +129,4 @@ pub(super) fn read_user_settings(home: &TempDir) -> allthecodes_config::settings
     let path = home.path().join("settings.json");
     serde_json::from_str(&std::fs::read_to_string(path).expect("settings file"))
         .expect("settings json")
-}
-
-pub(super) fn make_test_skill(name: &str) -> SkillDefinition {
-    SkillDefinition {
-        name: name.to_string(),
-        source: SkillSource::Bundled,
-        base_dir: None,
-        frontmatter: SkillFrontmatter {
-            description: format!("Skill {} description", name),
-            version: Some("1.0.0".to_string()),
-            user_invocable: true,
-            ..Default::default()
-        },
-        prompt_body: format!("Do the {} thing.", name),
-    }
 }

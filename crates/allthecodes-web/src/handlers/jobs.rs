@@ -584,7 +584,7 @@ fn filter_runs(
     let mut runs: Vec<JobRunSummary> = runs
         .into_iter()
         .filter(|record| profile_matches(record.profile_id.as_deref(), profile_id))
-        .filter(|record| job_id.map_or(true, |job_id| record.run.job_id == job_id))
+        .filter(|record| job_id.is_none_or(|job_id| record.run.job_id == job_id))
         .map(|record| record.run)
         .collect();
     runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
@@ -592,7 +592,7 @@ fn filter_runs(
 }
 
 fn profile_matches(job_profile: Option<&str>, query_profile: Option<&str>) -> bool {
-    query_profile.map_or(true, |profile_id| job_profile == Some(profile_id))
+    query_profile.is_none_or(|profile_id| job_profile == Some(profile_id))
 }
 
 fn sort_jobs(jobs: &mut [JobSummary]) {
@@ -774,7 +774,7 @@ fn internal_error(error: String) -> Response {
 mod tests {
     use super::*;
     use crate::handlers::test_support::*;
-    use serde_json::{json, Value};
+    use serde_json::json;
     use serial_test::serial;
 
     fn create_request() -> JobCreateRequest {

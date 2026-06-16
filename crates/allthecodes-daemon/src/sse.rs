@@ -50,8 +50,13 @@ pub async fn sse_handler(
     });
     let mut replay_events = Vec::new();
 
+    // Register before replay so events published during connection setup are
+    // queued live. The replay high-watermark below is used to drop duplicates.
+    let rx = state.register_sse_client(query.client_id.clone(), connection_id.clone());
+
     // Replay missed events.
     let replay = state.replay_after(replay_after);
+    let replay_high_watermark = replay.high_watermark;
     if let Some(lagged) = state.lagged_event(&replay.status) {
         replay_events.push(lagged);
     }
@@ -74,24 +79,34 @@ pub async fn sse_handler(
         });
     }
 
-    // Register client.
-    let rx = state.register_sse_client(query.client_id.clone(), connection_id.clone());
-
     // Build the SSE stream.
     let replay_stream = stream::iter(replay_events.into_iter().map(sse_to_event));
     let live_state = state.clone();
     let live_client_id = query.client_id;
     let live_connection_id = connection_id;
-    let live_stream = stream::unfold(rx, move |mut rx| {
+    let live_stream = stream::unfold((rx, false), move |(mut rx, lag_sent)| {
         let state = live_state.clone();
         let client_id = live_client_id.clone();
         let connection_id = live_connection_id.clone();
         async move {
-            match rx.recv().await {
-                Some(event) => Some((sse_to_event(event.message), rx)),
-                None => {
-                    state.unregister_sse_client(&client_id, &connection_id);
-                    None
+            loop {
+                match rx.recv().await {
+                    Some(event) if event.seq <= replay_high_watermark => continue,
+                    Some(event) => return Some((sse_to_event(event.message), (rx, lag_sent))),
+                    None if !lag_sent => {
+                        if let Some(skipped) = state.take_disconnect_lag(&connection_id) {
+                            return Some((
+                                sse_to_event(state.live_lagged_event(skipped)),
+                                (rx, true),
+                            ));
+                        }
+                        state.unregister_sse_client(&client_id, &connection_id);
+                        return None;
+                    }
+                    None => {
+                        state.unregister_sse_client(&client_id, &connection_id);
+                        return None;
+                    }
                 }
             }
         }
@@ -103,9 +118,13 @@ pub async fn sse_handler(
 
 fn sse_to_event(sse_event: SseEvent) -> Result<Event, Infallible> {
     let event = Event::default()
-        .id(sse_event.id)
         .event(sse_event.event_type)
         .json_data(sse_event.data)
         .unwrap_or_else(|_| Event::default());
+    let event = if sse_event.id.is_empty() {
+        event
+    } else {
+        event.id(sse_event.id)
+    };
     Ok(event)
 }
