@@ -19,6 +19,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::api::client::{strip_anthropic_cache_fields, MessagesRequest};
+use crate::api::provider_runtime::{
+    metadata_from_response, provider_error_from_response, ProviderEndpoint, ProviderStreamTransport,
+};
 use allthecodes_types::message::{ContentBlock, MessageDelta, StreamEvent, Usage};
 
 // ---------------------------------------------------------------------------
@@ -432,29 +435,29 @@ pub(crate) async fn google_stream(
     api_key: &str,
     request: &MessagesRequest,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
-    let url = format!(
-        "{}/models/{}:streamGenerateContent?key={}&alt=sse",
-        base_url.trim_end_matches('/'),
-        request.model,
-        api_key,
-    );
+    let endpoint = ProviderEndpoint::google(base_url, api_key);
+    let mut url =
+        endpoint.url_for_path(&format!("/models/{}:streamGenerateContent", request.model))?;
+    url.query_pairs_mut().append_pair("alt", "sse");
 
     let body = build_gemini_request(request);
 
-    let response = http
-        .post(&url)
+    let response = endpoint
+        .apply_headers(http.post(url))
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
         .await
-        .context("failed to send Google Gemini request")?;
+        .map_err(|error| crate::api::provider_runtime::ProviderError::transport("google", error))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let error_body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Google Gemini error (HTTP {}): {}", status, error_body);
+        return Err(provider_error_from_response("google", response)
+            .await
+            .into());
     }
 
+    let metadata = metadata_from_response("google", ProviderStreamTransport::SseHttp, &response);
+    tracing::debug!(?metadata, "provider stream established");
     let stream = parse_gemini_sse_byte_stream(response.bytes_stream());
     Ok(Box::pin(stream))
 }
@@ -472,29 +475,21 @@ pub(crate) async fn google_count_tokens(
         total_tokens: u64,
     }
 
-    let url = format!(
-        "{}/models/{}:countTokens?key={}",
-        base_url.trim_end_matches('/'),
-        request.model,
-        api_key,
-    );
+    let endpoint = ProviderEndpoint::google(base_url, api_key);
+    let url = endpoint.url_for_path(&format!("/models/{}:countTokens", request.model))?;
     let body = build_gemini_count_tokens_request(request);
-    let response = http
-        .post(&url)
+    let response = endpoint
+        .apply_headers(http.post(url))
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
         .await
-        .context("failed to send Google Gemini countTokens request")?;
+        .map_err(|error| crate::api::provider_runtime::ProviderError::transport("google", error))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let error_body = response.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "Google Gemini countTokens error (HTTP {}): {}",
-            status,
-            error_body
-        );
+        return Err(provider_error_from_response("google", response)
+            .await
+            .into());
     }
 
     let parsed: CountTokensResponse = response

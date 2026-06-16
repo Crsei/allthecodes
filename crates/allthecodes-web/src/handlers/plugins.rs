@@ -385,3 +385,7 @@ mod tests {
         }));
     }
 }
+
+#[cfg(test)]
+#[path = "plugins_tests.rs"]
+mod api_tests;

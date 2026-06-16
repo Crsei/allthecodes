@@ -1399,3 +1399,7 @@ fn stored_message_from(msg: &Message) -> StoredMessage {
         },
     }
 }
+
+#[cfg(test)]
+#[path = "sessions_tests.rs"]
+mod tests;

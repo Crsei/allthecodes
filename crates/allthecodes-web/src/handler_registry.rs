@@ -512,6 +512,10 @@ pub fn provider_handlers() -> HandlerRegistry {
             delete(handlers::providers_delete_handler),
         )
         .handle(
+            ApiMethod::ProvidersProbe,
+            post(handlers::providers_probe_handler),
+        )
+        .handle(
             ApiMethod::ProvidersRefreshModels,
             post(handlers::providers_refresh_models_handler),
         )

@@ -519,6 +519,10 @@ crate::api_definitions! {
     ProvidersDelete => "DELETE /api/providers/{id}" {
         response: Value,
     },
+    ProvidersProbe => "POST /api/providers/{id}/probe" {
+        params: v1::providers::ProviderProbeRequest,
+        response: v1::providers::ProviderProbeResponse,
+    },
     ProvidersRefreshModels => "POST /api/providers/{id}/models/refresh" {
         response: Value,
     },

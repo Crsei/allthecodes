@@ -509,3 +509,7 @@ fn workspace_not_found() -> Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+#[path = "workspaces_tests.rs"]
+mod tests;

@@ -199,3 +199,7 @@ fn error_response(status: StatusCode, code: &'static str, error: impl Into<Strin
     .into_body();
     (status, Json(body)).into_response()
 }
+
+#[cfg(test)]
+#[path = "channels_tests.rs"]
+mod tests;

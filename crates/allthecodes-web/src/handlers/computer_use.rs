@@ -134,3 +134,7 @@ fn permission_label(state: PermissionState) -> &'static str {
         PermissionState::Unknown => "unknown",
     }
 }
+
+#[cfg(test)]
+#[path = "computer_use_tests.rs"]
+mod tests;

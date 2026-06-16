@@ -1,6 +1,8 @@
 //! Retry logic with exponential backoff and model fallback
 use std::time::Duration;
 
+use crate::api::provider_runtime::ProviderErrorKind;
+
 /// Retry configuration
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
@@ -58,36 +60,11 @@ impl ApiErrorCategory {
 
 /// Categorize an API error response
 pub fn categorize_api_error(status: u16, body: &str) -> ApiErrorCategory {
-    match status {
-        429 => {
-            // Check for overloaded vs rate limit
-            if body.contains("overloaded") {
-                ApiErrorCategory::Overloaded
-            } else {
-                ApiErrorCategory::RateLimit {
-                    retry_after_ms: None,
-                }
-            }
-        }
-        529 => ApiErrorCategory::Overloaded,
-        500..=599 => ApiErrorCategory::ServerError,
-        400 => {
-            if body.contains("prompt is too long") || body.contains("too many tokens") {
-                ApiErrorCategory::PromptTooLong
-            } else if body.contains("max_tokens") {
-                ApiErrorCategory::MaxOutputTokens
-            } else {
-                ApiErrorCategory::InvalidRequest {
-                    message: body.to_string(),
-                }
-            }
-        }
-        401 | 403 => ApiErrorCategory::AuthError,
-        _ => ApiErrorCategory::Unknown {
-            status: Some(status),
-            message: body.to_string(),
-        },
-    }
+    api_category_from_provider_kind(
+        ProviderErrorKind::classify(Some(status), None, body),
+        Some(status),
+        body,
+    )
 }
 
 /// Categorize a failure that happened before the stream was handed to callers.
@@ -100,55 +77,37 @@ pub fn categorize_stream_start_error(message: &str) -> ApiErrorCategory {
         return categorize_api_error(status, message);
     }
 
-    let lower = message.to_ascii_lowercase();
-    if lower.contains("prompt is too long")
-        || lower.contains("prompt_too_long")
-        || lower.contains("too many tokens")
-    {
-        return ApiErrorCategory::PromptTooLong;
-    }
-    if lower.contains("max_tokens") || lower.contains("max output tokens") {
-        return ApiErrorCategory::MaxOutputTokens;
-    }
-    if lower.contains("unauthorized")
-        || lower.contains("forbidden")
-        || lower.contains("invalid api key")
-        || lower.contains("authentication")
-    {
-        return ApiErrorCategory::AuthError;
-    }
-    if lower.contains("invalid request") || lower.contains("bad request") {
-        return ApiErrorCategory::InvalidRequest {
-            message: message.to_string(),
-        };
-    }
-    if lower.contains("overloaded") || lower.contains("high demand") || lower.contains("capacity") {
-        return ApiErrorCategory::Overloaded;
-    }
-    if lower.contains("rate limit")
-        || lower.contains("rate_limit")
-        || lower.contains("too many requests")
-    {
-        return ApiErrorCategory::RateLimit {
-            retry_after_ms: None,
-        };
-    }
-    if lower.contains("failed to send")
-        || lower.contains("error sending")
-        || lower.contains("timed out")
-        || lower.contains("timeout")
-        || lower.contains("connection")
-        || lower.contains("connect")
-        || lower.contains("dns")
-        || lower.contains("eof")
-        || lower.contains("network")
-    {
-        return ApiErrorCategory::ServerError;
-    }
+    api_category_from_provider_kind(
+        ProviderErrorKind::classify(None, None, message),
+        None,
+        message,
+    )
+}
 
-    ApiErrorCategory::Unknown {
-        status: None,
-        message: message.to_string(),
+fn api_category_from_provider_kind(
+    kind: ProviderErrorKind,
+    status: Option<u16>,
+    message: &str,
+) -> ApiErrorCategory {
+    match kind {
+        ProviderErrorKind::RateLimited => ApiErrorCategory::RateLimit {
+            retry_after_ms: None,
+        },
+        ProviderErrorKind::ServerOverloaded => ApiErrorCategory::Overloaded,
+        ProviderErrorKind::RetryableTransport => ApiErrorCategory::ServerError,
+        ProviderErrorKind::AuthenticationFailed => ApiErrorCategory::AuthError,
+        ProviderErrorKind::ContextWindowExceeded => ApiErrorCategory::PromptTooLong,
+        ProviderErrorKind::InvalidRequest | ProviderErrorKind::PolicyBlocked => {
+            ApiErrorCategory::InvalidRequest {
+                message: message.to_string(),
+            }
+        }
+        ProviderErrorKind::QuotaExceeded | ProviderErrorKind::UnknownProviderError => {
+            ApiErrorCategory::Unknown {
+                status,
+                message: message.to_string(),
+            }
+        }
     }
 }
 

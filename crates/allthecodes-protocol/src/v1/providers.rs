@@ -141,3 +141,78 @@ pub struct ProviderUpdateRequest {
     #[serde(default)]
     pub provider_options: Option<Value>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProbeTransport {
+    Http,
+    WebSocket,
+}
+
+impl Default for ProviderProbeTransport {
+    fn default() -> Self {
+        Self::WebSocket
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct ProviderProbeRequest {
+    #[serde(default)]
+    pub transport: ProviderProbeTransport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProbeStatus {
+    Ok,
+    Unsupported,
+    AuthFailed,
+    NetworkError,
+    QuotaOrRateLimited,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProbeErrorKind {
+    ContextWindowExceeded,
+    QuotaExceeded,
+    RateLimited,
+    PolicyBlocked,
+    ServerOverloaded,
+    RetryableTransport,
+    AuthenticationFailed,
+    InvalidRequest,
+    UnknownProviderError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct ProviderProbeMetadata {
+    pub provider: String,
+    pub transport: ProviderProbeTransport,
+    pub status: Option<u16>,
+    pub request_id: Option<String>,
+    pub headers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct ProviderProbeResponse {
+    pub provider_id: String,
+    pub transport: ProviderProbeTransport,
+    pub status: ProviderProbeStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<ProviderProbeErrorKind>,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ProviderProbeMetadata>,
+}

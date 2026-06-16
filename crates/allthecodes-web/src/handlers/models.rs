@@ -261,3 +261,7 @@ pub async fn models_set_default_handler(
     })
     .into_response()
 }
+
+#[cfg(test)]
+#[path = "models_tests.rs"]
+mod tests;

@@ -5,6 +5,9 @@ use futures::Stream;
 use serde_json::{json, Value};
 
 use crate::api::client::{build_openai_compat_url, is_openai_codex_provider, MessagesRequest};
+use crate::api::provider_runtime::{
+    metadata_from_response, provider_error_from_response, ProviderEndpoint, ProviderStreamTransport,
+};
 use allthecodes_types::message::{ContentBlock, MessageDelta, StreamEvent, Usage};
 
 use super::builder::build_openai_request;
@@ -20,6 +23,7 @@ pub(crate) async fn openai_compat_stream(
     provider_name: &str,
     request: &MessagesRequest,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+    let endpoint = ProviderEndpoint::openai_compat(provider_name, base_url, api_key)?;
     let url = build_openai_compat_url(base_url, provider_name);
     let body = build_openai_request(request, provider_name);
 
@@ -30,18 +34,12 @@ pub(crate) async fn openai_compat_stream(
         "OpenAI-compat request"
     );
 
-    let mut req_builder = http.post(&url).header("Content-Type", "application/json");
-    if is_openai_codex_provider(provider_name) {
-        req_builder = req_builder.header("Accept", "text/event-stream");
-    }
-
-    if provider_name.eq_ignore_ascii_case("azure") {
-        req_builder = req_builder.header("api-key", api_key);
-    } else {
-        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
-    }
-
-    let response = match req_builder.json(&body).send().await {
+    let response = match endpoint
+        .apply_headers(http.post(&url))
+        .json(&body)
+        .send()
+        .await
+    {
         Ok(resp) => resp,
         Err(e) => {
             tracing::error!(
@@ -51,21 +49,21 @@ pub(crate) async fn openai_compat_stream(
                 error_debug = ?e,
                 "HTTP request failed"
             );
-            anyhow::bail!("failed to send request to {}: {}", provider_name, e);
+            return Err(
+                crate::api::provider_runtime::ProviderError::transport(provider_name, e).into(),
+            );
         }
     };
 
     if !response.status().is_success() {
-        let status = response.status();
-        let error_body = response.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "Provider {} error (HTTP {}): {}",
-            provider_name,
-            status,
-            error_body
-        );
+        return Err(provider_error_from_response(provider_name, response)
+            .await
+            .into());
     }
 
+    let metadata =
+        metadata_from_response(provider_name, ProviderStreamTransport::SseHttp, &response);
+    tracing::debug!(?metadata, "provider stream established");
     let byte_stream = response.bytes_stream();
     if is_openai_codex_provider(provider_name) {
         Ok(Box::pin(parse_codex_sse_byte_stream(byte_stream)))

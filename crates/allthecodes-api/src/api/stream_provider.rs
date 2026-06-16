@@ -10,12 +10,12 @@ use anyhow::{Context, Result};
 use futures::Stream;
 
 use crate::api::client::{
-    apply_prompt_cache_policy_to_body, build_anthropic_headers_for_body,
-    build_anthropic_headers_for_body_with_beta_policy, is_official_anthropic_base_url,
-    parse_sse_byte_stream, strip_anthropic_compatible_only_fields, AnthropicAuth, MessagesRequest,
-    PromptCacheCapability,
+    apply_prompt_cache_policy_to_body, is_official_anthropic_base_url, parse_sse_byte_stream,
+    strip_anthropic_compatible_only_fields, AnthropicAuth, MessagesRequest, PromptCacheCapability,
 };
-use crate::api::streaming::normalize_api_error_body;
+use crate::api::provider_runtime::{
+    metadata_from_response, provider_error_from_response, ProviderEndpoint, ProviderStreamTransport,
+};
 use allthecodes_types::message::StreamEvent;
 
 /// Trait for provider-specific streaming implementations.
@@ -45,8 +45,6 @@ impl StreamProvider for AnthropicStreamProvider {
         http: &reqwest::Client,
         request: &MessagesRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
-        let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-
         let mut req_body = request.clone();
         req_body.stream = true;
 
@@ -66,49 +64,32 @@ impl StreamProvider for AnthropicStreamProvider {
         } else {
             strip_anthropic_compatible_only_fields(&mut body_value);
         }
-        let headers = if direct_official_anthropic {
-            build_anthropic_headers_for_body(&self.auth, false, &body_value)?
-        } else {
-            build_anthropic_headers_for_body_with_beta_policy(
-                &self.auth,
-                false,
-                &body_value,
-                false,
-            )?
-        };
+        let endpoint = ProviderEndpoint::anthropic(
+            &self.auth,
+            self.base_url.clone(),
+            direct_official_anthropic,
+            &body_value,
+        )?;
+        let url = endpoint.url_for_path("/v1/messages")?;
         let body_json =
             serde_json::to_string(&body_value).context("failed to serialize request body")?;
 
-        let response = http
-            .post(&url)
-            .headers(headers)
+        let response = endpoint
+            .apply_headers(http.post(url))
             .body(body_json)
             .send()
             .await
             .context("failed to send HTTP request")?;
 
-        let status = response.status().as_u16();
-
         if !response.status().is_success() {
-            let request_id = response
-                .headers()
-                .get("request-id")
-                .or_else(|| response.headers().get("x-request-id"))
-                .and_then(|value| value.to_str().ok())
-                .map(ToOwned::to_owned);
-            let error_body = response
-                .text()
+            return Err(provider_error_from_response("anthropic", response)
                 .await
-                .unwrap_or_else(|_| String::from("(failed to read error body)"));
-            return Err(normalize_api_error_body(
-                "anthropic",
-                Some(status),
-                &error_body,
-                request_id,
-            )
-            .into());
+                .into());
         }
 
+        let metadata =
+            metadata_from_response("anthropic", ProviderStreamTransport::SseHttp, &response);
+        tracing::debug!(?metadata, "provider stream established");
         let byte_stream = response.bytes_stream();
         let sse_stream = parse_sse_byte_stream(byte_stream);
 

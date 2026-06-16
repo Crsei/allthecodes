@@ -286,3 +286,7 @@ mod tests {
         assert_eq!(result, vec!["a", "b"]);
     }
 }
+
+#[cfg(test)]
+#[path = "memory_api_tests.rs"]
+mod api_tests;

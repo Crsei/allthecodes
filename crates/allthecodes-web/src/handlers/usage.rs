@@ -988,3 +988,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "usage_api_tests.rs"]
+mod api_tests;

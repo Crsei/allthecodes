@@ -377,3 +377,7 @@ fn internal_error(error: String) -> Response {
     let body = ProtocolApiError::Internal { message: error }.into_body();
     (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
+
+#[cfg(test)]
+#[path = "mcp_servers_tests.rs"]
+mod tests;
