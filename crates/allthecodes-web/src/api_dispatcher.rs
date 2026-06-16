@@ -202,6 +202,7 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::TerminalSessionsList - dedicated terminal transport, excluded.
 // ClientRequest::TerminalSessionsCreate - dedicated terminal transport, excluded.
 // ClientRequest::TerminalSessionDetail - dedicated terminal transport, excluded.
+// ClientRequest::TerminalSessionOutput - dedicated terminal output replay, excluded.
 // ClientRequest::TerminalSessionDelete - dedicated terminal transport, excluded.
 // ClientRequest::TerminalSessionWs - dedicated terminal WebSocket, excluded.
 // ClientRequest::TuiWs - dedicated TUI WebSocket, excluded.
@@ -304,6 +305,7 @@ const DEDICATED_TRANSPORT_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::TerminalSessionsList,
     ApiMethod::TerminalSessionsCreate,
     ApiMethod::TerminalSessionDetail,
+    ApiMethod::TerminalSessionOutput,
     ApiMethod::TerminalSessionDelete,
     ApiMethod::TerminalSessionWs,
     ApiMethod::TuiWs,
@@ -1057,6 +1059,7 @@ mod tests {
             ApiMethod::TerminalSessionsList,
             ApiMethod::TerminalSessionsCreate,
             ApiMethod::TerminalSessionDetail,
+            ApiMethod::TerminalSessionOutput,
             ApiMethod::TerminalSessionDelete,
             ApiMethod::TerminalSessionWs,
             ApiMethod::TuiWs,

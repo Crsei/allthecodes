@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use allthecodes_daemon::gateway_client::{LocalGatewayClient, LocalGatewayDaemonStatus};
 use allthecodes_daemon::process_state;
+use allthecodes_daemon::readiness;
 
 use allthecodes_protocol::ApiError as ProtocolApiError;
 
@@ -258,13 +259,27 @@ fn status_from_daemon(
             let port = parse_port(&base_url).or_else(|| parse_port(&health_url));
             let bind_address =
                 parse_bind_address(&base_url).or_else(|| parse_bind_address(&health_url));
+            let mut diagnostics = vec![format!("pid={pid}"), format!("health_url={health_url}")];
+            if let Some(port) = port {
+                let ready_url = readiness::ready_url(port);
+                diagnostics.push(format!("ready_url={ready_url}"));
+                diagnostics.push(
+                    match readiness::probe_ready(port, std::time::Duration::from_millis(500)) {
+                        Ok(()) => "readiness=ok".to_string(),
+                        Err(error) => format!("readiness=error:{error}"),
+                    },
+                );
+            } else {
+                diagnostics.push("ready_url=unknown".to_string());
+                diagnostics.push("readiness=error:daemon port unavailable".to_string());
+            }
             base_status(
                 "running",
                 port,
                 profile_id,
                 Some("Daemon gateway is running.".to_string()),
                 bind_address,
-                vec![format!("pid={pid}"), format!("health_url={health_url}")],
+                diagnostics,
             )
         }
         LocalGatewayDaemonStatus::Stale { pid } => base_status(
@@ -371,6 +386,38 @@ mod tests {
         assert_eq!(body["id"], json!("local-daemon"));
         assert_eq!(body["status"], json!("stopped"));
         assert_eq!(body["message"], json!("The daemon is not running."));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn gateway_status_running_includes_readiness_diagnostics() {
+        let (_home, _guard) = temp_home();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        allthecodes_daemon::process_state::write_started(port, std::path::Path::new("."))
+            .expect("daemon state");
+        let state = make_web_state();
+
+        let response = gateway_status_handler(
+            State(state),
+            Query(ProtocolGatewayQuery { profile_id: None }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], json!("running"));
+        let diagnostics = body["diagnostics"].as_array().expect("diagnostics");
+        assert!(diagnostics
+            .iter()
+            .any(|value| value == &json!(format!("ready_url=http://127.0.0.1:{port}/readyz"))));
+        assert!(diagnostics.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|diagnostic| diagnostic.starts_with("readiness=error:"))
+        }));
     }
 
     #[tokio::test]

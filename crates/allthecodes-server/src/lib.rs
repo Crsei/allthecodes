@@ -10,6 +10,8 @@
 
 mod event_log;
 mod outbound_router;
+mod output;
+mod probe;
 mod server_manager;
 mod server_mode;
 mod transport;
@@ -20,6 +22,11 @@ pub use event_log::{
 pub use outbound_router::{
     OutboundRouter, RouterBroadcastReport, RouterSendError, DEFAULT_WRITER_CHANNEL_CAPACITY,
 };
+pub use output::{
+    OutputEvent, OutputLifecycleState, OutputReadBatch, OutputRetention, OutputStream,
+    DEFAULT_DETACH_RESUME_TTL, DEFAULT_EXITED_OUTPUT_RETENTION_TTL, DEFAULT_OUTPUT_RETENTION_BYTES,
+};
+pub use probe::RootProbeResponse;
 pub use server_manager::{ServerHandle, ServerManager};
 pub use server_mode::ServerMode;
 pub use transport::{

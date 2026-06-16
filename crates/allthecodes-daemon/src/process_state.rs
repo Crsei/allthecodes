@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::protocol;
+use crate::{operation_lock, protocol, readiness};
 
 const SCHEMA_VERSION: u32 = 1;
 #[cfg(test)]
@@ -118,6 +118,17 @@ pub enum DaemonStatusSnapshot {
     Running(DaemonProcessState),
     Stale(DaemonProcessState),
     Stopped,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StaleStateCleanupReport {
+    pub supervisor_pid: Option<u32>,
+    pub supervisor_state_removed: bool,
+    pub control_token_removed: bool,
+    pub shutdown_request_removed: bool,
+    pub expired_sleep_state_removed: bool,
+    pub worker_states_removed: Vec<PathBuf>,
+    pub live_worker_states_retained: Vec<DaemonWorkerSummary>,
 }
 
 pub(crate) fn data_root() -> Option<PathBuf> {
@@ -402,6 +413,26 @@ pub fn status_snapshot() -> Result<DaemonStatusSnapshot> {
     Ok(DaemonStatusSnapshot::Stale(state))
 }
 
+pub fn cleanup_stale_state_before_start() -> Result<StaleStateCleanupReport> {
+    let mut report = StaleStateCleanupReport::default();
+    let Some(state) = read_state()? else {
+        return Ok(report);
+    };
+    if state.status == DaemonRunStatus::Stopped || process_is_alive(state.pid) {
+        return Ok(report);
+    }
+
+    report.supervisor_pid = Some(state.pid);
+    report.supervisor_state_removed = remove_file_if_exists(&state_path())?;
+    report.control_token_removed = remove_file_if_exists(&control_token_path())?;
+    report.shutdown_request_removed = remove_file_if_exists(&shutdown_request_path())?;
+    if read_sleep_state()?.is_some_and(|sleep| sleep.sleeping_until <= Utc::now()) {
+        report.expired_sleep_state_removed = remove_file_if_exists(&sleep_state_path())?;
+    }
+    cleanup_worker_state_files(&mut report)?;
+    Ok(report)
+}
+
 pub fn request_shutdown(reason: &str) -> Result<()> {
     ensure_daemon_dir()?;
     let req = DaemonShutdownRequest {
@@ -523,6 +554,64 @@ pub fn clear_sleep_state() -> Result<()> {
     Ok(())
 }
 
+fn cleanup_worker_state_files(report: &mut StaleStateCleanupReport) -> Result<()> {
+    let dir = workers_dir();
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        if entry
+            .metadata()
+            .with_context(|| format!("failed to stat {}", path.display()))?
+            .len()
+            == 0
+        {
+            fs::remove_file(&path).with_context(|| {
+                format!("failed to remove empty worker state {}", path.display())
+            })?;
+            report.worker_states_removed.push(path);
+            continue;
+        }
+
+        let state = match read_worker_state_file(&path) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "retained unreadable daemon worker state {}: {err:#}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        match state.pid {
+            Some(pid) if process_is_alive(pid) => {
+                report
+                    .live_worker_states_retained
+                    .push(DaemonWorkerSummary {
+                        worker_id: state.worker_id,
+                        kind: state.kind,
+                        pid: state.pid,
+                        status: state.status.as_str().to_string(),
+                        updated_at: state.updated_at,
+                    });
+            }
+            Some(_) | None => {
+                fs::remove_file(&path).with_context(|| {
+                    format!("failed to remove stale worker state {}", path.display())
+                })?;
+                report.worker_states_removed.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn try_run_management_command(args: &[String], cwd: &Path, port: u16) -> Option<ExitCode> {
     if args.first().map(String::as_str) != Some("daemon") {
         return None;
@@ -530,17 +619,33 @@ pub fn try_run_management_command(args: &[String], cwd: &Path, port: u16) -> Opt
 
     let subcommand = args.get(1).map(String::as_str).unwrap_or("status");
     let code = match subcommand {
-        "start" => print_result(start_daemon(args, cwd, port)),
-        "status" => print_result(print_status()),
-        "stop" => print_result(stop_daemon()),
-        "restart" => print_result(restart_daemon(args, cwd, port)),
+        "start" => print_result(operation_lock::with_operation_lock("start", cwd, || {
+            start_daemon(args, cwd, port)
+        })),
+        "status" => print_result(operation_lock::with_operation_lock(
+            "status",
+            cwd,
+            print_status,
+        )),
+        "stop" => print_result(operation_lock::with_operation_lock(
+            "stop",
+            cwd,
+            stop_daemon,
+        )),
+        "restart" => print_result(operation_lock::with_operation_lock("restart", cwd, || {
+            restart_daemon(args, cwd, port)
+        })),
         "submit" => print_result(submit_worker_command(args)),
         "abort" => print_result(abort_worker_command()),
         "command" => print_result(print_worker_command(args)),
         "events" => print_result(print_worker_events(args)),
         "token" => print_result(print_control_token()),
-        "sleep" => print_result(schedule_sleep_command(args)),
-        "wake" => print_result(wake_daemon_command()),
+        "sleep" => print_result(operation_lock::with_operation_lock("sleep", cwd, || {
+            schedule_sleep_command(args)
+        })),
+        "wake" => print_result(operation_lock::with_operation_lock("wake", cwd, || {
+            wake_daemon_command()
+        })),
         "help" | "--help" | "-h" => {
             print_usage();
             ExitCode::SUCCESS
@@ -555,6 +660,9 @@ pub fn try_run_management_command(args: &[String], cwd: &Path, port: u16) -> Opt
 }
 
 fn start_daemon(args: &[String], cwd: &Path, fallback_port: u16) -> Result<()> {
+    let cleanup = cleanup_stale_state_before_start()?;
+    print_stale_cleanup_report(&cleanup);
+
     match status_snapshot()? {
         DaemonStatusSnapshot::Running(state) => {
             println!(
@@ -563,9 +671,10 @@ fn start_daemon(args: &[String], cwd: &Path, fallback_port: u16) -> Result<()> {
             );
             return Ok(());
         }
-        DaemonStatusSnapshot::Stale(state) => {
-            eprintln!("cleaned stale daemon state for pid={}", state.pid);
-        }
+        DaemonStatusSnapshot::Stale(state) => anyhow::bail!(
+            "daemon state is stale for pid={} and could not be cleaned",
+            state.pid
+        ),
         DaemonStatusSnapshot::Stopped => {}
     }
 
@@ -597,10 +706,22 @@ fn start_daemon(args: &[String], cwd: &Path, fallback_port: u16) -> Result<()> {
 
     configure_detached(&mut cmd);
     let child = cmd.spawn().context("failed to spawn daemon supervisor")?;
+    let ready_url = readiness::ready_url(port);
+    let readiness = readiness::wait_for_ready(port).with_context(|| {
+        format!(
+            "daemon start failed readiness check: pid={} ready={} log={}",
+            child.id(),
+            ready_url,
+            log_path.display()
+        )
+    })?;
     println!(
-        "daemon start requested: pid={} health={} log={}",
+        "daemon started: pid={} health={} ready={} attempts={} elapsed_ms={} log={}",
         child.id(),
         health_url(port),
+        ready_url,
+        readiness.attempts,
+        readiness.elapsed.as_millis(),
         log_path.display()
     );
     Ok(())
@@ -737,6 +858,36 @@ fn wake_daemon_command() -> Result<()> {
     Ok(())
 }
 
+fn print_stale_cleanup_report(report: &StaleStateCleanupReport) {
+    if let Some(pid) = report.supervisor_pid {
+        if report.supervisor_state_removed {
+            eprintln!("cleaned stale daemon supervisor state for pid={pid}");
+        }
+    }
+    if report.control_token_removed {
+        eprintln!("removed stale daemon control token");
+    }
+    if report.shutdown_request_removed {
+        eprintln!("removed stale daemon shutdown request");
+    }
+    if report.expired_sleep_state_removed {
+        eprintln!("removed expired daemon sleep state");
+    }
+    for path in &report.worker_states_removed {
+        eprintln!("removed stale daemon worker state {}", path.display());
+    }
+    for worker in &report.live_worker_states_retained {
+        let pid = worker
+            .pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        eprintln!(
+            "retained live daemon worker state worker={} pid={} status={}",
+            worker.worker_id, pid, worker.status
+        );
+    }
+}
+
 fn require_running_daemon() -> Result<DaemonProcessState> {
     match status_snapshot()? {
         DaemonStatusSnapshot::Running(state) => Ok(state),
@@ -784,6 +935,15 @@ fn print_status() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<bool> {
+    if path.exists() {
+        fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 fn write_state(state: &DaemonProcessState) -> Result<()> {
@@ -1108,5 +1268,121 @@ mod tests {
         write_sleep_state_until(Utc::now() - chrono::Duration::seconds(1), "expired").unwrap();
         assert!(active_sleep_state().unwrap().is_none());
         assert!(read_sleep_state().unwrap().is_none());
+    }
+
+    fn dead_test_pid() -> u32 {
+        (1_000_000u32..4_194_303u32)
+            .rev()
+            .find(|pid| !process_is_alive(*pid))
+            .expect("dead test pid")
+    }
+
+    #[test]
+    #[serial]
+    fn stale_cleanup_removes_dead_supervisor_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        let now = Utc::now();
+        let state = DaemonProcessState {
+            schema_version: SCHEMA_VERSION,
+            status: DaemonRunStatus::Running,
+            pid: dead_test_pid(),
+            cwd: cwd.clone(),
+            port: DEFAULT_DAEMON_PORT,
+            health_url: health_url(DEFAULT_DAEMON_PORT),
+            started_at: now,
+            updated_at: now,
+            shutdown_requested: true,
+            workers: Vec::new(),
+        };
+        write_state(&state).unwrap();
+        write_control_token().unwrap();
+        request_shutdown("test").unwrap();
+        write_sleep_state_until(Utc::now() - chrono::Duration::seconds(1), "expired").unwrap();
+
+        let report = cleanup_stale_state_before_start().unwrap();
+
+        assert_eq!(report.supervisor_pid, Some(dead_test_pid()));
+        assert!(report.supervisor_state_removed);
+        assert!(report.control_token_removed);
+        assert!(report.shutdown_request_removed);
+        assert!(report.expired_sleep_state_removed);
+        assert!(!state_path().exists());
+        assert!(!control_token_path().exists());
+        assert!(!shutdown_request_path().exists());
+        assert!(!sleep_state_path().exists());
+    }
+
+    #[test]
+    #[serial]
+    fn stale_cleanup_preserves_live_supervisor_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        write_started(DEFAULT_DAEMON_PORT, temp.path()).unwrap();
+
+        let report = cleanup_stale_state_before_start().unwrap();
+
+        assert_eq!(report, StaleStateCleanupReport::default());
+        assert!(state_path().exists());
+        assert!(control_token_path().exists());
+    }
+
+    #[test]
+    #[serial]
+    fn stale_cleanup_removes_dead_worker_and_retains_live_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        let now = Utc::now();
+        write_state(&DaemonProcessState {
+            schema_version: SCHEMA_VERSION,
+            status: DaemonRunStatus::Running,
+            pid: dead_test_pid(),
+            cwd: cwd.clone(),
+            port: DEFAULT_DAEMON_PORT,
+            health_url: health_url(DEFAULT_DAEMON_PORT),
+            started_at: now,
+            updated_at: now,
+            shutdown_requested: false,
+            workers: Vec::new(),
+        })
+        .unwrap();
+        write_worker_running(
+            "live-worker",
+            "assistant-session",
+            std::process::id(),
+            &cwd,
+            &worker_log_path("live-worker"),
+            0,
+            true,
+        )
+        .unwrap();
+        write_worker_running(
+            "dead-worker",
+            "assistant-session",
+            dead_test_pid(),
+            &cwd,
+            &worker_log_path("dead-worker"),
+            0,
+            true,
+        )
+        .unwrap();
+        let empty_path = worker_state_path("empty-worker");
+        fs::write(&empty_path, "").unwrap();
+
+        let report = cleanup_stale_state_before_start().unwrap();
+
+        assert!(worker_state_path("live-worker").exists());
+        assert!(!worker_state_path("dead-worker").exists());
+        assert!(!empty_path.exists());
+        assert_eq!(report.live_worker_states_retained.len(), 1);
+        assert_eq!(
+            report.live_worker_states_retained[0].worker_id,
+            "live-worker"
+        );
+        assert_eq!(report.worker_states_removed.len(), 2);
     }
 }

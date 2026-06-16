@@ -1349,6 +1349,16 @@
     {
       "errors": [],
       "experimental": null,
+      "method": "GET",
+      "operation": "TerminalSessionOutput",
+      "params": null,
+      "path": "/api/terminal/sessions/{id}/output",
+      "response": "EmptyResponse",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
       "method": "DELETE",
       "operation": "TerminalSessionDelete",
       "params": null,
@@ -6076,6 +6086,24 @@
             "method": {
               "enum": [
                 "TerminalSessionDetail"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "TerminalSessionOutput"
               ],
               "type": "string"
             },
@@ -11595,6 +11623,24 @@
             "method": {
               "enum": [
                 "TerminalSessionDetail"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/EmptyResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "TerminalSessionOutput"
               ],
               "type": "string"
             },

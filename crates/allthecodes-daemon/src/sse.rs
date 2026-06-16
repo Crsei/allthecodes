@@ -42,25 +42,14 @@ pub async fn sse_handler(
     info!(client_id = query.client_id, "SSE client connected");
 
     let connection_id = ConnectionId::next();
-    let replay_after = query.after_seq.or_else(|| {
-        query
-            .last_event_id
-            .as_deref()
-            .and_then(|id| id.parse().ok())
-    });
-    let mut replay_events = Vec::new();
+    let replay_after = replay_after_from_query(&query);
 
     // Register before replay so events published during connection setup are
     // queued live. The replay high-watermark below is used to drop duplicates.
     let rx = state.register_sse_client(query.client_id.clone(), connection_id.clone());
 
     // Replay missed events.
-    let replay = state.replay_after(replay_after);
-    let replay_high_watermark = replay.high_watermark;
-    if let Some(lagged) = state.lagged_event(&replay.status) {
-        replay_events.push(lagged);
-    }
-    replay_events.extend(replay.events.into_iter().map(|event| event.message));
+    let (replay_high_watermark, mut replay_events) = buffered_replay_events(&state, replay_after);
 
     for event in super::protocol_store()
         .read_worker_events(ASSISTANT_WORKER_ID)
@@ -116,6 +105,26 @@ pub async fn sse_handler(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+fn replay_after_from_query(query: &SseQuery) -> Option<u64> {
+    query.after_seq.or_else(|| {
+        query
+            .last_event_id
+            .as_deref()
+            .and_then(|id| id.parse().ok())
+    })
+}
+
+fn buffered_replay_events(state: &DaemonState, replay_after: Option<u64>) -> (u64, Vec<SseEvent>) {
+    let replay = state.replay_after(replay_after);
+    let replay_high_watermark = replay.high_watermark;
+    let mut replay_events = Vec::new();
+    if let Some(lagged) = state.lagged_event(&replay.status) {
+        replay_events.push(lagged);
+    }
+    replay_events.extend(replay.events.into_iter().map(|event| event.message));
+    (replay_high_watermark, replay_events)
+}
+
 fn sse_to_event(sse_event: SseEvent) -> Result<Event, Infallible> {
     let event = Event::default()
         .event(sse_event.event_type)
@@ -127,4 +136,113 @@ fn sse_to_event(sse_event: SseEvent) -> Result<Event, Infallible> {
         event.id(sse_event.id)
     };
     Ok(event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use allthecodes_config::features::FeatureFlags;
+    use allthecodes_engine::lifecycle::QueryEngine;
+    use allthecodes_engine::types::config::QueryEngineConfig;
+    use std::sync::Arc;
+
+    fn make_daemon_state() -> DaemonState {
+        let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
+            cwd: ".".to_string(),
+            tools: vec![],
+            custom_system_prompt: None,
+            append_system_prompt: None,
+            user_specified_model: None,
+            fallback_model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            task_budget: None,
+            verbose: false,
+            initial_messages: None,
+            commands: vec![],
+            thinking_config: None,
+            json_schema: None,
+            replay_user_messages: false,
+            persist_session: false,
+            resolved_model: None,
+            auto_save_session: false,
+            agent_context: None,
+        }));
+        DaemonState::new(engine, Arc::new(FeatureFlags::all_disabled()), 19836)
+    }
+
+    fn event(label: &str) -> SseEvent {
+        SseEvent {
+            id: String::new(),
+            event_type: "system_info".to_string(),
+            data: json!({ "label": label }),
+        }
+    }
+
+    #[test]
+    fn after_seq_takes_precedence_over_legacy_last_event_id() {
+        let query = SseQuery {
+            client_id: "client-1".to_string(),
+            last_event_id: Some("1".to_string()),
+            after_seq: Some(3),
+        };
+
+        assert_eq!(replay_after_from_query(&query), Some(3));
+    }
+
+    #[test]
+    fn invalid_legacy_last_event_id_starts_at_live_tail() {
+        let query = SseQuery {
+            client_id: "client-1".to_string(),
+            last_event_id: Some("not-a-seq".to_string()),
+            after_seq: None,
+        };
+
+        assert_eq!(replay_after_from_query(&query), None);
+    }
+
+    #[test]
+    fn buffered_replay_uses_after_seq_and_reports_high_watermark() {
+        let state = make_daemon_state();
+        state.broadcast(event("one"));
+        state.broadcast(event("two"));
+        state.broadcast(event("three"));
+
+        let (high_watermark, events) = buffered_replay_events(&state, Some(1));
+
+        assert_eq!(high_watermark, 3);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, "2");
+        assert_eq!(events[0].data["label"], "two");
+        assert_eq!(events[1].id, "3");
+        assert_eq!(events[1].data["label"], "three");
+    }
+
+    #[test]
+    fn buffered_replay_emits_lagged_event_for_compacted_cursor() {
+        let state = make_daemon_state();
+        state.event_log.append_with(|seq| SseEvent {
+            id: seq.to_string(),
+            event_type: "test".to_string(),
+            data: json!({ "n": 1 }),
+        });
+        for n in 2..=1002u64 {
+            state.event_log.append_with(|seq| SseEvent {
+                id: seq.to_string(),
+                event_type: "test".to_string(),
+                data: json!({ "n": n }),
+            });
+        }
+
+        let (high_watermark, events) = buffered_replay_events(&state, Some(0));
+
+        assert_eq!(high_watermark, 1002);
+        assert_eq!(events[0].event_type, "lagged");
+        assert_eq!(events[0].id, "");
+        assert_eq!(events[0].data["requested_after_seq"], 0);
+        assert_eq!(events[0].data["oldest_seq"], 3);
+        assert_eq!(events[0].data["latest_seq"], 1002);
+        assert_eq!(events[0].data["skipped"], 2);
+        assert_eq!(events[1].id, "3");
+    }
 }

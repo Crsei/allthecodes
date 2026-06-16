@@ -19,10 +19,15 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::warn;
 
+use allthecodes_server::{
+    EventSeq, OutputEvent, OutputLifecycleState, OutputReadBatch, OutputRetention, OutputStream,
+    DEFAULT_DETACH_RESUME_TTL, DEFAULT_EXITED_OUTPUT_RETENTION_TTL,
+};
+
 use crate::state::WebState;
 
-const OUTPUT_BUFFER_LIMIT: usize = 256 * 1024;
-const DETACHED_IDLE_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+const PERSISTED_IDLE_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+const TERMINAL_REPLAY_LIMIT_BYTES: usize = 256 * 1024;
 const BRIDGE_CLI_PLUGIN_NAME: &str = "allthecodes-bridge-cli";
 const BRIDGE_CLI_MCP_SERVER: &str = "allthecodes-bridge";
 static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
@@ -97,7 +102,8 @@ impl TerminalManager {
             .sessions
             .read()
             .iter()
-            .filter_map(|(id, session)| session.should_prune(now).then(|| id.clone()))
+            .filter(|(_, session)| session.should_prune(now))
+            .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         if stale_ids.is_empty() {
             return;
@@ -132,10 +138,10 @@ pub struct TerminalSession {
     updated_at: Arc<AtomicU64>,
     exit_code: Arc<Mutex<Option<i32>>>,
     error: Arc<Mutex<Option<String>>>,
-    output_buffer: Arc<Mutex<String>>,
+    output: OutputRetention,
     attached_count: Arc<AtomicU64>,
     last_detached_at: Arc<AtomicU64>,
-    output_tx: broadcast::Sender<TerminalOutputEvent>,
+    output_tx: broadcast::Sender<OutputEvent>,
 }
 
 impl TerminalSession {
@@ -175,6 +181,8 @@ impl TerminalSession {
             .map_err(|error| format!("failed to take PTY writer: {error}"))?;
         let (output_tx, _) = broadcast::channel(512);
         let created_at = now_millis();
+        let output = OutputRetention::default();
+        output.set_state(OutputLifecycleState::Running);
 
         let session = Self {
             id: id.clone(),
@@ -196,7 +204,7 @@ impl TerminalSession {
             updated_at: Arc::new(AtomicU64::new(created_at as u64)),
             exit_code: Arc::new(Mutex::new(None)),
             error: Arc::new(Mutex::new(None)),
-            output_buffer: Arc::new(Mutex::new(String::new())),
+            output,
             attached_count: Arc::new(AtomicU64::new(0)),
             last_detached_at: Arc::new(AtomicU64::new(0)),
             output_tx,
@@ -211,7 +219,7 @@ impl TerminalSession {
         let tx = self.output_tx.clone();
         let bytes_out = self.bytes_out.clone();
         let updated_at = self.updated_at.clone();
-        let buffer = self.output_buffer.clone();
+        let output = self.output.clone();
         let status = self.status.clone();
         let exit_code = self.exit_code.clone();
         let error_slot = self.error.clone();
@@ -226,29 +234,24 @@ impl TerminalSession {
                         let data = String::from_utf8_lossy(&chunk[..n]).to_string();
                         bytes_out.fetch_add(n as u64, Ordering::SeqCst);
                         updated_at.store(now_millis() as u64, Ordering::SeqCst);
-                        {
-                            let mut output = buffer.lock();
-                            output.push_str(&data);
-                            if output.len() > OUTPUT_BUFFER_LIMIT {
-                                let split = output.len() - OUTPUT_BUFFER_LIMIT;
-                                output.drain(..split);
-                            }
-                        }
-                        let _ = tx.send(TerminalOutputEvent {
-                            session_id: session_id.clone(),
-                            data,
-                        });
+                        let event = output.append(OutputStream::Pty, data, session_id.clone());
+                        let _ = tx.send(event);
                     }
                     Err(error) => {
                         let message = format!("PTY read error: {error}");
                         warn!("{}", message);
                         *error_slot.lock() = Some(message);
+                        output.set_state(OutputLifecycleState::Failed);
+                        *status.write() = TerminalStatus::Failed;
                         break;
                     }
                 }
             }
 
-            *status.write() = TerminalStatus::Exited;
+            if *status.read() != TerminalStatus::Failed {
+                output.set_state(OutputLifecycleState::Exited);
+                *status.write() = TerminalStatus::Exited;
+            }
             updated_at.store(now_millis() as u64, Ordering::SeqCst);
             let code = child_slot
                 .lock()
@@ -278,14 +281,16 @@ impl TerminalSession {
             updated_at: self.updated_at.load(Ordering::SeqCst) as i64,
             exit_code: *self.exit_code.lock(),
             error: self.error.lock().clone(),
+            first_available_seq: self.output.first_available_seq(),
+            latest_seq: self.output.latest_seq(),
         }
     }
 
-    pub fn output_buffer(&self) -> String {
-        self.output_buffer.lock().clone()
+    pub fn read_output(&self, after_seq: Option<EventSeq>, limit_bytes: usize) -> OutputReadBatch {
+        self.output.read(after_seq, limit_bytes)
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<TerminalOutputEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<OutputEvent> {
         self.output_tx.subscribe()
     }
 
@@ -305,8 +310,16 @@ impl TerminalSession {
     }
 
     pub fn should_prune(&self, now: u64) -> bool {
-        if *self.status.read() == TerminalStatus::Exited {
-            return !self.persist;
+        match *self.status.read() {
+            TerminalStatus::Exited | TerminalStatus::Failed => {
+                let exited_for = now.saturating_sub(self.updated_at.load(Ordering::SeqCst));
+                if exited_for < DEFAULT_EXITED_OUTPUT_RETENTION_TTL.as_millis() as u64 {
+                    return false;
+                }
+                return !self.persist || self.attached_count.load(Ordering::SeqCst) == 0;
+            }
+            TerminalStatus::Expired => return true,
+            _ => {}
         }
         if self.attached_count.load(Ordering::SeqCst) > 0 {
             return false;
@@ -316,9 +329,9 @@ impl TerminalSession {
             return false;
         }
         if !self.persist {
-            return true;
+            return now.saturating_sub(detached_at) >= DEFAULT_DETACH_RESUME_TTL.as_millis() as u64;
         }
-        now.saturating_sub(detached_at) >= DETACHED_IDLE_TIMEOUT_MS
+        now.saturating_sub(detached_at) >= PERSISTED_IDLE_TIMEOUT_MS
     }
 
     pub fn write_input(&self, data: &str) -> Result<(), String> {
@@ -365,13 +378,8 @@ impl TerminalSession {
             }
         }
         *self.status.write() = TerminalStatus::Exited;
+        self.output.set_state(OutputLifecycleState::Exited);
     }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct TerminalOutputEvent {
-    pub session_id: String,
-    pub data: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -423,9 +431,12 @@ impl TerminalSize {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalStatus {
+    Starting,
     Running,
     Terminating,
     Exited,
+    Expired,
+    Failed,
     Error,
 }
 
@@ -469,6 +480,8 @@ pub struct TerminalSessionSnapshot {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    pub first_available_seq: EventSeq,
+    pub latest_seq: EventSeq,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -477,6 +490,27 @@ pub struct TuiWsParams {
     pub cwd: Option<String>,
     pub session_id: Option<String>,
     pub mode: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TerminalWsQuery {
+    pub after_seq: Option<EventSeq>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TerminalOutputQuery {
+    pub after_seq: Option<EventSeq>,
+    pub limit_bytes: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TerminalOutputResponse {
+    pub session_id: String,
+    pub events: Vec<OutputEvent>,
+    pub next_seq: EventSeq,
+    pub truncated: bool,
+    pub first_available_seq: EventSeq,
+    pub status: TerminalStatus,
 }
 
 #[derive(Clone, Default)]
@@ -647,6 +681,36 @@ pub async fn session_detail_handler(
     }
 }
 
+pub async fn session_output_handler(
+    State(state): State<WebState>,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<TerminalOutputQuery>,
+) -> Response {
+    match state.terminal_manager.get_session(&id) {
+        Some(session) => {
+            let snapshot = session.snapshot();
+            let batch = session.read_output(
+                query.after_seq,
+                query.limit_bytes.unwrap_or(TERMINAL_REPLAY_LIMIT_BYTES),
+            );
+            Json(TerminalOutputResponse {
+                session_id: snapshot.id,
+                events: batch.events,
+                next_seq: batch.next_seq,
+                truncated: batch.truncated,
+                first_available_seq: batch.first_available_seq,
+                status: snapshot.status,
+            })
+            .into_response()
+        }
+        None => terminal_error(
+            StatusCode::NOT_FOUND,
+            "terminal_not_found",
+            "terminal session not found",
+        ),
+    }
+}
+
 pub async fn delete_session_handler(
     State(state): State<WebState>,
     AxumPath(id): AxumPath<String>,
@@ -665,6 +729,7 @@ pub async fn session_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<WebState>,
     AxumPath(id): AxumPath<String>,
+    Query(query): Query<TerminalWsQuery>,
 ) -> Response {
     let Some(session) = state.terminal_manager.get_session(&id) else {
         return terminal_error(
@@ -674,7 +739,7 @@ pub async fn session_ws_handler(
         );
     };
     let manager = state.terminal_manager.clone();
-    ws.on_upgrade(move |socket| attach_socket(socket, manager, session))
+    ws.on_upgrade(move |socket| attach_socket(socket, manager, session, query.after_seq))
         .into_response()
 }
 
@@ -718,11 +783,16 @@ pub async fn legacy_tui_ws_handler(
         );
     };
     let manager = state.terminal_manager.clone();
-    ws.on_upgrade(move |socket| attach_socket(socket, manager, session))
+    ws.on_upgrade(move |socket| attach_socket(socket, manager, session, None))
         .into_response()
 }
 
-async fn attach_socket(socket: WebSocket, manager: TerminalManager, session: Arc<TerminalSession>) {
+async fn attach_socket(
+    socket: WebSocket,
+    manager: TerminalManager,
+    session: Arc<TerminalSession>,
+    after_seq: Option<EventSeq>,
+) {
     session.mark_attached();
     let mut output_rx = session.subscribe();
     let (mut ws_sender, mut ws_receiver) = socket.split();
@@ -733,19 +803,20 @@ async fn attach_socket(socket: WebSocket, manager: TerminalManager, session: Arc
         "profile": snapshot.profile,
         "pid": snapshot.pid,
         "status": snapshot.status,
+        "first_available_seq": snapshot.first_available_seq,
+        "latest_seq": snapshot.latest_seq,
+        "next_seq": snapshot.latest_seq.saturating_add(1),
     })
     .to_string();
     if ws_sender.send(Message::Text(ready.into())).await.is_err() {
         return;
     }
 
-    let buffered = session.output_buffer();
-    if !buffered.is_empty() {
-        let output = serde_json::json!({"type":"output","data": buffered}).to_string();
-        if ws_sender.send(Message::Text(output.into())).await.is_err() {
-            return;
-        }
+    let replay = session.read_output(after_seq.or(Some(0)), TERMINAL_REPLAY_LIMIT_BYTES);
+    if send_replay_batch(&mut ws_sender, &replay).await.is_err() {
+        return;
     }
+    let mut last_sent_seq = replay.next_seq.saturating_sub(1);
 
     loop {
         tokio::select! {
@@ -772,12 +843,28 @@ async fn attach_socket(socket: WebSocket, manager: TerminalManager, session: Arc
             output = output_rx.recv() => {
                 match output {
                     Ok(event) => {
-                        let msg = serde_json::json!({"type":"output","data": event.data}).to_string();
-                        if ws_sender.send(Message::Text(msg.into())).await.is_err() {
+                        last_sent_seq = event.seq;
+                        if ws_sender.send(Message::Text(terminal_output_message(&event).into())).await.is_err() {
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        let replay = session.read_output(Some(last_sent_seq), TERMINAL_REPLAY_LIMIT_BYTES);
+                        let lagged = serde_json::json!({
+                            "type": "lagged",
+                            "skipped": skipped,
+                            "first_available_seq": replay.first_available_seq,
+                            "next_seq": replay.next_seq,
+                            "truncated": replay.truncated,
+                        }).to_string();
+                        if ws_sender.send(Message::Text(lagged.into())).await.is_err() {
+                            break;
+                        }
+                        if send_replay_batch(&mut ws_sender, &replay).await.is_err() {
+                            break;
+                        }
+                        last_sent_seq = replay.next_seq.saturating_sub(1);
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -787,6 +874,8 @@ async fn attach_socket(socket: WebSocket, manager: TerminalManager, session: Arc
 
     session.mark_detached();
     if session.should_prune(now_millis() as u64) {
+        *session.status.write() = TerminalStatus::Expired;
+        session.output.set_state(OutputLifecycleState::Expired);
         let _ = manager.remove_session(&session.id);
     }
 
@@ -797,6 +886,44 @@ async fn attach_socket(socket: WebSocket, manager: TerminalManager, session: Arc
         let _ = ws_sender.send(Message::Text(msg.into())).await;
     }
     let _ = ws_sender.close().await;
+}
+
+async fn send_replay_batch(
+    ws_sender: &mut futures::stream::SplitSink<WebSocket, Message>,
+    replay: &OutputReadBatch,
+) -> Result<(), ()> {
+    if replay.truncated {
+        let lagged = serde_json::json!({
+            "type": "lagged",
+            "first_available_seq": replay.first_available_seq,
+            "next_seq": replay.next_seq,
+            "truncated": true,
+        })
+        .to_string();
+        ws_sender
+            .send(Message::Text(lagged.into()))
+            .await
+            .map_err(|_| ())?;
+    }
+    for event in &replay.events {
+        ws_sender
+            .send(Message::Text(terminal_output_message(event).into()))
+            .await
+            .map_err(|_| ())?;
+    }
+    Ok(())
+}
+
+fn terminal_output_message(event: &OutputEvent) -> String {
+    serde_json::json!({
+        "type": "output",
+        "data": event.chunk,
+        "seq": event.seq,
+        "stream": event.stream,
+        "timestamp_ms": event.timestamp_ms,
+        "process_or_run_id": event.process_or_run_id,
+    })
+    .to_string()
 }
 
 async fn handle_client_text(
@@ -1031,12 +1158,12 @@ fn bridge_cli_shell_command(plugin_root: &Path, command: &str, serve_args: &[Str
         serve_args.to_vec()
     };
     let exec_command = std::iter::once(shell_quote(command))
-        .chain(serve_args.iter().map(|arg| shell_quote(arg)))
+        .chain(serve_args.iter().map(shell_quote))
         .collect::<Vec<_>>()
         .join(" ");
     format!(
         "cd {} && {} doctor && echo {} && exec {}",
-        shell_quote(&plugin_root.to_string_lossy()),
+        shell_quote(plugin_root.to_string_lossy()),
         shell_quote(command),
         shell_quote("[bridge] starting MCP stdio server..."),
         exec_command
@@ -1137,6 +1264,7 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn bridge_cli_profile_id_resolves() {
@@ -1201,5 +1329,54 @@ mod tests {
         assert!(command.contains(
             "exec /plugins/allthecodes-bridge-cli/target/release/allthecodes-bridge-cli serve"
         ));
+    }
+
+    #[test]
+    fn terminal_output_message_keeps_legacy_data_and_seq_metadata() {
+        let event = OutputEvent {
+            seq: 7,
+            stream: OutputStream::Pty,
+            chunk: "hello\r\n".to_string(),
+            timestamp_ms: 1234,
+            process_or_run_id: "terminal-1".to_string(),
+        };
+
+        let value: serde_json::Value =
+            serde_json::from_str(&terminal_output_message(&event)).unwrap();
+
+        assert_eq!(value["type"], json!("output"));
+        assert_eq!(value["data"], json!("hello\r\n"));
+        assert_eq!(value["seq"], json!(7));
+        assert_eq!(value["stream"], json!("pty"));
+        assert_eq!(value["timestamp_ms"], json!(1234));
+        assert_eq!(value["process_or_run_id"], json!("terminal-1"));
+    }
+
+    #[test]
+    fn terminal_output_response_serializes_incremental_cursor_fields() {
+        let response = TerminalOutputResponse {
+            session_id: "terminal-1".to_string(),
+            events: vec![OutputEvent {
+                seq: 3,
+                stream: OutputStream::Stdout,
+                chunk: "late".to_string(),
+                timestamp_ms: 2000,
+                process_or_run_id: "run-1".to_string(),
+            }],
+            next_seq: 4,
+            truncated: true,
+            first_available_seq: 2,
+            status: TerminalStatus::Exited,
+        };
+
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["session_id"], json!("terminal-1"));
+        assert_eq!(value["events"][0]["seq"], json!(3));
+        assert_eq!(value["events"][0]["chunk"], json!("late"));
+        assert_eq!(value["next_seq"], json!(4));
+        assert_eq!(value["truncated"], json!(true));
+        assert_eq!(value["first_available_seq"], json!(2));
+        assert_eq!(value["status"], json!("exited"));
     }
 }

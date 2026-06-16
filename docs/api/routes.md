@@ -137,6 +137,7 @@ Generated from `allthecodes-protocol` metadata.
 | `TerminalSessionsList` | `GET` | `/api/terminal/sessions` | - | `EmptyResponse` | `concurrent` | - | - |
 | `TerminalSessionsCreate` | `POST` | `/api/terminal/sessions` | - | `EmptyResponse` | `concurrent` | - | - |
 | `TerminalSessionDetail` | `GET` | `/api/terminal/sessions/{id}` | - | `EmptyResponse` | `concurrent` | - | - |
+| `TerminalSessionOutput` | `GET` | `/api/terminal/sessions/{id}/output` | - | `EmptyResponse` | `concurrent` | - | - |
 | `TerminalSessionDelete` | `DELETE` | `/api/terminal/sessions/{id}` | - | `EmptyResponse` | `concurrent` | - | - |
 | `TerminalSessionWs` | `ANY` | `/api/terminal/sessions/{id}/ws` | - | `EmptyResponse` | `concurrent` | - | - |
 | `TuiWs` | `ANY` | `/api/tui/ws` | - | `EmptyResponse` | `concurrent` | - | - |

@@ -565,6 +565,10 @@ pub fn terminal_handlers() -> HandlerRegistry {
             get(ws::terminal::session_detail_handler),
         )
         .handle(
+            ApiMethod::TerminalSessionOutput,
+            get(ws::terminal::session_output_handler),
+        )
+        .handle(
             ApiMethod::TerminalSessionDelete,
             delete(ws::terminal::delete_session_handler),
         )

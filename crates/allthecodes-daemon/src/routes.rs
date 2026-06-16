@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::app_state::AppState;
+use allthecodes_server::RootProbeResponse;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::routing::{get, post};
@@ -657,6 +658,18 @@ pub fn team_memory_routes() -> Router<DaemonState> {
 /// `GET /health` -- simple liveness probe.
 pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+pub async fn healthz() -> Json<RootProbeResponse> {
+    Json(RootProbeResponse::ok("healthz", "daemon"))
+}
+
+pub async fn readyz() -> Json<RootProbeResponse> {
+    Json(RootProbeResponse::ok("readyz", "daemon"))
+}
+
+pub async fn startupz() -> Json<RootProbeResponse> {
+    Json(RootProbeResponse::ok("startupz", "daemon"))
 }
 
 #[cfg(test)]

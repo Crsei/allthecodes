@@ -567,6 +567,9 @@ crate::api_definitions! {
     TerminalSessionDetail => "GET /api/terminal/sessions/{id}" {
         response: EmptyResponse,
     },
+    TerminalSessionOutput => "GET /api/terminal/sessions/{id}/output" {
+        response: EmptyResponse,
+    },
     TerminalSessionDelete => "DELETE /api/terminal/sessions/{id}" {
         response: EmptyResponse,
     },

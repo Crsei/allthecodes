@@ -10051,6 +10051,44 @@
         "x-allthecodes-serialization": "concurrent"
       }
     },
+    "/api/terminal/sessions/{id}/output": {
+      "get": {
+        "operationId": "TerminalSessionOutput",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmptyResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
     "/api/terminal/sessions/{id}/ws": {
       "get": {
         "operationId": "TerminalSessionWs",

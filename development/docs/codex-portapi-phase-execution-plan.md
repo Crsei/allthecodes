@@ -179,6 +179,48 @@ Phase 0 不决定具体 wire shape，也不改变 daemon handler 行为。
 - 新增 transport adapter 单元测试和至少一个 WebSocket integration test。
 - 慢客户端/断连不会 panic，不会丢失其他连接状态。
 
+### 执行记录
+
+| 命令/核对项 | 结果 |
+|---|---|
+| `cargo test -p allthecodes-server` — transport tests | 通过：17 个 transport 单元测试、22 个 server 测试、8 个 integration tests、0 个 doctests |
+| `cargo test -p allthecodes-ipc-transport` | 编译通过 |
+| `cargo test -p allthecodes-web` — WS transport tests | 通过：11 个 IPC WS transport tests（origin 校验、frame 转换、close event）、8 个 API RPC tests（JSON-RPC dispatch、transport event 包装） |
+| `cargo test -p allthecodes-ipc` | 通过：17 个 runtime/headless 测试 |
+| `cargo check -p allthecodes --bin allthecodes` | 通过 |
+| `cargo build --workspace` | 通过 |
+| `cargo clippy --workspace --lib --bins` | 通过，无新增 error |
+| WebSocket Origin 校验 — 缺失 Origin → `LocalNative` | 通过，`transport.rs:82-84` |
+| WebSocket Origin 校验 — loopback（localhost/127.0.0.1/[::1]）→ 允许 | 通过，`transport.rs:272-297` |
+| WebSocket Origin 校验 — 非 loopback → 403 | 通过，`ipc.rs:83-86`、`api_rpc.rs:28-31` |
+| `/api/ipc/ws` — text frame → `TransportEvent::IncomingMessage<FrontendMessage>` | 通过，`ipc.rs:208-215, 286-295` |
+| `/api/ipc/ws` — outbound 仍用 `BackendMessage` JSON text frame；`OutboundEnvelope` 仅内部标注目标 | 通过，`ipc.rs:184-193` |
+| `/api/ipc/ws` — `handle_frontend_message` 分发路径未变 | 通过，`ipc.rs:217-223` |
+| `/api/ipc/ws` — open/close event 仅用于日志与 cleanup 前状态表达 | 通过，`ipc.rs:135-139, 248-251` |
+| `/api/rpc/ws` — 每连接生成 `ConnectionId` 与 `ConnectionOrigin` | 通过，`api_rpc.rs:33-34, 26-32` |
+| `/api/rpc/ws` — JSON-RPC dispatch 仍走 `handle_api_rpc_text` / `ApiDispatcher` | 通过，`api_rpc.rs:129-131, 191-219` |
+| `/api/rpc/ws` — invalid frame 和 error response 行为不变 | 通过，`api_rpc.rs:211-218` |
+| headless JSONL — 单一 stdio connection 使用 `TransportKind::HeadlessStdio` | 通过，`headless.rs:83-87` |
+| headless JSONL — stdin line parse → `IncomingMessage` | 通过，`headless.rs:126-132` |
+| headless JSONL — stdin EOF → `ConnectionClosedReason::StdinEof` | 通过，`headless.rs:117-119` |
+| headless JSONL — EOF 后继续走原有 shutdown cleanup | 通过，`headless.rs:233-244` |
+
+### 补充记录
+
+1. **路由注册不统一**：`/api/ipc/ws` 通过 `handler_registry.rs:576` 的 `ApiMethod::IpcWs` 注册，`/api/rpc/ws` 通过 `mod.rs:29` 直接 `.route()` 注册。两者均可达且功能正确，但风格不一致。建议 Phase 3 统一为 handler_registry 模式。
+
+2. **`OutboundEnvelope` 当前为过渡状态**：IPC WS（`ipc.rs:188`）仅序列化了 `envelope.message`，`connection_id` 未被实际使用。这是预期状态，等待 Phase 3 outbound router 启用。
+
+3. **`TransportEvent::IncomingMessage` 在 IPC WS 中被解构丢弃了 `connection_id` 和 `kind`**（`ipc.rs:209`）。单连接场景下合理，但 Phase 3 实现 outbound router 后应考虑携带这些信息。
+
+4. **`handler_registry` 新增传输隔离测试**：`non_web_transports_are_not_registered_as_web_api_routes`、`dedicated_transports_are_marked_as_websocket_routes`、`transport_inventory_keeps_public_web_entries_visible` 强化了传输层与 Web API 的路由隔离，可在 Phase 3 标准化后补充到文档。
+
+### 未实现项（留给后续阶段）
+
+- Unix socket transport 仍未纳入本轮。
+- Phase 4b 继续统一 agent/worker 输出恢复能力。
+- 外部 wire shape、REST route、JSONL 协议、JSON-RPC method 均未调整
+
 ---
 
 ## Phase 3：Outbound 两循环与事件日志
@@ -210,6 +252,23 @@ Phase 0 不决定具体 wire shape，也不改变 daemon handler 行为。
 - 一个慢 WebSocket client 不影响另一个 client 收到 stream events。
 - 新 client 能用 `after_seq` 或兼容参数补齐最近事件。
 - bounded buffer 溢出时有可观察 lag 信号。
+
+### 执行记录
+
+Phase 3 已闭环到代码与测试：
+
+- `allthecodes-server::EventLog` 提供 bounded memory buffer、monotonic `seq`、`replay_after(after_seq)` 与 compacted replay 状态。
+- `allthecodes-server::OutboundRouter` 使用 bounded per-connection writer channel；满队列连接会被标记为 lagging 并移出 fanout，不阻塞其他连接。
+- IPC WebSocket hub 接入 `EventLog`/`OutboundRouter`，支持 `after_seq` replay、lag notification 和慢客户端隔离。
+- daemon SSE `/events` 支持 `after_seq`，并保留 `last_event_id` 兼容；`after_seq` 优先级高于 `last_event_id`。
+- compacted replay 会先发送 `lagged` 事件，携带 `requested_after_seq`、`oldest_seq`、`latest_seq`、`skipped`，且不推进 SSE `Last-Event-ID`。
+
+新增/确认测试：
+
+- `crates/allthecodes-server/src/event_log.rs`：sequence、replay、bounded compaction、zero capacity。
+- `crates/allthecodes-server/src/outbound_router.rs`：bounded fanout、慢连接隔离、unregister/disconnect。
+- `crates/allthecodes-web/src/ipc_streams.rs`：IPC hub fanout、lagged disconnect、single owner。
+- `crates/allthecodes-daemon/src/sse.rs`：`after_seq`/`last_event_id` 解析、buffered replay、compacted lag notification。
 
 ---
 
@@ -247,10 +306,36 @@ Phase 0 不决定具体 wire shape，也不改变 daemon handler 行为。
 
 ### 验收标准
 
-- Agent 输出可断线重连后补齐。
-- 大输出不会无限占用内存。
-- late output after exit 有测试覆盖。
-- 前端/CLI 能用 seq 做幂等读取。
+- Terminal/PTY 输出可断线重连后补齐。
+- Terminal/PTY 大输出不会无限占用内存。
+- Terminal/PTY late output after exit 有测试覆盖。
+- 前端可用 `seq` 做 terminal 输出幂等读取。
+
+### 执行记录
+
+Phase 4 本轮闭环 terminal/PTY 输出恢复，并为 task/agent output 工具路径补上兼容的增量输出事件；daemon gateway/worker run-event wire shape 仍拆为 Phase 4b：
+
+- 新增共享 `OutputEvent`、`OutputRetention`、`OutputReadBatch`、`OutputLifecycleState`，字段覆盖 `seq`、`stream`、`chunk`、`timestamp_ms`、`process_or_run_id`。
+- Terminal session 输出从单一字符串 buffer 改为 bounded output retention，默认 1 MiB，保留 `first_available_seq` 与 `latest_seq`。
+- 新增 `GET /api/terminal/sessions/{id}/output?after_seq&limit_bytes`，返回 `events`、`next_seq`、`truncated`、`first_available_seq`、`status`。
+- Terminal WebSocket 支持 `after_seq` replay；`ready` frame 增加 `first_available_seq`、`latest_seq`、`next_seq`；`output` frame 保留旧 `data` 字段并追加 `seq`、`stream`、`timestamp_ms`、`process_or_run_id`。
+- Terminal WebSocket broadcast lag 后发送 `lagged` frame 并用 retention replay 补齐可用输出。
+- detach/resume TTL 使用 `DEFAULT_DETACH_RESUME_TTL`；exited output 使用 `DEFAULT_EXITED_OUTPUT_RETENTION_TTL` 防止 late output 丢失。
+- `TaskStore::append_output` 继续维护旧 `.output.log` 和 `output` 字段，同时写入 bounded `.output.events.ndjson`，事件使用共享 `OutputEvent`、monotonic `seq`、`stdout` stream、`process_or_run_id=task_id`。
+- `TaskStore::read_output_events(after_seq, limit_bytes)` 支持 task/agent output 增量读取，返回共享 `OutputReadBatch`，并把 `TaskStatus` 映射到 `OutputLifecycleState`。
+- `TaskOutput` 工具新增可选 `after_seq`/`limit_bytes`；未传游标时保持旧 payload，传入后追加 `output_events`、`output_next_seq`、`output_first_available_seq`、`output_truncated_by_limit`、`output_state`。
+
+新增/确认测试：
+
+- `crates/allthecodes-server/src/output.rs`：增量读取、bounded retention、byte limit、late output after exit、zero retention、future cursor `next_seq`。
+- `crates/allthecodes-web/src/ws/terminal.rs`：terminal output WS frame 保留 `data` 并序列化 seq 元数据；REST output response 序列化 cursor 字段。
+- `crates/allthecodes-tasks/src/store.rs`：task output event incremental replay、legacy output seed、bounded event retention。
+- `crates/allthecodes-tools/src/semantic_tool_tests.rs`：`TaskOutput` 旧 payload 兼容和 `after_seq` event cursor 字段。
+
+### Phase 4b 保留缺口
+
+- daemon gateway run events、worker NDJSON、agent supervisor 输出合约尚未统一为 `OutputEvent` wire shape。
+- 本轮不修改 gateway/worker 外部 wire shape，避免扩大到 remote-control run protocol migration。
 
 ---
 
@@ -284,6 +369,25 @@ Phase 0 不决定具体 wire shape，也不改变 daemon handler 行为。
 - 并发 start/restart 不会产生两个 daemon/server。
 - readiness polling 不依赖固定 sleep。
 - stale state 有可读诊断。
+
+### 执行记录
+
+Phase 5 已闭环到代码与测试：
+
+- Web 和 daemon 均提供根级 `/healthz`、`/readyz`、`/startupz`；daemon 保留 `/health` 兼容响应。
+- `allthecodes-daemon::readiness` 提供 `ready_url`、`probe_ready`、`wait_for_ready`，默认 50ms poll interval、10s timeout，并在错误中保留最后一次探测错误。
+- daemon `start` 在 spawn 后轮询 `/readyz`，输出 `ready=`、`attempts=`、`elapsed_ms=`、`log=` 诊断。
+- daemon management 的 `start`、`status`、`stop`、`restart`、`sleep`、`wake` 进入 `operation_lock::with_operation_lock` 串行化。
+- stale supervisor/worker state cleanup 会移除 dead pid 状态并打印 retained/removed 诊断。
+- Web gateway status diagnostics 暴露 `ready_url` 和 readiness 探测结果。
+
+新增/确认测试：
+
+- `crates/allthecodes-web/src/mod.rs`、`crates/allthecodes-daemon/src/server.rs`：root probe endpoint shape。
+- `crates/allthecodes-daemon/src/readiness.rs`：200/non-200 probe、timeout last_error。
+- `crates/allthecodes-daemon/src/operation_lock.rs`：并发互斥、timeout holder 信息、dead pid stale lock cleanup。
+- `crates/allthecodes-daemon/src/process_state.rs`：stale supervisor/worker cleanup。
+- `crates/allthecodes-web/src/handlers/gateways.rs`：gateway status readiness diagnostics。
 
 ---
 
@@ -450,16 +554,15 @@ Phase 0 不决定具体 wire shape，也不改变 daemon handler 行为。
 
 最高优先级：
 
-1. Phase 0：修正文档事实和状态。
-2. Phase 1：完成手动验收和相同端口保护。
-3. Phase 3：bounded event log + replay，因为它会解锁 session resume、SSE catch-up、agent output 可靠性。
+1. Phase 4b：统一 agent/worker 输出恢复能力，复用本轮 terminal `OutputEvent`/retention 设计。
+2. Phase 6：provider runtime 统一，降低多 provider 行为漂移。
 
 中优先级：
 
-1. Phase 5：readiness/operation lock，提升本地 daemon 稳定性。
-2. Phase 6：provider runtime 统一，降低多 provider 行为漂移。
+1. Phase 7：layered config。
+2. Phase 8：完整 PID/process lifecycle。
 
 后续大项：
 
-1. Phase 7：layered config。
-2. Phase 8：完整 PID/process lifecycle。
+1. Unix socket transport。
+2. 按 Phase 4b 结果同步 agent/worker API 文档和 schema。
