@@ -82,14 +82,32 @@ pub(crate) fn validate_flags(
                             return false; // Flag should not have a value
                         }
                         i += 1;
+                    } else if has_equals {
+                        // Use the inline value
+                        if arg_type == FlagArgType::String
+                            && inline_value.starts_with('-')
+                            && !(command_name == Some("git")
+                                && flag == "--sort"
+                                && inline_value
+                                    .chars()
+                                    .nth(1)
+                                    .map(|c| c.is_ascii_alphabetic())
+                                    .unwrap_or(false))
+                        {
+                            return false;
+                        }
+                        if !validate_flag_arg(inline_value, arg_type) {
+                            return false;
+                        }
+                        i += 1;
                     } else {
-                        if has_equals {
-                            // Use the inline value
+                        // Check if next token is the argument
+                        if i + 1 < args.len() && !is_flag(&args[i + 1]) {
                             if arg_type == FlagArgType::String
-                                && inline_value.starts_with('-')
+                                && args[i + 1].starts_with('-')
                                 && !(command_name == Some("git")
                                     && flag == "--sort"
-                                    && inline_value
+                                    && args[i + 1]
                                         .chars()
                                         .nth(1)
                                         .map(|c| c.is_ascii_alphabetic())
@@ -97,32 +115,12 @@ pub(crate) fn validate_flags(
                             {
                                 return false;
                             }
-                            if !validate_flag_arg(inline_value, arg_type) {
+                            if !validate_flag_arg(&args[i + 1], arg_type) {
                                 return false;
                             }
-                            i += 1;
+                            i += 2;
                         } else {
-                            // Check if next token is the argument
-                            if i + 1 < args.len() && !is_flag(&args[i + 1]) {
-                                if arg_type == FlagArgType::String
-                                    && args[i + 1].starts_with('-')
-                                    && !(command_name == Some("git")
-                                        && flag == "--sort"
-                                        && args[i + 1]
-                                            .chars()
-                                            .nth(1)
-                                            .map(|c| c.is_ascii_alphabetic())
-                                            .unwrap_or(false))
-                                {
-                                    return false;
-                                }
-                                if !validate_flag_arg(&args[i + 1], arg_type) {
-                                    return false;
-                                }
-                                i += 2;
-                            } else {
-                                return false; // Missing required argument
-                            }
+                            return false; // Missing required argument
                         }
                     }
                 }

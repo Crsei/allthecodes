@@ -45,43 +45,49 @@ pub struct AsyncHookResponse {
     pub exit_code: Option<i32>,
 }
 
+/// Data needed to register a pending async hook.
+pub struct PendingAsyncHookRegistration {
+    pub process_id: String,
+    pub hook_id: String,
+    pub hook_name: String,
+    pub hook_event: String,
+    pub command: String,
+    pub timeout_secs: u64,
+    pub tool_name: Option<String>,
+    pub plugin_id: Option<String>,
+    pub stop_progress: Option<Box<dyn Fn() + Send>>,
+}
+
 /// Register a new pending async hook.
-pub fn register_pending_async_hook(
-    process_id: &str,
-    hook_id: &str,
-    hook_name: &str,
-    hook_event: &str,
-    command: &str,
-    timeout_secs: u64,
-    tool_name: Option<String>,
-    plugin_id: Option<String>,
-    stop_progress: Option<Box<dyn Fn() + Send>>,
-) {
+pub fn register_pending_async_hook(registration: PendingAsyncHookRegistration) {
     let info = PendingAsyncHook {
-        process_id: process_id.to_string(),
-        hook_id: hook_id.to_string(),
-        hook_name: hook_name.to_string(),
-        hook_event: hook_event.to_string(),
-        tool_name,
-        plugin_id,
+        process_id: registration.process_id.clone(),
+        hook_id: registration.hook_id,
+        hook_name: registration.hook_name.clone(),
+        hook_event: registration.hook_event,
+        tool_name: registration.tool_name,
+        plugin_id: registration.plugin_id,
         start_time: Utc::now(),
-        timeout: timeout_secs,
-        command: command.to_string(),
+        timeout: registration.timeout_secs,
+        command: registration.command,
         response_attachment_sent: false,
     };
 
-    debug!("Hooks: Registering async hook {process_id} ({hook_name}) with timeout {timeout_secs}s");
+    debug!(
+        "Hooks: Registering async hook {} ({}) with timeout {}s",
+        registration.process_id, registration.hook_name, registration.timeout_secs
+    );
 
     let mut hooks = PENDING_HOOKS.lock().expect("PENDING_HOOKS lock poisoned");
     hooks.insert(
-        process_id.to_string(),
+        registration.process_id,
         PendingHookState {
             info,
             completed: Arc::new(AtomicBool::new(false)),
             stdout: String::new(),
             stderr: String::new(),
             exit_code: None,
-            stop_progress,
+            stop_progress: registration.stop_progress,
         },
     );
 }
@@ -225,7 +231,7 @@ fn parse_hook_json_response(stdout: &str) -> Value {
         if trimmed.starts_with('{') {
             if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
                 // Exclude async responses (they have an "async" field)
-                if !val.get("async").is_some() {
+                if val.get("async").is_none() {
                     return val;
                 }
             }
@@ -273,17 +279,17 @@ mod tests {
     #[serial_test::serial]
     fn test_get_pending_after_register() {
         clear_all_async_hooks();
-        register_pending_async_hook(
-            "proc-1",
-            "hook-1",
-            "test-hook",
-            "Stop",
-            "echo ok",
-            30,
-            None,
-            None,
-            None,
-        );
+        register_pending_async_hook(PendingAsyncHookRegistration {
+            process_id: "proc-1".to_string(),
+            hook_id: "hook-1".to_string(),
+            hook_name: "test-hook".to_string(),
+            hook_event: "Stop".to_string(),
+            command: "echo ok".to_string(),
+            timeout_secs: 30,
+            tool_name: None,
+            plugin_id: None,
+            stop_progress: None,
+        });
 
         let pending = get_pending_async_hooks();
         assert_eq!(pending.len(), 1);
@@ -294,17 +300,17 @@ mod tests {
     #[serial_test::serial]
     fn test_complete_async_hook() {
         clear_all_async_hooks();
-        register_pending_async_hook(
-            "proc-2",
-            "hook-2",
-            "test-hook-2",
-            "PreToolUse",
-            "echo json",
-            30,
-            Some("Bash".into()),
-            None,
-            None,
-        );
+        register_pending_async_hook(PendingAsyncHookRegistration {
+            process_id: "proc-2".to_string(),
+            hook_id: "hook-2".to_string(),
+            hook_name: "test-hook-2".to_string(),
+            hook_event: "PreToolUse".to_string(),
+            command: "echo json".to_string(),
+            timeout_secs: 30,
+            tool_name: Some("Bash".into()),
+            plugin_id: None,
+            stop_progress: None,
+        });
 
         complete_async_hook("proc-2", r#"{"continue":true}"#, "", 0);
 

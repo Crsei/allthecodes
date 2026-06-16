@@ -69,28 +69,20 @@ fn parse_goal_command(args: &str) -> std::result::Result<GoalCommand, String> {
 
     let (first, rest) = split_first_word(trimmed);
     match first {
-        "complete" | "completed" | "done" => {
-            return Ok(GoalCommand::Complete {
-                reason: non_empty(rest).map(str::to_string),
-            });
-        }
-        "block" | "blocked" => {
-            return Ok(GoalCommand::Block {
-                reason: non_empty(rest).map(str::to_string),
-            });
-        }
-        "pause" | "paused" => {
-            return Ok(GoalCommand::Pause {
-                reason: non_empty(rest).map(str::to_string),
-            });
-        }
-        "resume" | "resumed" => {
-            return Ok(GoalCommand::Resume {
-                reason: non_empty(rest).map(str::to_string),
-            });
-        }
-        "clear" => return Ok(GoalCommand::Clear),
-        "edit" => return Ok(GoalCommand::Edit),
+        "complete" | "completed" | "done" => Ok(GoalCommand::Complete {
+            reason: non_empty(rest).map(str::to_string),
+        }),
+        "block" | "blocked" => Ok(GoalCommand::Block {
+            reason: non_empty(rest).map(str::to_string),
+        }),
+        "pause" | "paused" => Ok(GoalCommand::Pause {
+            reason: non_empty(rest).map(str::to_string),
+        }),
+        "resume" | "resumed" => Ok(GoalCommand::Resume {
+            reason: non_empty(rest).map(str::to_string),
+        }),
+        "clear" => Ok(GoalCommand::Clear),
+        "edit" => Ok(GoalCommand::Edit),
         "set" | "create" => parse_create_args(rest),
         _ => parse_create_args(trimmed),
     }

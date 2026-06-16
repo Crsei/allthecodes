@@ -48,7 +48,7 @@ fn string_param<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
-fn target_param<'a>(input: &'a Value) -> Option<(&'static str, &'a str)> {
+fn target_param(input: &Value) -> Option<(&'static str, &str)> {
     ["agent_id", "task_path", "task_id", "nickname", "name"]
         .into_iter()
         .find_map(|key| string_param(input, key).map(|value| (key, value)))

@@ -176,7 +176,7 @@ fn extract_commands_from_node<'a>(
     node: Node<'a>,
     source: &'a [u8],
     node_count: &mut usize,
-    diagnostics: &mut Vec<ParseDiagnostic>,
+    _diagnostics: &mut Vec<ParseDiagnostic>,
     commands: &mut Vec<SimpleCommand>,
 ) -> Result<(), (String, Option<String>)> {
     *node_count += 1;
@@ -202,7 +202,7 @@ fn extract_commands_from_node<'a>(
         "program" | "list" | "redirected_statement" | "negated_command" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                extract_commands_from_node(child, source, node_count, diagnostics, commands)?;
+                extract_commands_from_node(child, source, node_count, _diagnostics, commands)?;
             }
             Ok(())
         }
@@ -211,7 +211,7 @@ fn extract_commands_from_node<'a>(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if !SEPARATOR_TYPES.contains(&child.kind()) {
-                    extract_commands_from_node(child, source, node_count, diagnostics, commands)?;
+                    extract_commands_from_node(child, source, node_count, _diagnostics, commands)?;
                 }
             }
             Ok(())

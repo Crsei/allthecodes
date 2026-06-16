@@ -177,7 +177,7 @@ pub fn find_shadowed_rules(
             // Check if this rule also came from a managed source.
             shadowed.push(ShadowedRule {
                 rule: user_rule.clone(),
-                shadowed_by: format!("managed deny rule"),
+                shadowed_by: "managed deny rule".to_string(),
                 source: SettingsSource::User,
             });
         }
@@ -188,7 +188,7 @@ pub fn find_shadowed_rules(
         if mp.allow.contains(user_rule) {
             shadowed.push(ShadowedRule {
                 rule: user_rule.clone(),
-                shadowed_by: format!("managed allow rule"),
+                shadowed_by: "managed allow rule".to_string(),
                 source: SettingsSource::User,
             });
         }

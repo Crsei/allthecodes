@@ -122,7 +122,7 @@ pub fn create_mcpb(plugin_dir: &Path, output_path: &Path) -> Result<()> {
 
     // Content hash covers manifest + payload
     let mut hasher = Sha256::new();
-    hasher.update(&manifest_bytes.as_bytes());
+    hasher.update(manifest_bytes.as_bytes());
     hasher.update(&payload);
     let content_hash = hasher.finalize();
 

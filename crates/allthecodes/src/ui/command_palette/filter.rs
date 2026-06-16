@@ -60,7 +60,7 @@ pub(super) fn filtered_commands(query: &str, cwd: &Path) -> Vec<CommandItem> {
             .collect();
 
     // Process commands with multi-field weighted scoring
-    for (_index, cmd) in commands::get_all_commands().into_iter().enumerate() {
+    for cmd in commands::get_all_commands() {
         if is_hidden_palette_command(&cmd.name) {
             continue;
         }

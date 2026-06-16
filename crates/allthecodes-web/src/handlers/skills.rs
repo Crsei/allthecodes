@@ -26,6 +26,8 @@ use allthecodes_skills::{
     SkillDefinition, SkillDiagnostic, SkillSource,
 };
 
+type BoxResponse = Box<Response>;
+
 use crate::api_dispatcher::rest_processor_response;
 use crate::handler_registry::HandlerRegistry;
 use crate::processors::Processor;
@@ -283,7 +285,7 @@ pub async fn skills_files_handler(
     // Path traversal prevention
     let resolved = match resolve_skill_path(&base_dir, &query.path) {
         Ok(path) => path,
-        Err(error) => return error.into_response(),
+        Err(error) => return (*error).into_response(),
     };
 
     // Reject directories
@@ -299,7 +301,7 @@ pub async fn skills_files_handler(
     let max_bytes = query.max_bytes.unwrap_or(10 * 1024 * 1024);
     let mut response = match read_skill_file(&id, &query.path, &resolved, max_bytes) {
         Ok(r) => r,
-        Err(error) => return error.into_response(),
+        Err(error) => return (*error).into_response(),
     };
     response.profile_id = query.profile_id;
     Json(response).into_response()
@@ -474,28 +476,33 @@ fn file_summary(base_dir: &Path, relative_path: &str) -> SkillFileSummary {
 // ---------------------------------------------------------------------------
 
 /// Resolve `request_path` relative to `base_dir`, rejecting traversal.
-fn resolve_skill_path(base_dir: &Path, request_path: &str) -> Result<PathBuf, Response> {
-    let base = base_dir
-        .canonicalize()
-        .map_err(|_| internal_error("Failed to resolve skill base directory".to_string()))?;
+fn resolve_skill_path(base_dir: &Path, request_path: &str) -> Result<PathBuf, BoxResponse> {
+    let base = base_dir.canonicalize().map_err(|_| {
+        Box::new(internal_error(
+            "Failed to resolve skill base directory".to_string(),
+        ))
+    })?;
 
     let cleaned = request_path.trim_start_matches('/');
     let joined = base.join(cleaned);
 
     // Check existence first to give a precise error.
     if !joined.exists() {
-        return Err(not_found(format!(
+        return Err(Box::new(not_found(format!(
             "File '{}' not found in skill",
             request_path
-        )));
+        ))));
     }
 
-    let resolved = joined
-        .canonicalize()
-        .map_err(|_| bad_request(format!("Cannot resolve path '{}'", request_path)))?;
+    let resolved = joined.canonicalize().map_err(|_| {
+        Box::new(bad_request(format!(
+            "Cannot resolve path '{}'",
+            request_path
+        )))
+    })?;
 
     if !resolved.starts_with(&base) {
-        return Err(forbidden("Path traversal detected".to_string()));
+        return Err(Box::new(forbidden("Path traversal detected".to_string())));
     }
 
     Ok(resolved)
@@ -516,18 +523,22 @@ fn read_skill_file(
     request_path: &str,
     path: &Path,
     max_bytes: u64,
-) -> Result<SkillFileResponse, Response> {
-    let meta = std::fs::metadata(path)
-        .map_err(|e| internal_error(format!("Failed to read file metadata: {}", e)))?;
+) -> Result<SkillFileResponse, BoxResponse> {
+    let meta = std::fs::metadata(path).map_err(|e| {
+        Box::new(internal_error(format!(
+            "Failed to read file metadata: {}",
+            e
+        )))
+    })?;
 
     let size = meta.len();
     let file = std::fs::File::open(path)
-        .map_err(|e| internal_error(format!("Failed to open file: {}", e)))?;
+        .map_err(|e| Box::new(internal_error(format!("Failed to open file: {}", e))))?;
 
     let mut buf = Vec::new();
     file.take(max_bytes)
         .read_to_end(&mut buf)
-        .map_err(|e| internal_error(format!("Failed to read file: {}", e)))?;
+        .map_err(|e| Box::new(internal_error(format!("Failed to read file: {}", e))))?;
 
     // Probe first 8 KB for null bytes to detect binary content
     let is_binary = !buf.is_empty() && buf[..buf.len().min(8192)].contains(&0x00);

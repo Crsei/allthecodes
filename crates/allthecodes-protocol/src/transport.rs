@@ -24,7 +24,7 @@ pub enum JsonRpcFrame {
     Response {
         jsonrpc: JsonRpcVersion,
         id: TransportRequestId,
-        response: ClientResponse,
+        response: Box<ClientResponse>,
     },
     Error {
         jsonrpc: JsonRpcVersion,
@@ -58,7 +58,7 @@ impl JsonRpcFrame {
         Self::Response {
             jsonrpc: JsonRpcVersion::V2,
             id,
-            response,
+            response: Box::new(response),
         }
     }
 

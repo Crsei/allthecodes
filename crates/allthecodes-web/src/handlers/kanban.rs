@@ -26,6 +26,8 @@ use axum::routing::{get, post};
 use crate::api_dispatcher::rest_processor_response;
 use crate::handler_registry::HandlerRegistry;
 use crate::processors::Processor;
+
+type BoxResponse = Box<Response>;
 use crate::serialization::SerializationLayer;
 use crate::state::WebState;
 
@@ -64,7 +66,7 @@ impl Processor for KanbanBoardsProcessor {
             .boards
             .iter()
             .map(|b| {
-                serde_json::from_value(serde_json::to_value(&board_summary(b)).unwrap()).unwrap()
+                serde_json::from_value(serde_json::to_value(board_summary(b)).unwrap()).unwrap()
             })
             .collect();
         Ok(ProtocolKanbanBoardsResponse {
@@ -383,7 +385,7 @@ pub async fn kanban_task_update_handler(
 ) -> Response {
     match mutate_store(|store| update_task(store, &id, req)) {
         Ok(response) => Json(response).into_response(),
-        Err(error) => error.into_response(),
+        Err(error) => (*error).into_response(),
     }
 }
 
@@ -394,7 +396,7 @@ pub async fn kanban_task_comment_handler(
 ) -> Response {
     match mutate_store(|store| add_comment(store, &id, req)) {
         Ok(response) => Json(response).into_response(),
-        Err(error) => error.into_response(),
+        Err(error) => (*error).into_response(),
     }
 }
 
@@ -404,12 +406,12 @@ fn read_store() -> Result<KanbanStore, String> {
 }
 
 fn mutate_store<T>(
-    mutate: impl FnOnce(&mut KanbanStore) -> Result<T, Response>,
-) -> Result<T, Response> {
-    let _guard = lock_store().map_err(|e| internal_error(e))?;
-    let mut store = load_store_locked().map_err(|e| internal_error(e))?;
+    mutate: impl FnOnce(&mut KanbanStore) -> Result<T, BoxResponse>,
+) -> Result<T, BoxResponse> {
+    let _guard = lock_store().map_err(|e| Box::new(internal_error(e)))?;
+    let mut store = load_store_locked().map_err(|e| Box::new(internal_error(e)))?;
     let result = mutate(&mut store)?;
-    write_store_locked(&store).map_err(|e| internal_error(e))?;
+    write_store_locked(&store).map_err(|e| Box::new(internal_error(e)))?;
     Ok(result)
 }
 
@@ -542,12 +544,17 @@ fn default_columns() -> Vec<KanbanColumn> {
 fn create_task(
     store: &mut KanbanStore,
     req: KanbanTaskCreateRequest,
-) -> Result<KanbanTaskMutationResponse, Response> {
+) -> Result<KanbanTaskMutationResponse, BoxResponse> {
     let board = store
         .boards
         .iter_mut()
         .find(|board| board.id == req.board_id)
-        .ok_or_else(|| not_found(format!("Kanban board '{}' not found", req.board_id)))?;
+        .ok_or_else(|| {
+            Box::new(not_found(format!(
+                "Kanban board '{}' not found",
+                req.board_id
+            )))
+        })?;
     let title = clean_required(req.title, "Task title")?;
     let now = now_timestamp();
     let task = KanbanTask {
@@ -582,12 +589,12 @@ fn update_task(
     store: &mut KanbanStore,
     id: &str,
     req: KanbanTaskUpdateRequest,
-) -> Result<KanbanTaskMutationResponse, Response> {
+) -> Result<KanbanTaskMutationResponse, BoxResponse> {
     let (board, task_index) = find_task_mut(store, id)?;
     if board.tasks[task_index].revision != req.revision {
-        return Err(revision_conflict(
+        return Err(Box::new(revision_conflict(
             "Kanban task revision conflict".to_string(),
-        ));
+        )));
     }
 
     let task = &mut board.tasks[task_index];
@@ -632,13 +639,13 @@ fn add_comment(
     store: &mut KanbanStore,
     id: &str,
     req: KanbanCommentCreateRequest,
-) -> Result<KanbanTaskMutationResponse, Response> {
+) -> Result<KanbanTaskMutationResponse, BoxResponse> {
     let body = clean_required(req.body, "Comment body")?;
     let (board, task_index) = find_task_mut(store, id)?;
     if board.tasks[task_index].revision != req.revision {
-        return Err(revision_conflict(
+        return Err(Box::new(revision_conflict(
             "Kanban task revision conflict".to_string(),
-        ));
+        )));
     }
 
     let now = now_timestamp();
@@ -663,13 +670,16 @@ fn add_comment(
 fn find_task_mut<'a>(
     store: &'a mut KanbanStore,
     id: &str,
-) -> Result<(&'a mut KanbanBoard, usize), Response> {
+) -> Result<(&'a mut KanbanBoard, usize), BoxResponse> {
     for board in &mut store.boards {
         if let Some(index) = board.tasks.iter().position(|task| task.id == id) {
             return Ok((board, index));
         }
     }
-    Err(not_found(format!("Kanban task '{}' not found", id)))
+    Err(Box::new(not_found(format!(
+        "Kanban task '{}' not found",
+        id
+    ))))
 }
 
 fn board_summary(board: &KanbanBoard) -> KanbanBoardSummary {
@@ -690,10 +700,13 @@ fn sorted_columns(mut columns: Vec<KanbanColumn>) -> Vec<KanbanColumn> {
     columns
 }
 
-fn clean_required(value: String, label: &str) -> Result<String, Response> {
+fn clean_required(value: String, label: &str) -> Result<String, BoxResponse> {
     let value = value.trim();
     if value.is_empty() {
-        Err(validation_error(format!("{} cannot be empty", label)))
+        Err(Box::new(validation_error(format!(
+            "{} cannot be empty",
+            label
+        ))))
     } else {
         Ok(value.to_string())
     }

@@ -56,17 +56,12 @@ pub enum SchedulerKind {
     RemoteTrigger,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduleKind {
+    #[default]
     Interval,
     Cron,
-}
-
-impl Default for ScheduleKind {
-    fn default() -> Self {
-        Self::Interval
-    }
 }
 
 impl SchedulerKind {

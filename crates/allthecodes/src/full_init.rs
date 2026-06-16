@@ -812,16 +812,21 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
                     let classifier = shared_classifier.clone();
                     let auto_mode_policy = auto_mode_policy.clone();
                     Box::pin(async move {
-                        use allthecodes_safety::classifier::SafetyClassifierRequest;
+                        use allthecodes_safety::classifier::{
+                            AutoModeToolClassifierInput, SafetyClassifierRequest,
+                        };
                         let request = SafetyClassifierRequest::auto_mode_tool_with_classifier_input(
-                            tool_name,
-                            tool_input,
-                            tool_classifier_input,
-                            messages,
-                            std::path::PathBuf::from(cwd),
-                            allthecodes_types::permissions::PermissionMode::Auto,
-                            None,
-                            auto_mode_policy.as_ref().clone(),
+                            AutoModeToolClassifierInput {
+                                tool_name,
+                                tool_input,
+                                tool_classifier_input,
+                                transcript: messages,
+                                cwd: std::path::PathBuf::from(cwd),
+                                permission_mode:
+                                    allthecodes_types::permissions::PermissionMode::Auto,
+                                sandbox_mode: None,
+                                auto_mode_policy: auto_mode_policy.as_ref().clone(),
+                            },
                         );
                         Some(classifier.classify(&request).await)
                     })

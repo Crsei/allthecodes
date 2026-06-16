@@ -318,11 +318,12 @@ mod tests {
         let response = handle_api_rpc_text(&dispatcher, &test_context(), &text).await;
 
         match response {
-            JsonRpcFrame::Response {
-                id,
-                response: ClientResponse::Capabilities(body),
-                ..
-            } => {
+            JsonRpcFrame::Response { id, response, .. }
+                if matches!(response.as_ref(), ClientResponse::Capabilities(_)) =>
+            {
+                let ClientResponse::Capabilities(body) = *response else {
+                    unreachable!();
+                };
                 assert_eq!(id, 7);
                 assert_eq!(body.capabilities.get("sessions"), Some(&true));
             }

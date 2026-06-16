@@ -404,7 +404,7 @@ pub async fn launch_app_entry(entry: &AppEntry) -> anyhow::Result<String> {
     {
         if let Some(name) = entry.linux.first() {
             let _output = tokio::process::Command::new(name)
-                .arg(&format!("--version")) // dummy to test existence
+                .arg("--version") // dummy to test existence
                 .output()
                 .await;
 

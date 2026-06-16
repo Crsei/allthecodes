@@ -55,18 +55,12 @@ pub struct HeredocExtractionResult {
 }
 
 /// Options for `extract_heredocs()`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ExtractOptions {
     /// When true, only extract quoted/escaped heredocs (`<<'EOF'`, `<<"EOF"`,
     /// `<<\\EOF`). Unquoted heredocs (`<<EOF`) have their bodies expanded by
     /// bash and are left in place so security validators can inspect them.
     pub quoted_only: bool,
-}
-
-impl Default for ExtractOptions {
-    fn default() -> Self {
-        ExtractOptions { quoted_only: false }
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -96,10 +96,10 @@ pub enum PermissionUpdate {
 }
 
 /// Helper: select the correct rules field based on behavior.
-fn rules_field_mut<'a>(
-    ctx: &'a mut ToolPermissionContext,
+fn rules_field_mut(
+    ctx: &mut ToolPermissionContext,
     behavior: RuleBehavior,
-) -> &'a mut std::collections::HashMap<String, Vec<String>> {
+) -> &mut std::collections::HashMap<String, Vec<String>> {
     match behavior {
         RuleBehavior::Allow => &mut ctx.always_allow_rules,
         RuleBehavior::Deny => &mut ctx.always_deny_rules,
@@ -244,11 +244,7 @@ pub fn create_read_rule_suggestion(
         return None;
     }
 
-    let rule = if dir_path.starts_with('/') {
-        format!("{}/**", dir_path)
-    } else {
-        format!("{}/**", dir_path)
-    };
+    let rule = format!("{}/**", dir_path);
 
     Some(PermissionUpdate::AddRules {
         rules: vec![format!("Read({})", rule)],

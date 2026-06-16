@@ -1092,7 +1092,7 @@ impl App {
 
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!(" \u{276f} "),
+                    " \u{276f} ".to_string(),
                     if selected {
                         Style::default().fg(Color::Green)
                     } else {

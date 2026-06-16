@@ -426,10 +426,7 @@ fn build_permission_rules_section(ctx: &CommandContext) -> Section {
     // Permission validation warnings.
     let perm_validation = permission_validation::validate_permission_settings(
         &ctx.app_state.settings.permissions,
-        &{
-            let sm = std::collections::BTreeMap::new();
-            sm
-        },
+        &std::collections::BTreeMap::new(),
     );
     for w in &perm_validation {
         let status = match w.severity {
@@ -440,18 +437,17 @@ fn build_permission_rules_section(ctx: &CommandContext) -> Section {
         rows.push(Row::new(&w.field, status, w.message.clone()));
     }
 
-    if rows.is_empty()
+    if (rows.is_empty()
         || rows
             .iter()
-            .all(|r| matches!(r.status, Status::Ok | Status::Info))
+            .all(|r| matches!(r.status, Status::Ok | Status::Info)))
+        && perm_validation.is_empty()
     {
-        if perm_validation.is_empty() {
-            rows.push(Row::new(
-                "permission validation",
-                Status::Ok,
-                "no permission validation warnings".to_string(),
-            ));
-        }
+        rows.push(Row::new(
+            "permission validation",
+            Status::Ok,
+            "no permission validation warnings".to_string(),
+        ));
     }
 
     Section {

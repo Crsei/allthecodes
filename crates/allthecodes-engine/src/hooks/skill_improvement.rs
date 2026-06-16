@@ -43,34 +43,30 @@ pub const TURN_BATCH_SIZE: usize = 5;
 /// Initialize the skill improvement system.
 /// Registers a post-sampling hook that periodically analyzes conversations.
 pub fn init_skill_improvement() {
-    if !is_skill_improvement_enabled() {
-        return;
+    if is_skill_improvement_enabled() {
+        // TODO: Register post-sampling hook with create_api_query_hook config
+        // See TypeScript `createSkillImprovementHook()` for the full implementation.
+        //
+        // The hook should:
+        // 1. Check if a project skill is active
+        // 2. Every TURN_BATCH_SIZE user messages, analyze recent messages
+        // 3. Parse <updates> tags for improvement suggestions
+        // 4. Update AppState.skillImprovement with suggestions
     }
-
-    // TODO: Register post-sampling hook with create_api_query_hook config
-    // See TypeScript `createSkillImprovementHook()` for the full implementation.
-    //
-    // The hook should:
-    // 1. Check if a project skill is active
-    // 2. Every TURN_BATCH_SIZE user messages, analyze recent messages
-    // 3. Parse <updates> tags for improvement suggestions
-    // 4. Update AppState.skillImprovement with suggestions
 }
 
 /// Apply skill improvements by making an LLM call to rewrite the skill file.
 /// Fire-and-forget — does not block the main conversation.
 pub async fn apply_skill_improvement(skill_name: &str, _updates: &[SkillUpdate]) {
-    if skill_name.is_empty() {
-        return;
+    if !skill_name.is_empty() {
+        // TODO: Full implementation:
+        //
+        // 1. Read skill file from .allthecodes/skills/{skill_name}/SKILL.md
+        // 2. Build LLM prompt with current content + suggested updates
+        // 3. Call queryModelWithoutStreaming (via cc-api)
+        // 4. Parse <updated_file> tags
+        // 5. Write updated content back to file
     }
-
-    // TODO: Full implementation:
-    //
-    // 1. Read skill file from .allthecodes/skills/{skill_name}/SKILL.md
-    // 2. Build LLM prompt with current content + suggested updates
-    // 3. Call queryModelWithoutStreaming (via cc-api)
-    // 4. Parse <updated_file> tags
-    // 5. Write updated content back to file
 }
 
 #[cfg(test)]

@@ -27,9 +27,10 @@ use crate::zip_cache::{extract_tgz_to, extract_zip_to};
 use crate::{PluginEntry, PluginSource, PluginStatus};
 
 /// Installation scope for a plugin.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InstallScope {
     /// User-wide installation (default).
+    #[default]
     User,
     /// Project-local installation.
     Project,
@@ -44,12 +45,6 @@ impl InstallScope {
             InstallScope::Project => "project",
             InstallScope::Local => "local",
         }
-    }
-}
-
-impl Default for InstallScope {
-    fn default() -> Self {
-        InstallScope::User
     }
 }
 
@@ -173,7 +168,7 @@ pub async fn install_plugin(
 
     // 6. Download/resolve the plugin package
     let dest_dir = crate::cache_dir()
-        .join(&scope.as_str())
+        .join(scope.as_str())
         .join(sanitize_id(source));
     let resolved_plugin = resolve_source(&resolved.resolve_source, &dest_dir).await?;
 

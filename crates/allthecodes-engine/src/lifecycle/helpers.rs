@@ -288,7 +288,7 @@ fn build_output_config(
         object.insert("effort".to_string(), serde_json::Value::String(effort));
     }
 
-    (!object.is_empty()).then(|| serde_json::Value::Object(object))
+    (!object.is_empty()).then_some(serde_json::Value::Object(object))
 }
 
 fn default_cache_marker() -> serde_json::Value {

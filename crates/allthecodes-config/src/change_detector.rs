@@ -88,6 +88,7 @@ impl ChangeDetector {
     /// - The file was not previously tracked and now exists.
     /// - The file's mtime is different from the recorded value.
     /// - The file was previously tracked but no longer exists.
+    ///
     /// Returns `false` if the file is tracked and its mtime matches.
     pub fn has_changed(&self, path: &Path) -> bool {
         let current_mtime = std::fs::metadata(path)

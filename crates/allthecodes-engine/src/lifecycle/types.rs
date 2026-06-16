@@ -33,7 +33,7 @@ fn total_usage_tokens(usage: &UsageTracking) -> u64 {
 /// Goal records persist cumulative usage. This state keeps the live engine
 /// baseline so a newly created goal does not inherit tokens used before it
 /// existed, and each write can be guarded by the current goal id.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct GoalRuntimeState {
     pub(crate) active_goal_id: Option<String>,
     last_accounted_usage: UsageTracking,
@@ -125,18 +125,6 @@ impl GoalRuntimeState {
 
     pub(crate) fn mark_budget_warning_sent(&mut self, goal_id: &str) {
         self.budget_warning_sent_for_goal_id = Some(goal_id.to_string());
-    }
-}
-
-impl Default for GoalRuntimeState {
-    fn default() -> Self {
-        Self {
-            active_goal_id: None,
-            last_accounted_usage: UsageTracking::default(),
-            last_accounted_at: None,
-            budget_warning_sent_for_goal_id: None,
-            continuation_queued_for_goal_id: None,
-        }
     }
 }
 

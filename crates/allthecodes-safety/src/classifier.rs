@@ -73,6 +73,17 @@ pub struct SafetyClassifierRequest {
     pub hook_context: Option<Value>,
 }
 
+pub struct AutoModeToolClassifierInput {
+    pub tool_name: String,
+    pub tool_input: Value,
+    pub tool_classifier_input: Value,
+    pub transcript: Vec<Message>,
+    pub cwd: PathBuf,
+    pub permission_mode: PermissionMode,
+    pub sandbox_mode: Option<String>,
+    pub auto_mode_policy: AutoModeSettings,
+}
+
 impl SafetyClassifierRequest {
     pub fn auto_mode_tool(
         tool_name: impl Into<String>,
@@ -83,38 +94,29 @@ impl SafetyClassifierRequest {
         sandbox_mode: Option<String>,
         auto_mode_policy: AutoModeSettings,
     ) -> Self {
-        Self::auto_mode_tool_with_classifier_input(
-            tool_name,
-            tool_input.clone(),
-            tool_input,
+        Self::auto_mode_tool_with_classifier_input(AutoModeToolClassifierInput {
+            tool_name: tool_name.into(),
+            tool_input: tool_input.clone(),
+            tool_classifier_input: tool_input,
             transcript,
             cwd,
             permission_mode,
             sandbox_mode,
             auto_mode_policy,
-        )
+        })
     }
 
-    pub fn auto_mode_tool_with_classifier_input(
-        tool_name: impl Into<String>,
-        tool_input: Value,
-        tool_classifier_input: Value,
-        transcript: Vec<Message>,
-        cwd: PathBuf,
-        permission_mode: PermissionMode,
-        sandbox_mode: Option<String>,
-        auto_mode_policy: AutoModeSettings,
-    ) -> Self {
+    pub fn auto_mode_tool_with_classifier_input(input: AutoModeToolClassifierInput) -> Self {
         Self {
             purpose: SafetyClassifierPurpose::AutoModeToolUse,
-            tool_name: tool_name.into(),
-            tool_input,
-            tool_classifier_input,
-            transcript,
-            cwd,
-            permission_mode,
-            sandbox_mode,
-            auto_mode_policy,
+            tool_name: input.tool_name,
+            tool_input: input.tool_input,
+            tool_classifier_input: input.tool_classifier_input,
+            transcript: input.transcript,
+            cwd: input.cwd,
+            permission_mode: input.permission_mode,
+            sandbox_mode: input.sandbox_mode,
+            auto_mode_policy: input.auto_mode_policy,
             hook_context: None,
         }
     }

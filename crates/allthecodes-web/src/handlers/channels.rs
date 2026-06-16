@@ -14,6 +14,8 @@ use allthecodes_gateway::{AdapterProvider, AdapterStatus, GatewayDiagnostic};
 
 use allthecodes_protocol::{ApiError as ProtocolApiError, ApiErrorBody};
 
+type BoxResponse = Box<Response>;
+
 #[derive(Serialize)]
 pub struct ChannelsResponse {
     pub daemon: ChannelDaemonInfo,
@@ -55,7 +57,7 @@ pub struct ChannelTestRequest {
 pub async fn channels_list_handler() -> Response {
     let (daemon, client) = match running_gateway_client() {
         Ok(pair) => pair,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match client.adapters().await {
         Ok(adapters) => Json(ChannelsResponse { daemon, adapters }).into_response(),
@@ -67,7 +69,7 @@ pub async fn channels_list_handler() -> Response {
 pub async fn channels_capabilities_handler() -> Response {
     let (daemon, client) = match running_gateway_client() {
         Ok(pair) => pair,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match client.capabilities().await {
         Ok(snapshot) => Json(ChannelsCapabilitiesResponse {
@@ -87,7 +89,7 @@ pub async fn channels_connect_handler(AxumPath(provider): AxumPath<String>) -> R
     };
     let (_daemon, client) = match running_gateway_client() {
         Ok(pair) => pair,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match client.connect_adapter(provider).await {
         Ok(status) => Json(status).into_response(),
@@ -106,7 +108,7 @@ pub async fn channels_test_handler(
     };
     let (_daemon, client) = match running_gateway_client() {
         Ok(pair) => pair,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match client
         .test_adapter_message(provider, req.target, req.text)
@@ -117,13 +119,13 @@ pub async fn channels_test_handler(
     }
 }
 
-fn running_gateway_client() -> Result<(ChannelDaemonInfo, LocalGatewayClient), Response> {
+fn running_gateway_client() -> Result<(ChannelDaemonInfo, LocalGatewayClient), BoxResponse> {
     let status = LocalGatewayClient::daemon_status().map_err(|error| {
-        error_response(
+        Box::new(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "daemon_state_unavailable",
             format!("The daemon state could not be read: {}", error),
-        )
+        ))
     })?;
 
     match status {
@@ -134,19 +136,19 @@ fn running_gateway_client() -> Result<(ChannelDaemonInfo, LocalGatewayClient), R
                 pid: Some(pid),
             };
             let client = LocalGatewayClient::from_running_daemon()
-                .map_err(|diagnostic| diagnostic_response(diagnostic))?;
+                .map_err(|diagnostic| Box::new(diagnostic_response(diagnostic)))?;
             Ok((daemon, client))
         }
-        LocalGatewayDaemonStatus::Stale { pid } => Err(error_response(
+        LocalGatewayDaemonStatus::Stale { pid } => Err(Box::new(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "daemon_stale",
             format!("The daemon state is stale for pid {}", pid),
-        )),
-        LocalGatewayDaemonStatus::Stopped => Err(error_response(
+        ))),
+        LocalGatewayDaemonStatus::Stopped => Err(Box::new(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "daemon_stopped",
             "The daemon is not running".to_string(),
-        )),
+        ))),
     }
 }
 

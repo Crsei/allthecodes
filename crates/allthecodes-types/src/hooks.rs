@@ -633,15 +633,22 @@ pub struct ApiQueryResult<T> {
 }
 
 /// Configuration for an API query hook.
+pub type ApiQueryShouldRun = Box<dyn Fn(&ApiQueryHookContext) -> bool + Send + Sync>;
+pub type ApiQueryBuildMessages = Box<dyn Fn(&ApiQueryHookContext) -> Vec<Value> + Send + Sync>;
+pub type ApiQueryParseResponse<TResult> = Box<dyn Fn(&str) -> TResult + Send + Sync>;
+pub type ApiQueryLogResult<TResult> =
+    Box<dyn Fn(&ApiQueryResult<TResult>, &ApiQueryHookContext) + Send + Sync>;
+pub type ApiQueryGetModel = Box<dyn Fn() -> String + Send + Sync>;
+
 pub struct ApiQueryHookConfig<TResult> {
     pub name: String,
-    pub should_run: Box<dyn Fn(&ApiQueryHookContext) -> bool + Send + Sync>,
-    pub build_messages: Box<dyn Fn(&ApiQueryHookContext) -> Vec<Value> + Send + Sync>,
+    pub should_run: ApiQueryShouldRun,
+    pub build_messages: ApiQueryBuildMessages,
     pub system_prompt: Option<String>,
     pub use_tools: bool,
-    pub parse_response: Box<dyn Fn(&str) -> TResult + Send + Sync>,
-    pub log_result: Box<dyn Fn(&ApiQueryResult<TResult>, &ApiQueryHookContext) + Send + Sync>,
-    pub get_model: Box<dyn Fn() -> String + Send + Sync>,
+    pub parse_response: ApiQueryParseResponse<TResult>,
+    pub log_result: ApiQueryLogResult<TResult>,
+    pub get_model: ApiQueryGetModel,
 }
 
 // ---------------------------------------------------------------------------

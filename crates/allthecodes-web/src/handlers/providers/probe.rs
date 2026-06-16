@@ -28,7 +28,7 @@ pub async fn providers_probe_handler(
 
     let endpoint = match provider_endpoint_for_probe(&id, profile) {
         Ok(endpoint) => endpoint,
-        Err(response) => return Json(response).into_response(),
+        Err(response) => return Json(*response).into_response(),
     };
 
     let report = match req.transport {
@@ -41,7 +41,7 @@ pub async fn providers_probe_handler(
 pub(super) fn provider_endpoint_for_probe(
     id: &str,
     profile: Option<&ProviderProfileSettings>,
-) -> Result<ProviderEndpoint, ProviderProbeResponse> {
+) -> Result<ProviderEndpoint, Box<ProviderProbeResponse>> {
     let kind = profile
         .and_then(|profile| profile.api_provider.as_deref())
         .unwrap_or(id);
@@ -49,13 +49,13 @@ pub(super) fn provider_endpoint_for_probe(
     let Some(protocol) = info.map(|info| info.protocol).or_else(|| {
         profile.map(|_| allthecodes_api::api::providers::ProviderProtocol::OpenAiCompat)
     }) else {
-        return Err(provider_probe_local_error(
+        return Err(Box::new(provider_probe_local_error(
             id,
             ProviderProbeStatus::Error,
             Some(ProviderProbeErrorKind::InvalidRequest),
             format!("Provider '{id}' is not configured"),
             None,
-        ));
+        )));
     };
     let base_url = profile
         .and_then(|profile| normalized_non_empty(profile.base_url.as_deref()))
@@ -63,13 +63,13 @@ pub(super) fn provider_endpoint_for_probe(
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     let env_key = info.map(|info| info.env_key).unwrap_or("OPENAI_API_KEY");
     let Some(api_key) = provider_probe_api_key(profile, env_key) else {
-        return Err(provider_probe_local_error(
+        return Err(Box::new(provider_probe_local_error(
             id,
             ProviderProbeStatus::AuthFailed,
             Some(ProviderProbeErrorKind::AuthenticationFailed),
             format!("Provider '{id}' has no configured credential"),
             allthecodes_api::api::providers::base_url_host(&base_url),
-        ));
+        )));
     };
 
     match protocol {
@@ -80,24 +80,24 @@ pub(super) fn provider_endpoint_for_probe(
                     == Some("api.anthropic.com");
             ProviderEndpoint::anthropic(&auth, base_url, direct_official_anthropic, &json!({}))
                 .map_err(|error| {
-                    provider_probe_local_error(
+                    Box::new(provider_probe_local_error(
                         id,
                         ProviderProbeStatus::Error,
                         Some(ProviderProbeErrorKind::InvalidRequest),
                         error.to_string(),
                         None,
-                    )
+                    ))
                 })
         }
         allthecodes_api::api::providers::ProviderProtocol::OpenAiCompat => {
             ProviderEndpoint::openai_compat(kind, base_url, &api_key).map_err(|error| {
-                provider_probe_local_error(
+                Box::new(provider_probe_local_error(
                     id,
                     ProviderProbeStatus::Error,
                     Some(ProviderProbeErrorKind::InvalidRequest),
                     error.to_string(),
                     None,
-                )
+                ))
             })
         }
         allthecodes_api::api::providers::ProviderProtocol::Google => {

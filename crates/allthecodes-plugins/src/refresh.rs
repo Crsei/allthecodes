@@ -183,7 +183,7 @@ pub fn compute_plugin_delta(old: &[crate::PluginEntry], new: &[crate::PluginEntr
         }
     }
 
-    for (id, _) in &old_by_id {
+    for id in old_by_id.keys() {
         if !new_by_id.contains_key(id) {
             removed.push((*id).to_string());
         }

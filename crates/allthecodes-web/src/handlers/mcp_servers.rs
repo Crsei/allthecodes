@@ -156,11 +156,10 @@ fn upsert_entry(
     state: &WebState,
     entry: McpServerConfigEntry,
 ) -> Result<McpServerConfigEntry, ProtocolApiError> {
-    validate_entry(&entry).map_err(|error| validation_api(error))?;
+    validate_entry(&entry).map_err(validation_api)?;
     let cwd = engine_cwd(state);
-    let path =
-        settings_path_for_scope(&cwd, &entry.scope).map_err(|error| validation_api(error))?;
-    let mut raw = read_raw_settings(&path).map_err(|error| internal_api(error))?;
+    let path = settings_path_for_scope(&cwd, &entry.scope).map_err(validation_api)?;
+    let mut raw = read_raw_settings(&path).map_err(internal_api)?;
     let servers = raw
         .extra
         .entry("mcpServers".to_string())

@@ -138,11 +138,10 @@ pub(super) fn account_goal_runtime_message(
                 .goal_runtime
                 .account_explicit_token_delta(&goal.goal_id, &usage, token_delta, now)
         } else {
-            let Some((token_delta, seconds_delta)) =
-                state.goal_runtime.account_delta(&goal.goal_id, &usage, now)
-            else {
-                return None;
-            };
+            let (token_delta, seconds_delta) =
+                state
+                    .goal_runtime
+                    .account_delta(&goal.goal_id, &usage, now)?;
             (token_delta, seconds_delta)
         }
     };

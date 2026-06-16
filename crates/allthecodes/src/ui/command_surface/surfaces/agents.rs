@@ -827,7 +827,7 @@ fn render_text_field(label: &str, value: &str) -> String {
 }
 
 fn is_text_step(step: usize) -> bool {
-    matches!(step, 2 | 3 | 4 | 5)
+    matches!(step, 2..=5)
 }
 
 fn edit_current_create_text(create: &mut CreateAgentState, code: KeyCode) {

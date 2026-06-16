@@ -202,7 +202,7 @@ fn parse_simple_command(
             .map(|s| s.to_string())
     });
     let args: Vec<String> = args_after_env.iter().skip(1).cloned().collect();
-    let full_argv: Vec<String> = argv.iter().cloned().collect();
+    let full_argv: Vec<String> = argv.to_vec();
 
     // Extract redirections
     let redirections = extract_redirections(raw);

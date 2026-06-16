@@ -34,9 +34,7 @@ pub(crate) fn validate_enum(
     key: &str,
     allowed: &[&str],
 ) -> Option<ValidationResult> {
-    let Some(value) = string_param(input, key) else {
-        return None;
-    };
+    let value = string_param(input, key)?;
     if allowed.contains(&value) {
         None
     } else {

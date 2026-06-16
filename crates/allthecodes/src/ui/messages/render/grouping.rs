@@ -102,30 +102,16 @@ pub(crate) fn collapse_read_search_groups(
         };
 
         let mut originals = vec![messages[i].clone()];
-        let mut source_indices = HashSet::new();
-        let mut tool_use_ids = Vec::new();
-        let mut read_count = 0usize;
-        let mut search_count = 0usize;
-        let mut list_count = 0usize;
-        let mut latest_hint = None;
-        add_collapsible_info(
-            first_info,
-            &messages[i],
-            &mut source_indices,
-            &mut tool_use_ids,
-            &mut read_count,
-            &mut search_count,
-            &mut list_count,
-            &mut latest_hint,
-        );
+        let mut accumulator = CollapsibleAccumulator::default();
+        add_collapsible_info(first_info, &messages[i], &mut accumulator);
         i += 1;
 
         while i < messages.len() {
             if let Some(result_id) = tool_result_id(&messages[i]) {
-                if tool_use_ids.iter().any(|id| id == result_id) {
+                if accumulator.tool_use_ids.iter().any(|id| id == result_id) {
                     originals.push(messages[i].clone());
                     if let Some(source_index) = source_index_of(&messages[i]) {
-                        source_indices.insert(source_index);
+                        accumulator.source_indices.insert(source_index);
                     }
                     i += 1;
                     continue;
@@ -134,32 +120,23 @@ pub(crate) fn collapse_read_search_groups(
             let Some(info) = collapsible_tool_info(&messages[i]) else {
                 break;
             };
-            add_collapsible_info(
-                info,
-                &messages[i],
-                &mut source_indices,
-                &mut tool_use_ids,
-                &mut read_count,
-                &mut search_count,
-                &mut list_count,
-                &mut latest_hint,
-            );
+            add_collapsible_info(info, &messages[i], &mut accumulator);
             originals.push(messages[i].clone());
             i += 1;
         }
 
-        let tool_count = read_count + search_count + list_count;
+        let tool_count = accumulator.read_count + accumulator.search_count + accumulator.list_count;
         if tool_count >= 2 {
             result.push(RenderableMessage::CollapsedReadSearch(
                 CollapsedReadSearchRenderRecord {
                     uuid: derive_group_uuid(originals[0].uuid(), "collapsed"),
                     timestamp: originals[0].timestamp(),
-                    source_indices: source_indices.into_iter().collect(),
-                    tool_use_ids,
-                    read_count,
-                    search_count,
-                    list_count,
-                    latest_hint,
+                    source_indices: accumulator.source_indices.into_iter().collect(),
+                    tool_use_ids: accumulator.tool_use_ids,
+                    read_count: accumulator.read_count,
+                    search_count: accumulator.search_count,
+                    list_count: accumulator.list_count,
+                    latest_hint: accumulator.latest_hint,
                 },
             ));
         } else {
@@ -178,25 +155,30 @@ pub(crate) struct CollapsibleToolInfo {
     hint: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct CollapsibleAccumulator {
+    source_indices: HashSet<usize>,
+    tool_use_ids: Vec<String>,
+    read_count: usize,
+    search_count: usize,
+    list_count: usize,
+    latest_hint: Option<String>,
+}
+
 fn add_collapsible_info(
     info: CollapsibleToolInfo,
     msg: &RenderableMessage,
-    source_indices: &mut HashSet<usize>,
-    tool_use_ids: &mut Vec<String>,
-    read_count: &mut usize,
-    search_count: &mut usize,
-    list_count: &mut usize,
-    latest_hint: &mut Option<String>,
+    accumulator: &mut CollapsibleAccumulator,
 ) {
     if let Some(source_index) = source_index_of(msg) {
-        source_indices.insert(source_index);
+        accumulator.source_indices.insert(source_index);
     }
-    tool_use_ids.extend(info.tool_use_ids);
-    *read_count += info.read_count;
-    *search_count += info.search_count;
-    *list_count += info.list_count;
+    accumulator.tool_use_ids.extend(info.tool_use_ids);
+    accumulator.read_count += info.read_count;
+    accumulator.search_count += info.search_count;
+    accumulator.list_count += info.list_count;
     if info.hint.is_some() {
-        *latest_hint = info.hint;
+        accumulator.latest_hint = info.hint;
     }
 }
 

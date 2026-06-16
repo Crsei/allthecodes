@@ -8,6 +8,9 @@ use allthecodes_types::hooks::{HookEntry, HookEvent};
 
 use super::session_hooks::SessionHookStore;
 
+type HookMatcherHooks = Vec<(String, Vec<HookEntry>)>;
+type HookRegistrationSpec = (HookEvent, HookMatcherHooks);
+
 /// Register hooks from frontmatter (agent or skill) into session scope.
 ///
 /// These hooks are active for the duration of the session/agent and are
@@ -18,7 +21,7 @@ use super::session_hooks::SessionHookStore;
 pub fn register_frontmatter_hooks(
     store: &mut SessionHookStore,
     session_id: &str,
-    hooks: &[(HookEvent, Vec<(String, Vec<HookEntry>)>)],
+    hooks: &[HookRegistrationSpec],
     source_name: &str,
     is_agent: bool,
 ) {
@@ -63,7 +66,7 @@ pub fn register_frontmatter_hooks(
 pub fn register_skill_hooks(
     store: &mut SessionHookStore,
     session_id: &str,
-    hooks: &[(HookEvent, Vec<(String, Vec<HookEntry>)>)],
+    hooks: &[HookRegistrationSpec],
     skill_name: &str,
     skill_root: Option<String>,
 ) {
@@ -95,7 +98,7 @@ pub fn register_skill_hooks(
 /// Input format: HashMap<HookEvent, Vec<{ matcher: String, hooks: Vec<HookEntry> }>>
 pub fn parse_hooks_settings(
     settings: &std::collections::HashMap<HookEvent, Vec<HookMatcherEntry>>,
-) -> Vec<(HookEvent, Vec<(String, Vec<HookEntry>)>)> {
+) -> Vec<HookRegistrationSpec> {
     settings
         .iter()
         .map(|(event, matchers)| {

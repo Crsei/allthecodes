@@ -132,15 +132,13 @@ fn pattern_matches(pattern: &str, value: &str) -> bool {
         return value.contains(inner);
     }
 
-    if pattern.ends_with('*') {
+    if let Some(prefix) = pattern.strip_suffix('*') {
         // Prefix matching: prefix*
-        let prefix = &pattern[..pattern.len() - 1];
         return value.starts_with(prefix);
     }
 
-    if pattern.starts_with('*') {
+    if let Some(suffix) = pattern.strip_prefix('*') {
         // Suffix matching: *suffix
-        let suffix = &pattern[1..];
         return value.ends_with(suffix);
     }
 

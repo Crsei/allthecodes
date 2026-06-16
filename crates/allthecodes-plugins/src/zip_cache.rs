@@ -166,7 +166,7 @@ pub fn extract_tgz_to(tgz_data: &[u8], dest_dir: &Path) -> Result<()> {
         let path = tar_header_path(header)?;
         let size = tar_octal(&header[124..136])?;
         let typeflag = header[156];
-        let padded = ((size + 511) / 512) * 512;
+        let padded = size.div_ceil(512) * 512;
         if offset + padded > tar_data.len() {
             anyhow::bail!("Invalid tar archive: entry '{}' exceeds archive size", path);
         }

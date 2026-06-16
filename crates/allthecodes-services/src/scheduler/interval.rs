@@ -153,10 +153,7 @@ impl CronSchedule {
     }
 
     fn matches(&self, dt: DateTime<Utc>) -> bool {
-        let cron_weekday = match dt.weekday().num_days_from_sunday() {
-            0 => 0,
-            n => n,
-        };
+        let cron_weekday = dt.weekday().num_days_from_sunday();
         self.minutes.contains(&dt.minute())
             && self.hours.contains(&dt.hour())
             && self.days_of_month.contains(&dt.day())
@@ -240,15 +237,13 @@ fn parse_cron_number(
             field,
             token: raw.to_string(),
         })?;
-    if value < min || value > max {
-        if !(sunday_alias && value == 7) {
-            return Err(CronParseError::OutOfRange {
-                field,
-                value,
-                min,
-                max,
-            });
-        }
+    if (value < min || value > max) && !(sunday_alias && value == 7) {
+        return Err(CronParseError::OutOfRange {
+            field,
+            value,
+            min,
+            max,
+        });
     }
     Ok(value)
 }

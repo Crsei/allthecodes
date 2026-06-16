@@ -77,9 +77,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     ));
 
     fs::write(&tmp_path, bytes)?;
-    fs::rename(&tmp_path, path).map_err(|error| {
+    fs::rename(&tmp_path, path).inspect_err(|_error| {
         let _ = fs::remove_file(&tmp_path);
-        error
     })
 }
 

@@ -76,6 +76,12 @@ pub fn get_hook_display_text(hook: &HookEntry) -> String {
 /// Hook helpers utility struct.
 pub struct HookHelpers;
 
+impl Default for HookHelpers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HookHelpers {
     pub fn new() -> Self {
         Self

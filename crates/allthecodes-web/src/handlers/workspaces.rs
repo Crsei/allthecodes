@@ -18,6 +18,8 @@ use allthecodes_session::storage::{self, SessionInfo};
 use crate::state::WebState;
 use crate::workspace_metadata::{self, WorkspaceUiMetadata, WorkspaceUiMetadataPatch};
 
+type BoxResponse = Box<Response>;
+
 #[derive(Serialize)]
 pub struct WorkspacesResponse {
     pub workspaces: Vec<WorkspaceSummary>,
@@ -166,7 +168,7 @@ pub async fn workspace_open_handler(
 ) -> impl IntoResponse {
     let root = match resolve_workspace_root(&state, &workspace_key, req.root.as_deref()) {
         Ok(root) => root,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     let mut command = if cfg!(target_os = "macos") {
@@ -337,10 +339,10 @@ pub(crate) fn resolve_workspace_root(
     state: &WebState,
     workspace_key: &str,
     requested_root: Option<&str>,
-) -> Result<PathBuf, Response> {
+) -> Result<PathBuf, BoxResponse> {
     let known = known_workspaces(state);
     let Some(workspace) = known.get(workspace_key) else {
-        return Err(workspace_not_found());
+        return Err(Box::new(workspace_not_found()));
     };
 
     let root = match requested_root {
@@ -348,17 +350,19 @@ pub(crate) fn resolve_workspace_root(
             let candidate = validate_local_dir(root)?;
             let candidate_key = storage::workspace_key(&candidate);
             if candidate_key != workspace_key {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(
-                        ProtocolApiError::BadRequest {
-                            code: "workspace_root_mismatch",
-                            message: "Workspace root does not match workspace key".into(),
-                        }
-                        .into_body(),
-                    ),
-                )
-                    .into_response());
+                return Err(Box::new(
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(
+                            ProtocolApiError::BadRequest {
+                                code: "workspace_root_mismatch",
+                                message: "Workspace root does not match workspace key".into(),
+                            }
+                            .into_body(),
+                        ),
+                    )
+                        .into_response(),
+                ));
             }
             candidate
         }
@@ -400,19 +404,21 @@ pub(crate) fn resolve_workspace_root_protocol(
     validate_local_dir_path_protocol(&root)
 }
 
-fn validate_local_dir(raw: &str) -> Result<PathBuf, Response> {
+fn validate_local_dir(raw: &str) -> Result<PathBuf, BoxResponse> {
     if raw.contains("://") {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(
-                ProtocolApiError::BadRequest {
-                    code: "workspace_root_invalid",
-                    message: "Workspace root must be a local directory path".into(),
-                }
-                .into_body(),
-            ),
-        )
-            .into_response());
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    ProtocolApiError::BadRequest {
+                        code: "workspace_root_invalid",
+                        message: "Workspace root must be a local directory path".into(),
+                    }
+                    .into_body(),
+                ),
+            )
+                .into_response(),
+        ));
     }
     validate_local_dir_path(Path::new(raw))
 }
@@ -427,33 +433,37 @@ fn validate_local_dir_protocol(raw: &str) -> Result<PathBuf, ProtocolApiError> {
     validate_local_dir_path_protocol(Path::new(raw))
 }
 
-fn validate_local_dir_path(path: &Path) -> Result<PathBuf, Response> {
+fn validate_local_dir_path(path: &Path) -> Result<PathBuf, BoxResponse> {
     let canonical = std::fs::canonicalize(path).map_err(|error| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(
-                ProtocolApiError::BadRequest {
-                    code: "workspace_root_invalid",
-                    message: format!("Workspace root is not accessible: {error}"),
-                }
-                .into_body(),
-            ),
+        Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    ProtocolApiError::BadRequest {
+                        code: "workspace_root_invalid",
+                        message: format!("Workspace root is not accessible: {error}"),
+                    }
+                    .into_body(),
+                ),
+            )
+                .into_response(),
         )
-            .into_response()
     })?;
 
     if !canonical.is_dir() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(
-                ProtocolApiError::BadRequest {
-                    code: "workspace_root_invalid",
-                    message: "Workspace root must be a directory".into(),
-                }
-                .into_body(),
-            ),
-        )
-            .into_response());
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    ProtocolApiError::BadRequest {
+                        code: "workspace_root_invalid",
+                        message: "Workspace root must be a directory".into(),
+                    }
+                    .into_body(),
+                ),
+            )
+                .into_response(),
+        ));
     }
 
     Ok(canonical)

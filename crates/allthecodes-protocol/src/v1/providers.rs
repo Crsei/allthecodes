@@ -142,18 +142,13 @@ pub struct ProviderUpdateRequest {
     pub provider_options: Option<Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderProbeTransport {
     Http,
+    #[default]
     WebSocket,
-}
-
-impl Default for ProviderProbeTransport {
-    fn default() -> Self {
-        Self::WebSocket
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -90,6 +90,12 @@ struct NotebookEditOutcome {
 
 pub struct NotebookEditTool;
 
+impl Default for NotebookEditTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NotebookEditTool {
     pub fn new() -> Self {
         Self

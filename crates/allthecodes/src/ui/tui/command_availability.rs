@@ -14,13 +14,13 @@ pub(super) fn slash_command_availability_during_task(input: &str) -> TaskCommand
     };
 
     let metadata = allthecodes_commands::get_dynamic_metadata();
-    let Some(command) = resolve_command(&command_name, &metadata) else {
+    let Some(command) = resolve_command(command_name, &metadata) else {
         return TaskCommandAvailability::UnknownCommand;
     };
 
-    if command.name == "goal" && is_goal_status_command(input) {
-        TaskCommandAvailability::Allowed
-    } else if is_available_during_task(&command.name) {
+    if (command.name == "goal" && is_goal_status_command(input))
+        || is_available_during_task(&command.name)
+    {
         TaskCommandAvailability::Allowed
     } else {
         TaskCommandAvailability::Disabled {

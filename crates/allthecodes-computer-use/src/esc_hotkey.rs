@@ -100,7 +100,7 @@ impl EscHotkeyMonitor {
                 if self
                     .press_times
                     .last()
-                    .map_or(false, |t| t.elapsed() >= duration)
+                    .is_some_and(|t| t.elapsed() >= duration)
                 {
                     self.aborted.store(true, Ordering::SeqCst);
                     return true;

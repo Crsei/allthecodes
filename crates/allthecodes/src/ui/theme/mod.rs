@@ -467,15 +467,14 @@ pub fn get_theme(name: &ThemeName) -> &'static ThemeColors {
     // One-shot initialisation; the maps are tiny so a single static is fine.
     static THEMES: OnceLock<[ThemeColors; 6]> = OnceLock::new();
     let themes = THEMES.get_or_init(|| {
-        let arr = [
+        [
             dark_theme(),
             light_theme(),
             light_daltonized_theme(),
             dark_daltonized_theme(),
             light_ansi_theme(),
             dark_ansi_theme(),
-        ];
-        arr
+        ]
     });
     match name {
         ThemeName::Dark => &themes[0],

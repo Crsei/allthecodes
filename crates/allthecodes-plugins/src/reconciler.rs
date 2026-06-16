@@ -70,7 +70,7 @@ impl Reconciler {
         }
 
         // 4. Detect removed (in memory but not on disk)
-        for (id, _) in &mem_by_id {
+        for id in mem_by_id.keys() {
             if !disk_by_id.contains_key(id) {
                 report.removed.push((*id).to_string());
             }

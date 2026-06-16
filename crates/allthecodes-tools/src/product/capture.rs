@@ -402,15 +402,10 @@ where
 {
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    let mut output = output.lock().await;
-                    append_limited(&mut output, &line, 64 * 1024);
-                    append_limited(&mut output, "\n", 64 * 1024);
-                }
-                Ok(None) | Err(_) => break,
-            }
+        while let Ok(Some(line)) = lines.next_line().await {
+            let mut output = output.lock().await;
+            append_limited(&mut output, &line, 64 * 1024);
+            append_limited(&mut output, "\n", 64 * 1024);
         }
     })
 }

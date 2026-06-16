@@ -45,7 +45,7 @@ fn url_matches_pattern(url: &str, pattern: &str) -> bool {
 /// Strip CR, LF, and NUL bytes from a header value to prevent HTTP header
 /// injection (CRLF injection) via env var values or hook-configured header templates.
 fn sanitize_header_value(value: &str) -> String {
-    value.replace('\r', "").replace('\n', "").replace('\0', "")
+    value.replace(['\r', '\n', '\0'], "")
 }
 
 /// Interpolate $VAR_NAME and ${VAR_NAME} patterns in a string using
@@ -107,7 +107,7 @@ pub async fn exec_http_hook(
     }
 
     let timeout = timeout_secs
-        .map(|s| Duration::from_secs(s))
+        .map(Duration::from_secs)
         .unwrap_or(DEFAULT_HTTP_HOOK_TIMEOUT);
 
     // Build headers with env var interpolation
@@ -118,7 +118,7 @@ pub async fn exec_http_hook(
         // Resolve allowed env vars intersection
         let hook_vars: Vec<String> = allowed_env_vars.map(|v| v.to_vec()).unwrap_or_default();
 
-        let effective_vars = if let Some(ref policy) = policy {
+        let effective_vars = if let Some(policy) = policy {
             if let Some(ref policy_vars) = policy.allowed_env_vars {
                 hook_vars
                     .into_iter()
@@ -227,7 +227,7 @@ pub async fn exec_http_hook(
             );
 
             HttpHookResult {
-                ok: status_code >= 200 && status_code < 300,
+                ok: (200..300).contains(&status_code),
                 status_code: Some(status_code),
                 body,
                 error: None,

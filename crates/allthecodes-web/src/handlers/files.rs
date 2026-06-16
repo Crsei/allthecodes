@@ -917,10 +917,7 @@ fn files_write(
         return Err(internal_error(format!("Cannot write file: {err}")));
     }
 
-    let hash = match file_hash(&resolved) {
-        Ok(h) => Some(h),
-        Err(_) => None,
-    };
+    let hash = file_hash(&resolved).ok();
 
     Ok(FileMutationResponse {
         ok: true,
@@ -1191,10 +1188,8 @@ fn files_copy(
         if let Err(err) = copy_dir_recursive(&source, &destination, overwrite) {
             return Err(internal_error(format!("Cannot copy directory: {err}")));
         }
-    } else {
-        if let Err(err) = std::fs::copy(&source, &destination) {
-            return Err(internal_error(format!("Cannot copy file: {err}")));
-        }
+    } else if let Err(err) = std::fs::copy(&source, &destination) {
+        return Err(internal_error(format!("Cannot copy file: {err}")));
     }
 
     Ok(FileMutationResponse {
@@ -1238,12 +1233,10 @@ fn files_move(
                     "Cannot remove existing destination: {err}"
                 )));
             }
-        } else {
-            if let Err(err) = std::fs::remove_file(&destination) {
-                return Err(internal_error(format!(
-                    "Cannot remove existing destination: {err}"
-                )));
-            }
+        } else if let Err(err) = std::fs::remove_file(&destination) {
+            return Err(internal_error(format!(
+                "Cannot remove existing destination: {err}"
+            )));
         }
     }
 
@@ -1330,10 +1323,8 @@ fn files_delete(
                 return Err(internal_error(format!("Cannot remove directory: {err}")));
             }
         }
-    } else {
-        if let Err(err) = std::fs::remove_file(&resolved) {
-            return Err(internal_error(format!("Cannot remove file: {err}")));
-        }
+    } else if let Err(err) = std::fs::remove_file(&resolved) {
+        return Err(internal_error(format!("Cannot remove file: {err}")));
     }
 
     Ok(FileMutationResponse {
@@ -1373,7 +1364,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path, overwrite: bool) -> Result<(), std
             if dest_path.exists() && !overwrite {
                 continue;
             }
-            std::fs::copy(&entry.path(), &dest_path)?;
+            std::fs::copy(entry.path(), &dest_path)?;
         }
     }
     Ok(())

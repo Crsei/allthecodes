@@ -153,10 +153,11 @@ fn is_allow_rule_shadowed_by_ask_rule<'a>(
 
         // Sandbox exception: for Bash, personal ask rules don't shadow
         // when sandbox auto-allow is enabled.
-        if allow_tool == "Bash" && options.sandbox_auto_allow_enabled {
-            if !is_shared_setting_source(ask_source) {
-                continue;
-            }
+        if allow_tool == "Bash"
+            && options.sandbox_auto_allow_enabled
+            && !is_shared_setting_source(ask_source)
+        {
+            continue;
         }
 
         return Some((ask_source, ask_rule));

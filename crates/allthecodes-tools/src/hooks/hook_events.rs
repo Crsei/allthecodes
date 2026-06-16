@@ -18,7 +18,9 @@ const ALWAYS_EMITTED_EVENTS: &[HookEvent] = &[HookEvent::SessionStart, HookEvent
 
 const MAX_PENDING_EVENTS: usize = 100;
 
-static EVENT_HANDLER: LazyLock<Mutex<Option<Box<dyn Fn(HookExecutionEvent) + Send>>>> =
+type HookEventHandler = Box<dyn Fn(HookExecutionEvent) + Send>;
+
+static EVENT_HANDLER: LazyLock<Mutex<Option<HookEventHandler>>> =
     LazyLock::new(|| Mutex::new(None));
 
 static ALL_HOOK_EVENTS_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -28,7 +30,7 @@ static PENDING_EVENTS: LazyLock<Mutex<Vec<HookExecutionEvent>>> =
 
 /// Register a hook event handler. Replaces any previously registered handler.
 /// If there are pending events, they are immediately forwarded to the new handler.
-pub fn register_hook_event_handler(handler: Option<Box<dyn Fn(HookExecutionEvent) + Send>>) {
+pub fn register_hook_event_handler(handler: Option<HookEventHandler>) {
     let mut guard = EVENT_HANDLER.lock().expect("EVENT_HANDLER lock poisoned");
     *guard = handler;
 
@@ -76,25 +78,27 @@ pub fn emit_hook_started(hook_id: &str, hook_name: &str, hook_event: &HookEvent)
 }
 
 /// Emit a hook response event.
-pub fn emit_hook_response(
-    hook_id: &str,
-    hook_name: &str,
-    hook_event: &HookEvent,
-    output: &str,
-    stdout: &str,
-    stderr: &str,
-    exit_code: Option<i32>,
-    outcome: HookOutcome,
-) {
+pub struct HookResponseEmit<'a> {
+    pub hook_id: &'a str,
+    pub hook_name: &'a str,
+    pub hook_event: &'a HookEvent,
+    pub output: &'a str,
+    pub stdout: &'a str,
+    pub stderr: &'a str,
+    pub exit_code: Option<i32>,
+    pub outcome: HookOutcome,
+}
+
+pub fn emit_hook_response(event: HookResponseEmit<'_>) {
     emit(HookExecutionEvent::Response(HookResponseEvent {
-        hook_id: hook_id.to_string(),
-        hook_name: hook_name.to_string(),
-        hook_event: hook_event.to_string(),
-        output: output.to_string(),
-        stdout: stdout.to_string(),
-        stderr: stderr.to_string(),
-        exit_code,
-        outcome,
+        hook_id: event.hook_id.to_string(),
+        hook_name: event.hook_name.to_string(),
+        hook_event: event.hook_event.to_string(),
+        output: event.output.to_string(),
+        stdout: event.stdout.to_string(),
+        stderr: event.stderr.to_string(),
+        exit_code: event.exit_code,
+        outcome: event.outcome,
     }));
 }
 

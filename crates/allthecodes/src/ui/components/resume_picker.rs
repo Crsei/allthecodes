@@ -144,6 +144,7 @@ mod tests {
             cwd: "/repo".to_string(),
             title: "".to_string(),
             custom_title: None,
+            chat_mode_override: None,
             workspace_key: "repo".to_string(),
             workspace_root: "/repo".to_string(),
             workspace_name: "repo".to_string(),

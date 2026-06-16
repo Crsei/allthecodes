@@ -118,7 +118,7 @@ pub fn process_user_input(
     }
 
     // -- Slash-command path ------------------------------------------------
-    if trimmed.starts_with('/') {
+    if let Some(stripped) = trimmed.strip_prefix('/') {
         if let Some(parsed) = dispatcher.parse_command_input(trimmed) {
             return ProcessedInput {
                 messages: Vec::new(),
@@ -136,7 +136,7 @@ pub fn process_user_input(
         // Unrecognised slash command — check if it's a user-invocable skill.
         // If so, mark it as a skill invocation. Otherwise, fall through to
         // treat as regular user text (matches TypeScript behaviour).
-        let skill_name = trimmed[1..].split_whitespace().next().unwrap_or("");
+        let skill_name = stripped.split_whitespace().next().unwrap_or("");
         if !skill_name.is_empty() && is_known_skill(skill_name) {
             return process_skill_input(trimmed, skill_name);
         }
@@ -179,8 +179,8 @@ pub fn process_slash_command_input(_input: &str) -> ProcessedInput {
 ///
 /// Wraps the shell command text in a user message with bash mode metadata.
 pub fn process_bash_input(input: &str) -> ProcessedInput {
-    let shell_text = if input.starts_with('!') {
-        &input[1..]
+    let shell_text = if let Some(stripped) = input.strip_prefix('!') {
+        stripped
     } else {
         input
     };

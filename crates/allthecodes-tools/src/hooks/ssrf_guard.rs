@@ -54,12 +54,12 @@ fn is_blocked_v4(addr: Ipv4Addr) -> bool {
         return true;
     }
     // 172.16.0.0/12
-    if a == 172 && b >= 16 && b <= 31 {
+    if a == 172 && (16..=31).contains(&b) {
         return true;
     }
     // 100.64.0.0/10 — shared address space (RFC 6598, CGNAT).
     // Some cloud providers use this range for metadata endpoints.
-    if a == 100 && b >= 64 && b <= 127 {
+    if a == 100 && (64..=127).contains(&b) {
         return true;
     }
     // 192.168.0.0/16

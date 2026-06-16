@@ -33,39 +33,30 @@ pub fn routes() -> Router<WebState> {
 
 fn raw_routes() -> Vec<(&'static str, MethodRouter<WebState>)> {
     vec![
-        ("/api/web/health", get(health).into()),
-        ("/api/web/preferences/fields", get(preference_fields).into()),
+        ("/api/web/health", get(health)),
+        ("/api/web/preferences/fields", get(preference_fields)),
         (
             "/api/web/preferences",
-            get(get_preferences).put(update_preferences).into(),
+            get(get_preferences).put(update_preferences),
         ),
-        (
-            "/api/web/themes",
-            get(list_themes).post(create_theme).into(),
-        ),
+        ("/api/web/themes", get(list_themes).post(create_theme)),
         (
             "/api/web/themes/{id}",
-            put(update_theme).delete(delete_theme).into(),
+            put(update_theme).delete(delete_theme),
         ),
-        (
-            "/api/web/prompts",
-            get(list_prompts).post(create_prompt).into(),
-        ),
+        ("/api/web/prompts", get(list_prompts).post(create_prompt)),
         (
             "/api/web/prompts/{id}",
-            put(update_prompt).delete(delete_prompt).into(),
+            put(update_prompt).delete(delete_prompt),
         ),
-        (
-            "/api/web/layouts",
-            get(list_layouts).post(create_layout).into(),
-        ),
+        ("/api/web/layouts", get(list_layouts).post(create_layout)),
         (
             "/api/web/layouts/{id}",
-            put(update_layout).delete(delete_layout).into(),
+            put(update_layout).delete(delete_layout),
         ),
         (
             "/api/web/layouts/{id}/set-default",
-            post(set_default_layout).into(),
+            post(set_default_layout),
         ),
     ]
 }

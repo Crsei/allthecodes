@@ -105,7 +105,7 @@ pub struct UsageQuery {
 const VALID_PERIODS: &[&str] = &["24h", "7d", "30d", "90d", "all"];
 
 /// Validate and normalize a period string.
-pub fn normalize_period(raw: &str) -> Result<String, Response> {
+pub fn normalize_period(raw: &str) -> Result<String, Box<Response>> {
     let lower = raw.trim().to_lowercase();
     if VALID_PERIODS.contains(&lower.as_str()) {
         Ok(lower)
@@ -116,7 +116,9 @@ pub fn normalize_period(raw: &str) -> Result<String, Response> {
             message: format!("invalid period '{}'. Must be one of: {}", raw, valid),
         }
         .into_body();
-        Err((StatusCode::BAD_REQUEST, Json(body)).into_response())
+        Err(Box::new(
+            (StatusCode::BAD_REQUEST, Json(body)).into_response(),
+        ))
     }
 }
 
@@ -236,7 +238,7 @@ pub async fn usage_handler(
     Query(query): Query<UsageQuery>,
 ) -> Result<Json<UsageDashboardResponse>, Response> {
     let period = match query.period.as_deref() {
-        Some(raw) => normalize_period(raw)?,
+        Some(raw) => normalize_period(raw).map_err(|response| *response)?,
         None => "7d".to_string(),
     };
 

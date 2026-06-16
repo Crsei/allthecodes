@@ -152,9 +152,8 @@ pub(super) fn profile_auth_kind(profile: &ProviderProfileSettings) -> String {
         .api_key
         .as_ref()
         .is_some_and(|value| !value.is_empty())
+        || profile.env.as_ref().is_some_and(|env| !env.is_empty())
     {
-        "api_key".to_string()
-    } else if profile.env.as_ref().is_some_and(|env| !env.is_empty()) {
         "api_key".to_string()
     } else {
         auth_kind_for_provider(profile.api_provider.as_deref().unwrap_or("")).to_string()

@@ -165,45 +165,48 @@ pub fn codex_model_capabilities() -> HashMap<String, ModelCapabilitySettings> {
         .collect()
 }
 
-fn common_codex_capability(
-    display_name: &str,
-    description: &str,
-    default_reasoning_level: &str,
+struct CodexCapabilitySpec<'a> {
+    display_name: &'a str,
+    description: &'a str,
+    default_reasoning_level: &'a str,
     context_window: u64,
     max_context_window: u64,
     supports_fast_mode: bool,
     supports_image_detail_original: bool,
     supported_in_api: bool,
-    input_modalities: &[&str],
-) -> ModelCapabilitySettings {
+    input_modalities: &'a [&'a str],
+}
+
+fn common_codex_capability(spec: CodexCapabilitySpec<'_>) -> ModelCapabilitySettings {
     ModelCapabilitySettings {
-        display_name: Some(display_name.to_string()),
-        description: Some(description.to_string()),
-        default_reasoning_level: Some(default_reasoning_level.to_string()),
+        display_name: Some(spec.display_name.to_string()),
+        description: Some(spec.description.to_string()),
+        default_reasoning_level: Some(spec.default_reasoning_level.to_string()),
         provider_options: None,
         supported_reasoning_levels: ["low", "medium", "high", "xhigh"]
             .into_iter()
             .map(ToOwned::to_owned)
             .collect(),
-        context_window: Some(context_window),
-        max_context_window: Some(max_context_window),
+        context_window: Some(spec.context_window),
+        max_context_window: Some(spec.max_context_window),
         max_output_tokens: None,
         effective_context_window_percent: Some(95),
-        supports_fast_mode,
+        supports_fast_mode: spec.supports_fast_mode,
         supports_reasoning_summaries: true,
         supports_reasoning: None,
         supports_image_output: None,
         supports_embedding: None,
         support_verbosity: true,
         supports_parallel_tool_calls: true,
-        supports_image_detail_original,
+        supports_image_detail_original: spec.supports_image_detail_original,
         supports_search_tool: true,
-        supported_in_api,
-        input_modalities: input_modalities
+        supported_in_api: spec.supported_in_api,
+        input_modalities: spec
+            .input_modalities
             .iter()
             .map(|value| (*value).to_string())
             .collect(),
-        service_tiers: if supports_fast_mode {
+        service_tiers: if spec.supports_fast_mode {
             vec!["priority".to_string()]
         } else {
             Vec::new()
@@ -215,87 +218,87 @@ fn codex_capability_entries() -> Vec<(&'static str, ModelCapabilitySettings)> {
     vec![
         (
             "gpt-5.5",
-            common_codex_capability(
-                "GPT-5.5",
-                "Frontier model for complex coding, research, and real-world work.",
-                "medium",
-                272_000,
-                272_000,
-                true,
-                true,
-                true,
-                &["text", "image"],
-            ),
+            common_codex_capability(CodexCapabilitySpec {
+                display_name: "GPT-5.5",
+                description: "Frontier model for complex coding, research, and real-world work.",
+                default_reasoning_level: "medium",
+                context_window: 272_000,
+                max_context_window: 272_000,
+                supports_fast_mode: true,
+                supports_image_detail_original: true,
+                supported_in_api: true,
+                input_modalities: &["text", "image"],
+            }),
         ),
         (
             "gpt-5.4",
-            common_codex_capability(
-                "gpt-5.4",
-                "Strong model for everyday coding.",
-                "medium",
-                272_000,
-                1_000_000,
-                true,
-                true,
-                true,
-                &["text", "image"],
-            ),
+            common_codex_capability(CodexCapabilitySpec {
+                display_name: "gpt-5.4",
+                description: "Strong model for everyday coding.",
+                default_reasoning_level: "medium",
+                context_window: 272_000,
+                max_context_window: 1_000_000,
+                supports_fast_mode: true,
+                supports_image_detail_original: true,
+                supported_in_api: true,
+                input_modalities: &["text", "image"],
+            }),
         ),
         (
             "gpt-5.4-mini",
-            common_codex_capability(
-                "GPT-5.4-Mini",
-                "Small, fast, and cost-efficient model for simpler coding tasks.",
-                "medium",
-                272_000,
-                272_000,
-                false,
-                true,
-                true,
-                &["text", "image"],
-            ),
+            common_codex_capability(CodexCapabilitySpec {
+                display_name: "GPT-5.4-Mini",
+                description: "Small, fast, and cost-efficient model for simpler coding tasks.",
+                default_reasoning_level: "medium",
+                context_window: 272_000,
+                max_context_window: 272_000,
+                supports_fast_mode: false,
+                supports_image_detail_original: true,
+                supported_in_api: true,
+                input_modalities: &["text", "image"],
+            }),
         ),
         (
             "gpt-5.3-codex",
-            common_codex_capability(
-                "gpt-5.3-codex",
-                "Coding-optimized model.",
-                "medium",
-                272_000,
-                272_000,
-                false,
-                true,
-                true,
-                &["text", "image"],
-            ),
+            common_codex_capability(CodexCapabilitySpec {
+                display_name: "gpt-5.3-codex",
+                description: "Coding-optimized model.",
+                default_reasoning_level: "medium",
+                context_window: 272_000,
+                max_context_window: 272_000,
+                supports_fast_mode: false,
+                supports_image_detail_original: true,
+                supported_in_api: true,
+                input_modalities: &["text", "image"],
+            }),
         ),
         (
             "gpt-5.3-codex-spark",
-            common_codex_capability(
-                "GPT-5.3-Codex-Spark",
-                "Ultra-fast coding model.",
-                "high",
-                128_000,
-                128_000,
-                false,
-                false,
-                false,
-                &["text"],
-            ),
+            common_codex_capability(CodexCapabilitySpec {
+                display_name: "GPT-5.3-Codex-Spark",
+                description: "Ultra-fast coding model.",
+                default_reasoning_level: "high",
+                context_window: 128_000,
+                max_context_window: 128_000,
+                supports_fast_mode: false,
+                supports_image_detail_original: false,
+                supported_in_api: false,
+                input_modalities: &["text"],
+            }),
         ),
         (
             "gpt-5.2",
-            common_codex_capability(
-                "gpt-5.2",
-                "Optimized for professional work and long-running agents.",
-                "medium",
-                272_000,
-                272_000,
-                false,
-                false,
-                true,
-                &["text", "image"],
-            ),
+            common_codex_capability(CodexCapabilitySpec {
+                display_name: "gpt-5.2",
+                description: "Optimized for professional work and long-running agents.",
+                default_reasoning_level: "medium",
+                context_window: 272_000,
+                max_context_window: 272_000,
+                supports_fast_mode: false,
+                supports_image_detail_original: false,
+                supported_in_api: true,
+                input_modalities: &["text", "image"],
+            }),
         ),
     ]
 }

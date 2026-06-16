@@ -129,7 +129,7 @@ impl Processor for ChatModesResourcesProcessor {
             .map_err(|e| ProtocolApiError::Internal { message: e })?;
         // Types are structurally identical; bridge via serialization
         let proto = serde_json::to_value(&resources)
-            .and_then(|v| serde_json::from_value::<ProtocolChatModeResourcesResponse>(v))
+            .and_then(serde_json::from_value::<ProtocolChatModeResourcesResponse>)
             .map_err(|e| ProtocolApiError::Internal {
                 message: format!("failed to convert ChatModeResourcesResponse: {e}"),
             })?;
@@ -442,7 +442,7 @@ fn load_mode_bundles() -> Result<Vec<ChatModeBundle>, String> {
             bundles.push(bundle);
         }
     }
-    bundles.sort_by(|a, b| mode_sort_key(a).cmp(&mode_sort_key(b)));
+    bundles.sort_by_key(mode_sort_key);
     Ok(bundles)
 }
 

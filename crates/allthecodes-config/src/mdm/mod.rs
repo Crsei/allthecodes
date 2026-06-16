@@ -84,7 +84,7 @@ impl ManagedSettingsConfig {
             && self
                 .managed
                 .as_ref()
-                .map_or(false, |m| !m.is_effectively_empty())
+                .is_some_and(|m| !m.is_effectively_empty())
     }
 
     /// Whether a given setting key from a given source would be shadowed

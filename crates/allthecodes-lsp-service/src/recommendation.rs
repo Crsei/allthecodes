@@ -144,10 +144,7 @@ impl RecommendationEngine {
         };
         for entry in dir_entries.flatten() {
             let path = entry.path();
-            if path
-                .extension()
-                .map_or(true, |e| e != "json" && e != "toml")
-            {
+            if path.extension().is_none_or(|e| e != "json" && e != "toml") {
                 continue;
             }
             let content = match std::fs::read_to_string(&path) {
@@ -472,9 +469,8 @@ fn simple_pattern_match(filename: &str, pattern: &str) -> bool {
     // Strip `**/` prefix if present
     let p = p.strip_prefix("**/").unwrap_or(p);
 
-    if p.starts_with('*') {
+    if let Some(ext) = p.strip_prefix('*') {
         // Extension pattern: `*.rs`, `*.js`, etc.
-        let ext = &p[1..]; // remove the `*`
         filename.ends_with(ext)
     } else {
         // Exact filename match
