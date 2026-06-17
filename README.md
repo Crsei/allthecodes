@@ -140,7 +140,9 @@ rustup show active-toolchain
 cargo build --workspace --release
 ```
 
-上面的命令会构建后端、TUI 和 Web API/WS 服务，但不会把前端 SPA 嵌入二进制。
+上面的命令会构建后端、TUI 和 Web API/WS 服务，默认包含剪贴板图片处理
+(`image`) 和 TUI 代码块语法高亮 (`syntect`)。浏览器 SPA 不内置在二进制中；
+需要 Web 前端时请运行独立的 sibling `../allthecodes-web` 仓库。
 
 运行版本检查：
 
@@ -165,22 +167,6 @@ Web 后端模式：
 ```bash
 target/release/allthecodes --web --web-port 17322 --no-open
 ```
-
-### 高级/可选本地构建：内置 Web UI
-
-npm 发布包不使用这个流程。只有在你明确需要“单进程直接打开 Web UI”的本地
-release binary 时，才先构建 sibling 前端仓库，再启用 Cargo 的 `web-ui` feature：
-
-```bash
-cd ../allthecodes-web
-npm ci
-npm run build
-cd ../allthecodes
-cargo build --release --bin allthecodes --features web-ui
-```
-
-这样编译出的 `target/release/allthecodes --web --web-port 17322` 会同时提供
-后端 API/WS 和内置的前端 SPA。
 
 发布构建使用 GitHub Actions 的 `release` workflow。推送 `vX.Y.Z` tag
 时，tag 版本必须与 `crates/allthecodes/Cargo.toml` 一致；手动

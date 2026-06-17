@@ -3,25 +3,21 @@ name = "allthecodes"
 version = "0.1.5"
 edition = "2021"
 description = "allthecodes CLI"
-build = "build.rs"
 
 # ============================================================
 # Features
 # ============================================================
 #
-# default 闂?minimal build: no telemetry, no embedded web assets,
-#           no image/syntect/tree-sitter pulls. Keeps `cargo build`
-#           fast and avoids heavy native deps (onig, tonic/prost).
+# default: release-ready CLI build with image paste support and syntax
+#          highlighting, but no telemetry, no embedded web assets, and no
+#          tree-sitter pulls.
 #
 # Opt-in:
-#   telemetry   闂?Langfuse + OpenTelemetry export (pulls tonic/prost).
-#   web-ui      闂?Embed the React SPA (rust-embed) into the binary.
-#   image       闂?Image decoding (png/jpeg only).
-#   syntect     闂?Syntax highlighting via fancy-regex (no onig C dep).
-#   tree-sitter 闂?AST parsing.
+#   telemetry   - Langfuse + OpenTelemetry export (pulls tonic/prost).
+#   tree-sitter - AST parsing.
 
 [features]
-default = []
+default = ["image", "syntect"]
 telemetry = [
     "dep:tracing-opentelemetry",
     "dep:opentelemetry",
@@ -31,7 +27,6 @@ telemetry = [
     "allthecodes-services/telemetry",
     "allthecodes-startup/telemetry",
 ]
-web-ui = ["allthecodes-web/web-ui"]
 image = ["dep:image"]
 syntect = ["dep:syntect"]
 tree-sitter = ["dep:tree-sitter"]
@@ -185,6 +180,7 @@ notify-rust = { workspace = true }
 # AST / 闂佹悶鍎查崕鎶藉磿?
 tree-sitter = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
+tempfile = { workspace = true }
 
 # 闂佸憡鐟崹杈ㄦ櫠閻ｅ本鍋橀悘鐐靛亾閻庮喖霉閻樺搫鐓愰柣鎿勭節楠?(sandbox/availability.rs 闂佹椿娼块崝宀勬偩閻樿绠抽柕蹇ョ磿閵?bwrap/sandbox-exec)
 which = { workspace = true }
@@ -194,7 +190,6 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 assert_fs = { workspace = true }
 insta = { workspace = true }
-tempfile = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 serde_json = { workspace = true }

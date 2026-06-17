@@ -182,8 +182,7 @@ sqlx = { version = "0.8", default-features = false, features = [
     "uuid",
 ] }
 
-# Web UI
-rust-embed = "8"
+# Web static helpers
 mime_guess = "2"
 
 # AST / 图像

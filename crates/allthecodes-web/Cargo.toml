@@ -4,10 +4,6 @@ version = "0.1.0"
 edition = "2021"
 description = "Axum web UI server for cc-rust."
 
-[features]
-default = []
-web-ui = ["dep:rust-embed"]
-
 [lib]
 path = "src/mod.rs"
 
@@ -43,7 +39,6 @@ futures = { workspace = true }
 parking_lot = { workspace = true }
 portable-pty = { workspace = true }
 reqwest = { workspace = true }
-rust-embed = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

@@ -217,6 +217,7 @@ mod imp {
         spans
     }
 
+    #[cfg(test)]
     pub(crate) fn supports_language(lang: &str) -> bool {
         let ss = syntax_set();
         let Some(token) = preferred_syntect_token(lang) else {

@@ -1,7 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use crate::ui::clipboard_paste::{normalize_pasted_path, pasted_image_format, EncodedImageFormat};
+use crate::ui::clipboard_paste::{
+    normalize_pasted_path, paste_image_to_temp_png, pasted_image_format, EncodedImageFormat,
+};
 use crate::ui::command_palette::CommandAction;
 use crate::ui::command_surface::CommandSurfaceOutcome;
 use crate::ui::completions::{
@@ -360,6 +362,17 @@ impl App {
             _ => {}
         }
 
+        if self.prompt.is_active
+            && !self.is_streaming
+            && matches!(
+                (key.modifiers, key.code),
+                (KeyModifiers::CONTROL, KeyCode::Char('v'))
+            )
+            && self.try_paste_clipboard_image()
+        {
+            return AppAction::None;
+        }
+
         if self.vim.enabled && self.prompt.is_active {
             let vim_action =
                 self.vim
@@ -453,6 +466,31 @@ impl App {
 
         self.sync_command_palette();
         AppAction::None
+    }
+
+    fn try_paste_clipboard_image(&mut self) -> bool {
+        let Ok((path, info)) = paste_image_to_temp_png() else {
+            return false;
+        };
+
+        let path_text = path.to_string_lossy().into_owned();
+        self.prompt.paste_text(&path_text);
+        self.history_index = None;
+        self.saved_input.clear();
+        self.sync_command_palette();
+        self.add_notification(super::notification_from_app_event(
+            "pasted-clipboard-image".to_string(),
+            format!(
+                "Pasted {} image from clipboard: {}x{} {path_text}",
+                info.encoded_format.label(),
+                info.width,
+                info.height
+            ),
+            "low".to_string(),
+            Some(3500),
+        ));
+        self.dirty = true;
+        true
     }
 
     fn handle_command_surface_key(&mut self, key: KeyEvent) -> AppAction {

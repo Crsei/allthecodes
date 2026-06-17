@@ -52,11 +52,7 @@ pub struct PastedImageInfo {
 
 /// Capture an image from the system clipboard, encode it as PNG bytes, and
 /// return the bytes plus dimensions.
-#[cfg(all(
-    any(test, feature = "image"),
-    not(target_os = "android"),
-    feature = "image"
-))]
+#[cfg(all(test, not(target_os = "android"), feature = "image"))]
 pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageError> {
     let (path, info) = paste_image_to_temp_png()?;
     let bytes = std::fs::read(&path).map_err(|e| PasteImageError::IoError(e.to_string()))?;
