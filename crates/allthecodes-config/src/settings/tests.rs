@@ -1207,6 +1207,36 @@ fn schema_has_known_keys() {
     }
 }
 
+#[test]
+fn schema_marks_electron_legacy_fields_deprecated() {
+    let s = settings_schema();
+    let props = s
+        .pointer("/properties")
+        .and_then(|v| v.as_object())
+        .expect("schema has /properties");
+
+    for key in [
+        "appIcon",
+        "autoStart",
+        "startMinimized",
+        "minimizeToTray",
+        "closeToTray",
+        "quickChatHideOnBlur",
+        "quickChatInjectScreen",
+        "quickChatAmbient",
+    ] {
+        let field = props.get(key).unwrap_or_else(|| panic!("missing {key}"));
+        assert_eq!(field.get("deprecated").and_then(Value::as_bool), Some(true));
+        assert!(
+            field
+                .get("description")
+                .and_then(Value::as_str)
+                .is_some_and(|description| description.contains("no runtime effect")),
+            "missing no-effect description for {key}: {field}"
+        );
+    }
+}
+
 /// The committed schema file is the canonical doc. This test makes
 /// sure it never drifts from the runtime [`settings_schema`] output.
 /// To regenerate the file, run:

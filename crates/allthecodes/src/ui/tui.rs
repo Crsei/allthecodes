@@ -69,6 +69,7 @@ use super::notifications::{detect_backend, DesktopNotificationBackend, Notificat
 use super::permissions::hooks::{render_permission_hook_event, PermissionHookEvent};
 use super::permissions::permission_decision_debug_info::render_permission_decision_debug_info;
 use super::permissions::BypassPermissionsModeChoice;
+use super::terminal_progress::TerminalProgressBackend;
 
 fn permission_event_notification(text: String, tone: NotificationTone) -> InAppNotification {
     InAppNotification::new("permission-event", NotificationPriority::Low, text)
@@ -94,6 +95,31 @@ fn notify_desktop_for_app_event(backend: &mut DesktopNotificationBackend, event:
             _ => {}
         },
         AppEvent::Tick | AppEvent::Shutdown => {}
+    }
+}
+
+fn clear_terminal_progress<W: io::Write>(backend: &mut TerminalProgressBackend, writer: &mut W) {
+    if let Err(error) = backend.clear(writer) {
+        debug!(error = %error, "TUI: terminal progress clear failed");
+    }
+}
+
+fn set_terminal_progress_enabled<W: io::Write>(
+    backend: &mut TerminalProgressBackend,
+    enabled: bool,
+    writer: &mut W,
+) {
+    if let Err(error) = backend.set_enabled(enabled, writer) {
+        debug!(error = %error, "TUI: terminal progress setting update failed");
+    }
+}
+
+fn mark_terminal_progress_indeterminate<W: io::Write>(
+    backend: &mut TerminalProgressBackend,
+    writer: &mut W,
+) {
+    if let Err(error) = backend.indeterminate(writer) {
+        debug!(error = %error, "TUI: terminal progress update failed");
     }
 }
 
@@ -256,6 +282,13 @@ pub async fn run_tui(
     app.set_session_id(engine.current_session_id().to_string());
     app.set_cwd(engine.cwd().to_string());
     let app_state = engine.app_state();
+    app.set_sound_effects(app_state.settings.sound_effects.unwrap_or(true));
+    app.set_terminal_progress_bar_enabled(
+        app_state
+            .settings
+            .terminal_progress_bar_enabled
+            .unwrap_or(true),
+    );
     if app_state.tool_permission_context.mode == PermissionMode::Bypass {
         let disabled = !app_state
             .tool_permission_context
@@ -269,6 +302,8 @@ pub async fn run_tui(
             app.show_bypass_permissions_mode_dialog(disabled);
         }
     }
+    let mut terminal_progress =
+        TerminalProgressBackend::detect(app.terminal_progress_bar_enabled());
     let (app_event_sender, mut app_event_rx) = app_event_sender::channel();
     match super::persistent_history::load_persistent_history_for_workspace(std::path::Path::new(
         engine.cwd(),
@@ -492,6 +527,10 @@ pub async fn run_tui(
                             AppAction::Abort => {
                                 engine.abort();
                                 app.set_streaming(false);
+                                clear_terminal_progress(
+                                    &mut terminal_progress,
+                                    terminal.backend_mut(),
+                                );
                                 app.add_message(create_user_message(CONVERSATION_INTERRUPTED_MESSAGE));
                             }
                             AppAction::Quit => {
@@ -618,7 +657,9 @@ pub async fn run_tui(
             }
 
             Some(app_event) = app_event_rx.recv() => {
-                notify_desktop_for_app_event(&mut desktop_notifications, &app_event);
+                if app.sound_effects_enabled() {
+                    notify_desktop_for_app_event(&mut desktop_notifications, &app_event);
+                }
                 app.handle_app_event(app_event);
             }
 
@@ -634,6 +675,10 @@ pub async fn run_tui(
                     }
                     EngineEvent::ToolProgress(progress) => {
                         handle_tool_progress(&mut app, progress);
+                        mark_terminal_progress_indeterminate(
+                            &mut terminal_progress,
+                            terminal.backend_mut(),
+                        );
                     }
                     EngineEvent::PermissionRequest { request, response_tx } => {
                         if let Some(previous) = pending_permission_response.take() {
@@ -663,7 +708,9 @@ pub async fn run_tui(
                             }),
                             NotificationTone::Info,
                         );
-                        notify_desktop(&mut desktop_notifications, &notification.text);
+                        if app.sound_effects_enabled() {
+                            notify_desktop(&mut desktop_notifications, &notification.text);
+                        }
                         app.add_notification(notification);
                     }
                     EngineEvent::PermissionDecisionDebug(event) => {
@@ -676,11 +723,17 @@ pub async fn run_tui(
                             ),
                             NotificationTone::Dim,
                         );
-                        notify_desktop(&mut desktop_notifications, &notification.text);
+                        if app.sound_effects_enabled() {
+                            notify_desktop(&mut desktop_notifications, &notification.text);
+                        }
                         app.add_notification(notification);
                     }
                     EngineEvent::Done => {
                         app.set_streaming(false);
+                        clear_terminal_progress(
+                            &mut terminal_progress,
+                            terminal.backend_mut(),
+                        );
                         while let Some(text) = app.pop_next_queued() {
                             let remaining = app.queued_count();
                             app.handle_app_event(AppEvent::LocalNotice {
@@ -729,11 +782,18 @@ pub async fn run_tui(
         if app.should_quit() {
             break;
         }
+
+        set_terminal_progress_enabled(
+            &mut terminal_progress,
+            app.terminal_progress_bar_enabled(),
+            terminal.backend_mut(),
+        );
     }
 
     // ── Restore terminal ───────────────────────────────────────────
     // (TerminalGuard::drop also handles this, but explicit cleanup is
     // cleaner for the normal exit path.)
+    clear_terminal_progress(&mut terminal_progress, terminal.backend_mut());
     terminal::disable_raw_mode()?;
     if mouse_capture_enabled {
         execute!(

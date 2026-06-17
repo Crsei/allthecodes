@@ -27,10 +27,49 @@ async fn test_config_show() {
             assert!(text.contains("model"));
             assert!(text.contains("backend"));
             assert!(text.contains("permissionMode"));
+            assert!(text.contains("soundEffects"));
+            assert!(text.contains("terminalProgressBarEnabled"));
+            let sound_line = text
+                .lines()
+                .find(|line| line.contains("soundEffects"))
+                .expect("soundEffects row");
+            assert!(sound_line.contains("[default]"));
+            assert!(sound_line.ends_with("true"));
+            let terminal_progress_line = text
+                .lines()
+                .find(|line| line.contains("terminalProgressBarEnabled"))
+                .expect("terminal progress row");
+            assert!(terminal_progress_line.contains("[default]"));
+            assert!(terminal_progress_line.ends_with("true"));
             assert!(text.contains("File locations"));
         }
         _ => panic!("Expected Output result"),
     }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_config_set_sound_effects_updates_runtime_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = EnvGuard::set("ALLTHECODES_HOME", dir.path().to_str().unwrap());
+    let handler = ConfigHandler;
+    let mut ctx = test_ctx();
+
+    let result = handler
+        .execute("set soundEffects false", &mut ctx)
+        .await
+        .unwrap();
+
+    let CommandResult::Output(text) = result else {
+        panic!("expected output")
+    };
+    assert!(text.contains("Sound effects: false"));
+    assert_eq!(ctx.app_state.settings.sound_effects, Some(false));
+
+    let settings: RawSettings =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings.sound_effects, Some(false));
 }
 
 #[tokio::test]

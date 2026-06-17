@@ -16,6 +16,7 @@ pub mod permissions;
 pub mod skills;
 pub mod tasks;
 pub mod teams;
+pub mod terminal_progress;
 pub mod tui;
 
 // Components: interactive widgets and modal surfaces owned or orchestrated by

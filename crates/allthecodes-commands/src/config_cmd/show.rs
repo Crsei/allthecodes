@@ -154,6 +154,12 @@ pub(super) fn handle_show(parts: &[&str], ctx: &CommandContext) -> Result<Comman
         &mut lines,
     );
     row(
+        "soundEffects",
+        state.settings.sound_effects.unwrap_or(true).to_string(),
+        "soundEffects",
+        &mut lines,
+    );
+    row(
         "editorMode",
         opt_str(state.settings.editor_mode.clone()),
         "editorMode",
@@ -167,12 +173,11 @@ pub(super) fn handle_show(parts: &[&str], ctx: &CommandContext) -> Result<Comman
     );
     row(
         "terminalProgressBarEnabled",
-        opt_str(
-            state
-                .settings
-                .terminal_progress_bar_enabled
-                .map(|b| b.to_string()),
-        ),
+        state
+            .settings
+            .terminal_progress_bar_enabled
+            .unwrap_or(true)
+            .to_string(),
         "terminalProgressBarEnabled",
         &mut lines,
     );

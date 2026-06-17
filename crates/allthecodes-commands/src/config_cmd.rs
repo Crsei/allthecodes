@@ -106,7 +106,7 @@ fn handle_set(parts: &[&str], ctx: &mut CommandContext) -> Result<CommandResult>
             "Usage: /config set <key> <value> [--user|--project|--local]\n\n\
              Available keys: backend, theme, verbose, permissionMode,\n  \
                apiProvider,\n  \
-               outputStyle, language, voiceEnabled, editorMode, viewMode,\n  \
+               outputStyle, language, voiceEnabled, soundEffects, editorMode, viewMode,\n  \
                terminalProgressBarEnabled, effortLevel, model_reasoning_effort, fastMode,\n  \
                defaultModel, fallbackModel, fastModel,\n  \
                sotaModel, motaModel, fotaModel, fastModePerSessionOptIn,\n  \
@@ -233,6 +233,11 @@ fn apply_set_in_memory(key: &str, value: &str, app_state: &mut AppState) -> Resu
             let v = parse_config_bool(key, value)?;
             s.voice_enabled = Some(v);
             Ok(format!("Voice enabled: {}", v))
+        }
+        "soundEffects" | "sound_effects" => {
+            let v = parse_config_bool(key, value)?;
+            s.sound_effects = Some(v);
+            Ok(format!("Sound effects: {}", v))
         }
         "editorMode" | "editor_mode" => {
             s.editor_mode = Some(value.to_string());
@@ -385,6 +390,9 @@ fn apply_set_to_raw(raw: &mut RawSettings, key: &str, value: &str) -> Result<()>
         "language" => raw.language = Some(value.into()),
         "voiceEnabled" | "voice_enabled" => {
             raw.voice_enabled = Some(parse_config_bool(key, value)?)
+        }
+        "soundEffects" | "sound_effects" => {
+            raw.sound_effects = Some(parse_config_bool(key, value)?)
         }
         "editorMode" | "editor_mode" => raw.editor_mode = Some(value.into()),
         "viewMode" | "view_mode" => raw.view_mode = Some(value.into()),

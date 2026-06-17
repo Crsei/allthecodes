@@ -137,14 +137,46 @@
       }
     },
     "terminalProgressBarEnabled": { "type": "boolean" },
-    "appIcon": { "type": "string" },
-    "autoStart": { "type": "boolean" },
-    "startMinimized": { "type": "boolean" },
-    "minimizeToTray": { "type": "boolean" },
-    "closeToTray": { "type": "boolean" },
-    "quickChatHideOnBlur": { "type": "boolean" },
-    "quickChatInjectScreen": { "type": "boolean" },
-    "quickChatAmbient": { "type": "boolean" },
+    "appIcon": {
+      "type": "string",
+      "deprecated": true,
+      "description": "Legacy Electron app icon setting. Accepted for compatibility, but unsupported by the Rust TUI and has no runtime effect."
+    },
+    "autoStart": {
+      "type": "boolean",
+      "deprecated": true,
+      "description": "Legacy Electron auto-start setting. Accepted for compatibility, but unsupported by the Rust TUI and has no runtime effect."
+    },
+    "startMinimized": {
+      "type": "boolean",
+      "deprecated": true,
+      "description": "Legacy Electron start-minimized setting. Accepted for compatibility, but unsupported by the Rust TUI and has no runtime effect."
+    },
+    "minimizeToTray": {
+      "type": "boolean",
+      "deprecated": true,
+      "description": "Legacy Electron tray setting. Accepted for compatibility, but unsupported by the Rust TUI and has no runtime effect."
+    },
+    "closeToTray": {
+      "type": "boolean",
+      "deprecated": true,
+      "description": "Legacy Electron tray setting. Accepted for compatibility, but unsupported by the Rust TUI and has no runtime effect."
+    },
+    "quickChatHideOnBlur": {
+      "type": "boolean",
+      "deprecated": true,
+      "description": "Legacy Electron quick-chat setting. Accepted for compatibility, but unsupported by the Rust TUI and has no runtime effect."
+    },
+    "quickChatInjectScreen": {
+      "type": "boolean",
+      "deprecated": true,
+      "description": "Legacy Electron quick-chat setting. Accepted for compatibility, but unsupported by the Rust TUI and has no runtime effect."
+    },
+    "quickChatAmbient": {
+      "type": "boolean",
+      "deprecated": true,
+      "description": "Legacy Electron quick-chat setting. Accepted for compatibility, but unsupported by the Rust TUI and has no runtime effect."
+    },
     "autoApproveTools": { "type": "boolean" },
     "analyticsEnabled": { "type": "boolean" },
     "availableModels": { "type": "array", "items": { "type": "string" } },

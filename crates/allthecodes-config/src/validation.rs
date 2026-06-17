@@ -50,6 +50,27 @@ fn model_reasoning_effort_is_known(effort: &str) -> bool {
     )
 }
 
+const ELECTRON_LEGACY_SETTINGS: &[(&str, fn(&SettingsJson) -> bool)] = &[
+    ("appIcon", |settings| settings.app_icon.is_some()),
+    ("autoStart", |settings| settings.auto_start.is_some()),
+    ("startMinimized", |settings| {
+        settings.start_minimized.is_some()
+    }),
+    ("minimizeToTray", |settings| {
+        settings.minimize_to_tray.is_some()
+    }),
+    ("closeToTray", |settings| settings.close_to_tray.is_some()),
+    ("quickChatHideOnBlur", |settings| {
+        settings.quick_chat_hide_on_blur.is_some()
+    }),
+    ("quickChatInjectScreen", |settings| {
+        settings.quick_chat_inject_screen.is_some()
+    }),
+    ("quickChatAmbient", |settings| {
+        settings.quick_chat_ambient.is_some()
+    }),
+];
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -170,6 +191,18 @@ pub fn validate_model_name(model: &str) -> Result<()> {
 /// Does not fail hard -- returns warnings that the caller can display or log.
 pub fn validate_settings(settings: &SettingsJson) -> Vec<ValidationWarning> {
     let mut warnings = Vec::new();
+
+    for (field, is_set) in ELECTRON_LEGACY_SETTINGS {
+        if is_set(settings) {
+            warnings.push(ValidationWarning {
+                field: (*field).to_string(),
+                message: format!(
+                    "{field} is accepted for settings compatibility, but the Rust TUI does not support the legacy Electron behavior and this setting has no runtime effect."
+                ),
+                severity: WarningSeverity::Info,
+            });
+        }
+    }
 
     // Validate model name
     if let Some(ref model) = settings.model {
@@ -758,6 +791,40 @@ mod tests {
                 .map(|w| (&w.field, &w.message))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_validate_settings_flags_electron_legacy_fields_as_info() {
+        let settings = SettingsJson {
+            app_icon: Some("custom".into()),
+            auto_start: Some(true),
+            start_minimized: Some(true),
+            minimize_to_tray: Some(true),
+            close_to_tray: Some(true),
+            quick_chat_hide_on_blur: Some(true),
+            quick_chat_inject_screen: Some(true),
+            quick_chat_ambient: Some(true),
+            ..Default::default()
+        };
+
+        let warnings = validate_settings(&settings);
+        for field in [
+            "appIcon",
+            "autoStart",
+            "startMinimized",
+            "minimizeToTray",
+            "closeToTray",
+            "quickChatHideOnBlur",
+            "quickChatInjectScreen",
+            "quickChatAmbient",
+        ] {
+            assert!(
+                warnings.iter().any(|warning| warning.field == field
+                    && warning.severity == WarningSeverity::Info
+                    && warning.message.contains("no runtime effect")),
+                "missing legacy warning for {field}: {warnings:?}"
+            );
+        }
     }
 
     #[test]

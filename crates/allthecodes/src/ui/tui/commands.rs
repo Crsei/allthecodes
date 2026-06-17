@@ -190,6 +190,10 @@ fn sync_app_runtime_from_state(
     app.set_theme_setting(state.settings.theme.as_deref());
     app.set_editor_mode(state.settings.editor_mode.as_deref());
     app.set_keybindings(state.keybindings.clone());
+    app.set_sound_effects(state.settings.sound_effects.unwrap_or(true));
+    app.set_terminal_progress_bar_enabled(
+        state.settings.terminal_progress_bar_enabled.unwrap_or(true),
+    );
     app.sync_status_context_from_state(state);
 
     let lang =

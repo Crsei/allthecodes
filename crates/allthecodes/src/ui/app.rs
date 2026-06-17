@@ -278,6 +278,12 @@ pub struct App {
     /// Normalized STT language passed to the controller on press.
     voice_language: String,
 
+    /// Whether audible/desktop terminal notifications are enabled.
+    /// This does not affect in-app notifications.
+    sound_effects: bool,
+    /// Whether supported terminals should receive OSC 9;4 progress updates.
+    terminal_progress_bar_enabled: bool,
+
     // Completion state (Lane E)
     /// Tracks the active completion session for the input prompt.
     completion_state: input::CompletionState,
@@ -353,6 +359,8 @@ impl App {
             voice_enabled: false,
             voice_supported: false,
             voice_language: "en".to_string(),
+            sound_effects: true,
+            terminal_progress_bar_enabled: true,
             completion_state: input::CompletionState::new(),
         }
     }
@@ -727,6 +735,22 @@ impl App {
         if self.notifications.add_notification(notification) {
             self.dirty = true;
         }
+    }
+
+    pub fn set_sound_effects(&mut self, enabled: bool) {
+        self.sound_effects = enabled;
+    }
+
+    pub fn sound_effects_enabled(&self) -> bool {
+        self.sound_effects
+    }
+
+    pub fn set_terminal_progress_bar_enabled(&mut self, enabled: bool) {
+        self.terminal_progress_bar_enabled = enabled;
+    }
+
+    pub fn terminal_progress_bar_enabled(&self) -> bool {
+        self.terminal_progress_bar_enabled
     }
 
     pub fn handle_app_event(&mut self, event: AppEvent) {
