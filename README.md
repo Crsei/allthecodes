@@ -62,7 +62,7 @@ npm --version
 Linux:
 
 ```bash
-npm install -g allthecodes@0.1.5
+npm install -g allthecodes@0.1.7
 allthecodes --version
 allthecodes
 ```
@@ -70,7 +70,7 @@ allthecodes
 macOS:
 
 ```bash
-npm install -g allthecodes@0.1.5
+npm install -g allthecodes@0.1.7
 allthecodes --version
 allthecodes
 ```
@@ -78,7 +78,7 @@ allthecodes
 Windows PowerShell:
 
 ```powershell
-npm install -g allthecodes@0.1.5
+npm install -g allthecodes@0.1.7
 allthecodes --version
 allthecodes
 ```
@@ -121,7 +121,7 @@ ALLTHECODES_BACKEND_PORT=18080 npm run dev
 临时运行，不全局安装：
 
 ```bash
-npx allthecodes@0.1.5 --help
+npx allthecodes@0.1.7 --help
 ```
 
 ## 构建
