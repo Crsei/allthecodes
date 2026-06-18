@@ -134,7 +134,7 @@ fn resolve_fast_model(ctx: &CommandContext) -> String {
         .map(|(model, _)| model.clone())
         .unwrap_or_else(|| {
             crate::model::resolve_model_alias_with_settings(
-                allthecodes_models::DEFAULT_FAST_MODEL_ALIAS,
+                allthecodes_types::models::DEFAULT_FAST_MODEL_ALIAS,
                 &ctx.app_state.settings,
             )
         })

@@ -78,7 +78,7 @@ impl Default for AppState {
         Self {
             settings: SettingsJson::default(),
             verbose: false,
-            main_loop_model: allthecodes_models::default_model_id(),
+            main_loop_model: allthecodes_types::models::default_model_id(),
             main_loop_backend: "native".to_string(),
             advisor_model: None,
             tool_permission_context: ToolPermissionContext {

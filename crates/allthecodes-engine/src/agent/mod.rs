@@ -80,12 +80,12 @@ fn resolve_model_alias(alias: &str, fallback: &str) -> Result<String> {
     if trimmed.eq_ignore_ascii_case("inherit") {
         return Ok(fallback.to_string());
     }
-    if allthecodes_models::is_removed_legacy_model_alias(trimmed) {
-        bail!(allthecodes_models::removed_legacy_model_alias_error(
+    if allthecodes_types::models::is_removed_legacy_model_alias(trimmed) {
+        bail!(allthecodes_types::models::removed_legacy_model_alias_error(
             trimmed
         ));
     }
-    Ok(allthecodes_models::resolve_model_alias(trimmed))
+    Ok(allthecodes_types::models::resolve_model_alias(trimmed))
 }
 
 // ---------------------------------------------------------------------------

@@ -7,15 +7,15 @@ use uuid::Uuid;
 fn test_resolve_model_alias() {
     assert_eq!(
         resolve_model_alias("SOTA", "fallback").unwrap(),
-        allthecodes_models::SOTA_MODEL_ID
+        allthecodes_types::models::SOTA_MODEL_ID
     );
     assert_eq!(
         resolve_model_alias("MOTA", "fallback").unwrap(),
-        allthecodes_models::MOTA_MODEL_ID
+        allthecodes_types::models::MOTA_MODEL_ID
     );
     assert_eq!(
         resolve_model_alias("FOTA", "fallback").unwrap(),
-        allthecodes_models::FOTA_MODEL_ID
+        allthecodes_types::models::FOTA_MODEL_ID
     );
     assert!(resolve_model_alias("opus", "fallback").is_err());
     assert_eq!(

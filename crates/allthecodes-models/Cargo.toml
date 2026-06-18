@@ -1,7 +1,0 @@
-[package]
-name = "allthecodes-models"
-version = "0.1.0"
-edition = "2021"
-description = "Shared model metadata, aliases, provider mappings, and pricing for cc-rust"
-
-[dependencies]

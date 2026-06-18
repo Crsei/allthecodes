@@ -491,7 +491,7 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
     } else if is_codex_backend {
         allthecodes_engine::codex_exec::DEFAULT_CODEX_MODEL.to_string()
     } else {
-        allthecodes_models::DEFAULT_MODEL_ALIAS.to_string()
+        allthecodes_types::models::DEFAULT_MODEL_ALIAS.to_string()
     };
     let requested_model = cli.model.clone().or(merged_config.model.clone());
     let model = resolve_startup_model(
@@ -518,7 +518,7 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
                 model.clone()
             } else {
                 resolve_model_alias_for_effective_settings(
-                    allthecodes_models::DEFAULT_FALLBACK_MODEL_ALIAS,
+                    allthecodes_types::models::DEFAULT_FALLBACK_MODEL_ALIAS,
                     &merged_config,
                 )
             }

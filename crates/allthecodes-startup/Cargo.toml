@@ -26,7 +26,6 @@ allthecodes-config = { workspace = true }
 allthecodes-engine = { workspace = true }
 allthecodes-lsp-service = { workspace = true }
 allthecodes-mcp = { workspace = true }
-allthecodes-models = { workspace = true }
 allthecodes-permissions = { workspace = true }
 allthecodes-plugins = { workspace = true }
 allthecodes-services = { workspace = true }

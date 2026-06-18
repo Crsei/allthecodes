@@ -86,7 +86,7 @@ pub(crate) fn model_for_autocompact(
     let model = if let Some(model) = params.model.as_deref().filter(|model| !model.is_empty()) {
         model.to_string()
     } else if app_model.is_empty() {
-        allthecodes_models::default_fallback_model_id()
+        allthecodes_types::models::default_fallback_model_id()
     } else {
         app_model.to_string()
     };

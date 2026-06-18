@@ -17,6 +17,7 @@ pub mod commands;
 pub mod hooks;
 pub mod mcp;
 pub mod message;
+pub mod models;
 pub mod output;
 pub mod permission_events;
 #[cfg(feature = "runtime-types")]

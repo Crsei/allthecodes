@@ -4,7 +4,7 @@ use allthecodes_types::message::Usage;
 
 /// Calculate total cost in USD for a model + usage pair.
 pub fn calculate_cost(model: &str, usage: &Usage) -> f64 {
-    allthecodes_models::get_pricing(model).cost_from_counts(
+    allthecodes_types::models::get_pricing(model).cost_from_counts(
         usage.input_tokens,
         usage.output_tokens,
         usage.cache_read_input_tokens,

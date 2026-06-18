@@ -12,7 +12,6 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 allthecodes-auth = { workspace = true }
 allthecodes-config = { workspace = true }
-allthecodes-models = { workspace = true }
 allthecodes-types = { workspace = true }
 allthecodes-utils = { workspace = true }
 chrono = { workspace = true }

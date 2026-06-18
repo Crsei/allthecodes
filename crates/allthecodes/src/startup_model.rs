@@ -13,7 +13,7 @@ pub(crate) fn resolve_startup_model(
         if allthecodes_commands::model::is_removed_legacy_model_alias(candidate) {
             warn!(
                 model = %candidate,
-                replacement = ?allthecodes_models::replacement_for_removed_legacy_alias(candidate),
+                replacement = ?allthecodes_types::models::replacement_for_removed_legacy_alias(candidate),
                 "legacy model alias ignored during startup"
             );
             continue;

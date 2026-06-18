@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use allthecodes_compact::auto_compact::get_context_window_size;
-use allthecodes_models::ModelSetting;
+use allthecodes_types::models::ModelSetting;
 use git2::Repository;
 
 pub use allthecodes_types::status_line::{

@@ -203,7 +203,7 @@ pub(crate) fn build_messages_request(
     let resolved_model = params
         .model
         .clone()
-        .unwrap_or_else(allthecodes_models::default_fallback_model_id);
+        .unwrap_or_else(allthecodes_types::models::default_fallback_model_id);
     let model_reasoning_effort = resolve_model_reasoning_effort(
         params.model_reasoning_effort.as_deref(),
         params.effort_value.as_deref(),

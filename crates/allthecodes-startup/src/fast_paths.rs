@@ -130,7 +130,7 @@ pub fn run_dump_system_prompt(cli: &impl DumpSystemPromptCli, tools: &[Arc<dyn T
         .model()
         .map(str::to_string)
         .or(provider_default)
-        .unwrap_or_else(allthecodes_models::default_model_id);
+        .unwrap_or_else(allthecodes_types::models::default_model_id);
     let model = model_owned.as_str();
 
     // Populate the browser MCP server registry from config alone (no live

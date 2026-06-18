@@ -252,17 +252,17 @@ mod tests {
         let result = set_advisor_with_persist(&mut ctx, "SOTA", noop_persist).unwrap();
         match result {
             CommandResult::Output(text) => {
-                assert!(text.contains(allthecodes_models::SOTA_MODEL_ID))
+                assert!(text.contains(allthecodes_types::models::SOTA_MODEL_ID))
             }
             _ => panic!("expected Output"),
         }
         assert_eq!(
             ctx.app_state.advisor_model.as_deref(),
-            Some(allthecodes_models::SOTA_MODEL_ID)
+            Some(allthecodes_types::models::SOTA_MODEL_ID)
         );
         assert_eq!(
             ctx.app_state.settings.advisor_model.as_deref(),
-            Some(allthecodes_models::SOTA_MODEL_ID)
+            Some(allthecodes_types::models::SOTA_MODEL_ID)
         );
     }
 
@@ -343,14 +343,14 @@ mod tests {
         // Uses an explicit tempdir path — no env-var mutation, no race.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("settings.json");
-        persist_advisor_to_path(&path, Some(allthecodes_models::SOTA_MODEL_ID)).unwrap();
+        persist_advisor_to_path(&path, Some(allthecodes_types::models::SOTA_MODEL_ID)).unwrap();
 
         let raw_json = std::fs::read_to_string(&path).unwrap();
         let raw: allthecodes_config::settings::RawSettings =
             serde_json::from_str(&raw_json).unwrap();
         assert_eq!(
             raw.advisor_model.as_deref(),
-            Some(allthecodes_models::SOTA_MODEL_ID)
+            Some(allthecodes_types::models::SOTA_MODEL_ID)
         );
 
         // Clear via None.

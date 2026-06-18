@@ -51,7 +51,6 @@ allthecodes-config = { workspace = true }
 allthecodes-bootstrap = { workspace = true }
 allthecodes-observability = { workspace = true }
 allthecodes-permissions = { workspace = true }
-allthecodes-models = { workspace = true }
 allthecodes-compact = { workspace = true }
 allthecodes-keybindings = { workspace = true }
 allthecodes-utils = { workspace = true }

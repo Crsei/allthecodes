@@ -126,7 +126,6 @@ parking_lot = "0.12"
 allthecodes-keybindings = { path = "crates/allthecodes-keybindings" }
 allthecodes-observability = { path = "crates/allthecodes-observability" }
 allthecodes-types = { path = "crates/allthecodes-types" }
-allthecodes-models = { path = "crates/allthecodes-models" }
 allthecodes-bootstrap = { path = "crates/allthecodes-bootstrap" }
 allthecodes-auth = { path = "crates/allthecodes-auth" }
 allthecodes-api = { path = "crates/allthecodes-api" }

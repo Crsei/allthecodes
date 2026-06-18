@@ -15,7 +15,7 @@ use async_trait::async_trait;
 
 use crate::{CommandContext, CommandHandler, CommandResult};
 
-pub use allthecodes_models::resolve_model_alias;
+pub use allthecodes_types::models::resolve_model_alias;
 
 fn neutral_model_alias(name: &str) -> Option<&'static str> {
     let trimmed = name.trim();
@@ -147,11 +147,11 @@ fn format_model_capability_line(
 }
 
 pub fn removed_legacy_model_alias_error(name: &str) -> String {
-    allthecodes_models::removed_legacy_model_alias_error(name)
+    allthecodes_types::models::removed_legacy_model_alias_error(name)
 }
 
 pub fn is_removed_legacy_model_alias(name: &str) -> bool {
-    allthecodes_models::is_removed_legacy_model_alias(name)
+    allthecodes_types::models::is_removed_legacy_model_alias(name)
 }
 
 fn available_model_matches(allowed: &str, resolved_target: &str) -> bool {
@@ -530,13 +530,13 @@ mod tests {
         let result = handler.execute("SOTA", &mut ctx).await.unwrap();
         match result {
             CommandResult::Output(text) => {
-                assert!(text.contains(allthecodes_models::SOTA_MODEL_ID));
+                assert!(text.contains(allthecodes_types::models::SOTA_MODEL_ID));
             }
             _ => panic!("Expected Output result"),
         }
         assert_eq!(
             ctx.app_state.main_loop_model,
-            allthecodes_models::SOTA_MODEL_ID
+            allthecodes_types::models::SOTA_MODEL_ID
         );
     }
 
@@ -558,11 +558,11 @@ mod tests {
     fn test_resolve_alias() {
         assert_eq!(
             resolve_model_alias("SOTA"),
-            allthecodes_models::SOTA_MODEL_ID
+            allthecodes_types::models::SOTA_MODEL_ID
         );
         assert_eq!(
             resolve_model_alias("mota"),
-            allthecodes_models::MOTA_MODEL_ID
+            allthecodes_types::models::MOTA_MODEL_ID
         );
         assert_eq!(resolve_model_alias("opus"), "opus");
         assert_eq!(resolve_model_alias("unknown"), "unknown");
@@ -618,12 +618,12 @@ mod tests {
     #[test]
     fn test_check_available_accepts_alias_entries() {
         let allowed = vec!["SOTA".to_string(), "gpt-4o".to_string()];
-        assert!(check_available(allthecodes_models::SOTA_MODEL_ID, &allowed).is_ok());
+        assert!(check_available(allthecodes_types::models::SOTA_MODEL_ID, &allowed).is_ok());
     }
 
     #[test]
     fn test_check_available_accepts_full_id_entries_for_alias_input() {
-        let allowed = vec![allthecodes_models::SOTA_MODEL_ID.to_string()];
+        let allowed = vec![allthecodes_types::models::SOTA_MODEL_ID.to_string()];
         assert!(check_available(&resolve_model_alias("SOTA"), &allowed).is_ok());
     }
 
@@ -670,7 +670,7 @@ mod tests {
         let mut ctx = test_ctx();
         ctx.app_state.settings.available_models = vec!["SOTA".to_string()];
         let result = handler
-            .execute(allthecodes_models::SOTA_MODEL_ID, &mut ctx)
+            .execute(allthecodes_types::models::SOTA_MODEL_ID, &mut ctx)
             .await
             .unwrap();
         match result {
@@ -679,7 +679,7 @@ mod tests {
         }
         assert_eq!(
             ctx.app_state.main_loop_model,
-            allthecodes_models::SOTA_MODEL_ID
+            allthecodes_types::models::SOTA_MODEL_ID
         );
     }
 
@@ -752,7 +752,7 @@ mod tests {
             CommandResult::Output(text) => {
                 assert!(text.contains("Model changed"));
                 assert!(text.contains("MOTA"));
-                assert!(!text.contains(allthecodes_models::MOTA_MODEL_ID));
+                assert!(!text.contains(allthecodes_types::models::MOTA_MODEL_ID));
             }
             _ => panic!("Expected Output"),
         }

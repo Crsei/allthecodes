@@ -134,7 +134,6 @@ parking_lot = { workspace = true }
 allthecodes-keybindings = { workspace = true }
 allthecodes-observability = { workspace = true }
 allthecodes-types = { workspace = true }
-allthecodes-models = { workspace = true }
 allthecodes-bootstrap = { workspace = true }
 allthecodes-auth = { workspace = true }
 allthecodes-api = { workspace = true }

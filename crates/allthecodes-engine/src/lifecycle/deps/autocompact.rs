@@ -280,7 +280,7 @@ impl QueryEngineDeps {
                 self.api_client
                     .as_ref()
                     .map(|c| c.config().default_model.clone())
-                    .unwrap_or_else(allthecodes_models::default_fallback_model_id)
+                    .unwrap_or_else(allthecodes_types::models::default_fallback_model_id)
             } else {
                 app.main_loop_model.clone()
             }
@@ -312,7 +312,7 @@ impl QueryEngineDeps {
                 self.api_client
                     .as_ref()
                     .map(|c| c.config().default_model.clone())
-                    .unwrap_or_else(allthecodes_models::default_fallback_model_id)
+                    .unwrap_or_else(allthecodes_types::models::default_fallback_model_id)
             } else {
                 app.main_loop_model.clone()
             }

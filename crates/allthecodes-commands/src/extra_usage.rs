@@ -23,7 +23,7 @@ struct MsgStats {
     cost_usd: f64,
 }
 
-use allthecodes_models::pricing;
+use allthecodes_types::models::pricing;
 
 /// Format a token count with thousands separators.
 fn fmt_tok(n: u64) -> String {

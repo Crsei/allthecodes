@@ -17,7 +17,6 @@ allthecodes-engine = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
 allthecodes-keybindings = { workspace = true }
 allthecodes-mcp = { workspace = true }
-allthecodes-models = { workspace = true }
 allthecodes-permissions = { workspace = true }
 allthecodes-plugins = { workspace = true }
 allthecodes-sandbox = { workspace = true }

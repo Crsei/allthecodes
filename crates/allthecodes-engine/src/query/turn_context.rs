@@ -32,7 +32,7 @@ impl QueryRunContext {
             fallback_model: Some(
                 params
                     .fallback_model
-                    .unwrap_or_else(allthecodes_models::default_fallback_model_id),
+                    .unwrap_or_else(allthecodes_types::models::default_fallback_model_id),
             ),
             gates: params.gates,
         };

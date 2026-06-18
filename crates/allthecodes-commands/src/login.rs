@@ -888,7 +888,7 @@ fn resolve_codex_default_model(ctx: &CommandContext, raw: &RawSettings) -> Strin
             allthecodes_api::api::providers::get_provider(settings::API_PROVIDER_OPENAI_CODEX)
                 .map(|provider| provider.default_model.to_string())
         })
-        .unwrap_or_else(allthecodes_models::default_model_id)
+        .unwrap_or_else(allthecodes_types::models::default_model_id)
 }
 
 fn resolve_codex_model_candidate(
@@ -902,7 +902,7 @@ fn resolve_codex_model_candidate(
     }
     Some(
         codex_alias_model(trimmed, raw, ctx)
-            .unwrap_or_else(|| allthecodes_models::resolve_model_alias(trimmed)),
+            .unwrap_or_else(|| allthecodes_types::models::resolve_model_alias(trimmed)),
     )
 }
 

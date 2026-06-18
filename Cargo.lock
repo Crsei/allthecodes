@@ -54,7 +54,6 @@ dependencies = [
  "allthecodes-keybindings",
  "allthecodes-lsp-service",
  "allthecodes-mcp",
- "allthecodes-models",
  "allthecodes-observability",
  "allthecodes-permissions",
  "allthecodes-plugins",
@@ -150,7 +149,6 @@ version = "0.1.0"
 dependencies = [
  "allthecodes-auth",
  "allthecodes-config",
- "allthecodes-models",
  "allthecodes-types",
  "allthecodes-utils",
  "anyhow",
@@ -202,7 +200,7 @@ dependencies = [
 name = "allthecodes-bootstrap"
 version = "0.1.0"
 dependencies = [
- "allthecodes-models",
+ "allthecodes-types",
  "parking_lot",
  "serde",
  "serde_json",
@@ -243,7 +241,6 @@ dependencies = [
  "allthecodes-ipc-protocol",
  "allthecodes-keybindings",
  "allthecodes-mcp",
- "allthecodes-models",
  "allthecodes-permissions",
  "allthecodes-plugins",
  "allthecodes-sandbox",
@@ -390,7 +387,6 @@ dependencies = [
  "allthecodes-langfuse",
  "allthecodes-lsp-service",
  "allthecodes-mcp",
- "allthecodes-models",
  "allthecodes-observability",
  "allthecodes-permissions",
  "allthecodes-sandbox",
@@ -544,10 +540,6 @@ dependencies = [
  "tracing",
  "url",
 ]
-
-[[package]]
-name = "allthecodes-models"
-version = "0.1.0"
 
 [[package]]
 name = "allthecodes-observability"
@@ -721,7 +713,6 @@ dependencies = [
  "allthecodes-compact",
  "allthecodes-config",
  "allthecodes-db",
- "allthecodes-models",
  "allthecodes-types",
  "allthecodes-utils",
  "anyhow",
@@ -780,7 +771,6 @@ dependencies = [
  "allthecodes-engine",
  "allthecodes-lsp-service",
  "allthecodes-mcp",
- "allthecodes-models",
  "allthecodes-permissions",
  "allthecodes-plugins",
  "allthecodes-services",

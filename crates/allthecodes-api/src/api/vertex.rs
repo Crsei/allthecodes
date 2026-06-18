@@ -45,7 +45,7 @@ use serde_json::{json, Value};
 
 use crate::api::client::{parse_sse_byte_stream, strip_anthropic_cache_fields, MessagesRequest};
 use crate::api::retry::categorize_api_error;
-use allthecodes_models::to_vertex_model_id;
+use allthecodes_types::models::to_vertex_model_id;
 use allthecodes_types::message::StreamEvent;
 
 pub const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";

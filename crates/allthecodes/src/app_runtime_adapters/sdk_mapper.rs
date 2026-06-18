@@ -399,7 +399,7 @@ mod tests {
             json_schema: None,
             replay_user_messages: false,
             persist_session: false,
-            resolved_model: Some(allthecodes_models::default_model_id()),
+            resolved_model: Some(allthecodes_types::models::default_model_id()),
             auto_save_session: false,
             agent_context: None,
         }))
