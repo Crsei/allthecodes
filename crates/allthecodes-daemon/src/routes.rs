@@ -263,6 +263,18 @@ pub fn api_routes() -> Router<DaemonState> {
             "/api/account-auth/logout",
             post(crate::account_auth::logout),
         )
+        .route(
+            "/api/account-auth/billing",
+            get(crate::account_auth::billing_snapshot),
+        )
+        .route(
+            "/api/account-auth/billing/ledger",
+            get(crate::account_auth::billing_ledger),
+        )
+        .route(
+            "/api/account-auth/billing/orders/{id}",
+            get(crate::account_auth::billing_order),
+        )
 }
 
 fn require_control_token(headers: &HeaderMap) -> Result<(), Json<Value>> {

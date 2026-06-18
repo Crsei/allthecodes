@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use allthecodes_auth::api_key::KEYCHAIN_SERVICE_NAME;
 use allthecodes_auth::oauth::pkce;
 use anyhow::{anyhow, Context, Result};
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -49,6 +49,8 @@ pub struct AccountAuthSession {
     pub user: Value,
     pub subscription: Value,
     pub entitlements: Value,
+    pub credits: Value,
+    pub agent_collaboration: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +105,10 @@ struct TokenResponse {
     user: Value,
     subscription: Value,
     entitlements: Value,
+    #[serde(default)]
+    credits: Value,
+    #[serde(default)]
+    agent_collaboration: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +266,38 @@ pub async fn logout(State(state): State<DaemonState>) -> (StatusCode, Json<Value
     ok(json!({ "ok": true, "status": "signed_out" }))
 }
 
+pub async fn billing_snapshot(State(state): State<DaemonState>) -> (StatusCode, Json<Value>) {
+    proxy_billing_get(state, "/api/billing/me", Vec::new()).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BillingLedgerQuery {
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+}
+
+pub async fn billing_ledger(
+    State(state): State<DaemonState>,
+    Query(query): Query<BillingLedgerQuery>,
+) -> (StatusCode, Json<Value>) {
+    let mut params = Vec::new();
+    if let Some(page) = query.page {
+        params.push(("page".to_string(), page.to_string()));
+    }
+    if let Some(page_size) = query.page_size {
+        params.push(("page_size".to_string(), page_size.to_string()));
+    }
+    proxy_billing_get(state, "/api/billing/ledger", params).await
+}
+
+pub async fn billing_order(
+    State(state): State<DaemonState>,
+    Path(order_id): Path<String>,
+) -> (StatusCode, Json<Value>) {
+    let path = format!("/api/billing/orders/{order_id}");
+    proxy_billing_get(state, &path, Vec::new()).await
+}
+
 fn current_unexpired_session(state: &DaemonState) -> Option<AccountAuthSession> {
     let session = state.account_auth.lock().session.clone()?;
     if access_token_expired(&session) {
@@ -360,6 +398,8 @@ fn session_from_token_response(
         user: token.user,
         subscription: token.subscription,
         entitlements: token.entitlements,
+        credits: token.credits,
+        agent_collaboration: token.agent_collaboration,
     })
 }
 
@@ -433,7 +473,80 @@ fn session_payload(status: &str, session: &AccountAuthSession) -> Value {
         "user": session.user,
         "subscription": session.subscription,
         "entitlements": session.entitlements,
+        "credits": session.credits,
+        "agent_collaboration": session.agent_collaboration,
     })
+}
+
+async fn proxy_billing_get(
+    state: DaemonState,
+    path: &str,
+    query: Vec<(String, String)>,
+) -> (StatusCode, Json<Value>) {
+    let session = match session_for_account_request(&state).await {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return error(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("no desktop account session"),
+            )
+        }
+        Err(err) => return error(StatusCode::BAD_GATEWAY, err),
+    };
+
+    match fetch_billing_get(&session, path, &query).await {
+        Ok((StatusCode::UNAUTHORIZED, _)) => match refresh_from_stored_auth(&state).await {
+            Ok(Some(refreshed)) => match fetch_billing_get(&refreshed, path, &query).await {
+                Ok(response) => response,
+                Err(err) => error(StatusCode::BAD_GATEWAY, err),
+            },
+            Ok(None) => error(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("no desktop account session"),
+            ),
+            Err(err) => error(StatusCode::BAD_GATEWAY, err),
+        },
+        Ok(response) => response,
+        Err(err) => error(StatusCode::BAD_GATEWAY, err),
+    }
+}
+
+async fn session_for_account_request(state: &DaemonState) -> Result<Option<AccountAuthSession>> {
+    if let Some(session) = current_unexpired_session(state) {
+        return Ok(Some(session));
+    }
+    refresh_from_stored_auth(state).await
+}
+
+async fn fetch_billing_get(
+    session: &AccountAuthSession,
+    path: &str,
+    query: &[(String, String)],
+) -> Result<(StatusCode, Json<Value>)> {
+    let mut url = endpoint_url(&session.account_site_url, path)?;
+    if !query.is_empty() {
+        url.query_pairs_mut()
+            .extend_pairs(query.iter().map(|(key, value)| (key.as_str(), value.as_str())));
+    }
+    let response = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(&session.access_token)
+        .send()
+        .await
+        .context("failed to load desktop account billing data")?;
+    let status = StatusCode::from_u16(response.status().as_u16())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let text = response.text().await.unwrap_or_default();
+    let value = if text.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str::<Value>(&text).unwrap_or_else(|_| {
+            json!({
+                "error": text,
+            })
+        })
+    };
+    Ok((status, Json(value)))
 }
 
 fn metadata_path() -> std::path::PathBuf {
