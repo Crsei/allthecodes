@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches:
+      - allthecodes
       - main
       - master
   pull_request:
