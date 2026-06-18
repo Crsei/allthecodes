@@ -1,0 +1,4 @@
+# Short executable supervisor smoke task.
+# This task is intentionally read-only and should not modify repository files.
+
+[checkpoint] supervisor-smoke-00 - Read scripts/workspace_crate_extraction_omx_supervisor.py and scripts/workspace_crate_extraction_omx_py/supervisor.py, run or reason from their CLI help only if useful, do not edit files, do not commit, and return PASS if the supervisor entrypoint and task-list loading path are understandable. If anything is broken, return ERROR with the exact command or file path.

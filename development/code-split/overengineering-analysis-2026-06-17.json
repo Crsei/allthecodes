@@ -1,0 +1,208 @@
+{
+  "summary": "Over-engineering analysis across 47 crates, 372,191 lines, 1,321 files",
+  "generated_at": "2026-06-17",
+  "generated_by": "workflow (9 sub-agents, schema-constrained structured output)",
+  "result": {
+    "top_10_overengineered": [
+      {
+        "rank": 1,
+        "crate": "allthecodes-query",
+        "score": 5,
+        "lines": 5418,
+        "primary_issue": "Entire 5,418-line crate (including 2,700 test lines) is unused in production — engine crate has a forked, enhanced copy internally. Only ModelCallParams and QueryDeps trait are imported from outside.",
+        "recommendation": "merge_into_parent (into allthecodes-engine)",
+        "effort_to_fix": "medium"
+      },
+      {
+        "rank": 2,
+        "crate": "allthecodes-voice",
+        "score": 5,
+        "lines": 1326,
+        "primary_issue": "Textbook YAGNI: full AudioCaptureBackend trait hierarchy, feasibility checker, state machine — only production implementation is NullAudioBackend returning 'not available'.",
+        "recommendation": "delete_unused",
+        "effort_to_fix": "trivial"
+      },
+      {
+        "rank": 3,
+        "crate": "allthecodes-ipc-client",
+        "score": 5,
+        "lines": 722,
+        "primary_issue": "4 of 9 modules are pure re-export stubs (sink.rs: 3 lines, transport.rs: 6 lines, event_class.rs: 5 lines, sdk_mapping.rs: 6 lines).",
+        "recommendation": "merge_into_parent (into allthecodes-ipc)",
+        "effort_to_fix": "small"
+      },
+      {
+        "rank": 4,
+        "crate": "allthecodes-ipc-adapters",
+        "score": 5,
+        "lines": 275,
+        "primary_issue": "Single 275-line file as a crate, ~130 lines real logic (6 small conversion functions) + 140 lines tests.",
+        "recommendation": "merge_into_parent (into allthecodes-ipc)",
+        "effort_to_fix": "trivial"
+      },
+      {
+        "rank": 5,
+        "crate": "allthecodes-shell-command",
+        "score": 5,
+        "lines": 4172,
+        "primary_issue": "4,172-line shell command parser: tree-sitter AST parser (50K node budget), 1,050-line heredoc parser, 553-line pipe handler — for parsing 'echo hello > file.txt'. sandbox crate has duplicate inline parser.",
+        "recommendation": "merge_with_peer (into allthecodes-sandbox)",
+        "effort_to_fix": "medium"
+      },
+      {
+        "rank": 6,
+        "crate": "allthecodes-models",
+        "score": 5,
+        "lines": 708,
+        "primary_issue": "Zero-dependency crate with only static data tables (model aliases, pricing, mapping) and simple lookup functions. Exists solely due to dependency graph ordering constraints.",
+        "recommendation": "merge_into_parent (into allthecodes-types)",
+        "effort_to_fix": "small"
+      },
+      {
+        "rank": 7,
+        "crate": "allthecodes-bootstrap",
+        "score": 4,
+        "lines": 792,
+        "primary_issue": "9 of 12 ProcessState fields are dead code. Signal<T> unused. model.rs is a one-line re-export no production code imports.",
+        "recommendation": "merge_into_parent (into allthecodes)",
+        "effort_to_fix": "small"
+      },
+      {
+        "rank": 8,
+        "crate": "allthecodes-ipc-transport",
+        "score": 4,
+        "lines": 651,
+        "primary_issue": "Single-consumer crate with IpcTransport/Reader/Writer traits for only 2 implementations, one of which (MemoryTransport) is test-only.",
+        "recommendation": "merge_into_parent (into allthecodes-ipc)",
+        "effort_to_fix": "small"
+      },
+      {
+        "rank": 9,
+        "crate": "allthecodes-protocol",
+        "score": 4,
+        "lines": 3251,
+        "primary_issue": "408-line macro system generating 5+ enums. 19 extremely fragmented v1 modules (capabilities.rs: 12 lines, health.rs: 12 lines). ServerNotification is an empty enum.",
+        "recommendation": "merge_into_parent (into allthecodes-web or allthecodes-daemon)",
+        "effort_to_fix": "medium"
+      },
+      {
+        "rank": 10,
+        "crate": "allthecodes-engine",
+        "score": 4,
+        "lines": 33243,
+        "primary_issue": "32K-line monolith: forked query loop (952 lines), god-objects (QueryEngineState ~20 concerns, AppState ~22 fields), AgentRuntimeAdapters service locator with 6+ Arc<dyn Trait> fields in global OnceLock.",
+        "recommendation": "merge_with_peer (absorb allthecodes-query, then split god-objects)",
+        "effort_to_fix": "large"
+      }
+    ],
+    "patterns": [
+      {
+        "pattern": "Unnecessary crate boundaries",
+        "frequency": "pervasive",
+        "impact": "high",
+        "examples": [
+          "allthecodes-ipc has 4 sub-crates (ipc-protocol, ipc-transport, ipc-client, ipc-adapters) totaling ~6,300 lines where 1 crate would serve",
+          "allthecodes-web-state is a 964-line single-file crate with exactly one consumer (allthecodes-web)",
+          "allthecodes-shell-command (4,172 lines) should be a module inside allthecodes-sandbox (already a dep)",
+          "allthecodes-models (708 lines, zero dependencies) should be merged into allthecodes-types"
+        ]
+      },
+      {
+        "pattern": "Global static service locator pattern",
+        "frequency": "common",
+        "impact": "medium",
+        "examples": [
+          "allthecodes-tools/src/registry.rs: LazyLock<RwLock<ToolRegistryProviders>> global",
+          "allthecodes-mcp/src/runtime.rs: LazyLock<RwLock<Option<SharedMcpManager>>> global",
+          "allthecodes-browser/src/state.rs: LazyLock<RwLock<BrowserConnectionState>> global",
+          "allthecodes-engine/src/agent_runtime.rs: OnceLock<RwLock<AgentRuntimeAdapters>> global",
+          "allthecodes-commands/src/runtime.rs: 17 OnceLock function pointer slots"
+        ]
+      },
+      {
+        "pattern": "Dead code / YAGNI violations",
+        "frequency": "pervasive",
+        "impact": "high",
+        "examples": [
+          "allthecodes-query: entire 5,418-line crate unused because engine has internal fork",
+          "allthecodes-voice: 1,326 lines of traits, audio backends, and feasibility checks all returning 'not available'",
+          "allthecodes-bootstrap: Signal<T> (121 lines) never used in production code",
+          "allthecodes-observability/src/perfetto.rs: 13-line placeholder saying 'deferred'",
+          "allthecodes-protocol: ServerNotification is an empty enum (0 variants)",
+          "allthecodes-bootstrap: 9 of 12 ProcessState fields are dead code"
+        ]
+      },
+      {
+        "pattern": "Duplicated/forked code",
+        "frequency": "occasional",
+        "impact": "high",
+        "examples": [
+          "allthecodes-engine vs allthecodes-query: forked loop_impl.rs (952 vs 783 lines) with different features",
+          "startup_skills.rs and command_runtime_bridge.rs: near-duplicate discover_plugin_skills functions",
+          "allthecodes-web and allthecodes-daemon both have build_router + start_server functions",
+          "allthecodes-sandbox has inline shell parser despite depending on allthecodes-shell-command"
+        ]
+      },
+      {
+        "pattern": "Excessive ceremony — manual field-by-field mapping",
+        "frequency": "common",
+        "impact": "medium",
+        "examples": [
+          "allthecodes-config: 80+ fields repeated across RawSettings, EffectiveSettings, SettingsJson, and JSON Schema",
+          "allthecodes/src/full_init.rs: 129-line manual AppState field copy from EffectiveSettings",
+          "allthecodes-daemon: write_started/write_stopped/write_supervisor_heartbeat each repeat ~15 DaemonProcessState fields"
+        ]
+      },
+      {
+        "pattern": "Micro-module fragmentation",
+        "frequency": "common",
+        "impact": "low",
+        "examples": [
+          "allthecodes-protocol/src/v1/health.rs: 12-line module with 1 struct",
+          "allthecodes-protocol/src/v1/capabilities.rs: 12-line module with 1 struct",
+          "allthecodes-types/src/query_host.rs: 11-line module",
+          "allthecodes-types/src/agent_channel.rs: 25-line module"
+        ]
+      },
+      {
+        "pattern": "Excessive trait abstraction",
+        "frequency": "occasional",
+        "impact": "medium",
+        "examples": [
+          "Tool trait: 19 methods with 12 default implementations (most tools only implement 5)",
+          "QueryDeps trait: 16 methods with 8 noop defaults",
+          "ShellProvider trait: normalize_command hardcodes env vars regardless of provider",
+          "StartupCli / DumpSystemPromptCli traits exist solely to access CLI fields"
+        ]
+      }
+    ],
+    "quick_wins": [
+      {"action": "Delete the allthecodes-voice crate entirely (1,326 lines)", "benefit": "Eliminates 1,326 lines dead code, reduces workspace by 1 crate", "risk": "low"},
+      {"action": "Merge allthecodes-ipc-adapters (275-line single file) into allthecodes-ipc", "benefit": "Eliminates a crate with ~130 lines real logic", "risk": "low"},
+      {"action": "Merge allthecodes-ipc-transport (651 lines) and allthecodes-ipc-client (722 lines) into allthecodes-ipc", "benefit": "Eliminates 2 crates, ~1,400 lines", "risk": "low"},
+      {"action": "Merge allthecodes-models (708 lines) into allthecodes-types", "benefit": "Eliminates a zero-justification crate", "risk": "low"},
+      {"action": "Merge allthecodes-web-state (964 lines) into allthecodes-web", "benefit": "Eliminates single-consumer crate", "risk": "low"},
+      {"action": "Merge allthecodes-worktree (1,288 lines) into allthecodes-tools", "benefit": "Consolidates tool implementations", "risk": "low"},
+      {"action": "Merge allthecodes-langfuse (832 lines) into allthecodes-observability", "benefit": "Reduces observability fragmentation", "risk": "low"},
+      {"action": "Merge allthecodes-safety (880 lines) into allthecodes-permissions", "benefit": "Consolidates safety/classifier with permissions", "risk": "low"},
+      {"action": "Merge allthecodes-browser (3,367 lines) and allthecodes-computer-use (3,093 lines) into allthecodes-tools", "benefit": "Consolidates all tool implementations", "risk": "low"},
+      {"action": "Add From<EffectiveSettings> impl or derive macro for full_init.rs", "benefit": "Eliminates 129-line manual field copy", "risk": "low"}
+    ],
+    "architectural_concerns": [
+      "Forked query loop: allthecodes-query (~5,418 lines) entirely unused in production; engine maintains internal forked copy with added features",
+      "Quadruple config representation: RawSettings, EffectiveSettings, SettingsJson, and JSON Schema duplicate ~80+ settings fields",
+      "Global static service locator pattern: 5+ crates use LazyLock/OnceLock<RwLock<...>> as process-global registries",
+      "IPC protocol dualism: v1 (BackendMessage/FrontendMessage) and v2 (IpcPayload with envelopes) coexist",
+      "Daemon dual storage backends: every write persists to both SQLite and JSON files",
+      "Workspace split artifacts: 10-12 crates extracted during Phase 4/7 reorganization, boundaries never justified",
+      "allthecodes-commands depends on 24/40 workspace crates — compilation bottleneck"
+    ],
+    "final_verdict": "The project has a clear split into legitimate crates (engine, daemon, tools, config, permissions, session, types, api — justified by multiple consumers or domain complexity) and workspace split artifacts (Phase 4/7 reorganization). IPC family is most egregious: 4 extra crates ~6,300 lines where 1 crate would serve. YAGNI violations account for ~2,000 lines of unused code. Forked query loop is the most expensive single issue. Recommended: merge 6 highest-score crates, eliminate ~7 crates and ~9,000 lines of dead/ceremonial code, then address config quadruple representation and global service locators."
+  },
+  "score_summary": {
+    "score_5_severe": ["allthecodes-query", "allthecodes-voice", "allthecodes-ipc-client", "allthecodes-ipc-adapters", "allthecodes-shell-command", "allthecodes-models"],
+    "score_4_high": ["allthecodes-bootstrap", "allthecodes-ipc-transport", "allthecodes-protocol", "allthecodes-engine", "allthecodes-web-state", "allthecodes-observability"],
+    "score_3_moderate": ["allthecodes-worktree", "allthecodes-langfuse", "allthecodes-safety", "allthecodes-browser", "allthecodes-computer-use", "allthecodes-web", "allthecodes-commands", "allthecodes-config", "allthecodes-daemon", "allthecodes-ipc"],
+    "score_2_low": ["allthecodes-api", "allthecodes-tools", "allthecodes-session", "allthecodes-permissions", "allthecodes-types", "allthecodes-auth", "allthecodes-gateway", "allthecodes-server", "allthecodes-utils", "allthecodes-skills", "allthecodes-plugins", "allthecodes-teams", "allthecodes-tasks", "allthecodes-db", "allthecodes-startup", "allthecodes-keybindings", "allthecodes-sandbox", "allthecodes-ipc-protocol", "allthecodes-mcp", "allthecodes-services", "allthecodes-compact"]
+  }
+}

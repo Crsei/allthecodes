@@ -951,6 +951,7 @@ dependencies = [
  "allthecodes-utils",
  "allthecodes-web-state",
  "anyhow",
+ "async-stream",
  "async-trait",
  "axum",
  "base64",
@@ -968,6 +969,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "urlencoding",
 ]
 
 [[package]]

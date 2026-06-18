@@ -4,23 +4,25 @@ use allthecodes_gateway::{
 };
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(super) fn append_gateway_sdk_event(
     command: &protocol::DaemonCommand,
     event_type: &str,
     data: Value,
 ) -> Result<()> {
-    let kind = if event_type == "assistant_message" {
-        RunEventKind::AssistantDelta {
-            text: data.to_string(),
+    if event_type == "stream_delta" {
+        if let Some(text) = stream_delta_text(&data) {
+            return append_gateway_output(command, &text);
         }
-    } else {
+    }
+    append_gateway_event(
+        command,
         RunEventKind::Custom {
             name: event_type.to_string(),
             payload: data,
-        }
-    };
-    append_gateway_event(command, kind)
+        },
+    )
 }
 
 pub(super) fn append_gateway_event(
@@ -40,6 +42,15 @@ pub(super) fn append_gateway_event(
         .context("append gateway run event")
 }
 
+pub(super) fn append_gateway_output(command: &protocol::DaemonCommand, chunk: &str) -> Result<()> {
+    let Some(run_id) = gateway_run_id(command)? else {
+        return Ok(());
+    };
+    GatewayStore::default_with_policy(SessionKeyPolicy::default())
+        .append_output_chunk(&run_id, chunk, now_millis())
+        .context("append gateway run output")
+}
+
 pub(super) fn update_gateway_status(
     command: &protocol::DaemonCommand,
     status: RunStatus,
@@ -51,6 +62,25 @@ pub(super) fn update_gateway_status(
         .update_status(&run_id, status)
         .context("update gateway run status")?;
     Ok(())
+}
+
+fn stream_delta_text(data: &Value) -> Option<String> {
+    let delta = data.get("event")?.get("delta")?;
+    for key in ["text", "thinking", "partial_json"] {
+        if let Some(value) = delta.get(key).and_then(Value::as_str) {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
 }
 
 fn gateway_run_id(command: &protocol::DaemonCommand) -> Result<Option<RunId>> {

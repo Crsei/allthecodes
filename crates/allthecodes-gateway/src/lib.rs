@@ -26,6 +26,9 @@ pub use adapters::{
     AdapterProvider, AdapterRegistry, AdapterState, AdapterStatus, AdapterTestMessage,
     RemoteAdapter,
 };
+pub use allthecodes_types::output::{
+    EventSeq, OutputEvent, OutputLifecycleState, OutputReadBatch, OutputStream,
+};
 pub use api::{GatewayApiState, GatewayBusySnapshotProvider, StaticBusySnapshotProvider};
 pub use auth::{GatewayAuthMode, GatewayAuthVerifier, RemoteGatewayAuth};
 pub use config::{GatewayConfig, GatewayLimits, GatewayPersistence, GatewaySecurityConfig};

@@ -11,6 +11,7 @@ use std::time::Duration;
 use crate::types::tool::Tool;
 use allthecodes_tasks::{TaskCreateOptions, TaskEntry, TaskRuntimeHandle, TaskStatus};
 use allthecodes_types::agent_types::AgentNode;
+use allthecodes_types::output::{EventSeq, OutputReadBatch};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -311,6 +312,12 @@ pub trait AgentTaskStore: Send + Sync {
     fn try_update_status(&self, id: &str, status: TaskStatus) -> Result<Option<TaskEntry>>;
     fn register_runtime_handle(&self, id: &str, cancellation_token: CancellationToken) -> bool;
     fn append_output(&self, id: &str, output: &str) -> Option<TaskEntry>;
+    fn read_output_events(
+        &self,
+        id: &str,
+        after_seq: Option<EventSeq>,
+        limit_bytes: usize,
+    ) -> Result<Option<OutputReadBatch>>;
     fn try_stop(&self, id: &str) -> Result<Option<TaskEntry>>;
     fn get_by_agent_id(&self, agent_id: &str) -> Option<TaskEntry>;
     fn unregister_runtime_handle(&self, id: &str) -> Option<TaskRuntimeHandle>;
@@ -345,6 +352,15 @@ impl AgentTaskStore for NoopAgentTaskStore {
 
     fn append_output(&self, _id: &str, _output: &str) -> Option<TaskEntry> {
         None
+    }
+
+    fn read_output_events(
+        &self,
+        _id: &str,
+        _after_seq: Option<EventSeq>,
+        _limit_bytes: usize,
+    ) -> Result<Option<OutputReadBatch>> {
+        Ok(None)
     }
 
     fn try_stop(&self, _id: &str) -> Result<Option<TaskEntry>> {

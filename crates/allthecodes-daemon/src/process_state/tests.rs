@@ -5,7 +5,7 @@ use chrono::Utc;
 
 use super::management::parse_port;
 use super::paths::health_url;
-use super::storage::write_state;
+use super::storage::{ensure_daemon_dir, write_state};
 use super::types::{DEFAULT_DAEMON_PORT, SCHEMA_VERSION};
 use super::*;
 use serial_test::serial;
@@ -48,35 +48,49 @@ fn write_and_read_state_uses_allthecodes_home() {
     assert_eq!(state.pid, std::process::id());
     assert_eq!(read_back.port, 19999);
     assert_eq!(read_back.cwd, cwd);
+    assert_eq!(read_back.schema_version, SCHEMA_VERSION);
+    assert_eq!(read_back.command_kind.as_deref(), Some("daemon-supervisor"));
+    assert_eq!(
+        read_back.binary_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
+    assert!(read_back.binary_path.is_some());
+    assert!(read_back.log_path.is_some());
+    assert!(read_back.ready_url.is_some());
+    assert!(read_back.process_start_key.is_some());
     assert!(state_path().starts_with(temp.path()));
 }
 
-#[cfg(feature = "sqlite-storage")]
 #[test]
 #[serial]
-fn read_state_imports_legacy_json() {
+fn read_state_accepts_v1_json_without_process_metadata() {
     let temp = tempfile::tempdir().unwrap();
     let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
     let cwd = temp.path().join("workspace");
     fs::create_dir_all(&cwd).unwrap();
     let now = Utc::now();
-    let state = DaemonProcessState {
-        schema_version: SCHEMA_VERSION,
-        status: DaemonRunStatus::Running,
-        pid: std::process::id(),
-        cwd: cwd.clone(),
-        port: DEFAULT_DAEMON_PORT,
-        health_url: health_url(DEFAULT_DAEMON_PORT),
-        started_at: now,
-        updated_at: now,
-        shutdown_requested: false,
-        workers: Vec::new(),
-    };
-    atomic_write_json(&state_path(), &state).unwrap();
+    atomic_write_json(
+        &state_path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "status": "running",
+            "pid": std::process::id(),
+            "cwd": cwd,
+            "port": DEFAULT_DAEMON_PORT,
+            "health_url": health_url(DEFAULT_DAEMON_PORT),
+            "started_at": now,
+            "updated_at": now,
+            "shutdown_requested": false,
+            "workers": [],
+        }),
+    )
+    .unwrap();
 
     let read_back = read_state().unwrap().unwrap();
-    assert_eq!(read_back.cwd, cwd);
+    assert_eq!(read_back.cwd, temp.path().join("workspace"));
     assert_eq!(read_back.port, DEFAULT_DAEMON_PORT);
+    assert_eq!(read_back.schema_version, 1);
+    assert!(read_back.process_start_key.is_none());
 }
 
 #[cfg(feature = "sqlite-storage")]
@@ -115,6 +129,7 @@ fn shutdown_request_sets_state_flag() {
 #[test]
 fn current_process_is_alive() {
     assert!(process_is_alive(std::process::id()));
+    assert!(super::platform::process_start_key(std::process::id()).is_some());
 }
 
 #[test]
@@ -233,6 +248,12 @@ fn stale_cleanup_removes_dead_supervisor_state() {
         cwd: cwd.clone(),
         port: DEFAULT_DAEMON_PORT,
         health_url: health_url(DEFAULT_DAEMON_PORT),
+        command_kind: None,
+        binary_version: None,
+        binary_path: None,
+        log_path: None,
+        ready_url: None,
+        process_start_key: None,
         started_at: now,
         updated_at: now,
         shutdown_requested: true,
@@ -272,6 +293,94 @@ fn stale_cleanup_preserves_live_supervisor_state() {
 
 #[test]
 #[serial]
+fn status_snapshot_marks_dead_supervisor_stale() {
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+    let now = Utc::now();
+    write_state(&DaemonProcessState {
+        schema_version: SCHEMA_VERSION,
+        status: DaemonRunStatus::Running,
+        pid: dead_test_pid(),
+        cwd: temp.path().to_path_buf(),
+        port: DEFAULT_DAEMON_PORT,
+        health_url: health_url(DEFAULT_DAEMON_PORT),
+        command_kind: None,
+        binary_version: None,
+        binary_path: None,
+        log_path: None,
+        ready_url: None,
+        process_start_key: None,
+        started_at: now,
+        updated_at: now,
+        shutdown_requested: false,
+        workers: Vec::new(),
+    })
+    .unwrap();
+
+    match status_snapshot().unwrap() {
+        DaemonStatusSnapshot::Stale(state) => assert_eq!(state.pid, dead_test_pid()),
+        other => panic!("expected stale snapshot, got {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn status_snapshot_marks_reused_pid_stale() {
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+    let now = Utc::now();
+    write_state(&DaemonProcessState {
+        schema_version: SCHEMA_VERSION,
+        status: DaemonRunStatus::Running,
+        pid: std::process::id(),
+        cwd: temp.path().to_path_buf(),
+        port: DEFAULT_DAEMON_PORT,
+        health_url: health_url(DEFAULT_DAEMON_PORT),
+        command_kind: None,
+        binary_version: None,
+        binary_path: None,
+        log_path: None,
+        ready_url: None,
+        process_start_key: Some("definitely-not-this-process".to_string()),
+        started_at: now,
+        updated_at: now,
+        shutdown_requested: false,
+        workers: Vec::new(),
+    })
+    .unwrap();
+
+    match status_snapshot().unwrap() {
+        DaemonStatusSnapshot::Stale(state) => assert_eq!(state.pid, std::process::id()),
+        other => panic!("expected stale snapshot, got {other:?}"),
+    }
+}
+
+#[test]
+fn terminate_refuses_mismatched_identity() {
+    let error = terminate_process_tree(std::process::id(), Some("definitely-not-this-process"))
+        .expect_err("identity mismatch should fail before signaling");
+    assert!(error.to_string().contains("identity mismatch"));
+}
+
+#[test]
+#[serial]
+fn tail_log_limits_bytes_and_rejects_outside_daemon_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+    ensure_daemon_dir().unwrap();
+    let log = daemon_dir().join("supervisor.log");
+    fs::write(&log, "0123456789abcdef").unwrap();
+
+    assert_eq!(tail_log(&log, Some(4)).unwrap(), "cdef");
+
+    let outside = temp.path().join("outside.log");
+    fs::write(&outside, "secret").unwrap();
+    let error = tail_log(&outside, Some(16)).expect_err("outside path rejected");
+    assert!(error.to_string().contains("outside daemon dir"));
+}
+
+#[test]
+#[serial]
 fn stale_cleanup_removes_dead_worker_and_retains_live_worker() {
     let temp = tempfile::tempdir().unwrap();
     let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
@@ -285,6 +394,12 @@ fn stale_cleanup_removes_dead_worker_and_retains_live_worker() {
         cwd: cwd.clone(),
         port: DEFAULT_DAEMON_PORT,
         health_url: health_url(DEFAULT_DAEMON_PORT),
+        command_kind: None,
+        binary_version: None,
+        binary_path: None,
+        log_path: None,
+        ready_url: None,
+        process_start_key: None,
         started_at: now,
         updated_at: now,
         shutdown_requested: false,

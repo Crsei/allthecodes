@@ -123,6 +123,7 @@ Generated from `allthecodes-protocol` metadata.
 | `ProvidersOpenaiCodexApplyLocal` | `POST` | `/api/providers/openai-codex/apply-local` | - | `CodexApplyLocalResponse` | `concurrent` | - | - |
 | `ProvidersUpdate` | `PATCH` | `/api/providers/{id}` | `ProviderUpdateRequest` | `JsonValue` | `concurrent` | - | - |
 | `ProvidersDelete` | `DELETE` | `/api/providers/{id}` | - | `JsonValue` | `concurrent` | - | - |
+| `ProvidersProbe` | `POST` | `/api/providers/{id}/probe` | `ProviderProbeRequest` | `ProviderProbeResponse` | `concurrent` | - | - |
 | `ProvidersRefreshModels` | `POST` | `/api/providers/{id}/models/refresh` | - | `JsonValue` | `concurrent` | - | - |
 | `ModelsList` | `GET` | `/api/models` | - | `ModelRegistryResponse` | `concurrent` | - | - |
 | `ModelsUpdate` | `PATCH` | `/api/models/{id}` | `ModelUpdateRequest` | `JsonValue` | `concurrent` | - | - |
@@ -193,3 +194,12 @@ Generated from `allthecodes-protocol` metadata.
 | `BackendServicesAgentBridgeRetry` | `POST` | `/api/backend-services/agent-bridge/events/{id}/retry` | - | `JsonValue` | `concurrent` | - | - |
 | `BackendServicesMigrationsRun` | `POST` | `/api/backend-services/migrations/run` | - | `JsonValue` | `concurrent` | - | - |
 | `BackendServicesBackups` | `POST` | `/api/backend-services/backups` | `JsonValue` | `JsonValue` | `concurrent` | - | - |
+
+## Gateway Remote-Control Routes
+
+These daemon-mounted routes are not generated from `allthecodes-protocol` metadata. They require the daemon control token.
+
+| Method | Path | Response |
+|---|---|---|
+| `GET` | `/remote-control/v1/runs/{run_id}/events?after_seq=&limit_bytes=` | `OutputReadBatch` |
+| `GET` | `/remote-control/v1/runs/{run_id}/timeline?after_sequence=&limit=` | `{ "events": RunEvent[] }` |

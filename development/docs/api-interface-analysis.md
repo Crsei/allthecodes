@@ -1,6 +1,6 @@
 # AlltheCodes 前后端 API 接口全景分析
 
-> 最后更新：2026-06-16  
+> 最后更新：2026-06-16
 > 分析范围：allthecodes 仓库（Rust 后端 + React 前端）
 
 ---
@@ -73,11 +73,11 @@
 
 ## 2. HTTP REST API（allthecodes-web）
 
-**位置**：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes/crates/allthecodes-web/src/`  
-**框架**：Axum  
-**默认端口**：17322  
-**绑定地址**：`127.0.0.1`  
-**状态**：**外部可访问**（但仅限本地回环）  
+**位置**：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes/crates/allthecodes-web/src/`
+**框架**：Axum
+**默认端口**：17322
+**绑定地址**：`127.0.0.1`
+**状态**：**外部可访问**（但仅限本地回环）
 **前缀**：所有 REST 端点均以 `/api/*` 开头，同时提供 `/api/v2/*` 版本化镜像
 
 ### 2.1 协议元数据
@@ -228,6 +228,7 @@
 | ProvidersOpenaiCodexApplyLocal | POST | /api/providers/openai-codex/apply-local | C→S | - | CodexApplyLocalResponse | Concurrent |
 | ProvidersUpdate | PATCH | /api/providers/{id} | C→S | ProviderUpdateRequest | Value | Concurrent |
 | ProvidersDelete | DELETE | /api/providers/{id} | C→S | - | Value | Concurrent |
+| ProvidersProbe | POST | /api/providers/{id}/probe | C→S | ProviderProbeRequest | ProviderProbeResponse | Concurrent |
 | ProvidersRefreshModels | POST | /api/providers/{id}/models/refresh | C→S | - | Value | Concurrent |
 | **模型管理** ||||||
 | ModelsList | GET | /api/models | C→S | - | ModelRegistryResponse | Concurrent |
@@ -347,10 +348,10 @@ HTTP 状态码：400 Bad Request、404 Not Found、500 Internal Server Error 等
 
 ## 3. HTTP REST API（allthecodes-daemon）
 
-**位置**：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes/crates/allthecodes-daemon/src/`  
-**框架**：Axum  
-**默认端口**：19836  
-**绑定地址**：`127.0.0.1`  
+**位置**：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes/crates/allthecodes-daemon/src/`
+**框架**：Axum
+**默认端口**：19836
+**绑定地址**：`127.0.0.1`
 **状态**：**内部接口**（仅本地回环，需 daemon 控制令牌认证）
 
 ### 3.1 端点列表
@@ -425,7 +426,7 @@ HTTP 状态码：400 Bad Request、404 Not Found、500 Internal Server Error 等
 
 **路径**：`GET /events?client_id=...&last_event_id=...`
 
-**方向**：server → client  
+**方向**：server → client
 **状态**：**内部接口**（前端通过 daemon WebSocket 间接消费）
 
 | 事件类型 (event_type) | 含义 | 数据字段 |
@@ -669,8 +670,8 @@ pub struct IpcFrame {
 
 ## 7. Gateway 远程控制 API
 
-**位置**：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes/crates/allthecodes-gateway/src/`  
-**挂载点**：由 `allthecodes-daemon` 的 `gateway_routes.rs` 挂载到 `GET /remote-control/v1/*` 路径  
+**位置**：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes/crates/allthecodes-gateway/src/`
+**挂载点**：由 `allthecodes-daemon` 的 `gateway_routes.rs` 挂载到 `GET /remote-control/v1/*` 路径
 **状态**：**内部接口**（需要 daemon 控制令牌认证）
 
 ### 7.1 网关 HTTP 端点
@@ -680,7 +681,8 @@ pub struct IpcFrame {
 | /remote-control/v1/capabilities | GET | 获取 Gateway 能力列表 | C→S |
 | /remote-control/v1/runs | POST | 创建运行请求 | C→S |
 | /remote-control/v1/runs/{run_id} | GET | 查询运行状态 | C→S |
-| /remote-control/v1/runs/{run_id}/events | GET | 获取运行事件 | C→S |
+| /remote-control/v1/runs/{run_id}/events | GET | 获取可重放输出批次 (`OutputReadBatch`) | C→S |
+| /remote-control/v1/runs/{run_id}/timeline | GET | 获取非输出 timeline 事件（状态、审批、诊断等） | C→S |
 | /remote-control/v1/runs/{run_id}/stop | POST | 停止运行 | C→S |
 | /remote-control/v1/runs/{run_id}/approval | POST | 回复审批（允许/拒绝工具调用） | C→S |
 | /remote-control/v1/runs/{run_id}/ask-user | POST | 回复用户提问 | C→S |
@@ -927,6 +929,7 @@ MCP 服务器支持 OAuth 认证流程（`McpCommand::StartAuth` → `McpCommand
   GET/POST/PUT/DELETE /api/web/themes/*        - 主题管理
   GET/POST/PUT/DELETE /api/web/prompts/*       - 提示词管理
   GET/POST/PUT/DELETE /api/web/layouts/*       - 布局管理
+  POST /api/providers/{id}/probe     - Provider 连接诊断
   POST /api/data/export               - 数据导出
   POST /api/data/import               - 数据导入
   GET  /api/jobs                      - 定时任务管理

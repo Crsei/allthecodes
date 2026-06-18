@@ -1,6 +1,7 @@
 use super::subsystem_events::{add_system_error, add_system_info};
 use crate::ui::app::App;
 use crate::ui::command_surface::{CommandSurface, CommandSurfaceTarget};
+use crate::ui::transcript::ViewMode;
 use allthecodes_commands as slash_commands;
 use allthecodes_engine::command_runtime::{CommandContext, CommandResult};
 use allthecodes_engine::lifecycle::QueryEngine;
@@ -189,6 +190,15 @@ fn sync_app_runtime_from_state(
     app.set_output_style(state.settings.output_style.clone());
     app.set_theme_setting(state.settings.theme.as_deref());
     app.set_editor_mode(state.settings.editor_mode.as_deref());
+    app.set_view_mode(
+        state
+            .settings
+            .view_mode
+            .as_deref()
+            .and_then(|value| ViewMode::parse_configured(value).ok())
+            .unwrap_or_default(),
+    );
+    app.set_spinner_tips_settings(state.settings.spinner_tips.clone());
     app.set_keybindings(state.keybindings.clone());
     app.set_sound_effects(state.settings.sound_effects.unwrap_or(true));
     app.set_terminal_progress_bar_enabled(

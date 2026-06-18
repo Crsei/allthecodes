@@ -1237,6 +1237,33 @@ fn schema_marks_electron_legacy_fields_deprecated() {
     }
 }
 
+#[test]
+fn schema_describes_runtime_status_for_phase3_to_5_settings() {
+    let s = settings_schema();
+    assert_eq!(
+        s.pointer("/properties/viewMode/enum"),
+        Some(&serde_json::json!(["prompt", "transcript", "focus"]))
+    );
+    assert_eq!(
+        s.pointer("/properties/spinnerTips/properties/intervalMs/minimum")
+            .and_then(Value::as_i64),
+        Some(1)
+    );
+    assert_eq!(
+        s.pointer("/properties/compactThreshold/maximum")
+            .and_then(Value::as_i64),
+        Some(100)
+    );
+    assert!(s
+        .pointer("/properties/autoApproveTools/description")
+        .and_then(Value::as_str)
+        .is_some_and(|description| description.contains("permissionMode")));
+    assert!(s
+        .pointer("/properties/memoryAutoRetrieve/description")
+        .and_then(Value::as_str)
+        .is_some_and(|description| description.contains("Reserved")));
+}
+
 /// The committed schema file is the canonical doc. This test makes
 /// sure it never drifts from the runtime [`settings_schema`] output.
 /// To regenerate the file, run:

@@ -1,6 +1,7 @@
 use super::app_event::AppEvent;
 use super::workspace_trust::trusted_workspaces_path;
 use super::*;
+use crate::ui::completions::{CompletionItem, CompletionKind};
 use crate::ui::notifications::in_app::{InAppNotification, NotificationPriority, NotificationTone};
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_engine::types::tool::PermissionMode;
@@ -8,9 +9,11 @@ use allthecodes_ipc_protocol::BackendMessage;
 use allthecodes_keybindings::action::Action;
 use allthecodes_services::prompt_suggestion::{PromptSuggestion, SuggestionCategory};
 use allthecodes_types::agent_events::AgentEvent;
+use allthecodes_types::callbacks::AskUserRequestPayload;
 use allthecodes_types::message::{AssistantMessage, ContentBlock, MessageContent, UserMessage};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::backend::TestBackend;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 use serial_test::serial;
 use std::path::Path;
@@ -401,6 +404,43 @@ fn test_only_app_accessors_drive_state() {
 }
 
 #[test]
+fn configured_view_mode_applies_to_app_state() {
+    let mut app = App::new();
+
+    app.set_view_mode(ViewMode::Transcript);
+    assert_eq!(app.view_mode(), ViewMode::Transcript);
+    assert_eq!(app.transcript_state().scroll_offset, usize::MAX);
+
+    app.set_view_mode(ViewMode::Prompt);
+    assert_eq!(app.view_mode(), ViewMode::Prompt);
+}
+
+#[test]
+fn configured_spinner_tips_rotate_and_disable() {
+    let mut app = App::new();
+    app.set_spinner_tips_settings(allthecodes_config::settings::SpinnerTipsSettings {
+        enabled: Some(true),
+        interval_ms: Some(16),
+        custom_tips: vec!["alpha".to_string(), "beta".to_string()],
+        extra: Default::default(),
+    });
+
+    app.set_streaming(true);
+    app.tick();
+    assert_eq!(app.spinner_message(), "Thinking...  Tip: alpha");
+    app.tick();
+    assert_eq!(app.spinner_message(), "Thinking...  Tip: beta");
+
+    app.set_spinner_tips_settings(allthecodes_config::settings::SpinnerTipsSettings {
+        enabled: Some(false),
+        interval_ms: Some(16),
+        custom_tips: vec!["alpha".to_string()],
+        extra: Default::default(),
+    });
+    assert_eq!(app.spinner_message(), "Thinking...");
+}
+
+#[test]
 fn agent_event_updates_navigation_and_footer_rendering() {
     let mut app = App::new();
     app.set_session_id("session-main".to_string());
@@ -466,6 +506,38 @@ fn agent_tree_dialog_navigation_select_and_close() {
     assert!(app.agent_tree_dialog.is_some());
     assert_eq!(send_key(&mut app, KeyCode::Esc), AppAction::None);
     assert!(app.agent_tree_dialog.is_none());
+}
+
+#[test]
+fn agent_tree_dialog_renders_above_prompt_input() {
+    let mut app = App::new();
+    add_chat_context(&mut app);
+    app.set_session_id("session-main".to_string());
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::AgentEvent {
+            event: spawned_agent_event("worker-1", "Builder one", Some("builder")),
+        }),
+    });
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::AgentEvent {
+            event: spawned_agent_event("worker-2", "Builder two", Some("reviewer")),
+        }),
+    });
+    assert_eq!(
+        app.dispatch_bound_action(&Action::new_static("agents:tree")),
+        Some(AppAction::None)
+    );
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let content = buffer_to_lines(terminal.backend().buffer(), 120, 24);
+    assert!(content.join("\n").contains("Builder one"));
+    assert_title_above_prompt_area(
+        &content,
+        "Agent Threads",
+        app.prompt_area.expect("prompt area"),
+    );
 }
 
 #[test]
@@ -615,7 +687,7 @@ fn picker_enter_inserts_selected_target_into_prompt() {
 }
 
 #[test]
-fn command_palette_renders_below_prompt_input() {
+fn command_palette_renders_above_prompt_input() {
     let mut app = App::new();
     app.prompt.input = "/".to_string();
     app.prompt.cursor_position = app.prompt.input.len();
@@ -634,8 +706,37 @@ fn command_palette_renders_below_prompt_input() {
         .position(|line| line.contains(" Commands "))
         .expect("commands row");
     assert!(
-        commands_row > prompt_row,
-        "commands palette should render below the prompt input"
+        commands_row < prompt_row,
+        "commands palette should render above the prompt input"
+    );
+}
+
+#[test]
+fn completion_popup_renders_above_prompt_input() {
+    let mut app = App::new();
+    app.completion_state.active = true;
+    app.completion_state.items = vec![CompletionItem::new(
+        CompletionKind::Command,
+        "/help",
+        "/help",
+        0..0,
+    )];
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let content = buffer_to_lines(terminal.backend().buffer(), 100, 24);
+    let prompt_row = content
+        .iter()
+        .position(|line| line.trim_start().starts_with(">"))
+        .expect("prompt row");
+    let completions_row = content
+        .iter()
+        .position(|line| line.contains(" Completions "))
+        .expect("completions row");
+    assert!(
+        completions_row < prompt_row,
+        "completion popup should render above the prompt input"
     );
 }
 
@@ -841,6 +942,7 @@ fn prompt_arrow_keys_still_drive_history() {
 #[test]
 fn ctrl_r_opens_history_search_and_escape_closes() {
     let mut app = App::new();
+    add_chat_context(&mut app);
     app.push_history("first prompt".to_string());
 
     assert_eq!(
@@ -851,9 +953,14 @@ fn ctrl_r_opens_history_search_and_escape_closes() {
 
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
     terminal.draw(|frame| app.render(frame)).expect("draw");
-    let content = buffer_to_lines(terminal.backend().buffer(), 100, 24).join("\n");
-    assert!(content.contains("History search"));
-    assert!(content.contains("first prompt"));
+    let content = buffer_to_lines(terminal.backend().buffer(), 100, 24);
+    assert!(content.join("\n").contains("History search"));
+    assert!(content.join("\n").contains("first prompt"));
+    assert_title_above_prompt_area(
+        &content,
+        "History Search",
+        app.prompt_area.expect("prompt area"),
+    );
 
     assert_eq!(send_key(&mut app, KeyCode::Esc), AppAction::None);
     assert!(!app.history_search_active());
@@ -934,6 +1041,7 @@ fn command_surface_handles_selection_before_prompt_input() {
 #[test]
 fn command_surface_renders_as_overlay() {
     let mut app = App::new();
+    add_chat_context(&mut app);
     app.open_command_surface(CommandSurface::lsp_recommendation(
         lsp_recommendation_payload(Some("Rust language server".to_string())),
     ));
@@ -941,14 +1049,20 @@ fn command_surface_renders_as_overlay() {
 
     terminal.draw(|frame| app.render(frame)).expect("draw");
 
-    let content = buffer_to_lines(terminal.backend().buffer(), 100, 24).join("\n");
-    assert!(content.contains("LSP Plugin Recommendation"));
-    assert!(content.contains("Yes, install rust-analyzer"));
+    let content = buffer_to_lines(terminal.backend().buffer(), 100, 24);
+    assert!(content.join("\n").contains("LSP Plugin Recommendation"));
+    assert!(content.join("\n").contains("rust-analyzer"));
+    assert_title_above_prompt_area(
+        &content,
+        "LSP Plugin Recommendation",
+        app.prompt_area.expect("prompt area"),
+    );
 }
 
 #[test]
 fn web_fetch_permission_dialog_uses_dedicated_renderer() {
     let mut app = App::new();
+    add_chat_context(&mut app);
     app.show_permission_dialog(
         "WebFetch",
         r#"{"url":"https://example.com/docs"}"#,
@@ -961,6 +1075,64 @@ fn web_fetch_permission_dialog_uses_dedicated_renderer() {
     assert!(content.contains("Permission Required"));
     assert!(content.contains("method: GET"));
     assert!(content.contains("example.com/docs"));
+}
+
+#[test]
+fn permission_dialog_renders_above_prompt_input() {
+    let mut app = App::new();
+    add_chat_context(&mut app);
+    app.show_permission_dialog("Bash", r#"{"command":"cargo test"}"#, "Allow command?");
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let content = buffer_to_lines(terminal.backend().buffer(), 100, 24);
+    assert_title_above_prompt_area(
+        &content,
+        "Permission Required",
+        app.prompt_area.expect("prompt area"),
+    );
+}
+
+#[test]
+fn question_dialog_renders_above_prompt_input() {
+    let mut app = App::new();
+    add_chat_context(&mut app);
+    app.show_question_dialog(
+        "q-1",
+        AskUserRequestPayload {
+            question: "Continue?".to_string(),
+            choices: vec!["Yes".to_string(), "No".to_string()],
+            allow_free_text: false,
+        },
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let content = buffer_to_lines(terminal.backend().buffer(), 100, 24);
+    assert_title_above_prompt_area(
+        &content,
+        "Need Input",
+        app.prompt_area.expect("prompt area"),
+    );
+}
+
+#[test]
+fn bypass_permissions_dialog_renders_above_prompt_input() {
+    let mut app = App::new();
+    add_chat_context(&mut app);
+    app.show_bypass_permissions_mode_dialog(false);
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let content = buffer_to_lines(terminal.backend().buffer(), 100, 24);
+    assert_title_above_prompt_area(
+        &content,
+        "Bypass Permissions mode",
+        app.prompt_area.expect("prompt area"),
+    );
 }
 
 #[test]
@@ -1105,4 +1277,35 @@ fn buffer_to_lines(buf: &ratatui::buffer::Buffer, width: u16, height: u16) -> Ve
         lines.push(line);
     }
     lines
+}
+
+fn add_user_message(app: &mut App, text: &str) {
+    app.add_message(Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 0,
+        role: "user".to_string(),
+        content: MessageContent::Text(text.to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    }));
+}
+
+fn add_chat_context(app: &mut App) {
+    for idx in 0..14 {
+        add_user_message(app, &format!("previous context {idx}"));
+    }
+}
+
+fn assert_title_above_prompt_area(lines: &[String], title: &str, prompt_area: Rect) {
+    let prompt_row = prompt_area.y as usize;
+    let title_row = lines
+        .iter()
+        .position(|line| line.contains(title))
+        .unwrap_or_else(|| panic!("{title} title row"));
+    assert!(
+        title_row < prompt_row,
+        "{title} should render above the prompt input (title_row={title_row}, prompt_row={prompt_row})\n{}",
+        lines.join("\n")
+    );
 }

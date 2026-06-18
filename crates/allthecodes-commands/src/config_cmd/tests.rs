@@ -74,6 +74,125 @@ async fn test_config_set_sound_effects_updates_runtime_and_persists() {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn test_config_set_view_mode_validates_and_persists_canonical_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = EnvGuard::set("ALLTHECODES_HOME", dir.path().to_str().unwrap());
+    let handler = ConfigHandler;
+    let mut ctx = test_ctx();
+
+    let result = handler
+        .execute("set viewMode TRANSCRIPT", &mut ctx)
+        .await
+        .unwrap();
+
+    let CommandResult::Output(text) = result else {
+        panic!("expected output")
+    };
+    assert!(text.contains("View mode set to: transcript"));
+    assert_eq!(
+        ctx.app_state.settings.view_mode.as_deref(),
+        Some("transcript")
+    );
+
+    let settings: RawSettings =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings.view_mode.as_deref(), Some("transcript"));
+}
+
+#[tokio::test]
+async fn test_config_set_view_mode_rejects_invalid_value() {
+    let handler = ConfigHandler;
+    let mut ctx = test_ctx();
+
+    let result = handler.execute("set viewMode verbose", &mut ctx).await;
+
+    match result {
+        Ok(_) => panic!("invalid viewMode should fail visibly"),
+        Err(err) => assert!(err.to_string().contains("Invalid viewMode")),
+    }
+    assert!(ctx.app_state.settings.view_mode.is_none());
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_config_set_spinner_tips_nested_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = EnvGuard::set("ALLTHECODES_HOME", dir.path().to_str().unwrap());
+    let handler = ConfigHandler;
+    let mut ctx = test_ctx();
+
+    handler
+        .execute("set spinnerTips.enabled false", &mut ctx)
+        .await
+        .unwrap();
+    handler
+        .execute("set spinnerTips.intervalMs 2500", &mut ctx)
+        .await
+        .unwrap();
+    handler
+        .execute("set spinnerTips.customTips [\"one\",\"two\"]", &mut ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(ctx.app_state.settings.spinner_tips.enabled, Some(false));
+    assert_eq!(ctx.app_state.settings.spinner_tips.interval_ms, Some(2500));
+    assert_eq!(
+        ctx.app_state.settings.spinner_tips.custom_tips,
+        vec!["one".to_string(), "two".to_string()]
+    );
+
+    let settings: RawSettings =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    let spinner = settings.spinner_tips.expect("spinnerTips");
+    assert_eq!(spinner.enabled, Some(false));
+    assert_eq!(spinner.interval_ms, Some(2500));
+    assert_eq!(spinner.custom_tips, vec!["one", "two"]);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_config_set_auto_compact_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = EnvGuard::set("ALLTHECODES_HOME", dir.path().to_str().unwrap());
+    let handler = ConfigHandler;
+    let mut ctx = test_ctx();
+
+    handler
+        .execute("set autoCompact false", &mut ctx)
+        .await
+        .unwrap();
+    handler
+        .execute("set compactThreshold 65", &mut ctx)
+        .await
+        .unwrap();
+    handler
+        .execute("set keepRecentMessages 42", &mut ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(ctx.app_state.settings.auto_compact, Some(false));
+    assert_eq!(ctx.app_state.settings.compact_threshold, Some(65));
+    assert_eq!(ctx.app_state.settings.keep_recent_messages, Some(42));
+}
+
+#[tokio::test]
+async fn test_config_set_compact_threshold_rejects_over_100() {
+    let handler = ConfigHandler;
+    let mut ctx = test_ctx();
+
+    let result = handler.execute("set compactThreshold 101", &mut ctx).await;
+
+    match result {
+        Ok(_) => panic!("invalid compactThreshold should fail visibly"),
+        Err(err) => assert!(err.to_string().contains("1 to 100")),
+    }
+    assert!(ctx.app_state.settings.compact_threshold.is_none());
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn test_config_set_model_is_read_only() {
     // Use a tempdir as ALLTHECODES_HOME so we don't clobber the real user file.
     let dir = tempfile::tempdir().unwrap();

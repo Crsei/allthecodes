@@ -2,7 +2,9 @@ use std::future::Future;
 use std::sync::Arc;
 
 use allthecodes_commands::CommandContext;
-use allthecodes_gateway::{AdapterProvider, AdapterStatus, RunEvent, RunId, RunMeta};
+use allthecodes_gateway::{
+    AdapterProvider, AdapterStatus, OutputReadBatch, RunEvent, RunId, RunMeta,
+};
 
 pub(crate) fn install_command_runtime_providers() {
     allthecodes_commands::runtime::set_runtime_installer(
@@ -110,7 +112,8 @@ pub(crate) fn install_command_runtime_providers() {
             connect_adapter: remote_connect_adapter_for_commands,
             test_adapter_message: remote_test_adapter_message_for_commands,
             show_run: remote_show_run_for_commands,
-            run_events: remote_run_events_for_commands,
+            run_output: remote_run_output_for_commands,
+            run_timeline: remote_run_timeline_for_commands,
             stop_run: remote_stop_run_for_commands,
         },
     );
@@ -481,12 +484,13 @@ fn map_remote_daemon_status(
             pid,
             base_url,
             health_url,
+            ..
         } => allthecodes_commands::remote_cmd::LocalGatewayDaemonStatus::Running {
             pid,
             base_url,
             health_url,
         },
-        allthecodes_daemon::gateway_client::LocalGatewayDaemonStatus::Stale { pid } => {
+        allthecodes_daemon::gateway_client::LocalGatewayDaemonStatus::Stale { pid, .. } => {
             allthecodes_commands::remote_cmd::LocalGatewayDaemonStatus::Stale { pid }
         }
         allthecodes_daemon::gateway_client::LocalGatewayDaemonStatus::Stopped => {
@@ -551,12 +555,21 @@ fn remote_show_run_for_commands(
     })
 }
 
-fn remote_run_events_for_commands(
+fn remote_run_output_for_commands(
+    run_id: RunId,
+) -> allthecodes_commands::remote_cmd::RemoteFuture<OutputReadBatch> {
+    Box::pin(async move {
+        let client = allthecodes_daemon::gateway_client::LocalGatewayClient::from_running_daemon()?;
+        client.run_output(&run_id).await
+    })
+}
+
+fn remote_run_timeline_for_commands(
     run_id: RunId,
 ) -> allthecodes_commands::remote_cmd::RemoteFuture<Vec<RunEvent>> {
     Box::pin(async move {
         let client = allthecodes_daemon::gateway_client::LocalGatewayClient::from_running_daemon()?;
-        client.run_events(&run_id).await
+        client.run_timeline(&run_id).await
     })
 }
 

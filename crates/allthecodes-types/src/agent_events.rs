@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::agent_types::*;
+use super::output::{EventSeq, OutputReadBatch};
 
 // ===========================================================================
 // AgentEvent (Backend → Frontend)
@@ -85,6 +86,11 @@ pub enum AgentEvent {
     TreeSnapshot {
         roots: Vec<AgentNode>,
     },
+    OutputBatch {
+        agent_id: String,
+        task_id: String,
+        output: OutputReadBatch,
+    },
 }
 
 // ===========================================================================
@@ -94,9 +100,17 @@ pub enum AgentEvent {
 #[derive(Deserialize, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentCommand {
-    AbortAgent { agent_id: String },
+    AbortAgent {
+        agent_id: String,
+    },
     QueryActiveAgents,
-    QueryAgentOutput { agent_id: String },
+    QueryAgentOutput {
+        agent_id: String,
+        #[serde(default)]
+        after_seq: Option<EventSeq>,
+        #[serde(default)]
+        limit_bytes: Option<usize>,
+    },
 }
 
 // ===========================================================================

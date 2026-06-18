@@ -10,7 +10,7 @@ mod ingress;
 mod query_runner;
 mod sdk_mapper;
 
-use allthecodes_ipc::agent_handlers::{AgentRuntimeHost, AgentTaskOutput};
+use allthecodes_ipc::agent_handlers::{AgentRuntimeHost, AgentTaskOutput, AgentTaskOutputBatch};
 use allthecodes_ipc::headless::{
     BackgroundAgentCompletion, BoxHeadlessFuture, HeadlessRuntimeConfig, HeadlessRuntimeHost,
     PendingPermissions, PendingQuestions, SessionRuntime,
@@ -94,6 +94,23 @@ impl AgentRuntimeHost for RootAgentHost {
                 id: task.id,
                 output: task.output,
             }
+        })
+    }
+
+    fn agent_output_batch(
+        &self,
+        agent_id: &str,
+        after_seq: Option<u64>,
+        limit_bytes: usize,
+    ) -> Option<AgentTaskOutputBatch> {
+        let task = allthecodes_engine::agent::supervisor::output_for_agent(agent_id)?;
+        let output = allthecodes_engine::agent_runtime::global_task_store()
+            .read_output_events(&task.id, after_seq, limit_bytes)
+            .ok()
+            .flatten()?;
+        Some(AgentTaskOutputBatch {
+            id: task.id,
+            output,
         })
     }
 

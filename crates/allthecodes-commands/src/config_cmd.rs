@@ -107,7 +107,9 @@ fn handle_set(parts: &[&str], ctx: &mut CommandContext) -> Result<CommandResult>
              Available keys: backend, theme, verbose, permissionMode,\n  \
                apiProvider,\n  \
                outputStyle, language, voiceEnabled, soundEffects, editorMode, viewMode,\n  \
+               spinnerTips.enabled, spinnerTips.intervalMs, spinnerTips.customTips,\n  \
                terminalProgressBarEnabled, effortLevel, model_reasoning_effort, fastMode,\n  \
+               autoCompact, compactThreshold, keepRecentMessages,\n  \
                defaultModel, fallbackModel, fastModel,\n  \
                sotaModel, motaModel, fotaModel, fastModePerSessionOptIn,\n  \
                teammateMode, claudeInChromeDefaultEnabled,\n  \
@@ -153,7 +155,10 @@ fn handle_set(parts: &[&str], ctx: &mut CommandContext) -> Result<CommandResult>
         WriteScope::Project => SettingsSource::Project,
         WriteScope::Local => SettingsSource::Local,
     };
-    staged_state.settings.sources.insert(key.to_string(), src);
+    staged_state
+        .settings
+        .sources
+        .insert(source_key_for_config_set(key).to_string(), src);
     ctx.app_state = staged_state;
 
     Ok(CommandResult::Output(format!(
@@ -244,8 +249,24 @@ fn apply_set_in_memory(key: &str, value: &str, app_state: &mut AppState) -> Resu
             Ok(format!("Editor mode set to: {}", value))
         }
         "viewMode" | "view_mode" => {
-            s.view_mode = Some(value.to_string());
-            Ok(format!("View mode set to: {}", value))
+            let canonical = normalize_view_mode(value)?;
+            s.view_mode = Some(canonical.clone());
+            Ok(format!("View mode set to: {}", canonical))
+        }
+        "spinnerTips.enabled" | "spinner_tips.enabled" => {
+            let v = parse_config_bool(key, value)?;
+            s.spinner_tips.enabled = Some(v);
+            Ok(format!("Spinner tips enabled: {}", v))
+        }
+        "spinnerTips.intervalMs" | "spinner_tips.interval_ms" => {
+            let v = parse_positive_u64(key, value)?;
+            s.spinner_tips.interval_ms = Some(v);
+            Ok(format!("Spinner tips interval: {} ms", v))
+        }
+        "spinnerTips.customTips" | "spinner_tips.custom_tips" => {
+            let tips = parse_json_string_array(key, value)?;
+            s.spinner_tips.custom_tips = tips.clone();
+            Ok(format!("Spinner custom tips: {}", tips.len()))
         }
         "terminalProgressBarEnabled" | "terminal_progress_bar_enabled" => {
             let v = parse_config_bool(key, value)?;
@@ -299,6 +320,21 @@ fn apply_set_in_memory(key: &str, value: &str, app_state: &mut AppState) -> Resu
             let v = parse_config_bool(key, value)?;
             s.fast_mode_per_session_opt_in = Some(v);
             Ok(format!("Fast mode per-session opt-in: {}", v))
+        }
+        "autoCompact" | "auto_compact" => {
+            let v = parse_config_bool(key, value)?;
+            s.auto_compact = Some(v);
+            Ok(format!("Auto compact: {}", v))
+        }
+        "compactThreshold" | "compact_threshold" => {
+            let v = parse_percent_u8(key, value)?;
+            s.compact_threshold = Some(v);
+            Ok(format!("Compact threshold: {}%", v))
+        }
+        "keepRecentMessages" | "keep_recent_messages" => {
+            let v = parse_u8_range(key, value, 1, u8::MAX)?;
+            s.keep_recent_messages = Some(v);
+            Ok(format!("Keep recent messages: {}", v))
         }
         "teammateMode" | "teammate_mode" => {
             let v = parse_config_bool(key, value)?;
@@ -395,7 +431,22 @@ fn apply_set_to_raw(raw: &mut RawSettings, key: &str, value: &str) -> Result<()>
             raw.sound_effects = Some(parse_config_bool(key, value)?)
         }
         "editorMode" | "editor_mode" => raw.editor_mode = Some(value.into()),
-        "viewMode" | "view_mode" => raw.view_mode = Some(value.into()),
+        "viewMode" | "view_mode" => raw.view_mode = Some(normalize_view_mode(value)?),
+        "spinnerTips.enabled" | "spinner_tips.enabled" => {
+            let mut tips = raw.spinner_tips.take().unwrap_or_default();
+            tips.enabled = Some(parse_config_bool(key, value)?);
+            raw.spinner_tips = Some(tips);
+        }
+        "spinnerTips.intervalMs" | "spinner_tips.interval_ms" => {
+            let mut tips = raw.spinner_tips.take().unwrap_or_default();
+            tips.interval_ms = Some(parse_positive_u64(key, value)?);
+            raw.spinner_tips = Some(tips);
+        }
+        "spinnerTips.customTips" | "spinner_tips.custom_tips" => {
+            let mut tips = raw.spinner_tips.take().unwrap_or_default();
+            tips.custom_tips = parse_json_string_array(key, value)?;
+            raw.spinner_tips = Some(tips);
+        }
         "terminalProgressBarEnabled" | "terminal_progress_bar_enabled" => {
             raw.terminal_progress_bar_enabled = Some(parse_config_bool(key, value)?);
         }
@@ -412,6 +463,13 @@ fn apply_set_to_raw(raw: &mut RawSettings, key: &str, value: &str) -> Result<()>
         "fastMode" | "fast_mode" => raw.fast_mode = Some(parse_config_bool(key, value)?),
         "fastModePerSessionOptIn" | "fast_mode_per_session_opt_in" => {
             raw.fast_mode_per_session_opt_in = Some(parse_config_bool(key, value)?);
+        }
+        "autoCompact" | "auto_compact" => raw.auto_compact = Some(parse_config_bool(key, value)?),
+        "compactThreshold" | "compact_threshold" => {
+            raw.compact_threshold = Some(parse_percent_u8(key, value)?)
+        }
+        "keepRecentMessages" | "keep_recent_messages" => {
+            raw.keep_recent_messages = Some(parse_u8_range(key, value, 1, u8::MAX)?)
         }
         "teammateMode" | "teammate_mode" => {
             raw.teammate_mode = Some(parse_config_bool(key, value)?)
@@ -432,6 +490,24 @@ fn apply_set_to_raw(raw: &mut RawSettings, key: &str, value: &str) -> Result<()>
     Ok(())
 }
 
+fn source_key_for_config_set(key: &str) -> &str {
+    match key {
+        "spinnerTips.enabled"
+        | "spinner_tips.enabled"
+        | "spinnerTips.intervalMs"
+        | "spinner_tips.interval_ms"
+        | "spinnerTips.customTips"
+        | "spinner_tips.custom_tips" => "spinnerTips",
+        "view_mode" => "viewMode",
+        "auto_compact" => "autoCompact",
+        "compact_threshold" => "compactThreshold",
+        "keep_recent_messages" => "keepRecentMessages",
+        "terminal_progress_bar_enabled" => "terminalProgressBarEnabled",
+        "sound_effects" => "soundEffects",
+        _ => key,
+    }
+}
+
 fn parse_config_bool(key: &str, value: &str) -> Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "1" => Ok(true),
@@ -442,6 +518,86 @@ fn parse_config_bool(key: &str, value: &str) -> Result<bool> {
             value
         ),
     }
+}
+
+fn normalize_view_mode(value: &str) -> Result<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "prompt" => Ok("prompt".to_string()),
+        "transcript" => Ok("transcript".to_string()),
+        "focus" => Ok("focus".to_string()),
+        _ => anyhow::bail!(
+            "Invalid viewMode: '{}'. Use prompt, transcript, or focus.",
+            value
+        ),
+    }
+}
+
+fn parse_positive_u64(key: &str, value: &str) -> Result<u64> {
+    let parsed = value.trim().parse::<u64>().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid integer for {}: '{}'. Use a positive integer.",
+            key,
+            value
+        )
+    })?;
+    if parsed == 0 {
+        anyhow::bail!(
+            "Invalid integer for {}: '{}'. Use a positive integer.",
+            key,
+            value
+        );
+    }
+    Ok(parsed)
+}
+
+fn parse_u8_range(key: &str, value: &str, min: u8, max: u8) -> Result<u8> {
+    let parsed = value.trim().parse::<u16>().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid integer for {}: '{}'. Use a value from {} to {}.",
+            key,
+            value,
+            min,
+            max
+        )
+    })?;
+    if parsed < min as u16 || parsed > max as u16 {
+        anyhow::bail!(
+            "Invalid integer for {}: '{}'. Use a value from {} to {}.",
+            key,
+            value,
+            min,
+            max
+        );
+    }
+    Ok(parsed as u8)
+}
+
+fn parse_percent_u8(key: &str, value: &str) -> Result<u8> {
+    parse_u8_range(key, value, 1, 100)
+}
+
+fn parse_json_string_array(key: &str, value: &str) -> Result<Vec<String>> {
+    let parsed: serde_json::Value = serde_json::from_str(value).map_err(|error| {
+        anyhow::anyhow!(
+            "Invalid JSON for {}: {}. Use a JSON string array, e.g. [\"tip\"].",
+            key,
+            error
+        )
+    })?;
+    let Some(values) = parsed.as_array() else {
+        anyhow::bail!("Invalid value for {}. Use a JSON string array.", key);
+    };
+    let mut tips = Vec::with_capacity(values.len());
+    for item in values {
+        let Some(tip) = item.as_str() else {
+            anyhow::bail!(
+                "Invalid value for {}. Every custom tip must be a string.",
+                key
+            );
+        };
+        tips.push(tip.to_string());
+    }
+    Ok(tips)
 }
 
 fn normalize_model_reasoning_effort(value: &str) -> Result<String> {

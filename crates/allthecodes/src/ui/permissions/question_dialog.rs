@@ -81,10 +81,10 @@ impl QuestionDialog {
         None
     }
 
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+    pub fn render(&self, area: Rect, prompt_area: Option<Rect>, buf: &mut Buffer, theme: &Theme) {
         let spec = PanelSizePreset::QuestionDialog.spec();
         let dialog_area = spec
-            .resolve_rect(area, spec.max_height)
+            .resolve_prompt_or_centered_rect(area, prompt_area, spec.max_height)
             .unwrap_or(Rect::new(area.x, area.y, area.width, area.height));
 
         Widget::render(Clear, dialog_area, buf);
@@ -273,6 +273,10 @@ mod tests {
     use super::QuestionDialog;
     use allthecodes_types::callbacks::AskUserRequestPayload;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    use crate::ui::theme::Theme;
 
     #[test]
     fn question_dialog_collects_answer() {
@@ -350,5 +354,35 @@ mod tests {
             dialog.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some("jk".to_string())
         );
+    }
+
+    #[test]
+    fn question_dialog_can_render_above_prompt() {
+        let dialog = QuestionDialog::new(
+            "q-1",
+            AskUserRequestPayload {
+                question: "Continue?".to_string(),
+                choices: vec!["yes".to_string(), "no".to_string()],
+                allow_free_text: false,
+            },
+        );
+        let area = Rect::new(0, 0, 100, 30);
+        let prompt_area = Rect::new(0, 24, 100, 3);
+        let mut buffer = Buffer::empty(area);
+
+        dialog.render(area, Some(prompt_area), &mut buffer, &Theme::default());
+
+        let title_row = row_containing(&buffer, area, "Need Input").expect("title row");
+        assert!(title_row < prompt_area.y);
+    }
+
+    fn row_containing(buffer: &Buffer, area: Rect, needle: &str) -> Option<u16> {
+        (area.y..area.y + area.height).find(|&y| {
+            let mut line = String::new();
+            for x in area.x..area.x + area.width {
+                line.push_str(buffer[(x, y)].symbol());
+            }
+            line.contains(needle)
+        })
     }
 }

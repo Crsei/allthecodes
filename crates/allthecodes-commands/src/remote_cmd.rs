@@ -8,7 +8,7 @@ use std::sync::{OnceLock, RwLock};
 
 use allthecodes_gateway::{
     AdapterProvider, AdapterState, AdapterStatus, GatewayConfig, GatewayDiagnostic,
-    GatewayPersistence, GatewayStore, RunEvent, RunId, RunMeta, SessionKeyPolicy,
+    GatewayPersistence, GatewayStore, OutputReadBatch, RunEvent, RunId, RunMeta, SessionKeyPolicy,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -27,7 +27,8 @@ pub struct RemoteGatewayAdapter {
     pub connect_adapter: fn(AdapterProvider) -> RemoteFuture<AdapterStatus>,
     pub test_adapter_message: fn(AdapterProvider, String, String) -> RemoteFuture<AdapterStatus>,
     pub show_run: fn(RunId) -> RemoteFuture<RunMeta>,
-    pub run_events: fn(RunId) -> RemoteFuture<Vec<RunEvent>>,
+    pub run_output: fn(RunId) -> RemoteFuture<OutputReadBatch>,
+    pub run_timeline: fn(RunId) -> RemoteFuture<Vec<RunEvent>>,
     pub stop_run: fn(RunId) -> RemoteFuture<GatewayRunActionResponse>,
 }
 
@@ -103,6 +104,7 @@ impl CommandHandler for RemoteHandler {
             "runs" => render_runs(parse_limit(parts.collect())),
             "show" => show_run(parts.next()).await,
             "events" => show_events(parts.next(), parse_limit(parts.collect())).await,
+            "timeline" => show_timeline(parts.next(), parse_limit(parts.collect())).await,
             "stop" => stop_run(parts.next()).await,
             "doctor" => render_doctor().await,
             "help" | "--help" | "-h" => usage(),
@@ -223,13 +225,27 @@ async fn show_events(raw_run_id: Option<&str>, limit: usize) -> String {
     let Some(run_id) = parse_run_id(raw_run_id) else {
         return "Usage: /remote events <run_id> [--limit N]".to_string();
     };
-    let events = match remote_run_events(run_id.clone()).await {
+    let output = match remote_run_output(run_id.clone()).await {
+        Ok(output) => Ok(output),
+        Err(_) => read_local_output(&run_id),
+    };
+    match output {
+        Ok(output) => render_output_events(&output, limit),
+        Err(diag) => render_gateway_diagnostic("Events", &diag),
+    }
+}
+
+async fn show_timeline(raw_run_id: Option<&str>, limit: usize) -> String {
+    let Some(run_id) = parse_run_id(raw_run_id) else {
+        return "Usage: /remote timeline <run_id> [--limit N]".to_string();
+    };
+    let events = match remote_run_timeline(run_id.clone()).await {
         Ok(events) => Ok(events),
-        Err(_) => read_local_events(&run_id),
+        Err(_) => read_local_timeline(&run_id),
     };
     match events {
-        Ok(events) => render_events(&events, limit),
-        Err(diag) => render_gateway_diagnostic("Events", &diag),
+        Ok(events) => render_timeline_events(&events, limit),
+        Err(diag) => render_gateway_diagnostic("Timeline", &diag),
     }
 }
 
@@ -297,13 +313,39 @@ fn render_run_meta(meta: &allthecodes_gateway::RunMeta) -> String {
     lines.join("\n")
 }
 
-fn render_events(events: &[RunEvent], limit: usize) -> String {
+fn render_output_events(output: &OutputReadBatch, limit: usize) -> String {
+    if output.events.is_empty() {
+        return format!(
+            "Remote run output: none (state={:?} next_seq={})",
+            output.state, output.next_seq
+        );
+    }
+    let start = output.events.len().saturating_sub(limit);
+    let mut lines = vec![format!(
+        "Remote run output (showing {}, state={:?}, next_seq={}, truncated={})",
+        output.events.len() - start,
+        output.state,
+        output.next_seq,
+        output.truncated
+    )];
+    for event in &output.events[start..] {
+        lines.push(format!(
+            "#{} {:?} {}",
+            event.seq,
+            event.stream,
+            first_line(&event.chunk, 160)
+        ));
+    }
+    lines.join("\n")
+}
+
+fn render_timeline_events(events: &[RunEvent], limit: usize) -> String {
     if events.is_empty() {
-        return "Remote run events: none".to_string();
+        return "Remote run timeline: none".to_string();
     }
     let start = events.len().saturating_sub(limit);
     let mut lines = vec![format!(
-        "Remote run events (showing {})",
+        "Remote run timeline (showing {})",
         events.len() - start
     )];
     for event in &events[start..] {
@@ -413,11 +455,18 @@ async fn remote_show_run(run_id: RunId) -> Result<RunMeta, GatewayDiagnostic> {
     (adapter.show_run)(run_id).await
 }
 
-async fn remote_run_events(run_id: RunId) -> Result<Vec<RunEvent>, GatewayDiagnostic> {
+async fn remote_run_output(run_id: RunId) -> Result<OutputReadBatch, GatewayDiagnostic> {
     let Some(adapter) = remote_gateway_adapter() else {
         return Err(gateway_unavailable("Events"));
     };
-    (adapter.run_events)(run_id).await
+    (adapter.run_output)(run_id).await
+}
+
+async fn remote_run_timeline(run_id: RunId) -> Result<Vec<RunEvent>, GatewayDiagnostic> {
+    let Some(adapter) = remote_gateway_adapter() else {
+        return Err(gateway_unavailable("Timeline"));
+    };
+    (adapter.run_timeline)(run_id).await
 }
 
 async fn remote_stop_run(run_id: RunId) -> Result<GatewayRunActionResponse, GatewayDiagnostic> {
@@ -477,9 +526,15 @@ fn load_local_run(run_id: &RunId) -> Result<RunMeta, GatewayDiagnostic> {
         .map_err(|error| error.into_diagnostic())
 }
 
-fn read_local_events(run_id: &RunId) -> Result<Vec<RunEvent>, GatewayDiagnostic> {
+fn read_local_output(run_id: &RunId) -> Result<OutputReadBatch, GatewayDiagnostic> {
     GatewayStore::new(GatewayPersistence::default(), SessionKeyPolicy::default())
-        .read_events(run_id)
+        .read_output_events(run_id, None, 64 * 1024)
+        .map_err(|error| error.into_diagnostic())
+}
+
+fn read_local_timeline(run_id: &RunId) -> Result<Vec<RunEvent>, GatewayDiagnostic> {
+    GatewayStore::new(GatewayPersistence::default(), SessionKeyPolicy::default())
+        .read_timeline_events(run_id, None, 100)
         .map_err(|error| error.into_diagnostic())
 }
 
@@ -551,7 +606,7 @@ fn is_sensitive_key(key: &str) -> bool {
 }
 
 fn usage() -> String {
-    "Usage:\n  /remote status\n  /remote adapters\n  /remote connect <telegram|lark>\n  /remote test-message <telegram|lark> <target> [text]\n  /remote runs [--limit N]\n  /remote show <run_id>\n  /remote events <run_id> [--limit N]\n  /remote stop <run_id>\n  /remote doctor".to_string()
+    "Usage:\n  /remote status\n  /remote adapters\n  /remote connect <telegram|lark>\n  /remote test-message <telegram|lark> <target> [text]\n  /remote runs [--limit N]\n  /remote show <run_id>\n  /remote events <run_id> [--limit N]\n  /remote timeline <run_id> [--limit N]\n  /remote stop <run_id>\n  /remote doctor".to_string()
 }
 
 #[cfg(test)]

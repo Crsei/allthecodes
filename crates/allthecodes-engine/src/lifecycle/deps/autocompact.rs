@@ -16,11 +16,30 @@ fn auto_compact_trigger_tracking(tracking: Option<&AutoCompactTracking>) -> Auto
     }
 }
 
-pub(crate) fn exact_auto_compact_triggered(
+fn exact_auto_compact_triggered_with_threshold(
     heuristic_triggered: bool,
     exact_report: Option<&allthecodes_utils::tokens::TokenUsageReport>,
+    threshold_tokens: u64,
 ) -> bool {
-    exact_report.map_or(heuristic_triggered, |report| report.over_threshold)
+    exact_report.map_or(heuristic_triggered, |report| {
+        report.estimated_tokens > threshold_tokens
+    })
+}
+
+fn compact_pipeline_config_from_state(
+    state: &crate::types::app_state::AppState,
+) -> crate::compact::pipeline::PipelineConfig {
+    let threshold = state
+        .settings
+        .compact_threshold
+        .filter(|value| (1..=100).contains(value))
+        .unwrap_or_else(crate::compact::auto_compact::default_auto_compact_threshold_percent);
+
+    crate::compact::pipeline::PipelineConfig {
+        auto_compact: state.settings.auto_compact.unwrap_or(true),
+        compact_threshold_percent: threshold,
+        keep_recent_messages: state.settings.keep_recent_messages.unwrap_or(200) as usize,
+    }
 }
 
 pub(crate) fn build_auto_compact_exact_count_request(
@@ -53,7 +72,13 @@ impl QueryEngineDeps {
         tracking: Option<AutoCompactTracking>,
     ) -> Result<Option<CompactionResult>> {
         let original_messages = params.messages.clone();
-        let app_model = self.state.read().app_state.main_loop_model.clone();
+        let (app_model, pipeline_config) = {
+            let state = self.state.read();
+            (
+                state.app_state.main_loop_model.clone(),
+                compact_pipeline_config_from_state(&state.app_state),
+            )
+        };
         let model = model_for_autocompact(
             &mut params,
             &app_model,
@@ -61,20 +86,24 @@ impl QueryEngineDeps {
         );
 
         // Run the local context pipeline (budget -> snip -> microcompact -> auto-compact check)
-        let pipeline_result = crate::compact::pipeline::run_context_pipeline(
+        let pipeline_result = crate::compact::pipeline::run_context_pipeline_with_config(
             original_messages.clone(),
             tracking.clone(),
             &model,
+            pipeline_config,
         )
         .await;
 
         let mut auto_compact_triggered = pipeline_result.auto_compact_triggered;
         let mut auto_compact_tracking = pipeline_result.tracking.clone();
 
-        if crate::compact::auto_compact::should_check_exact_for_auto_compact(
-            pipeline_result.auto_compact_estimated_tokens,
-            &model,
-        ) {
+        if pipeline_config.auto_compact
+            && crate::compact::auto_compact::should_check_exact_for_auto_compact_with_percent(
+                pipeline_result.auto_compact_estimated_tokens,
+                &model,
+                pipeline_config.compact_threshold_percent,
+            )
+        {
             if let Some(client) = self
                 .api_client
                 .as_ref()
@@ -87,12 +116,20 @@ impl QueryEngineDeps {
                 );
                 match client.count_token_usage_exact(&count_request).await {
                     Ok(report) => {
-                        let exact_triggered =
-                            exact_auto_compact_triggered(auto_compact_triggered, Some(&report));
+                        let threshold_tokens =
+                            crate::compact::auto_compact::auto_compact_threshold_tokens_for_percent(
+                                &model,
+                                pipeline_config.compact_threshold_percent,
+                            );
+                        let exact_triggered = exact_auto_compact_triggered_with_threshold(
+                            auto_compact_triggered,
+                            Some(&report),
+                            threshold_tokens,
+                        );
                         tracing::debug!(
                             provider = report.provider.as_deref().unwrap_or("unknown"),
                             exact_tokens = report.estimated_tokens,
-                            threshold_tokens = report.threshold_tokens,
+                            threshold_tokens = threshold_tokens,
                             heuristic_tokens = pipeline_result.auto_compact_estimated_tokens,
                             heuristic_triggered = auto_compact_triggered,
                             exact_triggered = exact_triggered,
@@ -318,9 +355,18 @@ impl QueryEngineDeps {
             }
         };
 
-        let pipeline_result =
-            crate::compact::pipeline::run_context_pipeline(messages, tracking.clone(), &model)
-                .await;
+        let pipeline_config = {
+            let state = self.state.read();
+            compact_pipeline_config_from_state(&state.app_state)
+        };
+
+        let pipeline_result = crate::compact::pipeline::run_context_pipeline_with_config(
+            messages,
+            tracking.clone(),
+            &model,
+            pipeline_config,
+        )
+        .await;
 
         if !pipeline_result.compacted {
             return Ok(None);

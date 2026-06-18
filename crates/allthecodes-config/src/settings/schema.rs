@@ -171,13 +171,18 @@ pub fn settings_schema() -> Value {
             "language": { "type": "string" },
             "voiceEnabled": { "type": "boolean" },
             "editorMode": { "type": "string", "enum": ["normal", "vim"] },
-            "viewMode": { "type": "string" },
+            "viewMode": {
+                "type": "string",
+                "enum": ["prompt", "transcript", "focus"],
+                "description": "Default Rust TUI view mode at startup. Invalid persisted values fall back to prompt mode."
+            },
             "spinnerTips": {
                 "type": "object",
                 "additionalProperties": true,
+                "description": "Rust TUI spinner tip settings. Custom tips rotate while preserving the main spinner status text.",
                 "properties": {
                     "enabled": { "type": "boolean" },
-                    "intervalMs": { "type": "integer", "minimum": 0 },
+                    "intervalMs": { "type": "integer", "minimum": 1 },
                     "customTips": {
                         "type": "array", "items": { "type": "string" }
                     }
@@ -224,8 +229,14 @@ pub fn settings_schema() -> Value {
                 "deprecated": true,
                 "description": "Legacy Electron quick-chat setting. Accepted for compatibility, but unsupported by the Rust TUI and has no runtime effect."
             },
-            "autoApproveTools": { "type": "boolean" },
-            "analyticsEnabled": { "type": "boolean" },
+            "autoApproveTools": {
+                "type": "boolean",
+                "description": "Compatibility field only. It is not wired to Rust permissions and has no runtime effect; use permissionMode or permissions.defaultMode instead."
+            },
+            "analyticsEnabled": {
+                "type": "boolean",
+                "description": "Compatibility field only. Analytics collection is not implemented and this setting has no runtime effect."
+            },
             "availableModels": {
                 "type": "array", "items": { "type": "string" }
             },
@@ -245,9 +256,22 @@ pub fn settings_schema() -> Value {
             "defaultToolSelection": { "type": "string" },
             "defaultSkillSelection": { "type": "string" },
             "soundEffects": { "type": "boolean" },
-            "autoCompact": { "type": "boolean" },
-            "compactThreshold": { "type": "integer", "minimum": 1, "maximum": 255 },
-            "keepRecentMessages": { "type": "integer", "minimum": 1, "maximum": 255 },
+            "autoCompact": {
+                "type": "boolean",
+                "description": "Controls only threshold-triggered full auto-compact summarization. Local budget/snip/microcompact/context-collapse and prompt-too-long recovery still run when false."
+            },
+            "compactThreshold": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "description": "Context-window percentage that triggers full auto-compact summarization. Defaults to 80."
+            },
+            "keepRecentMessages": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 255,
+                "description": "Recent conversation turns retained by the snip stage. Defaults to 200."
+            },
             "hashlineMode": { "type": "boolean" },
             "fallbackModel": { "type": "string" },
             "fastModel": { "type": "string" },
@@ -280,20 +304,26 @@ pub fn settings_schema() -> Value {
             },
             "fastMode": { "type": "boolean" },
             "fastModePerSessionOptIn": { "type": "boolean" },
-            "teammateMode": { "type": "boolean" },
-            "claudeInChromeDefaultEnabled": { "type": "boolean" },
+            "teammateMode": {
+                "type": "boolean",
+                "description": "Compatibility field only. Rust TUI teammate display modes are not implemented and this setting has no runtime effect."
+            },
+            "claudeInChromeDefaultEnabled": {
+                "type": "boolean",
+                "description": "Browser integration default consumed by allthecodes-browser, not by the Rust TUI."
+            },
             "autoMemoryEnabled": { "type": "boolean" },
-            "memoryAutoRetrieve": { "type": "boolean" },
-            "memoryQueryRewriting": { "type": "boolean" },
-            "memoryMaxRetrieved": { "type": "integer", "minimum": 1, "maximum": 255 },
-            "memorySimilarityThreshold": { "type": "integer", "minimum": 1, "maximum": 255 },
-            "memoryAutoSummarize": { "type": "boolean" },
-            "memoryNightly": { "type": "boolean" },
-            "memorySleepTime": { "type": "string" },
-            "memoryTempTtl": { "type": "integer", "minimum": 1 },
-            "memoryArchiveRetention": { "type": "integer", "minimum": 1 },
-            "memoryToolModel": { "type": "string" },
-            "memoryEmbeddingModel": { "type": "string" },
+            "memoryAutoRetrieve": { "type": "boolean", "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memoryQueryRewriting": { "type": "boolean", "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memoryMaxRetrieved": { "type": "integer", "minimum": 1, "maximum": 255, "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memorySimilarityThreshold": { "type": "integer", "minimum": 1, "maximum": 255, "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memoryAutoSummarize": { "type": "boolean", "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memoryNightly": { "type": "boolean", "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memorySleepTime": { "type": "string", "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memoryTempTtl": { "type": "integer", "minimum": 1, "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memoryArchiveRetention": { "type": "integer", "minimum": 1, "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memoryToolModel": { "type": "string", "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
+            "memoryEmbeddingModel": { "type": "string", "description": "Reserved for future memory runtime tuning; currently has no runtime effect." },
             "proxyEnabled": { "type": "boolean" },
             "proxyUrl": { "type": "string" },
             "preferIpv4": { "type": "boolean" },
@@ -312,7 +342,10 @@ pub fn settings_schema() -> Value {
             "cloudSyncEnabled": { "type": "boolean" },
             "cloudSyncPath": { "type": "string" },
             "tokenSavingsTracking": { "type": "boolean" },
-            "advisorModel": { "type": "string" },
+            "advisorModel": {
+                "type": "string",
+                "description": "Advisor model consumed by supported native providers."
+            },
             "systemPrompt": { "type": "string" },
             "apiKey": { "type": "string" },
             "env": {

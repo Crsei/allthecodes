@@ -265,6 +265,28 @@ pub(super) fn handle_show(parts: &[&str], ctx: &CommandContext) -> Result<Comman
         &mut lines,
     );
     row(
+        "autoCompact",
+        state.settings.auto_compact.unwrap_or(true).to_string(),
+        "autoCompact",
+        &mut lines,
+    );
+    row(
+        "compactThreshold",
+        format!("{}%", state.settings.compact_threshold.unwrap_or(80)),
+        "compactThreshold",
+        &mut lines,
+    );
+    row(
+        "keepRecentMessages",
+        state
+            .settings
+            .keep_recent_messages
+            .unwrap_or(200)
+            .to_string(),
+        "keepRecentMessages",
+        &mut lines,
+    );
+    row(
         "teammateMode",
         opt_str(state.settings.teammate_mode.map(|b| b.to_string())),
         "teammateMode",

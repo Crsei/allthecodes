@@ -218,7 +218,7 @@ fn section(name: &str, body: impl AsRef<str>) -> String {
 fn render_permission_dialog(dialog: PermissionDialog, width: u16, height: u16) -> String {
     let area = Rect::new(0, 0, width, height);
     let mut buf = Buffer::empty(area);
-    dialog.render(area, &mut buf, &Theme::default());
+    dialog.render(area, None, &mut buf, &Theme::default());
     normalize_snapshot_text(buffer_text(&buf, area))
 }
 

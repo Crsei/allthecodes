@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub(super) const SCHEMA_VERSION: u32 = 1;
+pub(super) const SCHEMA_VERSION: u32 = 2;
 #[cfg(test)]
 pub(super) const DEFAULT_DAEMON_PORT: u16 = 19836;
 
@@ -54,6 +54,18 @@ pub struct DaemonProcessState {
     pub cwd: PathBuf,
     pub port: u16,
     pub health_url: String,
+    #[serde(default)]
+    pub command_kind: Option<String>,
+    #[serde(default)]
+    pub binary_version: Option<String>,
+    #[serde(default)]
+    pub binary_path: Option<PathBuf>,
+    #[serde(default)]
+    pub log_path: Option<PathBuf>,
+    #[serde(default)]
+    pub ready_url: Option<String>,
+    #[serde(default)]
+    pub process_start_key: Option<String>,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub shutdown_requested: bool,
@@ -68,6 +80,16 @@ pub struct DaemonWorkerState {
     pub pid: Option<u32>,
     pub cwd: PathBuf,
     pub log_path: PathBuf,
+    #[serde(default)]
+    pub command_kind: Option<String>,
+    #[serde(default)]
+    pub binary_version: Option<String>,
+    #[serde(default)]
+    pub binary_path: Option<PathBuf>,
+    #[serde(default)]
+    pub ready_url: Option<String>,
+    #[serde(default)]
+    pub process_start_key: Option<String>,
     pub status: DaemonWorkerStatus,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -104,6 +126,38 @@ pub enum DaemonStatusSnapshot {
     Running(DaemonProcessState),
     Stale(DaemonProcessState),
     Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessIdentityStatus {
+    Dead,
+    Matched,
+    Mismatched {
+        expected: String,
+        actual: Option<String>,
+    },
+    Unknown,
+    Unrecorded,
+}
+
+impl ProcessIdentityStatus {
+    pub fn as_diagnostic(&self) -> String {
+        match self {
+            Self::Dead => "identity=dead".to_string(),
+            Self::Matched => "identity=matched".to_string(),
+            Self::Mismatched { expected, actual } => format!(
+                "identity=pid_reused expected={} actual={}",
+                expected,
+                actual.as_deref().unwrap_or("unknown")
+            ),
+            Self::Unknown => "identity=unknown".to_string(),
+            Self::Unrecorded => "identity=unrecorded".to_string(),
+        }
+    }
+
+    pub fn is_current_process_record(&self) -> bool {
+        matches!(self, Self::Matched | Self::Unknown | Self::Unrecorded)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

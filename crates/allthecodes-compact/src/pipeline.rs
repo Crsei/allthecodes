@@ -63,6 +63,27 @@ const DEFAULT_SNIP_MAX_TURNS: usize = 200;
 /// Emergency snip target for reactive compaction.
 const REACTIVE_SNIP_MAX_TURNS: usize = 5;
 
+/// Runtime configuration for the normal context pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PipelineConfig {
+    /// Whether threshold-triggered full auto-compact summarization is enabled.
+    pub auto_compact: bool,
+    /// Percentage of the context window that triggers full auto-compact.
+    pub compact_threshold_percent: u8,
+    /// Number of most-recent conversation turns kept by snip compaction.
+    pub keep_recent_messages: usize,
+}
+
+impl Default for PipelineConfig {
+    fn default() -> Self {
+        Self {
+            auto_compact: true,
+            compact_threshold_percent: auto_compact::default_auto_compact_threshold_percent(),
+            keep_recent_messages: DEFAULT_SNIP_MAX_TURNS,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main pipeline (async — includes tool result budget disk I/O)
 // ---------------------------------------------------------------------------
@@ -77,6 +98,15 @@ pub async fn run_context_pipeline(
     messages: Vec<Message>,
     tracking: Option<AutoCompactTracking>,
     model: &str,
+) -> PipelineResult {
+    run_context_pipeline_with_config(messages, tracking, model, PipelineConfig::default()).await
+}
+
+pub async fn run_context_pipeline_with_config(
+    messages: Vec<Message>,
+    tracking: Option<AutoCompactTracking>,
+    model: &str,
+    config: PipelineConfig,
 ) -> PipelineResult {
     let mut current = messages;
     let mut compacted = false;
@@ -100,7 +130,7 @@ pub async fn run_context_pipeline(
     current = budgeted;
 
     // ── Step 2: Snip compact ────────────────────────────────────────
-    let snip_result = snip::snip_compact_if_needed(current, DEFAULT_SNIP_MAX_TURNS);
+    let snip_result = snip::snip_compact_if_needed(current, config.keep_recent_messages.max(1));
     if snip_result.tokens_freed > 0 {
         compacted = true;
         debug!(
@@ -142,15 +172,20 @@ pub async fn run_context_pipeline(
         .saturating_add(microcompact_tokens_freed)
         .saturating_add(context_collapse_tokens_freed);
     let auto_compact_estimated_tokens = estimated;
-    let auto_compact_triggered =
-        auto_compact::should_auto_compact(auto_compact_estimated_tokens, model);
+    let auto_compact_triggered = config.auto_compact
+        && auto_compact::should_auto_compact_with_percent(
+            auto_compact_estimated_tokens,
+            model,
+            config.compact_threshold_percent,
+        );
     let updated_tracking = if auto_compact_triggered {
         info!(
             estimated_tokens = auto_compact_estimated_tokens,
             raw_estimated_tokens = estimated,
             pre_autocompact_tokens_freed = total_tokens_freed,
             model = model,
-            "auto compact triggered (>80% of context window)"
+            threshold_percent = config.compact_threshold_percent,
+            "auto compact triggered"
         );
         let base = tracking.unwrap_or(AutoCompactTracking {
             compacted: false,
@@ -423,6 +458,79 @@ mod tests {
         assert!(!result.auto_compact_triggered);
         assert!(result.tracking.is_some());
         assert_eq!(result.tracking.unwrap().turn_id, tracking.turn_id);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_custom_threshold_triggers_at_configured_percent() {
+        let messages = vec![make_user(&"x".repeat(480_000))];
+        let result = run_context_pipeline_with_config(
+            messages,
+            None,
+            "claude-sonnet-4-20250514",
+            PipelineConfig {
+                compact_threshold_percent: 50,
+                ..PipelineConfig::default()
+            },
+        )
+        .await;
+
+        assert!(result.auto_compact_estimated_tokens > 100_000);
+        assert!(result.auto_compact_triggered);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_auto_compact_false_skips_full_auto_trigger_only() {
+        let messages = vec![make_user(&"x".repeat(720_000))];
+        let result = run_context_pipeline_with_config(
+            messages,
+            None,
+            "claude-sonnet-4-20250514",
+            PipelineConfig {
+                auto_compact: false,
+                compact_threshold_percent: 50,
+                ..PipelineConfig::default()
+            },
+        )
+        .await;
+
+        assert!(result.auto_compact_estimated_tokens > 100_000);
+        assert!(!result.auto_compact_triggered);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_keep_recent_messages_controls_snip_retention() {
+        let mut messages = vec![make_user("initial context")];
+        for turn in 0..6 {
+            messages.push(make_user(&format!("question {turn}")));
+            messages.push(make_assistant(&format!("answer {turn}")));
+        }
+
+        let result = run_context_pipeline_with_config(
+            messages,
+            None,
+            "claude-sonnet-4-20250514",
+            PipelineConfig {
+                keep_recent_messages: 2,
+                ..PipelineConfig::default()
+            },
+        )
+        .await;
+
+        assert!(result.snip_tokens_freed > 0);
+        assert!(
+            result
+                .messages
+                .iter()
+                .any(|message| matches!(message, Message::System(system) if system.content.contains("History snipped")))
+        );
+        assert!(result
+            .messages
+            .iter()
+            .any(|message| matches!(message, Message::User(user) if matches!(&user.content, MessageContent::Text(text) if text == "question 5"))));
+        assert!(!result
+            .messages
+            .iter()
+            .any(|message| matches!(message, Message::User(user) if matches!(&user.content, MessageContent::Text(text) if text == "question 1"))));
     }
 
     #[tokio::test]

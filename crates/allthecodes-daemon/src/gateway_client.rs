@@ -6,7 +6,8 @@
 use std::time::Duration;
 
 use allthecodes_gateway::{
-    AdapterProvider, AdapterStatus, AdapterTestMessage, GatewayDiagnostic, RunEvent, RunId, RunMeta,
+    AdapterProvider, AdapterStatus, AdapterTestMessage, GatewayDiagnostic, OutputReadBatch,
+    RunEvent, RunId, RunMeta,
 };
 use anyhow::Result;
 use reqwest::StatusCode;
@@ -24,9 +25,17 @@ pub enum LocalGatewayDaemonStatus {
         pid: u32,
         base_url: String,
         health_url: String,
+        ready_url: Option<String>,
+        binary_version: Option<String>,
+        binary_path: Option<String>,
+        log_path: Option<String>,
+        identity: String,
     },
     Stale {
         pid: u32,
+        binary_version: Option<String>,
+        log_path: Option<String>,
+        identity: String,
     },
     Stopped,
 }
@@ -61,7 +70,7 @@ pub struct GatewayRunActionResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GatewayRunEvents {
+pub struct GatewayRunTimeline {
     pub events: Vec<RunEvent>,
 }
 
@@ -75,13 +84,29 @@ impl LocalGatewayClient {
     pub fn daemon_status() -> Result<LocalGatewayDaemonStatus> {
         Ok(match process_state::status_snapshot()? {
             DaemonStatusSnapshot::Running(state) => LocalGatewayDaemonStatus::Running {
+                identity: process_state::process_matches_record(
+                    state.pid,
+                    state.process_start_key.as_deref(),
+                )
+                .as_diagnostic(),
                 pid: state.pid,
                 base_url: base_url_for_port(state.port),
                 health_url: state.health_url,
+                ready_url: state.ready_url,
+                binary_version: state.binary_version,
+                binary_path: state.binary_path.map(|path| path.display().to_string()),
+                log_path: state.log_path.map(|path| path.display().to_string()),
             },
-            DaemonStatusSnapshot::Stale(state) => {
-                LocalGatewayDaemonStatus::Stale { pid: state.pid }
-            }
+            DaemonStatusSnapshot::Stale(state) => LocalGatewayDaemonStatus::Stale {
+                identity: process_state::process_matches_record(
+                    state.pid,
+                    state.process_start_key.as_deref(),
+                )
+                .as_diagnostic(),
+                pid: state.pid,
+                binary_version: state.binary_version,
+                log_path: state.log_path.map(|path| path.display().to_string()),
+            },
             DaemonStatusSnapshot::Stopped => LocalGatewayDaemonStatus::Stopped,
         })
     }
@@ -98,7 +123,7 @@ impl LocalGatewayClient {
 
         let LocalGatewayDaemonStatus::Running { base_url, .. } = status else {
             return Err(match status {
-                LocalGatewayDaemonStatus::Stale { pid } => diagnostic(
+                LocalGatewayDaemonStatus::Stale { pid, .. } => diagnostic(
                     "daemon_stale",
                     "The daemon state is stale.",
                     "Restart the daemon with `allthecodes daemon restart`.",
@@ -193,9 +218,14 @@ impl LocalGatewayClient {
             .await
     }
 
-    pub async fn run_events(&self, run_id: &RunId) -> Result<Vec<RunEvent>, GatewayDiagnostic> {
+    pub async fn run_output(&self, run_id: &RunId) -> Result<OutputReadBatch, GatewayDiagnostic> {
+        self.get_json(&format!("/remote-control/v1/runs/{run_id}/events"))
+            .await
+    }
+
+    pub async fn run_timeline(&self, run_id: &RunId) -> Result<Vec<RunEvent>, GatewayDiagnostic> {
         Ok(self
-            .get_json::<GatewayRunEvents>(&format!("/remote-control/v1/runs/{run_id}/events"))
+            .get_json::<GatewayRunTimeline>(&format!("/remote-control/v1/runs/{run_id}/timeline"))
             .await?
             .events)
     }

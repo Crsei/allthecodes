@@ -70,6 +70,7 @@ use super::permissions::hooks::{render_permission_hook_event, PermissionHookEven
 use super::permissions::permission_decision_debug_info::render_permission_decision_debug_info;
 use super::permissions::BypassPermissionsModeChoice;
 use super::terminal_progress::TerminalProgressBackend;
+use super::transcript::ViewMode;
 
 fn permission_event_notification(text: String, tone: NotificationTone) -> InAppNotification {
     InAppNotification::new("permission-event", NotificationPriority::Low, text)
@@ -331,6 +332,15 @@ pub async fn run_tui(
         app.set_status_line_settings(app_state.settings.status_line.clone());
         app.set_keybindings(app_state.keybindings.clone());
         app.set_editor_mode(app_state.settings.editor_mode.as_deref());
+        app.set_view_mode(
+            app_state
+                .settings
+                .view_mode
+                .as_deref()
+                .and_then(|value| ViewMode::parse_configured(value).ok())
+                .unwrap_or_default(),
+        );
+        app.set_spinner_tips_settings(app_state.settings.spinner_tips.clone());
         app.set_output_style(app_state.settings.output_style.clone());
         app.set_theme_setting(app_state.settings.theme.as_deref());
         app.sync_status_context_from_state(&app_state);
@@ -568,7 +578,11 @@ pub async fn run_tui(
                             AppAction::AgentThreadSelected(agent_id) => {
                                 let messages =
                                     allthecodes_ipc::agent_handlers::handle_agent_command(
-                                        AgentCommand::QueryAgentOutput { agent_id },
+                                        AgentCommand::QueryAgentOutput {
+                                            agent_id,
+                                            after_seq: None,
+                                            limit_bytes: None,
+                                        },
                                     );
                                 handle_agent_backend_messages(&mut app, messages);
                             }

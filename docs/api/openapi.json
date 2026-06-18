@@ -2738,6 +2738,156 @@
         ],
         "type": "object"
       },
+      "ProviderProbeErrorKind": {
+        "enum": [
+          "context_window_exceeded",
+          "quota_exceeded",
+          "rate_limited",
+          "policy_blocked",
+          "server_overloaded",
+          "retryable_transport",
+          "authentication_failed",
+          "invalid_request",
+          "unknown_provider_error"
+        ],
+        "type": "string"
+      },
+      "ProviderProbeMetadata": {
+        "properties": {
+          "headers": {
+            "items": {
+              "items": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "transport": {
+            "$ref": "#/components/schemas/ProviderProbeTransport"
+          }
+        },
+        "required": [
+          "headers",
+          "provider",
+          "transport"
+        ],
+        "type": "object"
+      },
+      "ProviderProbeRequest": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "transport": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderProbeTransport"
+              }
+            ],
+            "default": "web_socket"
+          }
+        },
+        "title": "ProviderProbeRequest",
+        "type": "object"
+      },
+      "ProviderProbeResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "base_url_host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderProbeErrorKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderProbeMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProviderProbeStatus"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/ProviderProbeTransport"
+          }
+        },
+        "required": [
+          "message",
+          "provider_id",
+          "status",
+          "transport"
+        ],
+        "title": "ProviderProbeResponse",
+        "type": "object"
+      },
+      "ProviderProbeStatus": {
+        "enum": [
+          "ok",
+          "unsupported",
+          "auth_failed",
+          "network_error",
+          "quota_or_rate_limited",
+          "error"
+        ],
+        "type": "string"
+      },
+      "ProviderProbeTransport": {
+        "enum": [
+          "http",
+          "web_socket"
+        ],
+        "type": "string"
+      },
       "ProviderSummary": {
         "properties": {
           "arguments": {
@@ -3474,8 +3624,20 @@
           "session_id": {
             "type": "string"
           },
+          "settings_diagnostics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "settings_map": {
             "additionalProperties": true,
+            "type": "object"
+          },
+          "settings_sources": {
+            "additionalProperties": {
+              "type": "string"
+            },
             "type": "object"
           },
           "thinking_enabled": {
@@ -8801,6 +8963,54 @@
         "x-allthecodes-serialization": "concurrent"
       }
     },
+    "/api/providers/{id}/probe": {
+      "post": {
+        "operationId": "ProvidersProbe",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderProbeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderProbeResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
     "/api/proxy": {
       "get": {
         "operationId": "Proxy",
@@ -9560,6 +9770,32 @@
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/settings/layers": {
+      "get": {
+        "operationId": "SettingsLayers",
         "responses": {
           "200": {
             "content": {

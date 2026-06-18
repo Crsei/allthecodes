@@ -47,6 +47,22 @@ pub enum ViewMode {
 }
 
 impl ViewMode {
+    /// Parse the persisted `settings.json::viewMode` value.
+    ///
+    /// Accepted values are intentionally narrow so `/config set viewMode`
+    /// and startup behavior stay predictable.
+    pub fn parse_configured(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "prompt" => Ok(ViewMode::Prompt),
+            "transcript" => Ok(ViewMode::Transcript),
+            "focus" => Ok(ViewMode::Focus),
+            other => Err(format!(
+                "Unknown viewMode '{}'. Expected prompt, transcript, or focus.",
+                other
+            )),
+        }
+    }
+
     /// Advance to the next mode in the `Prompt → Transcript → Focus`
     /// cycle.
     pub fn next(self) -> Self {

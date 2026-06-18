@@ -144,9 +144,26 @@ impl WorkerRegistry {
 
             if worker_heartbeat_stale(worker_id)? {
                 process_state::write_worker_stale(worker_id, "heartbeat stale")?;
-                if let Some(pid) = process_state::read_worker_state(worker_id)?.and_then(|s| s.pid)
-                {
-                    let _ = process_state::terminate_process_tree(pid);
+                if let Some(state) = process_state::read_worker_state(worker_id)? {
+                    if let Some(pid) = state.pid {
+                        let identity = process_state::process_matches_record(
+                            pid,
+                            state.process_start_key.as_deref(),
+                        );
+                        if identity.is_current_process_record() {
+                            let _ = process_state::terminate_process_tree(
+                                pid,
+                                state.process_start_key.as_deref(),
+                            );
+                        } else {
+                            warn!(
+                                worker_id,
+                                pid,
+                                identity = %identity.as_diagnostic(),
+                                "skipped stale worker termination because pid identity did not match"
+                            );
+                        }
+                    }
                 }
                 warn!(worker_id, "daemon worker heartbeat is stale");
                 if managed.restart_count < managed.spec.restart_policy.max_restarts {
@@ -175,10 +192,26 @@ impl WorkerRegistry {
 
     fn terminate_all(&mut self) -> Result<()> {
         for (worker_id, managed) in &mut self.workers {
-            if let Some(pid) = process_state::read_worker_state(worker_id)?.and_then(|s| s.pid) {
-                if process_state::process_is_alive(pid) {
-                    process_state::terminate_process_tree(pid)
+            if let Some(state) = process_state::read_worker_state(worker_id)? {
+                if let Some(pid) = state.pid {
+                    let identity = process_state::process_matches_record(
+                        pid,
+                        state.process_start_key.as_deref(),
+                    );
+                    if identity.is_current_process_record() {
+                        process_state::terminate_process_tree(
+                            pid,
+                            state.process_start_key.as_deref(),
+                        )
                         .with_context(|| format!("failed to terminate worker {worker_id}"))?;
+                    } else {
+                        warn!(
+                            worker_id,
+                            pid,
+                            identity = %identity.as_diagnostic(),
+                            "skipped worker termination because pid identity did not match"
+                        );
+                    }
                 }
             } else {
                 let _ = managed.child.kill();
@@ -276,10 +309,20 @@ pub fn terminate_known_workers() -> Result<()> {
             DaemonWorkerStatus::Running | DaemonWorkerStatus::Starting | DaemonWorkerStatus::Stale
         ) {
             if let Some(pid) = worker.pid {
-                if process_state::process_is_alive(pid) {
-                    process_state::terminate_process_tree(pid).with_context(|| {
-                        format!("failed to terminate worker {}", worker.worker_id)
-                    })?;
+                let identity =
+                    process_state::process_matches_record(pid, worker.process_start_key.as_deref());
+                if identity.is_current_process_record() {
+                    process_state::terminate_process_tree(pid, worker.process_start_key.as_deref())
+                        .with_context(|| {
+                            format!("failed to terminate worker {}", worker.worker_id)
+                        })?;
+                } else {
+                    warn!(
+                        worker_id = %worker.worker_id,
+                        pid,
+                        identity = %identity.as_diagnostic(),
+                        "skipped known worker termination because pid identity did not match"
+                    );
                 }
             }
         }
@@ -405,6 +448,39 @@ mod tests {
         assert_eq!(specs[0].kind, WorkerKind::AssistantSession);
         assert!(specs[0].log_path.starts_with(temp.path()));
         assert!(specs[0].required);
+    }
+
+    #[test]
+    #[serial]
+    fn worker_state_includes_process_record_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let log_path = process_state::worker_log_path("worker-process-record");
+        process_state::write_worker_running(
+            "worker-process-record",
+            WorkerKind::AssistantSession.as_str(),
+            std::process::id(),
+            temp.path(),
+            &log_path,
+            0,
+            true,
+        )
+        .expect("worker state");
+
+        let state = process_state::read_worker_state("worker-process-record")
+            .expect("read worker")
+            .expect("worker exists");
+        assert_eq!(
+            state.command_kind.as_deref(),
+            Some("daemon-worker:assistant-session")
+        );
+        assert_eq!(
+            state.binary_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert!(state.binary_path.is_some());
+        assert_eq!(state.log_path, log_path);
+        assert!(state.process_start_key.is_some());
     }
 
     #[test]

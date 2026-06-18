@@ -167,11 +167,11 @@ impl PermissionDialog {
         None
     }
 
-    /// Render the permission dialog as a centered overlay.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+    /// Render the permission dialog as a centered or prompt-adjacent overlay.
+    pub fn render(&self, area: Rect, prompt_area: Option<Rect>, buf: &mut Buffer, theme: &Theme) {
         let spec = PanelSizePreset::PermissionDialog.spec();
         let dialog_width = spec
-            .resolve_rect(area, spec.min_height)
+            .resolve_prompt_or_centered_rect(area, prompt_area, spec.min_height)
             .map(|rect| rect.width)
             .unwrap_or(area.width);
         let labels = self.normalized_options();
@@ -184,7 +184,7 @@ impl PermissionDialog {
         let preferred_height =
             footer_height.saturating_add(if self.is_typing_feedback() { 14 } else { 12 });
         let dialog_area = spec
-            .resolve_rect(area, preferred_height)
+            .resolve_prompt_or_centered_rect(area, prompt_area, preferred_height)
             .unwrap_or(Rect::new(area.x, area.y, area.width, area.height));
 
         Clear.render_ref(dialog_area, buf);
@@ -736,13 +736,30 @@ mod tests {
         assert_snapshot!("permission_dialog_expanded_long_request_152x24", rendered);
     }
 
+    #[test]
+    fn permission_dialog_can_render_above_prompt() {
+        let dialog = PermissionDialog::new("Bash", r#"{"command":"cargo test"}"#, "");
+        let area = Rect::new(0, 0, 120, 30);
+        let prompt_area = Rect::new(0, 24, 120, 3);
+        let mut buffer = Buffer::empty(area);
+
+        dialog.render(area, Some(prompt_area), &mut buffer, &Theme::default());
+
+        let rendered = buffer_text(&buffer, area);
+        let title_row = rendered
+            .lines()
+            .position(|line| line.contains("Permission Required"))
+            .expect("title row");
+        assert!(title_row < prompt_area.y as usize);
+    }
+
     fn render_dialog_text(dialog: &PermissionDialog) -> String {
         render_dialog_text_in_area(dialog, Rect::new(0, 0, 120, 24))
     }
 
     fn render_dialog_text_in_area(dialog: &PermissionDialog, area: Rect) -> String {
         let mut buffer = Buffer::empty(area);
-        dialog.render(area, &mut buffer, &Theme::default());
+        dialog.render(area, None, &mut buffer, &Theme::default());
         buffer_text(&buffer, area)
     }
 

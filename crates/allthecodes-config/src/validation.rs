@@ -71,6 +71,42 @@ const ELECTRON_LEGACY_SETTINGS: &[(&str, fn(&SettingsJson) -> bool)] = &[
     }),
 ];
 
+const RESERVED_MEMORY_SETTINGS: &[(&str, fn(&SettingsJson) -> bool)] = &[
+    ("memoryAutoRetrieve", |settings| {
+        settings.memory_auto_retrieve.is_some()
+    }),
+    ("memoryQueryRewriting", |settings| {
+        settings.memory_query_rewriting.is_some()
+    }),
+    ("memoryMaxRetrieved", |settings| {
+        settings.memory_max_retrieved.is_some()
+    }),
+    ("memorySimilarityThreshold", |settings| {
+        settings.memory_similarity_threshold.is_some()
+    }),
+    ("memoryAutoSummarize", |settings| {
+        settings.memory_auto_summarize.is_some()
+    }),
+    ("memoryNightly", |settings| {
+        settings.memory_nightly.is_some()
+    }),
+    ("memorySleepTime", |settings| {
+        settings.memory_sleep_time.is_some()
+    }),
+    ("memoryTempTtl", |settings| {
+        settings.memory_temp_ttl.is_some()
+    }),
+    ("memoryArchiveRetention", |settings| {
+        settings.memory_archive_retention.is_some()
+    }),
+    ("memoryToolModel", |settings| {
+        settings.memory_tool_model.is_some()
+    }),
+    ("memoryEmbeddingModel", |settings| {
+        settings.memory_embedding_model.is_some()
+    }),
+];
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -198,6 +234,39 @@ pub fn validate_settings(settings: &SettingsJson) -> Vec<ValidationWarning> {
                 field: (*field).to_string(),
                 message: format!(
                     "{field} is accepted for settings compatibility, but the Rust TUI does not support the legacy Electron behavior and this setting has no runtime effect."
+                ),
+                severity: WarningSeverity::Info,
+            });
+        }
+    }
+
+    if settings.auto_approve_tools.is_some() {
+        warnings.push(ValidationWarning {
+            field: "autoApproveTools".to_string(),
+            message: "autoApproveTools is accepted for compatibility, but it is not wired to the Rust permission system and has no runtime effect. Use permissionMode or permissions.defaultMode instead.".to_string(),
+            severity: WarningSeverity::Info,
+        });
+    }
+    if settings.analytics_enabled.is_some() {
+        warnings.push(ValidationWarning {
+            field: "analyticsEnabled".to_string(),
+            message: "analyticsEnabled is accepted for compatibility, but analytics collection is not implemented and this setting has no runtime effect.".to_string(),
+            severity: WarningSeverity::Info,
+        });
+    }
+    if settings.teammate_mode.is_some() {
+        warnings.push(ValidationWarning {
+            field: "teammateMode".to_string(),
+            message: "teammateMode is accepted for compatibility, but the Rust TUI does not currently implement teammate display modes and this setting has no runtime effect.".to_string(),
+            severity: WarningSeverity::Info,
+        });
+    }
+    for (field, is_set) in RESERVED_MEMORY_SETTINGS {
+        if is_set(settings) {
+            warnings.push(ValidationWarning {
+                field: (*field).to_string(),
+                message: format!(
+                    "{field} is reserved for future memory runtime tuning and currently has no runtime effect."
                 ),
                 severity: WarningSeverity::Info,
             });
@@ -340,6 +409,33 @@ pub fn validate_settings(settings: &SettingsJson) -> Vec<ValidationWarning> {
                     "Unknown editor mode '{}'. Known modes: {}.",
                     mode,
                     valid.join(", ")
+                ),
+                severity: WarningSeverity::Warning,
+            });
+        }
+    }
+
+    if let Some(mode) = &settings.view_mode {
+        let valid = ["prompt", "transcript", "focus"];
+        if !valid.contains(&mode.trim().to_ascii_lowercase().as_str()) {
+            warnings.push(ValidationWarning {
+                field: "viewMode".to_string(),
+                message: format!(
+                    "Unknown viewMode '{}'. Known modes: {}. The TUI will start in prompt mode.",
+                    mode,
+                    valid.join(", ")
+                ),
+                severity: WarningSeverity::Warning,
+            });
+        }
+    }
+
+    if let Some(threshold) = settings.compact_threshold {
+        if threshold == 0 || threshold > 100 {
+            warnings.push(ValidationWarning {
+                field: "compactThreshold".to_string(),
+                message: format!(
+                    "compactThreshold must be between 1 and 100; got {threshold}. Runtime will use the default 80% threshold."
                 ),
                 severity: WarningSeverity::Warning,
             });
@@ -602,6 +698,8 @@ pub fn collect_config_diagnostics(loaded: &LoadedSettings) -> Vec<ConfigDiagnost
         diagnostics.push(ConfigDiagnostic::from(w));
     }
 
+    add_runtime_effect_diagnostics_for_loaded(loaded, &mut diagnostics);
+
     // Shadowed rules.
     let managed_perms = loaded.managed.as_ref().and_then(|r| r.permissions.clone());
     let shadowed = permission_validation::find_shadowed_rules(
@@ -632,6 +730,120 @@ pub fn collect_config_diagnostics(loaded: &LoadedSettings) -> Vec<ConfigDiagnost
     }
 
     diagnostics
+}
+
+fn add_runtime_effect_diagnostics_for_loaded(
+    loaded: &LoadedSettings,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let effective = &loaded.effective;
+    let mut push = |field: &str, message: String, fix: Option<String>| {
+        diagnostics.push(ConfigDiagnostic {
+            field: field.to_string(),
+            message,
+            severity: WarningSeverity::Info,
+            code: Some("no-runtime-effect".to_string()),
+            source_info: loaded
+                .sources
+                .get(field)
+                .map(|source| source.as_str().to_string()),
+            fix,
+        });
+    };
+
+    for (field, is_set) in [
+        ("appIcon", effective.app_icon.is_some()),
+        ("autoStart", effective.auto_start.is_some()),
+        ("startMinimized", effective.start_minimized.is_some()),
+        ("minimizeToTray", effective.minimize_to_tray.is_some()),
+        ("closeToTray", effective.close_to_tray.is_some()),
+        (
+            "quickChatHideOnBlur",
+            effective.quick_chat_hide_on_blur.is_some(),
+        ),
+        (
+            "quickChatInjectScreen",
+            effective.quick_chat_inject_screen.is_some(),
+        ),
+        ("quickChatAmbient", effective.quick_chat_ambient.is_some()),
+    ] {
+        if is_set {
+            push(
+                field,
+                format!(
+                    "{field} is accepted for settings compatibility, but the Rust TUI does not support the legacy Electron behavior and this setting has no runtime effect."
+                ),
+                None,
+            );
+        }
+    }
+
+    if effective.auto_approve_tools.is_some() {
+        push(
+            "autoApproveTools",
+            "autoApproveTools is accepted for compatibility, but it is not wired to the Rust permission system and has no runtime effect.".to_string(),
+            Some("Use permissionMode or permissions.defaultMode to change tool approval behavior.".to_string()),
+        );
+    }
+    if effective.analytics_enabled.is_some() {
+        push(
+            "analyticsEnabled",
+            "analyticsEnabled is accepted for compatibility, but analytics collection is not implemented and this setting has no runtime effect.".to_string(),
+            None,
+        );
+    }
+    if effective.teammate_mode.is_some() {
+        push(
+            "teammateMode",
+            "teammateMode is accepted for compatibility, but the Rust TUI does not currently implement teammate display modes and this setting has no runtime effect.".to_string(),
+            None,
+        );
+    }
+
+    for (field, is_set) in [
+        (
+            "memoryAutoRetrieve",
+            effective.memory_auto_retrieve.is_some(),
+        ),
+        (
+            "memoryQueryRewriting",
+            effective.memory_query_rewriting.is_some(),
+        ),
+        (
+            "memoryMaxRetrieved",
+            effective.memory_max_retrieved.is_some(),
+        ),
+        (
+            "memorySimilarityThreshold",
+            effective.memory_similarity_threshold.is_some(),
+        ),
+        (
+            "memoryAutoSummarize",
+            effective.memory_auto_summarize.is_some(),
+        ),
+        ("memoryNightly", effective.memory_nightly.is_some()),
+        ("memorySleepTime", effective.memory_sleep_time.is_some()),
+        ("memoryTempTtl", effective.memory_temp_ttl.is_some()),
+        (
+            "memoryArchiveRetention",
+            effective.memory_archive_retention.is_some(),
+        ),
+        ("memoryToolModel", effective.memory_tool_model.is_some()),
+        (
+            "memoryEmbeddingModel",
+            effective.memory_embedding_model.is_some(),
+        ),
+    ] {
+        if is_set {
+            push(
+                field,
+                format!(
+                    "{field} is reserved for future memory runtime tuning and currently has no runtime effect."
+                ),
+                None,
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -825,6 +1037,73 @@ mod tests {
                 "missing legacy warning for {field}: {warnings:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_validate_settings_flags_invalid_view_and_compact_threshold() {
+        let settings = SettingsJson {
+            view_mode: Some("verbose".into()),
+            compact_threshold: Some(101),
+            ..Default::default()
+        };
+
+        let warnings = validate_settings(&settings);
+        assert!(warnings.iter().any(|warning| warning.field == "viewMode"
+            && warning.severity == WarningSeverity::Warning
+            && warning.message.contains("prompt mode")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.field == "compactThreshold"
+                && warning.message.contains("default 80")));
+    }
+
+    #[test]
+    fn test_validate_settings_flags_no_runtime_effect_settings() {
+        let settings = SettingsJson {
+            auto_approve_tools: Some(true),
+            analytics_enabled: Some(false),
+            teammate_mode: Some(true),
+            memory_auto_retrieve: Some(true),
+            ..Default::default()
+        };
+
+        let warnings = validate_settings(&settings);
+        for field in [
+            "autoApproveTools",
+            "analyticsEnabled",
+            "teammateMode",
+            "memoryAutoRetrieve",
+        ] {
+            assert!(
+                warnings.iter().any(|warning| warning.field == field
+                    && warning.severity == WarningSeverity::Info
+                    && warning.message.contains("no runtime effect")),
+                "missing no-effect warning for {field}: {warnings:?}"
+            );
+        }
+        assert!(warnings
+            .iter()
+            .find(|warning| warning.field == "autoApproveTools")
+            .is_some_and(|warning| warning.message.contains("permissionMode")));
+    }
+
+    #[test]
+    fn test_collect_config_diagnostics_flags_auto_approve_tools_without_enabling_permissions() {
+        let mut loaded = LoadedSettings::default();
+        loaded.effective.auto_approve_tools = Some(true);
+
+        let diagnostics = collect_config_diagnostics(&loaded);
+
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.field == "autoApproveTools")
+            .expect("autoApproveTools diagnostic");
+        assert_eq!(diagnostic.severity, WarningSeverity::Info);
+        assert_eq!(diagnostic.code.as_deref(), Some("no-runtime-effect"));
+        assert!(diagnostic
+            .fix
+            .as_deref()
+            .is_some_and(|fix| fix.contains("permissions.defaultMode")));
     }
 
     #[test]

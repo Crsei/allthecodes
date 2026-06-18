@@ -1,5 +1,6 @@
 use std::fs;
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -12,14 +13,16 @@ use super::paths::{
     control_token_path, daemon_dir, health_url, logs_dir, shutdown_request_path, sleep_state_path,
     state_path, worker_state_path, workers_dir,
 };
-use super::platform::process_is_alive;
+use super::platform::{process_matches_record, process_start_key};
 #[cfg(feature = "sqlite-storage")]
 use super::sqlite_store;
 use super::types::{
     DaemonControlToken, DaemonProcessState, DaemonRunStatus, DaemonShutdownRequest,
     DaemonSleepState, DaemonStatusSnapshot, DaemonWorkerState, DaemonWorkerStatus,
-    DaemonWorkerSummary, StaleStateCleanupReport, SCHEMA_VERSION,
+    DaemonWorkerSummary, ProcessIdentityStatus, StaleStateCleanupReport, SCHEMA_VERSION,
 };
+
+const DEFAULT_LOG_TAIL_BYTES: usize = 16 * 1024;
 
 pub fn write_started(port: u16, cwd: &Path) -> Result<DaemonProcessState> {
     clear_shutdown_request()?;
@@ -32,6 +35,12 @@ pub fn write_started(port: u16, cwd: &Path) -> Result<DaemonProcessState> {
         cwd: cwd.to_path_buf(),
         port,
         health_url: health_url(port),
+        command_kind: Some("daemon-supervisor".to_string()),
+        binary_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        binary_path: current_binary_path(),
+        log_path: Some(daemon_dir().join("supervisor.log")),
+        ready_url: Some(crate::readiness::ready_url(port)),
+        process_start_key: process_start_key(std::process::id()),
         started_at: now,
         updated_at: now,
         shutdown_requested: false,
@@ -53,6 +62,12 @@ pub fn write_stopped(port: u16, cwd: &Path) -> Result<DaemonProcessState> {
         cwd: cwd.to_path_buf(),
         port,
         health_url: health_url(port),
+        command_kind: Some("daemon-supervisor".to_string()),
+        binary_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        binary_path: current_binary_path(),
+        log_path: Some(daemon_dir().join("supervisor.log")),
+        ready_url: Some(crate::readiness::ready_url(port)),
+        process_start_key: process_start_key(std::process::id()),
         started_at: now,
         updated_at: now,
         shutdown_requested: false,
@@ -72,6 +87,12 @@ pub fn write_supervisor_heartbeat(port: u16, cwd: &Path) -> Result<DaemonProcess
         cwd: cwd.to_path_buf(),
         port,
         health_url: health_url(port),
+        command_kind: Some("daemon-supervisor".to_string()),
+        binary_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        binary_path: current_binary_path(),
+        log_path: Some(daemon_dir().join("supervisor.log")),
+        ready_url: Some(crate::readiness::ready_url(port)),
+        process_start_key: process_start_key(std::process::id()),
         started_at: now,
         updated_at: now,
         shutdown_requested: false,
@@ -84,6 +105,12 @@ pub fn write_supervisor_heartbeat(port: u16, cwd: &Path) -> Result<DaemonProcess
     state.cwd = cwd.to_path_buf();
     state.port = port;
     state.health_url = health_url(port);
+    state.command_kind = Some("daemon-supervisor".to_string());
+    state.binary_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    state.binary_path = current_binary_path();
+    state.log_path = Some(daemon_dir().join("supervisor.log"));
+    state.ready_url = Some(crate::readiness::ready_url(port));
+    state.process_start_key = process_start_key(std::process::id());
     state.updated_at = now;
     state.shutdown_requested = shutdown_requested();
     state.workers = workers;
@@ -108,6 +135,11 @@ pub fn write_worker_running(
         pid: Some(pid),
         cwd: cwd.to_path_buf(),
         log_path: log_path.to_path_buf(),
+        command_kind: Some(format!("daemon-worker:{kind}")),
+        binary_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        binary_path: current_binary_path(),
+        ready_url: None,
+        process_start_key: process_start_key(pid),
         status: DaemonWorkerStatus::Running,
         started_at: now,
         updated_at: now,
@@ -245,14 +277,20 @@ pub fn status_snapshot() -> Result<DaemonStatusSnapshot> {
     if state.status != DaemonRunStatus::Running {
         return Ok(DaemonStatusSnapshot::Stopped);
     }
-    if process_is_alive(state.pid) {
-        state.workers = worker_summaries()?;
-        return Ok(DaemonStatusSnapshot::Running(state));
+    match process_matches_record(state.pid, state.process_start_key.as_deref()) {
+        ProcessIdentityStatus::Matched
+        | ProcessIdentityStatus::Unknown
+        | ProcessIdentityStatus::Unrecorded => {
+            state.workers = worker_summaries()?;
+            Ok(DaemonStatusSnapshot::Running(state))
+        }
+        ProcessIdentityStatus::Dead | ProcessIdentityStatus::Mismatched { .. } => {
+            state.status = DaemonRunStatus::Stale;
+            state.updated_at = Utc::now();
+            write_state(&state)?;
+            Ok(DaemonStatusSnapshot::Stale(state))
+        }
     }
-    state.status = DaemonRunStatus::Stale;
-    state.updated_at = Utc::now();
-    write_state(&state)?;
-    Ok(DaemonStatusSnapshot::Stale(state))
 }
 
 pub fn cleanup_stale_state_before_start() -> Result<StaleStateCleanupReport> {
@@ -260,7 +298,10 @@ pub fn cleanup_stale_state_before_start() -> Result<StaleStateCleanupReport> {
     let Some(state) = read_state()? else {
         return Ok(report);
     };
-    if state.status == DaemonRunStatus::Stopped || process_is_alive(state.pid) {
+    if state.status == DaemonRunStatus::Stopped
+        || process_matches_record(state.pid, state.process_start_key.as_deref())
+            .is_current_process_record()
+    {
         return Ok(report);
     }
 
@@ -294,6 +335,38 @@ pub fn request_shutdown(reason: &str) -> Result<()> {
         write_state(&state)?;
     }
     Ok(())
+}
+
+pub fn tail_log(path: &Path, max_bytes: Option<usize>) -> Result<String> {
+    ensure_daemon_dir()?;
+    let max_bytes = max_bytes.unwrap_or(DEFAULT_LOG_TAIL_BYTES);
+    let daemon_root = daemon_dir()
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", daemon_dir().display()))?;
+    let canonical_path = path
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize log path {}", path.display()))?;
+    if !canonical_path.starts_with(&daemon_root) {
+        anyhow::bail!(
+            "refusing to read log outside daemon dir: {}",
+            path.display()
+        );
+    }
+
+    let mut file = fs::File::open(&canonical_path)
+        .with_context(|| format!("failed to open log {}", canonical_path.display()))?;
+    let len = file
+        .metadata()
+        .with_context(|| format!("failed to stat log {}", canonical_path.display()))?
+        .len();
+    let read_len = len.min(max_bytes as u64);
+    file.seek(SeekFrom::Start(len.saturating_sub(read_len)))
+        .with_context(|| format!("failed to seek log {}", canonical_path.display()))?;
+    let mut bytes = Vec::with_capacity(read_len as usize);
+    file.take(read_len)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read log {}", canonical_path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
 pub fn shutdown_requested() -> bool {
@@ -451,7 +524,10 @@ fn cleanup_worker_state_files(report: &mut StaleStateCleanupReport) -> Result<()
             }
         };
         match state.pid {
-            Some(pid) if process_is_alive(pid) => {
+            Some(pid)
+                if process_matches_record(pid, state.process_start_key.as_deref())
+                    .is_current_process_record() =>
+            {
                 report
                     .live_worker_states_retained
                     .push(DaemonWorkerSummary {
@@ -489,7 +565,10 @@ fn cleanup_worker_state_records(report: &mut StaleStateCleanupReport) -> Result<
     for state in states {
         let path = worker_state_path(&state.worker_id);
         match state.pid {
-            Some(pid) if process_is_alive(pid) => {
+            Some(pid)
+                if process_matches_record(pid, state.process_start_key.as_deref())
+                    .is_current_process_record() =>
+            {
                 if !path.exists() {
                     report
                         .live_worker_states_retained
@@ -592,4 +671,8 @@ pub(super) fn ensure_daemon_dir() -> Result<()> {
     fs::create_dir_all(logs_dir())
         .with_context(|| format!("failed to create {}", logs_dir().display()))?;
     Ok(())
+}
+
+fn current_binary_path() -> Option<PathBuf> {
+    std::env::current_exe().ok()
 }

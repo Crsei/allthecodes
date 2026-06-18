@@ -355,6 +355,24 @@ impl TasksSurface {
                     task.summary = output.lines().last().unwrap_or(output.as_str()).to_string();
                 });
             }
+            AgentEvent::OutputBatch {
+                agent_id, output, ..
+            } => {
+                self.update_task(agent_id, |task| {
+                    for event in &output.events {
+                        if !event.chunk.is_empty() {
+                            task.output_lines.push(event.chunk.clone());
+                        }
+                    }
+                    if let Some(last_chunk) =
+                        output.events.iter().rev().find_map(|event| {
+                            (!event.chunk.is_empty()).then_some(event.chunk.as_str())
+                        })
+                    {
+                        task.summary = last_chunk.lines().last().unwrap_or(last_chunk).to_string();
+                    }
+                });
+            }
             AgentEvent::PermissionQueued { .. }
             | AgentEvent::PermissionResolved { .. }
             | AgentEvent::TreeSnapshot { .. } => {}

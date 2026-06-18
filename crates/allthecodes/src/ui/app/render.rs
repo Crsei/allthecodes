@@ -14,7 +14,7 @@ use crate::ui::command_surface::CommandSurface;
 use crate::ui::history_search_dialog::HistorySearchDialog;
 use crate::ui::messages::render_messages;
 use crate::ui::notifications::in_app::{NotificationPriority, NotificationTone};
-use crate::ui::overlays::{render_centered_dialog_lines, CenteredOverlayFrame};
+use crate::ui::overlays::{render_prompt_adjacent_dialog_lines, CenteredOverlayFrame};
 use crate::ui::panel_layout::PanelSizePreset;
 use crate::ui::prompt_input::PromptInputRenderContext;
 use crate::ui::theme::{Theme, ThemeColors};
@@ -228,7 +228,7 @@ impl App {
             }
         }
 
-        // Bottom area: spinner + suggestions + paste_notice + input + completion_popup + palette + arg_help + notification + agent_footer + status
+        // Bottom area: spinner + suggestions + paste_notice + completion_popup + palette + arg_help + input + notification + agent_footer + status
         let has_suggestions = suggestion_height > 0;
         let bottom_chunks = bottom_pane.split(bottom_area);
         self.prompt_area = Some(bottom_chunks.input);
@@ -246,6 +246,17 @@ impl App {
             self.render_paste_notice(bottom_chunks.paste_notice, frame.buffer_mut());
         }
 
+        // Render completion popup (when active and command palette is not active)
+        if self.completion_state.active && !self.command_palette.active() {
+            self.render_completion_popup(bottom_chunks.completion_popup, frame.buffer_mut());
+        }
+
+        self.command_palette.render(
+            bottom_chunks.command_palette,
+            frame.buffer_mut(),
+            &self.theme,
+        );
+
         let argument_hint = CommandPalette::argument_hint(&self.prompt.input, cwd_path);
         let placeholder = self.prompt_placeholder();
         let mode_indicator = self.prompt_mode_indicator();
@@ -258,17 +269,6 @@ impl App {
                 placeholder: Some(placeholder),
                 mode_indicator: Some(mode_indicator),
             },
-        );
-
-        // Render completion popup (when active and command palette is not active)
-        if self.completion_state.active && !self.command_palette.active() {
-            self.render_completion_popup(bottom_chunks.completion_popup, frame.buffer_mut());
-        }
-
-        self.command_palette.render(
-            bottom_chunks.command_palette,
-            frame.buffer_mut(),
-            &self.theme,
         );
 
         if notification_height > 0 {
@@ -285,6 +285,7 @@ impl App {
             render_command_surface_overlay(
                 surface,
                 size,
+                bottom_chunks.input,
                 frame.buffer_mut(),
                 self.design_theme_provider.colors(),
             );
@@ -294,6 +295,7 @@ impl App {
             render_history_search_overlay(
                 dialog,
                 size,
+                bottom_chunks.input,
                 frame.buffer_mut(),
                 &self.theme,
                 self.design_theme_provider.colors(),
@@ -307,6 +309,7 @@ impl App {
                 &self.agent_nav,
                 &current_thread_id,
                 size,
+                bottom_chunks.input,
                 frame.buffer_mut(),
                 &self.theme,
                 self.design_theme_provider.colors(),
@@ -314,15 +317,30 @@ impl App {
         }
 
         if let Some(ref dialog) = self.permission_dialog {
-            dialog.render(size, frame.buffer_mut(), &self.theme);
+            dialog.render(
+                size,
+                Some(bottom_chunks.input),
+                frame.buffer_mut(),
+                &self.theme,
+            );
         }
 
         if let Some(ref dialog) = self.question_dialog {
-            dialog.render(size, frame.buffer_mut(), &self.theme);
+            dialog.render(
+                size,
+                Some(bottom_chunks.input),
+                frame.buffer_mut(),
+                &self.theme,
+            );
         }
 
         if let Some(ref dialog) = self.bypass_permissions_mode_dialog {
-            dialog.render(size, frame.buffer_mut(), &self.theme);
+            dialog.render(
+                size,
+                Some(bottom_chunks.input),
+                frame.buffer_mut(),
+                &self.theme,
+            );
         }
 
         self.capture_render_snapshot(frame);
@@ -903,6 +921,7 @@ fn render_session_scrollbar(
 fn render_command_surface_overlay(
     surface: &CommandSurface,
     area: Rect,
+    prompt_area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     colors: &ThemeColors,
 ) {
@@ -911,11 +930,12 @@ fn render_command_surface_overlay(
         .lines()
         .map(|line| Line::from(line.to_string()))
         .collect::<Vec<_>>();
-    render_centered_dialog_lines(
+    render_prompt_adjacent_dialog_lines(
         CenteredOverlayFrame::with_preset(surface.title(), PanelSizePreset::CommandSurface)
             .color("accent"),
         body,
         area,
+        prompt_area,
         buf,
         colors,
         Style::default().fg(Color::White).bg(Color::Rgb(8, 10, 14)),
@@ -925,6 +945,7 @@ fn render_command_surface_overlay(
 fn render_history_search_overlay(
     dialog: &HistorySearchDialog,
     area: Rect,
+    prompt_area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     theme: &Theme,
     colors: &ThemeColors,
@@ -935,7 +956,7 @@ fn render_history_search_overlay(
     }
 
     let overlay = spec
-        .resolve_rect(area, spec.max_height)
+        .resolve_prompt_adjacent_rect(area, prompt_area, spec.max_height)
         .unwrap_or(Rect::new(area.x, area.y, area.width, area.height));
     let text = dialog.render(
         overlay.width.saturating_sub(4) as usize,
@@ -945,11 +966,12 @@ fn render_history_search_overlay(
         .lines()
         .map(|line| Line::from(line.to_string()))
         .collect::<Vec<_>>();
-    render_centered_dialog_lines(
+    render_prompt_adjacent_dialog_lines(
         CenteredOverlayFrame::with_preset("History Search", PanelSizePreset::HistorySearch)
             .color("accent"),
         body,
         area,
+        prompt_area,
         buf,
         colors,
         theme.dim,
@@ -961,6 +983,7 @@ fn render_agent_tree_overlay(
     state: &super::agent_navigation::AgentNavigationState,
     current_thread_id: &str,
     area: Rect,
+    prompt_area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     theme: &Theme,
     colors: &ThemeColors,
@@ -981,11 +1004,12 @@ fn render_agent_tree_overlay(
             Line::from(Span::styled(format!("Menu: {summary_row}"), theme.dim)),
         );
     }
-    render_centered_dialog_lines(
+    render_prompt_adjacent_dialog_lines(
         CenteredOverlayFrame::with_preset("Agent Threads", PanelSizePreset::AgentTree)
             .color("accent"),
         lines,
         area,
+        prompt_area,
         buf,
         colors,
         theme.dim,

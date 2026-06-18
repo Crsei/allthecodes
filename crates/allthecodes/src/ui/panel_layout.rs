@@ -53,28 +53,84 @@ impl PanelSizeSpec {
             return None;
         }
 
+        let width = self.resolve_width(area);
+        let height = self.resolve_height(area, preferred_height);
+
+        Some(centered_rect(area, width, height))
+    }
+
+    pub fn resolve_prompt_adjacent_rect(
+        self,
+        area: Rect,
+        prompt_area: Rect,
+        preferred_height: u16,
+    ) -> Option<Rect> {
+        if area.width == 0 || area.height == 0 {
+            return None;
+        }
+
+        let available_above_prompt = prompt_available_above(area, prompt_area);
+        let min_height = self.resolve_min_height(area);
+        if available_above_prompt < min_height {
+            return self.resolve_rect(area, preferred_height);
+        }
+
+        let width = self.resolve_width(area);
+        let height = self
+            .resolve_height(area, preferred_height)
+            .min(available_above_prompt)
+            .max(1);
+
+        Some(prompt_adjacent_rect(area, prompt_area, width, height))
+    }
+
+    pub fn resolve_prompt_or_centered_rect(
+        self,
+        area: Rect,
+        prompt_area: Option<Rect>,
+        preferred_height: u16,
+    ) -> Option<Rect> {
+        match prompt_area {
+            Some(prompt_area) => {
+                self.resolve_prompt_adjacent_rect(area, prompt_area, preferred_height)
+            }
+            None => self.resolve_rect(area, preferred_height),
+        }
+    }
+
+    fn resolve_width(self, area: Rect) -> u16 {
         let max_width = self.max_width.max(self.min_width);
         let available_width = area.width.saturating_sub(self.horizontal_padding);
         let target_width = self
             .width_percent
             .map(|percent| area.width.saturating_mul(percent.min(100)) / 100)
             .unwrap_or(available_width);
-        let width = target_width
+        target_width
             .max(self.min_width)
             .min(max_width)
             .min(area.width)
-            .max(1);
+            .max(1)
+    }
 
+    fn resolve_min_height(self, area: Rect) -> u16 {
         let max_height = self.max_height.max(self.min_height);
         let available_height = area.height.saturating_sub(self.vertical_padding);
-        let height = preferred_height
+        self.min_height
+            .min(max_height)
+            .min(available_height.max(1))
+            .min(area.height)
+            .max(1)
+    }
+
+    fn resolve_height(self, area: Rect, preferred_height: u16) -> u16 {
+        let max_height = self.max_height.max(self.min_height);
+        let available_height = area.height.saturating_sub(self.vertical_padding);
+        preferred_height
             .max(self.min_height)
             .min(max_height)
             .min(available_height.max(1))
             .min(area.height)
-            .max(1);
-
-        Some(centered_rect(area, width, height))
+            .max(1)
     }
 }
 
@@ -102,6 +158,36 @@ pub fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
         y: area.y + area.height.saturating_sub(height) / 2,
         width: width.min(area.width),
         height: height.min(area.height),
+    }
+}
+
+const PROMPT_ADJACENT_GAP: u16 = 1;
+
+fn prompt_available_above(area: Rect, prompt_area: Rect) -> u16 {
+    prompt_area
+        .y
+        .min(area.y.saturating_add(area.height))
+        .saturating_sub(area.y)
+        .saturating_sub(PROMPT_ADJACENT_GAP)
+}
+
+pub fn prompt_adjacent_rect(area: Rect, prompt_area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    let prompt_top = prompt_area.y.min(area.y.saturating_add(area.height));
+    let available_above_prompt = prompt_available_above(area, prompt_area);
+    if height > available_above_prompt {
+        return centered_rect(area, width, height);
+    }
+
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: prompt_top
+            .saturating_sub(PROMPT_ADJACENT_GAP)
+            .saturating_sub(height)
+            .max(area.y),
+        width,
+        height,
     }
 }
 
@@ -147,6 +233,56 @@ mod tests {
             .expect("rect");
 
         assert_eq!(rect, Rect::new(2, 3, 6, 4));
+    }
+
+    #[test]
+    fn prompt_adjacent_rect_sits_above_prompt_when_space_allows() {
+        let area = Rect::new(0, 0, 100, 30);
+        let prompt_area = Rect::new(0, 24, 100, 3);
+        let rect = prompt_adjacent_rect(area, prompt_area, 50, 8);
+
+        assert_eq!(rect.width, 50);
+        assert_eq!(rect.height, 8);
+        assert!(rect.y + rect.height <= prompt_area.y - 1);
+    }
+
+    #[test]
+    fn prompt_adjacent_rect_falls_back_to_center_when_space_is_short() {
+        let area = Rect::new(0, 0, 100, 30);
+        let prompt_area = Rect::new(0, 5, 100, 3);
+        let rect = prompt_adjacent_rect(area, prompt_area, 50, 8);
+
+        assert_eq!(rect, centered_rect(area, 50, 8));
+    }
+
+    #[test]
+    fn prompt_adjacent_rect_stays_inside_tiny_terminal() {
+        let area = Rect::new(4, 3, 8, 4);
+        let prompt_area = Rect::new(4, 6, 8, 1);
+        let rect = prompt_adjacent_rect(area, prompt_area, 20, 10);
+
+        assert!(rect.x >= area.x);
+        assert!(rect.y >= area.y);
+        assert!(rect.x + rect.width <= area.x + area.width);
+        assert!(rect.y + rect.height <= area.y + area.height);
+    }
+
+    #[test]
+    fn spec_resolves_prompt_adjacent_rect_or_centered_fallback() {
+        let spec = PanelSizeSpec::fixed(20, 60, 6, 12).with_padding(4, 2);
+        let area = Rect::new(0, 0, 100, 30);
+        let prompt_area = Rect::new(0, 24, 100, 3);
+        let adjacent = spec
+            .resolve_prompt_adjacent_rect(area, prompt_area, 10)
+            .expect("adjacent rect");
+        assert!(adjacent.y + adjacent.height <= prompt_area.y - 1);
+        assert_eq!(adjacent.height, 10);
+
+        let prompt_area = Rect::new(0, 4, 100, 3);
+        let centered = spec
+            .resolve_prompt_adjacent_rect(area, prompt_area, 10)
+            .expect("centered rect");
+        assert_eq!(centered, spec.resolve_rect(area, 10).expect("rect"));
     }
 
     #[test]

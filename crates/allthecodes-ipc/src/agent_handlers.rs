@@ -5,10 +5,22 @@ use std::sync::{Arc, OnceLock};
 use allthecodes_ipc_protocol::protocol::BackendMessage;
 use allthecodes_types::agent_events::{AgentCommand, AgentEvent, TeamCommand, TeamEvent};
 use allthecodes_types::agent_types::{AgentNode, TeamMemberInfo};
+use allthecodes_types::output::OutputReadBatch;
+
+const DEFAULT_AGENT_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
 
 pub trait AgentRuntimeHost: Send + Sync + 'static {
     fn cancel_agent(&self, agent_id: &str) -> Option<String>;
     fn agent_output(&self, agent_id: &str) -> Option<AgentTaskOutput>;
+    fn agent_output_batch(
+        &self,
+        agent_id: &str,
+        after_seq: Option<u64>,
+        limit_bytes: usize,
+    ) -> Option<AgentTaskOutputBatch> {
+        let _ = (agent_id, after_seq, limit_bytes);
+        None
+    }
     fn update_agent_state(
         &self,
         agent_id: &str,
@@ -26,6 +38,12 @@ pub trait AgentRuntimeHost: Send + Sync + 'static {
 pub struct AgentTaskOutput {
     pub id: String,
     pub output: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentTaskOutputBatch {
+    pub id: String,
+    pub output: OutputReadBatch,
 }
 
 static HOST: OnceLock<Arc<dyn AgentRuntimeHost>> = OnceLock::new();
@@ -77,8 +95,25 @@ pub fn handle_agent_command(cmd: AgentCommand) -> Vec<BackendMessage> {
                 },
             }]
         }
-        AgentCommand::QueryAgentOutput { agent_id } => {
-            match HOST.get().and_then(|host| host.agent_output(&agent_id)) {
+        AgentCommand::QueryAgentOutput {
+            agent_id,
+            after_seq,
+            limit_bytes,
+        } => match HOST.get().and_then(|host| {
+            host.agent_output_batch(
+                &agent_id,
+                after_seq,
+                limit_bytes.unwrap_or(DEFAULT_AGENT_OUTPUT_LIMIT_BYTES),
+            )
+        }) {
+            Some(task) => vec![BackendMessage::AgentEvent {
+                event: AgentEvent::OutputBatch {
+                    agent_id,
+                    task_id: task.id,
+                    output: task.output,
+                },
+            }],
+            None => match HOST.get().and_then(|host| host.agent_output(&agent_id)) {
                 Some(task) => vec![BackendMessage::SystemInfo {
                     text: if task.output.is_empty() {
                         format!(
@@ -97,8 +132,8 @@ pub fn handle_agent_command(cmd: AgentCommand) -> Vec<BackendMessage> {
                     text: format!("No retained output is available for agent {}.", agent_id),
                     level: "warning".into(),
                 }],
-            }
-        }
+            },
+        },
     }
 }
 

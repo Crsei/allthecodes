@@ -799,6 +799,16 @@
     {
       "errors": [],
       "experimental": null,
+      "method": "GET",
+      "operation": "SettingsLayers",
+      "params": null,
+      "path": "/api/settings/layers",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
       "method": "POST",
       "operation": "CommandRun",
       "params": "JsonValue",
@@ -1194,6 +1204,16 @@
       "params": null,
       "path": "/api/providers/{id}",
       "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "ProvidersProbe",
+      "params": "ProviderProbeRequest",
+      "path": "/api/providers/{id}/probe",
+      "response": "ProviderProbeResponse",
       "serialization": "concurrent"
     },
     {
@@ -3409,6 +3429,26 @@
           ],
           "type": "object"
         },
+        "ProviderProbeRequest": {
+          "properties": {
+            "transport": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ProviderProbeTransport"
+                }
+              ],
+              "default": "web_socket"
+            }
+          },
+          "type": "object"
+        },
+        "ProviderProbeTransport": {
+          "enum": [
+            "http",
+            "web_socket"
+          ],
+          "type": "string"
+        },
         "ProviderUpdateRequest": {
           "properties": {
             "api_key": {
@@ -5131,6 +5171,24 @@
           "properties": {
             "method": {
               "enum": [
+                "SettingsLayers"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "CommandRun"
               ],
               "type": "string"
@@ -5823,6 +5881,24 @@
             },
             "params": {
               "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "ProvidersProbe"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ProviderProbeRequest"
             }
           },
           "required": [
@@ -8701,6 +8777,139 @@
           ],
           "type": "object"
         },
+        "ProviderProbeErrorKind": {
+          "enum": [
+            "context_window_exceeded",
+            "quota_exceeded",
+            "rate_limited",
+            "policy_blocked",
+            "server_overloaded",
+            "retryable_transport",
+            "authentication_failed",
+            "invalid_request",
+            "unknown_provider_error"
+          ],
+          "type": "string"
+        },
+        "ProviderProbeMetadata": {
+          "properties": {
+            "headers": {
+              "items": {
+                "items": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "transport": {
+              "$ref": "#/definitions/ProviderProbeTransport"
+            }
+          },
+          "required": [
+            "headers",
+            "provider",
+            "transport"
+          ],
+          "type": "object"
+        },
+        "ProviderProbeResponse": {
+          "properties": {
+            "base_url_host": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error_kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProviderProbeErrorKind"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProviderProbeMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provider_id": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/definitions/ProviderProbeStatus"
+            },
+            "transport": {
+              "$ref": "#/definitions/ProviderProbeTransport"
+            }
+          },
+          "required": [
+            "message",
+            "provider_id",
+            "status",
+            "transport"
+          ],
+          "type": "object"
+        },
+        "ProviderProbeStatus": {
+          "enum": [
+            "ok",
+            "unsupported",
+            "auth_failed",
+            "network_error",
+            "quota_or_rate_limited",
+            "error"
+          ],
+          "type": "string"
+        },
+        "ProviderProbeTransport": {
+          "enum": [
+            "http",
+            "web_socket"
+          ],
+          "type": "string"
+        },
         "ProviderSummary": {
           "properties": {
             "arguments": {
@@ -9163,8 +9372,20 @@
             "session_id": {
               "type": "string"
             },
+            "settings_diagnostics": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "settings_map": {
               "additionalProperties": true,
+              "type": "object"
+            },
+            "settings_sources": {
+              "additionalProperties": {
+                "type": "string"
+              },
               "type": "object"
             },
             "thinking_enabled": {
@@ -10734,6 +10955,22 @@
           "properties": {
             "method": {
               "enum": [
+                "SettingsLayers"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "CommandRun"
               ],
               "type": "string"
@@ -11379,6 +11616,24 @@
               "type": "string"
             },
             "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "ProvidersProbe"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/ProviderProbeResponse"
+            }
           },
           "required": [
             "method",
@@ -15558,6 +15813,167 @@
       "title": "ProviderListResponse",
       "type": "object"
     },
+    "ProviderProbeRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ProviderProbeTransport": {
+          "enum": [
+            "http",
+            "web_socket"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "transport": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProviderProbeTransport"
+            }
+          ],
+          "default": "web_socket"
+        }
+      },
+      "title": "ProviderProbeRequest",
+      "type": "object"
+    },
+    "ProviderProbeResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ProviderProbeErrorKind": {
+          "enum": [
+            "context_window_exceeded",
+            "quota_exceeded",
+            "rate_limited",
+            "policy_blocked",
+            "server_overloaded",
+            "retryable_transport",
+            "authentication_failed",
+            "invalid_request",
+            "unknown_provider_error"
+          ],
+          "type": "string"
+        },
+        "ProviderProbeMetadata": {
+          "properties": {
+            "headers": {
+              "items": {
+                "items": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "transport": {
+              "$ref": "#/definitions/ProviderProbeTransport"
+            }
+          },
+          "required": [
+            "headers",
+            "provider",
+            "transport"
+          ],
+          "type": "object"
+        },
+        "ProviderProbeStatus": {
+          "enum": [
+            "ok",
+            "unsupported",
+            "auth_failed",
+            "network_error",
+            "quota_or_rate_limited",
+            "error"
+          ],
+          "type": "string"
+        },
+        "ProviderProbeTransport": {
+          "enum": [
+            "http",
+            "web_socket"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "base_url_host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProviderProbeErrorKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProviderProbeMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ProviderProbeStatus"
+        },
+        "transport": {
+          "$ref": "#/definitions/ProviderProbeTransport"
+        }
+      },
+      "required": [
+        "message",
+        "provider_id",
+        "status",
+        "transport"
+      ],
+      "title": "ProviderProbeResponse",
+      "type": "object"
+    },
     "ProviderUpdateRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -16367,8 +16783,20 @@
         "session_id": {
           "type": "string"
         },
+        "settings_diagnostics": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "settings_map": {
           "additionalProperties": true,
+          "type": "object"
+        },
+        "settings_sources": {
+          "additionalProperties": {
+            "type": "string"
+          },
           "type": "object"
         },
         "thinking_enabled": {

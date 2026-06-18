@@ -7,15 +7,17 @@ use anyhow::{Context, Result};
 
 use crate::{operation_lock, protocol, readiness};
 
-use super::paths::{daemon_dir, health_url, state_path};
-use super::platform::{configure_detached, process_is_alive, terminate_process_tree};
+use super::paths::{daemon_dir, health_url, state_path, worker_log_path};
+use super::platform::{configure_detached, process_matches_record};
 use super::storage::{
     cleanup_stale_state_before_start, clear_sleep_state, ensure_daemon_dir, read_control_token,
-    request_shutdown, status_snapshot, write_sleep_state,
+    read_worker_state, request_shutdown, status_snapshot, tail_log, write_sleep_state,
 };
 use super::types::{DaemonProcessState, DaemonStatusSnapshot, StaleStateCleanupReport};
 
-const STOP_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const SHUTDOWN_REQUEST_GRACE_PERIOD: Duration = Duration::from_secs(60);
+const TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const FINAL_EXIT_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
 pub fn try_run_management_command(args: &[String], cwd: &Path, port: u16) -> Option<ExitCode> {
     if args.first().map(String::as_str) != Some("daemon") {
@@ -40,6 +42,7 @@ pub fn try_run_management_command(args: &[String], cwd: &Path, port: u16) -> Opt
         "restart" => print_result(operation_lock::with_operation_lock("restart", cwd, || {
             restart_daemon(args, cwd, port)
         })),
+        "logs" => print_result(print_logs(args)),
         "submit" => print_result(submit_worker_command(args)),
         "abort" => print_result(abort_worker_command()),
         "command" => print_result(print_worker_command(args)),
@@ -140,23 +143,120 @@ fn stop_daemon() -> Result<()> {
     };
 
     request_shutdown("daemon stop command")?;
-    let deadline = Instant::now() + STOP_GRACE_PERIOD;
+    if wait_until_not_matching(&state, SHUTDOWN_REQUEST_GRACE_PERIOD)? {
+        println!("daemon stopped: pid={}", state.pid);
+        return Ok(());
+    }
+
+    super::platform::send_soft_terminate(state.pid, state.process_start_key.as_deref())?;
+    if wait_until_not_matching(&state, TERMINATE_GRACE_PERIOD)? {
+        println!("daemon stopped after terminate: pid={}", state.pid);
+        return Ok(());
+    }
+
+    super::platform::send_force_kill(state.pid, state.process_start_key.as_deref())?;
+    if wait_until_not_matching(&state, FINAL_EXIT_GRACE_PERIOD)? {
+        println!("daemon killed after timeout: pid={}", state.pid);
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "daemon pid={} still appears alive after force kill; {}",
+        state.pid,
+        process_matches_record(state.pid, state.process_start_key.as_deref()).as_diagnostic()
+    )
+}
+
+fn wait_until_not_matching(state: &DaemonProcessState, timeout: Duration) -> Result<bool> {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if !process_is_alive(state.pid) {
-            println!("daemon stopped: pid={}", state.pid);
-            return Ok(());
+        let identity = process_matches_record(state.pid, state.process_start_key.as_deref());
+        if !identity.is_current_process_record() {
+            if matches!(
+                identity,
+                super::types::ProcessIdentityStatus::Mismatched { .. }
+            ) {
+                let mut stale = state.clone();
+                stale.status = super::types::DaemonRunStatus::Stale;
+                stale.updated_at = chrono::Utc::now();
+                super::storage::write_state(&stale)?;
+            }
+            return Ok(true);
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-
-    terminate_process_tree(state.pid)?;
-    println!("daemon terminated after timeout: pid={}", state.pid);
-    Ok(())
+    Ok(false)
 }
 
 fn restart_daemon(args: &[String], cwd: &Path, port: u16) -> Result<()> {
+    if args.iter().any(|arg| arg == "--if-version-changed") {
+        if let DaemonStatusSnapshot::Running(state) = status_snapshot()? {
+            let ready_ok = readiness::probe_ready(state.port, Duration::from_millis(500)).is_ok();
+            let running_version = state.binary_version.as_deref().unwrap_or("unknown");
+            let current_version = env!("CARGO_PKG_VERSION");
+            let log_path = state
+                .log_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| daemon_dir().join("supervisor.log").display().to_string());
+            if running_version == current_version && ready_ok {
+                let ready_url = state
+                    .ready_url
+                    .clone()
+                    .unwrap_or_else(|| readiness::ready_url(state.port));
+                println!(
+                    "daemon restart skipped: version={} pid={} ready={} log={} {}",
+                    running_version,
+                    state.pid,
+                    ready_url,
+                    log_path,
+                    process_matches_record(state.pid, state.process_start_key.as_deref())
+                        .as_diagnostic()
+                );
+                return Ok(());
+            }
+            println!(
+                "daemon restart required: running_version={} current_version={} readiness={} pid={} log={}",
+                running_version,
+                current_version,
+                if ready_ok { "ok" } else { "error" },
+                state.pid,
+                log_path
+            );
+        }
+    }
     stop_daemon()?;
     start_daemon(args, cwd, port)
+}
+
+fn print_logs(args: &[String]) -> Result<()> {
+    let target = args
+        .get(2)
+        .filter(|arg| !arg.starts_with("--"))
+        .map(String::as_str)
+        .unwrap_or("supervisor");
+    let tail_bytes = parse_tail_bytes(args)?;
+    let path = if target == "supervisor" {
+        daemon_dir().join("supervisor.log")
+    } else {
+        read_worker_state(target)?
+            .map(|state| state.log_path)
+            .unwrap_or_else(|| worker_log_path(target))
+    };
+    print!("{}", tail_log(&path, tail_bytes)?);
+    Ok(())
+}
+
+fn parse_tail_bytes(args: &[String]) -> Result<Option<usize>> {
+    match args
+        .windows(2)
+        .find(|pair| pair[0] == "--tail-bytes")
+        .map(|pair| pair[1].parse::<usize>())
+    {
+        Some(Ok(bytes)) => Ok(Some(bytes)),
+        Some(Err(err)) => Err(anyhow::anyhow!("--tail-bytes must be an integer: {err}")),
+        None => Ok(None),
+    }
 }
 
 fn submit_worker_command(args: &[String]) -> Result<()> {
@@ -311,6 +411,36 @@ fn print_status() -> Result<()> {
             println!("  cwd: {}", state.cwd.display());
             println!("  port: {}", state.port);
             println!("  health: {}", state.health_url);
+            println!(
+                "  ready: {}",
+                state.ready_url.as_deref().unwrap_or("unknown")
+            );
+            println!(
+                "  version: {}",
+                state.binary_version.as_deref().unwrap_or("unknown")
+            );
+            println!(
+                "  binary: {}",
+                state
+                    .binary_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            );
+            println!(
+                "  log: {}",
+                state
+                    .log_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| daemon_dir().join("supervisor.log").display().to_string())
+            );
+            println!(
+                "  identity: {}",
+                process_matches_record(state.pid, state.process_start_key.as_deref())
+                    .as_diagnostic()
+                    .trim_start_matches("identity=")
+            );
             println!("  started_at: {}", state.started_at.to_rfc3339());
             println!("  updated_at: {}", state.updated_at.to_rfc3339());
             println!("  shutdown_requested: {}", state.shutdown_requested);
@@ -334,6 +464,12 @@ fn print_status() -> Result<()> {
             println!("daemon status: stale");
             println!("  stale_pid: {}", state.pid);
             println!("  state: {}", state_path().display());
+            println!(
+                "  identity: {}",
+                process_matches_record(state.pid, state.process_start_key.as_deref())
+                    .as_diagnostic()
+                    .trim_start_matches("identity=")
+            );
         }
         DaemonStatusSnapshot::Stopped => {
             println!("daemon status: stopped");
@@ -359,6 +495,6 @@ fn print_result(result: Result<()>) -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "Usage:\n  allthecodes daemon [status]\n  allthecodes daemon start [--port <port>]\n  allthecodes daemon stop\n  allthecodes daemon restart [--port <port>]\n  allthecodes daemon submit <text>\n  allthecodes daemon abort\n  allthecodes daemon command <id> [worker-id]\n  allthecodes daemon events [worker-id]\n  allthecodes daemon token\n  allthecodes daemon sleep <seconds> [reason]\n  allthecodes daemon wake"
+        "Usage:\n  allthecodes daemon [status]\n  allthecodes daemon start [--port <port>]\n  allthecodes daemon stop\n  allthecodes daemon restart [--if-version-changed] [--port <port>]\n  allthecodes daemon logs [supervisor|worker-id] [--tail-bytes N]\n  allthecodes daemon submit <text>\n  allthecodes daemon abort\n  allthecodes daemon command <id> [worker-id]\n  allthecodes daemon events [worker-id]\n  allthecodes daemon token\n  allthecodes daemon sleep <seconds> [reason]\n  allthecodes daemon wake"
     );
 }

@@ -139,7 +139,7 @@ fn running_gateway_client() -> Result<(ChannelDaemonInfo, LocalGatewayClient), B
                 .map_err(|diagnostic| Box::new(diagnostic_response(diagnostic)))?;
             Ok((daemon, client))
         }
-        LocalGatewayDaemonStatus::Stale { pid } => Err(Box::new(error_response(
+        LocalGatewayDaemonStatus::Stale { pid, .. } => Err(Box::new(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "daemon_stale",
             format!("The daemon state is stale for pid {}", pid),

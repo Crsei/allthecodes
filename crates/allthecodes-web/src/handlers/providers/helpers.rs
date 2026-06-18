@@ -5,7 +5,12 @@ use allthecodes_config::settings::{
 };
 
 use super::codex::codex_local_auth_status;
-use super::types::{ProviderPreset, ProviderSummary};
+use super::types::{
+    ProviderApiProxy, ProviderApiProxyEndpoints, ProviderApiProxyStatus, ProviderPreset,
+    ProviderSummary,
+};
+
+const LOCAL_PROXY_BASE_URL: &str = "http://127.0.0.1:17322";
 
 /// Build a list of providers from settings auth profiles.
 pub(super) fn provider_summaries_from_settings() -> Vec<ProviderSummary> {
@@ -19,6 +24,7 @@ pub(super) fn provider_summaries_from_settings() -> Vec<ProviderSummary> {
                 .clone()
                 .unwrap_or_else(|| "anthropic".to_string());
             let enabled = profile_enabled(&profile);
+            let api_proxy = provider_api_proxy(&id, &profile);
             providers.push(ProviderSummary {
                 id: id.clone(),
                 name: id.clone(),
@@ -36,11 +42,71 @@ pub(super) fn provider_summaries_from_settings() -> Vec<ProviderSummary> {
                 command: profile_command(&profile),
                 arguments: profile_arguments(&profile),
                 provider_options: profile_provider_options(&profile),
+                api_proxy: Some(api_proxy),
             });
         }
     }
 
     providers
+}
+
+pub(super) fn provider_api_proxy(
+    provider_id: &str,
+    profile: &ProviderProfileSettings,
+) -> ProviderApiProxy {
+    let status = provider_api_proxy_status(provider_id, profile);
+    let path_id = urlencoding::encode(provider_id);
+    let base_url = LOCAL_PROXY_BASE_URL.to_string();
+    ProviderApiProxy {
+        available: status == ProviderApiProxyStatus::Ready,
+        status,
+        base_url: base_url.clone(),
+        endpoints: ProviderApiProxyEndpoints {
+            anthropic_messages: format!("{base_url}/anthropic-proxy/{path_id}/v1/messages"),
+            anthropic_count_tokens: format!(
+                "{base_url}/anthropic-proxy/{path_id}/v1/messages/count_tokens"
+            ),
+            openai_responses: format!("{base_url}/proxy/{path_id}/v1/responses"),
+        },
+    }
+}
+
+pub(super) fn provider_api_proxy_status(
+    provider_id: &str,
+    profile: &ProviderProfileSettings,
+) -> ProviderApiProxyStatus {
+    if !profile_enabled(profile) {
+        return ProviderApiProxyStatus::ProviderDisabled;
+    }
+    if profile.extra.get("providerType").and_then(Value::as_str) == Some("acp") {
+        return ProviderApiProxyStatus::Unsupported;
+    }
+    let kind = profile.api_provider.as_deref().unwrap_or(provider_id);
+    let Some(info) = allthecodes_api::api::providers::get_provider(kind) else {
+        return ProviderApiProxyStatus::Unsupported;
+    };
+    let Some(capabilities) = allthecodes_api::api::providers::capabilities_for_provider_name(kind)
+    else {
+        return ProviderApiProxyStatus::Unknown;
+    };
+    if !capabilities.is_usable() {
+        return ProviderApiProxyStatus::Unsupported;
+    }
+    let credential_configured = if kind == API_PROVIDER_OPENAI_CODEX {
+        profile_credential_status(profile) == "configured"
+    } else {
+        normalized_non_empty(profile.api_key.as_deref()).is_some()
+            || profile
+                .env
+                .as_ref()
+                .and_then(|env| env.get(info.env_key))
+                .and_then(|value| normalized_non_empty(Some(value)))
+                .is_some()
+    };
+    if !credential_configured {
+        return ProviderApiProxyStatus::MissingCredential;
+    }
+    ProviderApiProxyStatus::Ready
 }
 
 pub(super) fn provider_presets() -> Vec<ProviderPreset> {

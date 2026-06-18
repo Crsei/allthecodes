@@ -9,6 +9,7 @@ path = "src/mod.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+async-stream = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }
@@ -45,6 +46,7 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "process", "io-util"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
+urlencoding = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }

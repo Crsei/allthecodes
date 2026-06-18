@@ -7,6 +7,7 @@ description = "Remote-control gateway models and foundations for cc-rust"
 [dependencies]
 axum = { workspace = true }
 allthecodes-config = { workspace = true }
+allthecodes-types = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }

@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 
 use agent_navigation::{AgentNavigationState, AgentThreadEntry, AgentThreadStatus};
 use agent_tree_dialog::AgentTreeDialog;
-use allthecodes_config::settings::StatusLineSettings;
+use allthecodes_config::settings::{SpinnerTipsSettings, StatusLineSettings};
 use allthecodes_ipc_protocol::BackendMessage;
 use allthecodes_keybindings::KeybindingRegistry;
 use allthecodes_services::prompt_suggestion::PromptSuggestion;
@@ -581,6 +581,9 @@ impl App {
     /// every 5th tick (~80ms) to keep a pleasant animation speed.
     pub fn tick(&mut self) {
         self.tick_counter = self.tick_counter.wrapping_add(1);
+        if self.spinner_state.active {
+            self.spinner_state.tick_tip(16);
+        }
         if self.spinner_state.active && self.tick_counter.is_multiple_of(5) {
             self.spinner_state.tick();
             self.dirty = true;
@@ -689,6 +692,21 @@ impl App {
         self.dirty = true;
     }
 
+    /// Apply a configured view mode at startup or after `/config set`.
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        if self.view_mode == mode {
+            return;
+        }
+        if self.view_mode.is_transcript_like() {
+            self.transcript_state.clear_search();
+        }
+        self.view_mode = mode;
+        if self.view_mode.is_transcript_like() {
+            self.transcript_state.scroll_offset = usize::MAX;
+        }
+        self.dirty = true;
+    }
+
     /// Open a modal slash-command surface above the normal prompt.
     pub fn open_command_surface(&mut self, surface: CommandSurface) {
         self.command_surface = Some(surface);
@@ -724,6 +742,20 @@ impl App {
     pub fn set_spinner_message(&mut self, msg: String) {
         self.spinner_state.set_message(msg);
         self.dirty = true;
+    }
+
+    pub fn set_spinner_tips_settings(&mut self, settings: SpinnerTipsSettings) {
+        self.spinner_state.configure_tips(
+            settings.enabled,
+            settings.interval_ms,
+            settings.custom_tips,
+        );
+        self.dirty = true;
+    }
+
+    #[cfg(test)]
+    pub fn spinner_message(&self) -> &str {
+        &self.spinner_state.message
     }
 
     pub fn set_suggestions(&mut self, suggestions: Vec<PromptSuggestion>) {
@@ -1134,6 +1166,25 @@ impl App {
                 };
                 self.agent_nav
                     .mark_status(agent_id, AgentThreadStatus::Running, Some(summary));
+            }
+            AgentEvent::OutputBatch {
+                agent_id, output, ..
+            } => {
+                if self.agent_nav.contains_thread(agent_id) {
+                    self.current_agent_thread_id = Some(agent_id.clone());
+                }
+                if let Some(last_chunk) = output
+                    .events
+                    .iter()
+                    .rev()
+                    .find_map(|event| (!event.chunk.is_empty()).then_some(event.chunk.as_str()))
+                {
+                    self.agent_nav.mark_status(
+                        agent_id,
+                        AgentThreadStatus::Running,
+                        Some(compact_inline(last_chunk, 80)),
+                    );
+                }
             }
         }
         self.dirty = true;

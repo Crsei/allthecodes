@@ -54,10 +54,10 @@ impl BypassPermissionsModeDialog {
         None
     }
 
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+    pub fn render(&self, area: Rect, prompt_area: Option<Rect>, buf: &mut Buffer, theme: &Theme) {
         let spec = PanelSizePreset::BypassPermissionsMode.spec();
         let dialog_area = spec
-            .resolve_rect(area, spec.max_height)
+            .resolve_prompt_or_centered_rect(area, prompt_area, spec.max_height)
             .unwrap_or(Rect::new(area.x, area.y, area.width, area.height));
 
         Clear.render(dialog_area, buf);
@@ -130,6 +130,8 @@ fn button_span(label: &str, selected: bool, theme: &Theme) -> Span<'static> {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
 
     #[test]
     fn accepts_when_enabled_and_yes_is_selected() {
@@ -155,5 +157,29 @@ mod tests {
             dialog.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some(BypassPermissionsModeChoice::Decline)
         );
+    }
+
+    #[test]
+    fn bypass_permissions_dialog_can_render_above_prompt() {
+        let dialog = BypassPermissionsModeDialog::new(false);
+        let area = Rect::new(0, 0, 100, 30);
+        let prompt_area = Rect::new(0, 24, 100, 3);
+        let mut buffer = Buffer::empty(area);
+
+        dialog.render(area, Some(prompt_area), &mut buffer, &Theme::default());
+
+        let title_row =
+            row_containing(&buffer, area, "Bypass Permissions mode").expect("title row");
+        assert!(title_row < prompt_area.y);
+    }
+
+    fn row_containing(buffer: &Buffer, area: Rect, needle: &str) -> Option<u16> {
+        (area.y..area.y + area.height).find(|&y| {
+            let mut line = String::new();
+            for x in area.x..area.x + area.width {
+                line.push_str(buffer[(x, y)].symbol());
+            }
+            line.contains(needle)
+        })
     }
 }

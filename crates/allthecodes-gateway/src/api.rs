@@ -1,5 +1,5 @@
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -24,6 +24,7 @@ const CAPABILITIES_PATH: &str = "/remote-control/v1/capabilities";
 const RUNS_PATH: &str = "/remote-control/v1/runs";
 const RUN_PATH: &str = "/remote-control/v1/runs/{run_id}";
 const RUN_EVENTS_PATH: &str = "/remote-control/v1/runs/{run_id}/events";
+const RUN_TIMELINE_PATH: &str = "/remote-control/v1/runs/{run_id}/timeline";
 const RUN_STOP_PATH: &str = "/remote-control/v1/runs/{run_id}/stop";
 const RUN_APPROVAL_PATH: &str = "/remote-control/v1/runs/{run_id}/approval";
 const RUN_ASK_USER_PATH: &str = "/remote-control/v1/runs/{run_id}/ask-user";
@@ -136,6 +137,7 @@ pub fn router(state: GatewayApiState) -> Router {
         .route(RUNS_PATH, post(create_run))
         .route(RUN_PATH, get(get_run))
         .route(RUN_EVENTS_PATH, get(get_run_events))
+        .route(RUN_TIMELINE_PATH, get(get_run_timeline))
         .route(RUN_STOP_PATH, post(stop_run))
         .route(RUN_APPROVAL_PATH, post(approval_response))
         .route(RUN_ASK_USER_PATH, post(ask_user_response))
@@ -198,6 +200,7 @@ async fn get_run_events(
     State(state): State<GatewayApiState>,
     headers: HeaderMap,
     Path(run_id): Path<String>,
+    Query(query): Query<RunOutputQuery>,
 ) -> Response {
     authorize_or_return!(state, headers);
     let run_id = run_id_or_return!(run_id);
@@ -208,7 +211,39 @@ async fn get_run_events(
     if let Err(error) = store.load_run(&run_id) {
         return error_response(error);
     }
-    match store.read_events(&run_id) {
+    match store.read_output_events(
+        &run_id,
+        query.after_seq,
+        query.limit_bytes.unwrap_or(DEFAULT_RUN_OUTPUT_LIMIT_BYTES),
+    ) {
+        Ok(batch) => Json(batch).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_run_timeline(
+    State(state): State<GatewayApiState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+    Query(query): Query<RunTimelineQuery>,
+) -> Response {
+    authorize_or_return!(state, headers);
+    let run_id = run_id_or_return!(run_id);
+    let store = GatewayStore::new(
+        state.config.persistence.clone(),
+        SessionKeyPolicy::default(),
+    );
+    if let Err(error) = store.load_run(&run_id) {
+        return error_response(error);
+    }
+    match store.read_timeline_events(
+        &run_id,
+        query.after_sequence,
+        query
+            .limit
+            .unwrap_or(DEFAULT_RUN_TIMELINE_LIMIT)
+            .clamp(1, 500),
+    ) {
         Ok(events) => Json(json!({ "events": events })).into_response(),
         Err(error) => error_response(error),
     }
@@ -362,6 +397,27 @@ struct AskUserResponseRequest {
     response: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunOutputQuery {
+    #[serde(default, alias = "after_seq")]
+    after_seq: Option<u64>,
+    #[serde(default, alias = "limit_bytes")]
+    limit_bytes: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunTimelineQuery {
+    #[serde(default, alias = "after_sequence")]
+    after_sequence: Option<u64>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+const DEFAULT_RUN_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+const DEFAULT_RUN_TIMELINE_LIMIT: usize = 100;
+
 fn capabilities_body(state: &GatewayApiState) -> Value {
     json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -377,6 +433,7 @@ fn capabilities_body(state: &GatewayApiState) -> Value {
             RUNS_PATH,
             RUN_PATH,
             RUN_EVENTS_PATH,
+            RUN_TIMELINE_PATH,
             RUN_STOP_PATH,
             RUN_APPROVAL_PATH,
             RUN_ASK_USER_PATH,
@@ -394,6 +451,7 @@ fn create_run_body(submission: GatewayRunSubmission) -> Value {
         "status": submission.meta.status,
         "action": submission.action,
         "eventsUrl": format!("/remote-control/v1/runs/{}/events", submission.meta.run_id),
+        "timelineUrl": format!("/remote-control/v1/runs/{}/timeline", submission.meta.run_id),
     });
     if let Some(command) = submission.command {
         body["command"] = serde_json::to_value(command).unwrap_or(Value::Null);

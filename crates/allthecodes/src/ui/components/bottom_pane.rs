@@ -40,10 +40,10 @@ impl BottomPaneHeights {
             Constraint::Length(self.spinner),
             Constraint::Length(self.suggestions),
             Constraint::Length(self.paste_notice),
-            Constraint::Length(self.input),
             Constraint::Length(self.completion_popup),
             Constraint::Length(self.command_palette),
             Constraint::Length(self.command_arg_help),
+            Constraint::Length(self.input),
             Constraint::Length(self.notification),
             Constraint::Length(self.agent_footer),
             Constraint::Length(self.status),
@@ -54,10 +54,10 @@ impl BottomPaneHeights {
             spinner: chunks[0],
             suggestions: chunks[1],
             paste_notice: chunks[2],
-            input: chunks[3],
-            completion_popup: chunks[4],
-            command_palette: chunks[5],
-            command_arg_help: chunks[6],
+            completion_popup: chunks[3],
+            command_palette: chunks[4],
+            command_arg_help: chunks[5],
+            input: chunks[6],
             notification: chunks[7],
             agent_footer: chunks[8],
             status: chunks[9],
@@ -191,5 +191,9 @@ mod tests {
         assert_eq!(areas.spinner.height, 1);
         assert_eq!(areas.input.height, 3);
         assert_eq!(areas.status.height, 1);
+        assert!(areas.completion_popup.y < areas.input.y);
+        assert!(areas.command_palette.y < areas.input.y);
+        assert!(areas.notification.y > areas.input.y);
+        assert!(areas.status.y > areas.input.y);
     }
 }

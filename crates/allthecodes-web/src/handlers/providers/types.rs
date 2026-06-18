@@ -35,6 +35,33 @@ pub struct ProviderSummary {
     pub arguments: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_proxy: Option<ProviderApiProxy>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderApiProxy {
+    pub available: bool,
+    pub status: ProviderApiProxyStatus,
+    pub base_url: String,
+    pub endpoints: ProviderApiProxyEndpoints,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderApiProxyStatus {
+    Ready,
+    ProviderDisabled,
+    MissingCredential,
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderApiProxyEndpoints {
+    pub anthropic_messages: String,
+    pub anthropic_count_tokens: String,
+    pub openai_responses: String,
 }
 
 #[derive(Serialize)]

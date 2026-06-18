@@ -6,6 +6,7 @@ use allthecodes_engine::agent_runtime::{
     AgentTaskStore, AgentToolRegistry, DashboardEmitter, TeammateSpawner,
 };
 use allthecodes_tasks::{TaskCreateOptions, TaskEntry, TaskRuntimeHandle, TaskStatus};
+use allthecodes_types::output::{EventSeq, OutputReadBatch};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -67,6 +68,15 @@ impl AgentTaskStore for RootAgentTaskStore {
 
     fn append_output(&self, id: &str, output: &str) -> Option<TaskEntry> {
         allthecodes_tasks::global_store().append_output(id, output)
+    }
+
+    fn read_output_events(
+        &self,
+        id: &str,
+        after_seq: Option<EventSeq>,
+        limit_bytes: usize,
+    ) -> Result<Option<OutputReadBatch>> {
+        allthecodes_tasks::global_store().read_output_events(id, after_seq, limit_bytes)
     }
 
     fn try_stop(&self, id: &str) -> Result<Option<TaskEntry>> {

@@ -21,19 +21,19 @@ pub use paths::{
     worker_log_path, worker_state_path, workers_dir,
 };
 pub(crate) use paths::{daily_log_path, team_memory_dir};
-pub(crate) use platform::{process_is_alive, terminate_process_tree};
+pub(crate) use platform::{process_is_alive, process_matches_record, terminate_process_tree};
 pub use storage::{
     active_sleep_state, cleanup_stale_state_before_start, clear_control_token,
     clear_shutdown_request, clear_sleep_state, read_control_token, read_sleep_state, read_state,
     read_worker_state, read_worker_states, request_shutdown, shutdown_requested, status_snapshot,
-    verify_control_token, worker_summaries, write_control_token, write_sleep_state,
+    tail_log, verify_control_token, worker_summaries, write_control_token, write_sleep_state,
     write_sleep_state_until, write_started, write_stopped, write_supervisor_heartbeat,
     write_worker_heartbeat, write_worker_running, write_worker_stale, write_worker_stopped,
 };
 pub use types::{
     DaemonControlToken, DaemonProcessState, DaemonRunStatus, DaemonShutdownRequest,
     DaemonSleepState, DaemonStatusSnapshot, DaemonWorkerState, DaemonWorkerStatus,
-    DaemonWorkerSummary, StaleStateCleanupReport,
+    DaemonWorkerSummary, ProcessIdentityStatus, StaleStateCleanupReport,
 };
 
 pub(crate) fn data_root() -> Option<std::path::PathBuf> {

@@ -1,8 +1,8 @@
 # Codex Port API 对齐 Phase 执行计划
 
-> 创建日期：2026-06-16  
-> 来源文档：`development/docs/codex-portapi-comparison-analysis.md`  
-> 目标：把 Codex 架构调研中的可迁移模式拆成可执行、可验证、可逐步提交的 allthecodes 全量构建路线图。  
+> 创建日期：2026-06-16
+> 来源文档：`development/docs/codex-portapi-comparison-analysis.md`
+> 目标：把 Codex 架构调研中的可迁移模式拆成可执行、可验证、可逐步提交的 allthecodes 全量构建路线图。
 > 原则：保持 allthecodes 现有 REST API、Rust TUI、daemon/gateway 能力不回退；每个 Phase 独立可验收，避免跨 Phase 大爆炸重构。
 
 ---
@@ -431,6 +431,22 @@ Phase 5 已闭环到代码与测试：
 - 错误分类有 fixture tests。
 - diagnostics 能区分认证失败、网络失败、quota/rate limit。
 
+### 执行记录（2026-06-16）
+
+已完成：
+
+- 新增 `allthecodes-api::api::provider_runtime`，集中 `ProviderEndpoint`、transport、response metadata、typed provider error、HTTP/WS probe report。
+- Anthropic/Claude、OpenAI-compatible、Google/Gemini streaming 路径接入 runtime helper；外部 `ApiClient::messages_stream` 仍返回既有 `StreamEvent`，保持调用方兼容。
+- 新增语义错误分类：`ContextWindowExceeded`、`QuotaExceeded`、`RateLimited`、`PolicyBlocked`、`ServerOverloaded`、`RetryableTransport`、`AuthenticationFailed`、`InvalidRequest`、`UnknownProviderError`；retry 兼容层复用新分类。
+- provider response metadata 捕获 request id、retry-after、x-ratelimit 等安全 headers，并在 stream 建立时写 tracing diagnostic。
+- 新增 `POST /api/providers/{id}/probe` 协议和 web handler；HTTP probe 做无模型请求的可达性诊断，WebSocket probe 对支持 WS probe path 的 provider 做握手后立即关闭，不支持时返回 `unsupported` diagnostic。
+
+保留边界：
+
+- `StreamProvider` trait 和 `StreamEvent` public consumer contract 保持不变；完整 `ResponseEvent` 对外迁移留给后续兼容窗口。
+- Bedrock/Vertex 未做全量 runtime 迁移，仅继续走现有 stream provider；后续迁移时应复用 `ProviderEndpoint`/`ProviderErrorKind`。
+- 默认测试不使用真实 provider credential，不发送模型请求。
+
 ---
 
 ## Phase 7：Layered Config 与 Requirements
@@ -531,6 +547,23 @@ Phase 5 已闭环到代码与测试：
 - stop/restart 在 Unix 上可靠；Windows 路径需有等价实现或明确 fallback。
 - 所有持久化路径保持 allthecodes/Codex 隔离。
 
+### 执行记录（2026-06-17）
+
+Phase 8 已闭环到 daemon supervisor / worker lifecycle：
+
+- `process_state` schema 升级到 v2；supervisor/worker 状态新增 `command_kind`、`binary_version`、`binary_path`、`log_path`、`ready_url`、`process_start_key`，并保持 v1 JSON/SQLite JSON 反序列化兼容。
+- 新增 PID identity helper：Linux 使用 `/proc/<pid>/stat` starttime，其他 Unix 使用 `ps -o lstart= -p <pid>`，Windows 使用 PowerShell/CIM 创建时间；identity 不可得时按 best-effort 处理并输出 `identity=unknown`。
+- `status_snapshot`、stale supervisor/worker cleanup、worker heartbeat stale terminate、known worker terminate、daemon stop/restart termination 均校验 process identity；PID reused 时标记 stale 并拒绝误杀。
+- daemon `stop` 改为 shutdown request 60s grace、soft terminate、force kill、最终 10s 确认退出；`restart --if-version-changed` 在版本相同且 `/readyz` OK 时跳过重启并打印诊断。
+- 新增 `daemon logs [supervisor|worker-id] [--tail-bytes N]`，tail 读取限制在 `daemon_dir()` 下，默认 16 KiB。
+- `daemon status` 与 Web gateway diagnostics 暴露 version、binary/log path、ready URL、identity 信息；不新增独立 Web API 字段。
+
+新增/确认测试：
+
+- `cargo test -p allthecodes-daemon process_state`
+- `cargo test -p allthecodes-daemon supervisor`
+- `cargo test -p allthecodes-web gateways`
+
 ---
 
 ## 跨 Phase 执行规则
@@ -563,19 +596,14 @@ Phase 5 已闭环到代码与测试：
 
 ---
 
-## 当前优先级建议
+## 剩余目标执行入口
 
-最高优先级：
+Phase 7 和 Phase 8 已有执行记录，不再作为当前待办列出。剩余目标已拆分到新的分阶段文档中推进：
 
-1. Phase 4b：统一 agent/worker 输出恢复能力，复用本轮 terminal `OutputEvent`/retention 设计。
-2. Phase 6：provider runtime 统一，降低多 provider 行为漂移。
+1. 总路线图：`development/docs/codex-portapi-remaining-roadmap.md`
+2. Phase 4b 输出恢复：`development/docs/phase4b-output-recovery-plan.md`
+3. Local socket / named pipe transport：`development/docs/local-socket-transport-plan.md`
+4. Phase 6 `ResponseEvent` 全链路迁移：`development/docs/phase6-response-event-migration-plan.md`
+5. 最终文档、schema 与复验：`development/docs/codex-portapi-final-verification-plan.md`
 
-中优先级：
-
-1. Phase 7：layered config。
-2. Phase 8：完整 PID/process lifecycle。
-
-后续大项：
-
-1. Unix socket transport。
-2. 按 Phase 4b 结果同步 agent/worker API 文档和 schema。
+执行顺序按总路线图推进。每个代码阶段完成后，将执行记录同步回对应阶段文档，并在本文件补充摘要。

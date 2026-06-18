@@ -31,6 +31,18 @@ pub fn build_router(state: WebState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/startupz", get(startupz))
+        .route(
+            "/anthropic-proxy/{provider_id}/v1/messages",
+            axum::routing::post(handlers::anthropic_proxy_messages_handler),
+        )
+        .route(
+            "/anthropic-proxy/{provider_id}/v1/messages/count_tokens",
+            axum::routing::post(handlers::anthropic_proxy_count_tokens_handler),
+        )
+        .route(
+            "/proxy/{provider_id}/v1/responses",
+            axum::routing::post(handlers::openai_proxy_responses_handler),
+        )
         .route("/api/rpc/ws", get(ws::api_rpc::api_rpc_ws_handler));
 
     router

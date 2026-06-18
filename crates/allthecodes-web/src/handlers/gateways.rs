@@ -255,13 +255,25 @@ fn status_from_daemon(
             pid,
             base_url,
             health_url,
+            ready_url,
+            binary_version,
+            binary_path,
+            log_path,
+            identity,
         } => {
             let port = parse_port(&base_url).or_else(|| parse_port(&health_url));
             let bind_address =
                 parse_bind_address(&base_url).or_else(|| parse_bind_address(&health_url));
-            let mut diagnostics = vec![format!("pid={pid}"), format!("health_url={health_url}")];
+            let mut diagnostics = vec![
+                format!("pid={pid}"),
+                format!("health_url={health_url}"),
+                format!("version={}", binary_version.as_deref().unwrap_or("unknown")),
+                format!("binary={}", binary_path.as_deref().unwrap_or("unknown")),
+                format!("log={}", log_path.as_deref().unwrap_or("unknown")),
+                identity,
+            ];
             if let Some(port) = port {
-                let ready_url = readiness::ready_url(port);
+                let ready_url = ready_url.unwrap_or_else(|| readiness::ready_url(port));
                 diagnostics.push(format!("ready_url={ready_url}"));
                 diagnostics.push(
                     match readiness::probe_ready(port, std::time::Duration::from_millis(500)) {
@@ -282,14 +294,27 @@ fn status_from_daemon(
                 diagnostics,
             )
         }
-        LocalGatewayDaemonStatus::Stale { pid } => base_status(
-            "error",
-            None,
-            profile_id,
-            Some(format!("Daemon state is stale for pid {pid}.")),
-            None,
-            vec![format!("pid={pid}")],
-        ),
+        LocalGatewayDaemonStatus::Stale {
+            pid,
+            binary_version,
+            log_path,
+            identity,
+        } => {
+            let diagnostics = vec![
+                format!("pid={pid}"),
+                format!("version={}", binary_version.as_deref().unwrap_or("unknown")),
+                format!("log={}", log_path.as_deref().unwrap_or("unknown")),
+                identity,
+            ];
+            base_status(
+                "error",
+                None,
+                profile_id,
+                Some(format!("Daemon state is stale for pid {pid}.")),
+                None,
+                diagnostics,
+            )
+        }
         LocalGatewayDaemonStatus::Stopped => base_status(
             "stopped",
             None,
@@ -413,6 +438,17 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|value| value == &json!(format!("ready_url=http://127.0.0.1:{port}/readyz"))));
+        assert!(diagnostics
+            .iter()
+            .any(|value| value == &json!(format!("version={}", env!("CARGO_PKG_VERSION")))));
+        assert!(diagnostics
+            .iter()
+            .any(|value| value.as_str().is_some_and(|diagnostic| {
+                diagnostic.starts_with("log=") && diagnostic.ends_with("supervisor.log")
+            })));
+        assert!(diagnostics
+            .iter()
+            .any(|value| value == &json!("identity=matched")));
         assert!(diagnostics.iter().any(|value| {
             value
                 .as_str()

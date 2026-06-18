@@ -43,6 +43,14 @@ impl ConfigSurface {
             .editor_mode
             .clone()
             .unwrap_or_else(|| "normal".to_string());
+        let view_mode = state
+            .settings
+            .view_mode
+            .clone()
+            .unwrap_or_else(|| "prompt".to_string());
+        let spinner_tips_enabled = state.settings.spinner_tips.enabled.unwrap_or(true);
+        let spinner_interval = state.settings.spinner_tips.interval_ms.unwrap_or(10_000);
+        let spinner_custom_count = state.settings.spinner_tips.custom_tips.len();
         let fast_mode = if state.fast_mode {
             "true".to_string()
         } else {
@@ -106,6 +114,24 @@ impl ConfigSurface {
                                 .with_description(format!("current editorMode={editor}")),
                             FormOption::new("editor-normal", "Use normal editor mode")
                                 .with_description(format!("current editorMode={editor}")),
+                            FormOption::new("view-prompt", "Use prompt view")
+                                .with_description(format!("current viewMode={view_mode}")),
+                            FormOption::new("view-transcript", "Use transcript view")
+                                .with_description(format!("current viewMode={view_mode}")),
+                            FormOption::new("view-focus", "Use focus view")
+                                .with_description(format!("current viewMode={view_mode}")),
+                            FormOption::new("spinner-tips-on", "Enable spinner tips")
+                                .with_description(format!(
+                                    "enabled={spinner_tips_enabled}; intervalMs={spinner_interval}; customTips={spinner_custom_count}"
+                                )),
+                            FormOption::new("spinner-tips-off", "Disable spinner tips")
+                                .with_description(format!(
+                                    "enabled={spinner_tips_enabled}; intervalMs={spinner_interval}; customTips={spinner_custom_count}"
+                                )),
+                            FormOption::new("spinner-tips-interval", "Set spinner tip interval")
+                                .with_description("fill prompt with /config set spinnerTips.intervalMs"),
+                            FormOption::new("spinner-tips-custom", "Set custom spinner tips")
+                                .with_description("fill prompt with JSON string array"),
                         ],
                     ),
                     FormTab::new(
@@ -254,6 +280,27 @@ impl ConfigSurface {
                 "editor-normal" => {
                     CommandSurfaceOutcome::Submit("/config set editorMode normal".to_string())
                 }
+                "view-prompt" => {
+                    CommandSurfaceOutcome::Submit("/config set viewMode prompt".to_string())
+                }
+                "view-transcript" => {
+                    CommandSurfaceOutcome::Submit("/config set viewMode transcript".to_string())
+                }
+                "view-focus" => {
+                    CommandSurfaceOutcome::Submit("/config set viewMode focus".to_string())
+                }
+                "spinner-tips-on" => CommandSurfaceOutcome::Submit(
+                    "/config set spinnerTips.enabled true".to_string(),
+                ),
+                "spinner-tips-off" => CommandSurfaceOutcome::Submit(
+                    "/config set spinnerTips.enabled false".to_string(),
+                ),
+                "spinner-tips-interval" => CommandSurfaceOutcome::FillPrompt(
+                    "/config set spinnerTips.intervalMs ".to_string(),
+                ),
+                "spinner-tips-custom" => CommandSurfaceOutcome::FillPrompt(
+                    "/config set spinnerTips.customTips [\"tip\"]".to_string(),
+                ),
                 "progress-on" => CommandSurfaceOutcome::Submit(
                     "/config set terminalProgressBarEnabled true".to_string(),
                 ),
