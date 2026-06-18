@@ -18,7 +18,7 @@ use allthecodes_ipc::headless::{
 use allthecodes_ipc::subsystem_handlers::{
     BoxRuntimeFuture, McpRuntimeOperation, McpRuntimeReport, SubsystemRuntimeHost,
 };
-use allthecodes_ipc_client::sink::FrontendSink;
+use allthecodes_ipc::transport::FrontendSink;
 use allthecodes_ipc_protocol::protocol::{BackendMessage, FrontendMessage};
 use allthecodes_ipc_protocol::subsystem_events::{
     IdeCommand, LspCommand, McpCommand, PluginCommand, SkillCommand, SubsystemEvent,

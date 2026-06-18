@@ -12,13 +12,13 @@ use parking_lot::Mutex;
 use tracing::debug;
 
 use allthecodes_engine::lifecycle::QueryEngine;
-use allthecodes_ipc_adapters::{extract_tool_result_output, stream_event_to_backend_message};
+use allthecodes_ipc::adapters::{extract_tool_result_output, stream_event_to_backend_message};
+use allthecodes_ipc::transport::FrontendSink;
 use allthecodes_services::prompt_suggestion::PromptSuggestionService;
 use allthecodes_types::message::{ContentBlock, Message, StreamEvent, ToolResultContent};
 use allthecodes_types::sdk::SdkMessage;
 
 use crate::ui::status_line::payload::{build_payload_from_snapshot, StatusLineSnapshot};
-use allthecodes_ipc_client::sink::FrontendSink;
 use allthecodes_ipc_protocol::BackendMessage;
 
 // ---------------------------------------------------------------------------

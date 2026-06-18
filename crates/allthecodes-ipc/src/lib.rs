@@ -10,10 +10,13 @@
 //! can share them without depending on the root binary crate.
 
 pub mod agent_handlers;
+pub mod adapters;
+pub mod client;
 pub mod headless;
 pub mod runtime;
 pub mod subsystem_events;
 pub mod subsystem_handlers;
+pub mod transport;
 
 pub use subsystem_events as event_bus;
 

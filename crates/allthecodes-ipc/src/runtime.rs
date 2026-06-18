@@ -12,7 +12,6 @@ use allthecodes_ipc_protocol::{
     IpcPayloadAdapterError, LaggedEvent, ServerCapabilities, ServerErrorEnvelope, ServerReady,
     ServerRequestEnvelope, ServerRequestMethod, IPC_V2_PROTOCOL_VERSION,
 };
-use allthecodes_ipc_transport::{classify_event, event_type, EventClass};
 use allthecodes_protocol::{ApiError, ClientResponse};
 use allthecodes_types::callbacks::{
     AskUserRequestPayload, PermissionRequestPayload, PermissionResponsePayload,
@@ -20,6 +19,8 @@ use allthecodes_types::callbacks::{
 use parking_lot::Mutex;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
+
+use crate::transport::{classify_event, event_type, EventClass};
 
 const DEFAULT_SERVER_REQUEST_TIMEOUT_MS: u64 = 30_000;
 

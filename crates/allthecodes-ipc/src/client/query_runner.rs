@@ -7,7 +7,7 @@ use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use tracing::error;
 
-use crate::sink::FrontendSink;
+use crate::transport::FrontendSink;
 
 /// Spawn a query turn as a background task and map each SDK message to IPC.
 pub fn spawn_query_turn<E, Svc, SdkMessage, F>(

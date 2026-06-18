@@ -6,7 +6,7 @@ use allthecodes_ipc_protocol::{BackendMessage, FrontendMessage};
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-use crate::{IpcFrame, IpcReader, IpcTransport, IpcWriter};
+use super::{IpcFrame, IpcReader, IpcTransport, IpcWriter};
 
 /// Parsed frontend line or an explicit diagnostic backend message.
 #[derive(Debug)]

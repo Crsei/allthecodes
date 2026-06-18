@@ -50,8 +50,6 @@ dependencies = [
  "allthecodes-engine",
  "allthecodes-gateway",
  "allthecodes-ipc",
- "allthecodes-ipc-adapters",
- "allthecodes-ipc-client",
  "allthecodes-ipc-protocol",
  "allthecodes-keybindings",
  "allthecodes-lsp-service",
@@ -449,43 +447,18 @@ dependencies = [
 name = "allthecodes-ipc"
 version = "0.1.0"
 dependencies = [
- "allthecodes-ipc-client",
  "allthecodes-ipc-protocol",
- "allthecodes-ipc-transport",
  "allthecodes-protocol",
  "allthecodes-server",
  "allthecodes-types",
  "anyhow",
+ "async-trait",
  "chrono",
- "parking_lot",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "allthecodes-ipc-adapters"
-version = "0.1.0"
-dependencies = [
- "allthecodes-ipc-protocol",
- "allthecodes-types",
- "serde_json",
-]
-
-[[package]]
-name = "allthecodes-ipc-client"
-version = "0.1.0"
-dependencies = [
- "allthecodes-ipc-adapters",
- "allthecodes-ipc-protocol",
- "allthecodes-ipc-transport",
- "allthecodes-types",
- "anyhow",
  "futures",
  "parking_lot",
+ "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",
@@ -499,18 +472,6 @@ dependencies = [
  "allthecodes-types",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "allthecodes-ipc-transport"
-version = "0.1.0"
-dependencies = [
- "allthecodes-ipc-protocol",
- "async-trait",
- "parking_lot",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

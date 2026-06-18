@@ -8,9 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use allthecodes_ipc_client::sink::FrontendSink;
 use allthecodes_ipc_protocol::{BackendMessage, FrontendMessage};
-use allthecodes_ipc_transport::{IpcReader, IpcTransport, JsonlStdioTransport, ParsedFrontendLine};
 use allthecodes_server::{
     ConnectionClosedReason, ConnectionId, ConnectionOrigin, TransportEvent, TransportKind,
 };
@@ -18,6 +16,10 @@ use tracing::{debug, error, warn};
 
 pub use crate::runtime::{
     PendingInteractions, PendingPermissions, PendingQuestions, SessionRuntime,
+};
+use crate::transport::{
+    parse_frontend_line, FrontendSink, IpcReader, IpcTransport, JsonlStdioTransport,
+    ParsedFrontendLine,
 };
 pub type BoxHeadlessFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -123,7 +125,7 @@ pub async fn run_headless(config: HeadlessRuntimeConfig) -> anyhow::Result<()> {
                     }
                 };
 
-                let event = match allthecodes_ipc_transport::parse_frontend_line(&line) {
+                let event = match parse_frontend_line(&line) {
                     ParsedFrontendLine::Message(msg) => TransportEvent::IncomingMessage {
                         connection_id: connection_id.clone(),
                         kind: TransportKind::HeadlessStdio,

@@ -8,7 +8,7 @@ use allthecodes_ipc_protocol::BackendMessage;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 
-use crate::{IpcFrame, IpcReader, IpcTransport, IpcWriter};
+use super::{IpcFrame, IpcReader, IpcTransport, IpcWriter};
 
 trait SinkWriter: Send + Sync {
     fn write_one(&self, msg: &BackendMessage) -> io::Result<()>;

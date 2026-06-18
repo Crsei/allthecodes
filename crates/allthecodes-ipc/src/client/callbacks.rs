@@ -12,7 +12,7 @@ use allthecodes_types::callbacks::{
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
-use crate::sink::FrontendSink;
+use crate::transport::FrontendSink;
 
 /// Pending permission requests awaiting a response from the frontend.
 pub type PendingPermissions =

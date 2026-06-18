@@ -3,13 +3,13 @@
 use std::sync::Arc;
 
 use allthecodes_engine::lifecycle::QueryEngine;
-use allthecodes_ipc_client::sink::FrontendSink;
+use allthecodes_ipc::transport::FrontendSink;
 use allthecodes_ipc_protocol::BackendMessage;
 
 /// Pending permission requests awaiting a response from the frontend.
-pub type PendingPermissions = allthecodes_ipc_client::PendingPermissions;
+pub type PendingPermissions = allthecodes_ipc::client::PendingPermissions;
 /// Pending AskUserQuestion requests awaiting the user's next submit_prompt.
-pub type PendingQuestions = allthecodes_ipc_client::PendingQuestions;
+pub type PendingQuestions = allthecodes_ipc::client::PendingQuestions;
 
 /// Install the permission callback on the engine.
 pub fn install_permission_callback(
@@ -39,7 +39,7 @@ pub fn install_permission_callback(
         }
     });
 
-    allthecodes_ipc_client::callbacks::install_permission_callback(
+    allthecodes_ipc::client::callbacks::install_permission_callback(
         engine,
         pending,
         sink,
@@ -49,7 +49,7 @@ pub fn install_permission_callback(
 
 /// Install the `ToolProgress` callback on the engine.
 pub fn install_tool_progress_callback(engine: &QueryEngine, sink: FrontendSink) {
-    allthecodes_ipc_client::callbacks::install_tool_progress_callback(engine, sink);
+    allthecodes_ipc::client::callbacks::install_tool_progress_callback(engine, sink);
 }
 
 /// Install the AskUserQuestion callback on the engine.
@@ -58,10 +58,10 @@ pub fn install_ask_user_callback(
     pending: PendingQuestions,
     sink: FrontendSink,
 ) {
-    allthecodes_ipc_client::callbacks::install_ask_user_callback(engine, pending, sink);
+    allthecodes_ipc::client::callbacks::install_ask_user_callback(engine, pending, sink);
 }
 
 /// Install the non-blocking permission event callback on the engine.
 pub fn install_permission_event_callback(engine: &QueryEngine, sink: FrontendSink) {
-    allthecodes_ipc_client::callbacks::install_permission_event_callback(engine, sink);
+    allthecodes_ipc::client::callbacks::install_permission_event_callback(engine, sink);
 }

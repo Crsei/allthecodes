@@ -1,6 +1,6 @@
 //! Client-side ingress helpers shared by headless runtimes.
 
-use crate::callbacks::{PendingPermissions, PendingQuestions};
+use super::callbacks::{PendingPermissions, PendingQuestions};
 use allthecodes_types::callbacks::PermissionResponsePayload;
 
 /// Complete a pending permission response by tool-use id.

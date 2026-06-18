@@ -159,9 +159,6 @@ allthecodes-daemon = { path = "crates/allthecodes-daemon" }
 allthecodes-commands = { path = "crates/allthecodes-commands" }
 allthecodes-ipc = { path = "crates/allthecodes-ipc" }
 allthecodes-ipc-protocol = { path = "crates/allthecodes-ipc-protocol" }
-allthecodes-ipc-transport = { path = "crates/allthecodes-ipc-transport" }
-allthecodes-ipc-adapters = { path = "crates/allthecodes-ipc-adapters" }
-allthecodes-ipc-client = { path = "crates/allthecodes-ipc-client" }
 allthecodes-startup = { path = "crates/allthecodes-startup" }
 allthecodes-voice = { path = "crates/allthecodes-voice" }
 allthecodes-web = { path = "crates/allthecodes-web" }

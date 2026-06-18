@@ -7,13 +7,14 @@ description = "IPC spine: JSONL/stdio (headless) + HTTP/SSE (daemon) protocols f
 [dependencies]
 anyhow = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
-allthecodes-ipc-client = { workspace = true }
-allthecodes-ipc-transport = { workspace = true }
 allthecodes-protocol = { workspace = true }
 allthecodes-server = { workspace = true }
 allthecodes-types = { workspace = true }
+async-trait = { workspace = true }
 chrono = { workspace = true }
+futures = { workspace = true }
 parking_lot = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -22,7 +22,7 @@ use crate::ui::path_completion::PathCompletionProvider;
 use crate::ui::shell_history_completion::ShellHistoryCompletionProvider;
 use crate::ui::slack_channel_completion::SlackChannelCompletionProvider;
 use allthecodes_ipc::runtime::SessionRuntime;
-use allthecodes_ipc_client::sink::FrontendSink;
+use allthecodes_ipc::transport::FrontendSink;
 use allthecodes_ipc_protocol::protocol::{
     CompletionItemDTO, InstallProgress, LspRecommendationDTO,
 };
