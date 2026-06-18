@@ -60,7 +60,6 @@ dependencies = [
  "allthecodes-observability",
  "allthecodes-permissions",
  "allthecodes-plugins",
- "allthecodes-query",
  "allthecodes-safety",
  "allthecodes-sandbox",
  "allthecodes-server",
@@ -433,6 +432,7 @@ name = "allthecodes-gateway"
 version = "0.1.0"
 dependencies = [
  "allthecodes-config",
+ "allthecodes-types",
  "axum",
  "hex",
  "hmac",
@@ -663,37 +663,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "allthecodes-query"
-version = "0.1.0"
-dependencies = [
- "allthecodes-api",
- "allthecodes-engine",
- "allthecodes-models",
- "allthecodes-observability",
- "allthecodes-services",
- "allthecodes-tools",
- "allthecodes-types",
- "allthecodes-utils",
- "anyhow",
- "async-stream",
- "async-trait",
- "chrono",
- "futures",
- "parking_lot",
- "serde_json",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "allthecodes-safety"
 version = "0.1.0"
 dependencies = [
  "allthecodes-config",
  "allthecodes-engine",
  "allthecodes-permissions",
- "allthecodes-query",
  "allthecodes-types",
  "anyhow",
  "async-trait",

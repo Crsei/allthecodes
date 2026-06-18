@@ -150,7 +150,6 @@ allthecodes-session = { path = "crates/allthecodes-session" }
 allthecodes-gateway = { path = "crates/allthecodes-gateway" }
 # Phase 6 / Phase 7 scaffolds (issues #75, #76).
 allthecodes-engine = { path = "crates/allthecodes-engine" }
-allthecodes-query = { path = "crates/allthecodes-query" }
 allthecodes-tools = { path = "crates/allthecodes-tools" }
 allthecodes-tasks = { path = "crates/allthecodes-tasks" }
 allthecodes-lsp-service = { path = "crates/allthecodes-lsp-service" }

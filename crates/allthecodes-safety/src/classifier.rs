@@ -12,8 +12,8 @@ use regex::Regex;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use allthecodes_engine::query::deps::{ModelCallParams, QueryDeps};
 use allthecodes_engine::types::tool::PermissionMode;
-use allthecodes_query::deps::{ModelCallParams, QueryDeps};
 use allthecodes_types::message::{
     AssistantMessage, ContentBlock, Message, MessageContent, SystemSubtype, ToolResultContent,
     UserMessage,
@@ -206,6 +206,8 @@ impl SafetyClassifierModel for QueryDepsSafetyClassifierModel {
                     AutoClassifierStage::Fast => "low".to_string(),
                     AutoClassifierStage::Thinking => "medium".to_string(),
                 }),
+                output_config: None,
+                model_reasoning_effort: None,
                 advisor_model: None,
             })
             .await?;

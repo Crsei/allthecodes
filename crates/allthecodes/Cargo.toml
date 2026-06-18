@@ -153,7 +153,6 @@ allthecodes-browser = { workspace = true }
 allthecodes-lsp-service = { workspace = true }
 allthecodes-session = { workspace = true }
 allthecodes-engine = { workspace = true }
-allthecodes-query = { workspace = true }
 allthecodes-tools = { workspace = true }
 allthecodes-tasks = { workspace = true }
 allthecodes-teams = { workspace = true }
