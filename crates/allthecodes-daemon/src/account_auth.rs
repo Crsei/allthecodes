@@ -2,10 +2,12 @@
 //!
 //! Electron opens the website authorization URL and gives the custom-scheme
 //! callback back to this local daemon. The daemon owns PKCE state, exchanges the
-//! authorization code with allthecodes.com, stores only the desktop refresh
-//! token in the OS keychain, and keeps access tokens in memory.
+//! authorization code with allthecodes.cc, stores allthecodes account
+//! credentials in `~/.allthecodes/auth.json`, and keeps access tokens in memory.
 
 use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
 
 use allthecodes_auth::api_key::KEYCHAIN_SERVICE_NAME;
 use allthecodes_auth::oauth::pkce;
@@ -13,7 +15,7 @@ use anyhow::{anyhow, Context, Result};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
@@ -21,7 +23,7 @@ use url::Url;
 use crate::process_state;
 use crate::state::DaemonState;
 
-const DEFAULT_ACCOUNT_SITE_URL: &str = "https://allthecodes.com";
+const DEFAULT_ACCOUNT_SITE_URL: &str = "https://allthecodes.cc";
 const DESKTOP_REDIRECT_URI: &str = "allthecodes://auth/callback";
 const KEYCHAIN_ACCOUNT_DESKTOP_REFRESH_TOKEN: &str = "desktop-refresh-token";
 
@@ -89,12 +91,33 @@ struct LogoutRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
+    #[serde(default)]
+    id_token: Option<String>,
     access_token: String,
     refresh_token: String,
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    last_refresh: Option<String>,
     expires_at: String,
     user: Value,
     subscription: Value,
     entitlements: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllthecodesAccountAuthFile {
+    pub auth_mode: String,
+    pub tokens: AllthecodesAccountAuthTokens,
+    pub last_refresh: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllthecodesAccountAuthTokens {
+    pub id_token: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub account_id: String,
 }
 
 pub async fn login_start(
@@ -203,7 +226,7 @@ pub async fn status(State(state): State<DaemonState>) -> (StatusCode, Json<Value
         return ok(session_payload("authenticated", &session));
     }
 
-    match refresh_from_keychain(&state).await {
+    match refresh_from_stored_auth(&state).await {
         Ok(Some(session)) => ok(session_payload("authenticated", &session)),
         Ok(None) => ok(json!({ "status": "signed_out" })),
         Err(err) => error(StatusCode::BAD_GATEWAY, err),
@@ -211,7 +234,7 @@ pub async fn status(State(state): State<DaemonState>) -> (StatusCode, Json<Value
 }
 
 pub async fn refresh(State(state): State<DaemonState>) -> (StatusCode, Json<Value>) {
-    match refresh_from_keychain(&state).await {
+    match refresh_from_stored_auth(&state).await {
         Ok(Some(session)) => ok(session_payload("authenticated", &session)),
         Ok(None) => error(
             StatusCode::UNAUTHORIZED,
@@ -224,10 +247,13 @@ pub async fn refresh(State(state): State<DaemonState>) -> (StatusCode, Json<Valu
 pub async fn logout(State(state): State<DaemonState>) -> (StatusCode, Json<Value>) {
     let metadata = load_metadata().unwrap_or_else(|_| default_metadata());
 
-    if let Ok(Some(refresh_token)) = load_refresh_token() {
+    if let Ok(Some(auth_file)) = load_account_auth_file() {
+        let _ = post_logout(&metadata.account_site_url, &auth_file.tokens.refresh_token).await;
+    } else if let Ok(Some(refresh_token)) = load_refresh_token() {
         let _ = post_logout(&metadata.account_site_url, &refresh_token).await;
     }
 
+    let _ = remove_account_auth_file();
     let _ = remove_refresh_token();
     state.account_auth.lock().session = None;
     state.account_auth.lock().pending = None;
@@ -243,14 +269,19 @@ fn current_unexpired_session(state: &DaemonState) -> Option<AccountAuthSession> 
     }
 }
 
-async fn refresh_from_keychain(state: &DaemonState) -> Result<Option<AccountAuthSession>> {
-    let Some(refresh_token) = load_refresh_token()? else {
+async fn refresh_from_stored_auth(state: &DaemonState) -> Result<Option<AccountAuthSession>> {
+    let refresh_token = if let Some(auth_file) = load_account_auth_file()? {
+        auth_file.tokens.refresh_token
+    } else if let Some(token) = load_refresh_token()? {
+        token
+    } else {
         state.account_auth.lock().session = None;
         return Ok(None);
     };
     let metadata = load_metadata().unwrap_or_else(|_| default_metadata());
     let token = post_refresh(&metadata.account_site_url, &refresh_token).await?;
     let session = session_from_token_response(metadata.account_site_url, token)?;
+    let _ = remove_refresh_token();
     state.account_auth.lock().session = Some(session.clone());
     Ok(Some(session))
 }
@@ -318,7 +349,7 @@ fn session_from_token_response(
     account_site_url: String,
     token: TokenResponse,
 ) -> Result<AccountAuthSession> {
-    store_refresh_token(&token.refresh_token)?;
+    store_account_auth_file(&token)?;
     save_metadata(&AccountAuthMetadata {
         account_site_url: account_site_url.clone(),
     })?;
@@ -364,7 +395,7 @@ fn build_authorize_url(
     code_challenge: &str,
     redirect_uri: &str,
 ) -> Result<String> {
-    let mut url = endpoint_url(account_site_url, "/app/authorize")?;
+    let mut url = endpoint_url(account_site_url, "/login")?;
     url.query_pairs_mut()
         .append_pair("state", state)
         .append_pair("code_challenge", code_challenge)
@@ -431,13 +462,143 @@ fn default_metadata() -> AccountAuthMetadata {
     }
 }
 
-fn store_refresh_token(token: &str) -> Result<()> {
-    let entry = keyring::Entry::new(
-        KEYCHAIN_SERVICE_NAME,
-        KEYCHAIN_ACCOUNT_DESKTOP_REFRESH_TOKEN,
-    )?;
-    entry.set_password(token)?;
+fn store_account_auth_file(token: &TokenResponse) -> Result<()> {
+    let account_id = token
+        .account_id
+        .clone()
+        .or_else(|| {
+            token
+                .user
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| anyhow!("desktop auth response is missing account_id"))?;
+    let last_refresh = token
+        .last_refresh
+        .clone()
+        .unwrap_or_else(current_iso_timestamp);
+    let auth_file = AllthecodesAccountAuthFile {
+        auth_mode: "allthecodes".to_string(),
+        tokens: AllthecodesAccountAuthTokens {
+            id_token: token
+                .id_token
+                .clone()
+                .unwrap_or_else(|| token.access_token.clone()),
+            access_token: token.access_token.clone(),
+            refresh_token: token.refresh_token.clone(),
+            account_id,
+        },
+        last_refresh,
+    };
+    write_account_auth_file(&auth_file)
+}
+
+fn load_account_auth_file() -> Result<Option<AllthecodesAccountAuthFile>> {
+    let path = account_auth_file_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let auth_file = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(Some(auth_file))
+}
+
+fn write_account_auth_file(auth_file: &AllthecodesAccountAuthFile) -> Result<()> {
+    let path = account_auth_file_path();
+    let parent = path
+        .parent()
+        .with_context(|| format!("path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+
+    let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    {
+        let mut file = create_private_file(&tmp)
+            .with_context(|| format!("failed to create {}", tmp.display()))?;
+        let bytes = serde_json::to_vec_pretty(auth_file)
+            .context("failed to serialize account auth file")?;
+        file.write_all(&bytes)
+            .with_context(|| format!("failed to write {}", tmp.display()))?;
+        file.write_all(b"\n")
+            .with_context(|| format!("failed to write {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", tmp.display()))?;
+    }
+    set_private_permissions(&tmp)?;
+    replace_file(&tmp, &path)
+}
+
+fn remove_account_auth_file() -> Result<()> {
+    let path = account_auth_file_path();
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
+    }
+}
+
+fn account_auth_file_path() -> PathBuf {
+    allthecodes_config::paths::data_root().join("auth.json")
+}
+
+fn current_iso_timestamp() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+#[cfg(unix)]
+fn create_private_file(path: &std::path::Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_file(path: &std::path::Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn set_private_permissions(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to set private permissions on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_path: &std::path::Path) -> Result<()> {
     Ok(())
+}
+
+fn replace_file(tmp: &std::path::Path, path: &std::path::Path) -> Result<()> {
+    match fs::rename(tmp, path) {
+        Ok(()) => Ok(()),
+        Err(first_err) if path.exists() => {
+            fs::remove_file(path)
+                .with_context(|| format!("failed to replace {}", path.display()))?;
+            fs::rename(tmp, path).with_context(|| {
+                format!(
+                    "failed to rename {} to {} after replace fallback: {first_err}",
+                    tmp.display(),
+                    path.display()
+                )
+            })
+        }
+        Err(err) => Err(err)
+            .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display())),
+    }
 }
 
 fn load_refresh_token() -> Result<Option<String>> {
