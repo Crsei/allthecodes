@@ -15,7 +15,7 @@
 | 3 | allthecodes-ipc-client | ⭐⭐⭐⭐⭐ | **已处理**：callbacks、ingress、query runner、request registry 已迁入 `allthecodes-ipc::client`，re-export 桩已删除 | 已合并入 allthecodes-ipc | 722 | 已完成 |
 | 4 | allthecodes-ipc-adapters | ⭐⭐⭐⭐⭐ | **已处理**：SDK/query event 到 IPC payload 的转换函数和测试已迁入 `allthecodes-ipc::adapters` | 已合并入 allthecodes-ipc | 275 | 已完成 |
 | 5 | allthecodes-shell-command | ⭐⭐⭐⭐⭐ | 4,172 行的 shell 命令解析器：tree-sitter AST 解析器（50,000 节点预算），1,050 行 heredoc 解析器，553 行 pipe 处理器 — 用于解析 "echo hello > file.txt" 这种字符串。sandbox crate 还有一份重复的 | 合并入 allthecodes-sandbox | 4,172 | 中等 |
-| 6 | allthecodes-models | ⭐⭐⭐⭐⭐ | 零依赖 crate，708 行跨 4 个微模块，仅包含静态数据表（model aliases, pricing, mapping）和简单查询函数。只因依赖图排序被分离 | 合并入 allthecodes-types | 708 | 小 |
+| 6 | allthecodes-models | ⭐⭐⭐⭐⭐ | **已处理**：aliases、mapping、pricing、setting 已迁入 `allthecodes-types::models`，旧 crate 与 workspace 依赖已删除 | 已合并入 allthecodes-types | 708 | 已完成 |
 | 7 | allthecodes-bootstrap | ⭐⭐⭐⭐ | 12 个 ProcessState 字段中 9 个死代码（从不读取），Signal\<T\> 未使用，model.rs 是一行 re-export 且无生产代码导入 | 合并入 allthecodes | 792 | 小 |
 | 8 | allthecodes-ipc-transport | ⭐⭐⭐⭐ | **已处理**：framing、JSONL stdio、FrontendSink、MemoryTransport、event classification 已迁入 `allthecodes-ipc::transport` | 已合并入 allthecodes-ipc | 651 | 已完成 |
 | 9 | allthecodes-protocol | ⭐⭐⭐⭐ | 408 行的宏系统生成 5+ enum 和元数据类型。19 个 v1 模块高度碎片化（capabilities.rs: 12 行, health.rs: 12 行）。ServerNotification 是空 enum（0 变体）却贯穿 Transport trait 层次 | 合并入 allthecodes-web 或 daemon | 3,251 | 中等 |
@@ -48,7 +48,7 @@
 - `allthecodes-ipc` 曾有 4 个子 crate；其中 ipc-transport、ipc-client、ipc-adapters 已合并回 `allthecodes-ipc`，`allthecodes-ipc-protocol` 暂保留为共享 DTO 边界
 - `allthecodes-web-state` 是 964 行单文件 crate，**只有 1 个消费者**（allthecodes-web）
 - `allthecodes-shell-command`（4,172 行）应该是 allthecodes-sandbox 内的一个模块（sandbox 已经是它的依赖）
-- `allthecodes-models`（708 行，零依赖）应合并入 allthecodes-types（8 个消费者都已依赖 allthecodes-types）
+- `allthecodes-models`（708 行，零依赖）已合并入 allthecodes-types（8 个消费者都已依赖 allthecodes-types）
 
 ### 2. 💀 死代码 / YAGNI 违规
 **频率**: 普遍 | **影响**: 高
@@ -129,7 +129,7 @@
 | 1 | ❌ 删除 allthecodes-voice crate（1,326 行 null 实现） | 消除 1,326 行死代码，减少 1 个 workspace crate | 低 |
 | 2 | ✅ 合并 allthecodes-ipc-adapters（275 行单文件）到 allthecodes-ipc | 已消除一个生产逻辑仅 ~130 行的 crate | 已完成 |
 | 3 | ✅ 合并 allthecodes-ipc-transport（651 行）和 allthecodes-ipc-client（722 行）到 allthecodes-ipc | 已消除 2 个 crate 和 ~1,400 行 re-export 桩和测试类型 | 已完成 |
-| 4 | 🔀 合并 allthecodes-models（708 行，零依赖）到 allthecodes-types | 消除零理由 crate；8 个依赖者已依赖 allthecodes-types | 低 |
+| 4 | ✅ 合并 allthecodes-models（708 行，零依赖）到 allthecodes-types | 已消除零理由 crate；8 个依赖者已改用 allthecodes-types | 已完成 |
 | 5 | 🔀 合并 allthecodes-web-state（964 行）到 allthecodes-web 作为内部模块 | 消除单消费者 crate；其依赖已是 allthecodes-web 的直接依赖 | 低 |
 | 6 | 🔀 合并 allthecodes-worktree（1,288 行，2 文件）到 allthecodes-tools | 工具实现归入工具 crate | 低 |
 | 7 | 🔀 合并 allthecodes-langfuse（832 行）到 allthecodes-observability | 三个 crate 的观测碎片化减少到两个 | 低 |
@@ -162,7 +162,7 @@
 | allthecodes-ipc-client | 722 | 9 | ⭐⭐⭐⭐⭐ | 4 | 3 | 3 | 4 | 5 | 已合并入 ipc |
 | allthecodes-ipc-adapters | 275 | 1 | ⭐⭐⭐⭐⭐ | 5 | 3 | 2 | 3 | 5 | 已合并入 ipc |
 | allthecodes-shell-command | 4,172 | 52 | ⭐⭐⭐⭐⭐ | 5 | 4 | 2 | 4 | 4 | 合并入 sandbox |
-| allthecodes-models | 708 | 4 | ⭐⭐⭐⭐⭐ | 5 | 2 | 2 | 4 | 1 | 合并入 types |
+| allthecodes-models | 708 | 4 | ⭐⭐⭐⭐⭐ | 5 | 2 | 2 | 4 | 1 | 已合并入 types |
 | allthecodes-bootstrap | 792 | 7 | ⭐⭐⭐⭐ | 4 | 3 | 4 | 4 | 3 | 合并入主 crate |
 | allthecodes-ipc-transport | 651 | 5 | ⭐⭐⭐⭐ | 4 | 4 | 1 | 3 | 4 | 已合并入 ipc |
 | allthecodes-protocol | 3,251 | 29 | ⭐⭐⭐⭐ | 4 | 4 | 3 | 3 | 4 | 合并入 web/daemon |
