@@ -248,6 +248,7 @@ pub fn settings_schema() -> Value {
             "maxTokens": { "type": "integer", "minimum": 1 },
             "streaming": { "type": "boolean" },
             "showTokenUsage": { "type": "boolean" },
+            "showReasoningDetails": { "type": "boolean" },
             "markdownRendering": { "type": "boolean" },
             "singleDollarMath": { "type": "boolean" },
             "infographic": { "type": "boolean" },

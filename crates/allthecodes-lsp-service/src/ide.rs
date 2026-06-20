@@ -306,8 +306,8 @@ mod tests {
 
     impl HomeGuard {
         fn set(path: &Path) -> Self {
-            let previous = std::env::var("CC_RUST_HOME").ok();
-            std::env::set_var("CC_RUST_HOME", path);
+            let previous = std::env::var("ALLTHECODES_HOME").ok();
+            std::env::set_var("ALLTHECODES_HOME", path);
             Self { previous }
         }
     }
@@ -315,8 +315,8 @@ mod tests {
     impl Drop for HomeGuard {
         fn drop(&mut self) {
             match &self.previous {
-                Some(v) => std::env::set_var("CC_RUST_HOME", v),
-                None => std::env::remove_var("CC_RUST_HOME"),
+                Some(v) => std::env::set_var("ALLTHECODES_HOME", v),
+                None => std::env::remove_var("ALLTHECODES_HOME"),
             }
         }
     }

@@ -85,6 +85,7 @@ pub struct SettingsJson {
     pub max_tokens: Option<u64>,
     pub streaming: Option<bool>,
     pub show_token_usage: Option<bool>,
+    pub show_reasoning_details: Option<bool>,
     pub markdown_rendering: Option<bool>,
     pub single_dollar_math: Option<bool>,
     pub infographic: Option<bool>,
@@ -225,6 +226,7 @@ impl SettingsJson {
         insert_opt!("max_tokens", self.max_tokens);
         insert_opt!("streaming", self.streaming);
         insert_opt!("show_token_usage", self.show_token_usage);
+        insert_opt!("show_reasoning_details", self.show_reasoning_details);
         insert_opt!("markdown_rendering", self.markdown_rendering);
         insert_opt!("single_dollar_math", self.single_dollar_math);
         insert_opt!("infographic", self.infographic);
@@ -350,6 +352,7 @@ mod tests {
         let settings = SettingsJson {
             language: Some("zh-CN".to_string()),
             proxy_enabled: Some(true),
+            show_reasoning_details: Some(true),
             tts_api_key: Some("sk-secret".to_string()),
             web_search_provider: Some("tavily".to_string()),
             web_search_tavily_api_key: Some("tvly-secret".to_string()),
@@ -371,6 +374,7 @@ mod tests {
         let map = settings.settings_map();
         assert_eq!(map.get("language"), Some(&json!("zh-CN")));
         assert_eq!(map.get("proxy_enabled"), Some(&json!(true)));
+        assert_eq!(map.get("show_reasoning_details"), Some(&json!(true)));
         assert_eq!(map.get("web_search_provider"), Some(&json!("tavily")));
         assert_eq!(map.get("web_search_tavily_configured"), Some(&json!(true)));
         assert_eq!(map.get("web_search_brave_configured"), Some(&json!(true)));

@@ -470,6 +470,15 @@ crate::api_definitions! {
     AuthRefresh => "POST /api/auth/refresh" {
         response: Value,
     },
+    AccountAuthStatus => "GET /api/account-auth/status" {
+        response: Value,
+    },
+    AccountAuthRefresh => "POST /api/account-auth/refresh" {
+        response: Value,
+    },
+    AccountAuthLogout => "POST /api/account-auth/logout" {
+        response: Value,
+    },
 
     ProfilesList => "GET /api/profiles" {
         response: v1::profiles::ProfileListResponse,

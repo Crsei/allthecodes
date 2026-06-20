@@ -649,6 +649,28 @@ mod tests {
         let response = settings_handler(
             State(state.clone()),
             Json(SettingsRequest {
+                action: "set_show_reasoning_details".to_string(),
+                value: json!(true),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = read_user_settings(&home);
+        assert_eq!(raw.show_reasoning_details, Some(true));
+        assert_eq!(
+            state
+                .engine()
+                .app_state()
+                .settings
+                .settings_map()
+                .get("show_reasoning_details"),
+            Some(&json!(true))
+        );
+
+        let response = settings_handler(
+            State(state.clone()),
+            Json(SettingsRequest {
                 action: "set_web_search_provider".to_string(),
                 value: json!("brave"),
             }),

@@ -382,6 +382,7 @@ fn action_to_setting_key(action: &str) -> Option<&'static str> {
         "set_max_tokens" => "max_tokens",
         "set_streaming" => "streaming",
         "set_show_token_usage" => "show_token_usage",
+        "set_show_reasoning_details" => "show_reasoning_details",
         "set_markdown" | "set_markdown_rendering" => "markdown_rendering",
         "set_single_dollar_math" => "single_dollar_math",
         "set_infographic" | "set_infographic_visualization" => "infographic",
@@ -484,6 +485,9 @@ pub(crate) fn normalize_settings_path(path: &str) -> Option<&'static str> {
         "projects.max_tokens" | "max_tokens" => "max_tokens",
         "projects.streaming" | "streaming" => "streaming",
         "projects.show_token_usage" | "show_token_usage" => "show_token_usage",
+        "projects.show_reasoning_details" | "show_reasoning_details" => {
+            "show_reasoning_details"
+        }
         "projects.markdown" | "projects.markdown_rendering" | "markdown_rendering" => {
             "markdown_rendering"
         }
@@ -638,6 +642,7 @@ fn setting_kind(key: &str) -> SettingKind {
         | "auto_title"
         | "streaming"
         | "show_token_usage"
+        | "show_reasoning_details"
         | "markdown_rendering"
         | "single_dollar_math"
         | "infographic"
@@ -712,6 +717,9 @@ fn apply_value_to_raw(raw: &mut RawSettings, key: &str, value: Value) -> Result<
         "max_tokens" => raw.max_tokens = Some(u64_value(key, &value)?),
         "streaming" => raw.streaming = Some(bool_value(key, &value)?),
         "show_token_usage" => raw.show_token_usage = Some(bool_value(key, &value)?),
+        "show_reasoning_details" => {
+            raw.show_reasoning_details = Some(bool_value(key, &value)?)
+        }
         "markdown_rendering" => raw.markdown_rendering = Some(bool_value(key, &value)?),
         "single_dollar_math" => raw.single_dollar_math = Some(bool_value(key, &value)?),
         "infographic" => raw.infographic = Some(bool_value(key, &value)?),
@@ -826,6 +834,7 @@ fn apply_value_to_app_state(app_state: &mut AppState, key: &str, value: Value) {
         "max_tokens" => settings.max_tokens = value.as_u64(),
         "streaming" => settings.streaming = value.as_bool(),
         "show_token_usage" => settings.show_token_usage = value.as_bool(),
+        "show_reasoning_details" => settings.show_reasoning_details = value.as_bool(),
         "markdown_rendering" => settings.markdown_rendering = value.as_bool(),
         "single_dollar_math" => settings.single_dollar_math = value.as_bool(),
         "infographic" => settings.infographic = value.as_bool(),

@@ -447,6 +447,18 @@ pub fn auth_handlers() -> HandlerRegistry {
         .handle(ApiMethod::AuthLogin, post(handlers::auth_login_handler))
         .handle(ApiMethod::AuthLogout, post(handlers::auth_logout_handler))
         .handle(ApiMethod::AuthRefresh, post(handlers::auth_refresh_handler))
+        .handle(
+            ApiMethod::AccountAuthStatus,
+            get(handlers::account_auth_status_handler),
+        )
+        .handle(
+            ApiMethod::AccountAuthRefresh,
+            post(handlers::account_auth_refresh_handler),
+        )
+        .handle(
+            ApiMethod::AccountAuthLogout,
+            post(handlers::account_auth_logout_handler),
+        )
 }
 
 pub fn profile_handlers() -> HandlerRegistry {

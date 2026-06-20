@@ -108,6 +108,7 @@ pub struct RawSettings {
     pub max_tokens: Option<u64>,
     pub streaming: Option<bool>,
     pub show_token_usage: Option<bool>,
+    pub show_reasoning_details: Option<bool>,
     pub markdown_rendering: Option<bool>,
     pub single_dollar_math: Option<bool>,
     pub infographic: Option<bool>,
@@ -319,6 +320,7 @@ impl RawSettings {
         merge_opt!(max_tokens, "maxTokens");
         merge_opt!(streaming, "streaming");
         merge_opt!(show_token_usage, "showTokenUsage");
+        merge_opt!(show_reasoning_details, "showReasoningDetails");
         merge_opt!(markdown_rendering, "markdownRendering");
         merge_opt!(single_dollar_math, "singleDollarMath");
         merge_opt!(infographic, "infographic");

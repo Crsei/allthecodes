@@ -85,6 +85,66 @@ fn empty_configs_produce_defaults() {
 }
 
 #[test]
+#[serial]
+fn user_settings_ignores_legacy_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let legacy_override = temp.path().join("cc-rust-home");
+    std::fs::create_dir_all(home.join(".cc-rust")).unwrap();
+    std::fs::write(
+        home.join(".cc-rust").join("settings.json"),
+        r#"{"ttsProvider":"elevenlabs"}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(&legacy_override).unwrap();
+    std::fs::write(
+        legacy_override.join("settings.json"),
+        r#"{"ttsProvider":"elevenlabs"}"#,
+    )
+    .unwrap();
+
+    let _allthecodes_home = EnvGuard::unset("ALLTHECODES_HOME");
+    let _cc_rust_home = EnvGuard::set_path("CC_RUST_HOME", &legacy_override);
+    let _home = EnvGuard::set_path("HOME", &home);
+
+    let mut raw = load_global_config().unwrap();
+    assert_eq!(raw.tts_provider, None);
+    raw.tts_provider = Some("openai".into());
+
+    let written = write_user_settings(&raw).unwrap();
+    assert_eq!(written, home.join(".allthecodes").join("settings.json"));
+
+    let next: RawSettings =
+        serde_json::from_str(&std::fs::read_to_string(&written).unwrap()).unwrap();
+    assert_eq!(next.tts_provider.as_deref(), Some("openai"));
+}
+
+#[test]
+#[serial]
+fn project_settings_ignores_legacy_project_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    let nested = repo.join("src").join("feature");
+    std::fs::create_dir_all(repo.join(".cc-rust")).unwrap();
+    std::fs::write(
+        repo.join(".cc-rust").join("settings.json"),
+        r#"{"ttsProvider":"elevenlabs"}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(&nested).unwrap();
+
+    assert_eq!(
+        project_settings_path(&nested),
+        nested.join(".allthecodes").join("settings.json")
+    );
+    assert_eq!(
+        local_settings_path(&nested),
+        nested.join(".allthecodes").join("settings.local.json")
+    );
+    assert_eq!(load_project_config(&nested).unwrap().tts_provider, None);
+}
+
+#[test]
 fn anthropic_provider_uses_claude_code_auth_profile_name() {
     assert_eq!(
         auth_profile_name_for_provider(API_PROVIDER_ANTHROPIC),

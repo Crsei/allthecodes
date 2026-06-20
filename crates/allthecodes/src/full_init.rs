@@ -604,6 +604,7 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
             max_tokens: merged_config.max_tokens,
             streaming: merged_config.streaming,
             show_token_usage: merged_config.show_token_usage,
+            show_reasoning_details: merged_config.show_reasoning_details,
             markdown_rendering: merged_config.markdown_rendering,
             single_dollar_math: merged_config.single_dollar_math,
             infographic: merged_config.infographic,

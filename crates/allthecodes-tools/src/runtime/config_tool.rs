@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn test_project_settings_path_uses_cc_rust_project_file() {
+    fn test_project_settings_path_uses_allthecodes_project_file() {
         let dir = tempfile::tempdir().expect("tempdir");
 
         let path = ConfigTool::project_settings_path_for_cwd(dir.path());
