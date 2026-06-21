@@ -11,13 +11,13 @@ use std::path::PathBuf;
 
 use allthecodes_auth::api_key::KEYCHAIN_SERVICE_NAME;
 use allthecodes_auth::oauth::pkce;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use url::Url;
 
 use crate::process_state;
@@ -138,11 +138,11 @@ pub async fn login_start(
         Ok(url) => url,
         Err(err) => return error(StatusCode::BAD_REQUEST, err),
     };
-    let redirect_uri = body.redirect_uri.as_deref().unwrap_or(DESKTOP_REDIRECT_URI);
-
-    if redirect_uri != DESKTOP_REDIRECT_URI {
-        return error(StatusCode::BAD_REQUEST, anyhow!("unsupported redirect_uri"));
-    }
+    let redirect_uri =
+        match validate_redirect_uri(body.redirect_uri.as_deref().unwrap_or(DESKTOP_REDIRECT_URI)) {
+            Ok(uri) => uri,
+            Err(err) => return error(StatusCode::BAD_REQUEST, err),
+        };
 
     let code_verifier = pkce::generate_code_verifier();
     let code_challenge = pkce::generate_code_challenge(&code_verifier);
@@ -151,7 +151,7 @@ pub async fn login_start(
         &account_site_url,
         &state_value,
         &code_challenge,
-        redirect_uri,
+        &redirect_uri,
     ) {
         Ok(url) => url,
         Err(err) => return error(StatusCode::BAD_REQUEST, err),
@@ -161,7 +161,7 @@ pub async fn login_start(
         let mut guard = state.account_auth.lock();
         guard.pending = Some(PendingLogin {
             account_site_url: account_site_url.clone(),
-            redirect_uri: redirect_uri.to_string(),
+            redirect_uri,
             state: state_value,
             code_verifier,
         });
@@ -435,7 +435,7 @@ fn build_authorize_url(
     code_challenge: &str,
     redirect_uri: &str,
 ) -> Result<String> {
-    let mut url = endpoint_url(account_site_url, "/login")?;
+    let mut url = endpoint_url(account_site_url, "/app/authorize")?;
     url.query_pairs_mut()
         .append_pair("state", state)
         .append_pair("code_challenge", code_challenge)
@@ -457,6 +457,30 @@ fn normalize_account_site_url(raw: &str) -> Result<String> {
         "http" | "https" => Ok(url.origin().ascii_serialization()),
         _ => Err(anyhow!("account_site_url must use http or https")),
     }
+}
+
+fn validate_redirect_uri(raw: &str) -> Result<String> {
+    if raw == DESKTOP_REDIRECT_URI {
+        return Ok(raw.to_string());
+    }
+
+    let url = Url::parse(raw).context("invalid redirect_uri")?;
+    let host = url.host_str().unwrap_or_default();
+    let local_host = host == "127.0.0.1" || host == "localhost";
+    let clean_callback = url.path() == "/account-auth/callback/"
+        && url.query().is_none()
+        && url.fragment().is_none();
+
+    if url.scheme() == "http"
+        && local_host
+        && clean_callback
+        && url.username().is_empty()
+        && url.password().is_none()
+    {
+        return Ok(url.to_string());
+    }
+
+    Err(anyhow!("unsupported redirect_uri"))
 }
 
 fn access_token_expired(session: &AccountAuthSession) -> bool {
@@ -489,7 +513,7 @@ async fn proxy_billing_get(
             return error(
                 StatusCode::UNAUTHORIZED,
                 anyhow!("no desktop account session"),
-            )
+            );
         }
         Err(err) => return error(StatusCode::BAD_GATEWAY, err),
     };
@@ -525,8 +549,11 @@ async fn fetch_billing_get(
 ) -> Result<(StatusCode, Json<Value>)> {
     let mut url = endpoint_url(&session.account_site_url, path)?;
     if !query.is_empty() {
-        url.query_pairs_mut()
-            .extend_pairs(query.iter().map(|(key, value)| (key.as_str(), value.as_str())));
+        url.query_pairs_mut().extend_pairs(
+            query
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        );
     }
     let response = reqwest::Client::new()
         .get(url)
@@ -534,8 +561,8 @@ async fn fetch_billing_get(
         .send()
         .await
         .context("failed to load desktop account billing data")?;
-    let status = StatusCode::from_u16(response.status().as_u16())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let text = response.text().await.unwrap_or_default();
     let value = if text.trim().is_empty() {
         json!({})
@@ -749,4 +776,34 @@ fn error(status: StatusCode, error: anyhow::Error) -> (StatusCode, Json<Value>) 
             "error": error.to_string(),
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_redirect_uri_accepts_desktop_and_local_web_callbacks() {
+        for uri in [
+            DESKTOP_REDIRECT_URI,
+            "http://127.0.0.1:17321/account-auth/callback/",
+            "http://localhost:17321/account-auth/callback/",
+        ] {
+            assert_eq!(validate_redirect_uri(uri).unwrap(), uri);
+        }
+    }
+
+    #[test]
+    fn account_redirect_uri_rejects_non_local_or_dirty_callbacks() {
+        for uri in [
+            "https://allthecodes.cc/account-auth/callback/",
+            "http://example.com/account-auth/callback/",
+            "http://127.0.0.1:17321/account-auth/callback/?code=leak",
+            "http://127.0.0.1:17321/account-auth/callback/#fragment",
+            "http://127.0.0.1:17321/account-auth/other/",
+            "allthecodes://auth/other",
+        ] {
+            assert!(validate_redirect_uri(uri).is_err(), "{uri}");
+        }
+    }
 }
