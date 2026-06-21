@@ -12,6 +12,8 @@ use crate::tool::{
 };
 use allthecodes_types::message::AssistantMessage;
 
+use super::hashline;
+
 /// FileReadTool — Read files from the filesystem
 ///
 /// Corresponds to TypeScript: tools/FileReadTool
@@ -610,6 +612,28 @@ impl FileReadTool {
         }
     }
 
+    fn format_hashline_text_window(
+        content: &str,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> FormattedRead {
+        let (output, total_lines, start_line, end_line, next_offset, line_limited) =
+            hashline::format_window_with_hashlines(
+                content,
+                offset,
+                limit,
+                Self::DEFAULT_TEXT_LINE_LIMIT,
+            );
+        FormattedRead {
+            output,
+            total_lines,
+            start_line,
+            end_line,
+            next_offset,
+            line_limited,
+        }
+    }
+
     async fn read_text(
         target: &ReadTarget,
         offset: Option<usize>,
@@ -639,7 +663,19 @@ impl FileReadTool {
         };
 
         let effective_offset = offset.unwrap_or(0);
-        let formatted = Self::format_text_window(&decoded.content, effective_offset, limit);
+        let hashline_mode = ctx
+            .map(|ctx| {
+                (ctx.get_app_state)()
+                    .settings
+                    .hashline_mode
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        let formatted = if hashline_mode {
+            Self::format_hashline_text_window(&decoded.content, effective_offset, limit)
+        } else {
+            Self::format_text_window(&decoded.content, effective_offset, limit)
+        };
         let is_full_read_request = effective_offset == 0 && limit.is_none();
 
         if formatted.output.is_empty() && formatted.total_lines > 0 {
@@ -652,6 +688,8 @@ impl FileReadTool {
                     "symlink_resolved": target.symlink_resolved,
                     "encoding": decoded.encoding,
                     "encoding_lossy": decoded.lossy,
+                    "base_file_hash": hashline_mode.then(|| hashline::file_hash(&decoded.content)),
+                    "hashline_mode": hashline_mode,
                 }),
                 new_messages: vec![],
                 ..Default::default()
@@ -674,6 +712,8 @@ impl FileReadTool {
                     "encoding": decoded.encoding,
                     "encoding_lossy": decoded.lossy,
                     "truncated": false,
+                    "base_file_hash": hashline_mode.then(|| hashline::file_hash(&decoded.content)),
+                    "hashline_mode": hashline_mode,
                 }),
                 new_messages: vec![],
                 ..Default::default()
@@ -711,6 +751,8 @@ impl FileReadTool {
                 "char_limited": truncated_by_chars,
                 "encoding": decoded.encoding,
                 "encoding_lossy": decoded.lossy,
+                "base_file_hash": hashline_mode.then(|| hashline::file_hash(&decoded.content)),
+                "hashline_mode": hashline_mode,
                 "file_path": target.original_path,
                 "resolved_path": target.resolved_path,
                 "symlink_resolved": target.symlink_resolved,
@@ -924,6 +966,7 @@ Usage:\n\
 - If limit is not provided, small files are read from the starting offset to the end; large text files are paginated and include next_offset to continue\n\
 - When you already know which part of the file you need, only read that part. This can be important for larger files.\n\
 - Results are returned using cat -n format, with line numbers starting at 1\n\
+- When hashline edit mode is enabled, text results include base_file_hash and line#hash prefixes for use with HashEdit\n\
 - Text results include encoding, resolved_path, and symlink_resolved metadata when available\n\
 - This tool allows allthecodes to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as allthecodes is a multimodal LLM.\n\
 - This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: \"1-5\"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.\n\

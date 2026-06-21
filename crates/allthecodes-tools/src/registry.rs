@@ -243,6 +243,18 @@ pub fn filter_tools_for_session_gates(tools: Tools, gates: ToolSessionGates) -> 
         .collect()
 }
 
+/// Filter tools controlled directly by runtime settings.
+pub fn filter_tools_for_runtime_settings(
+    tools: Tools,
+    settings: &allthecodes_config::runtime_settings::SettingsJson,
+) -> Tools {
+    let hashline_enabled = settings.hashline_mode.unwrap_or(false);
+    tools
+        .into_iter()
+        .filter(|tool| hashline_enabled || tool.name() != "HashEdit")
+        .collect()
+}
+
 /// Get all tools owned directly by `cc-tools`.
 ///
 /// Heavier tools that are still owned by dependency-cycle parents must be
@@ -464,6 +476,23 @@ mod tests {
         assert!(names.contains(&"Read".to_string()));
         assert!(names.contains(&"SearchExtraTools".to_string()));
         assert!(names.contains(&"ExecuteExtraTool".to_string()));
+    }
+
+    #[test]
+    fn runtime_settings_gate_hash_edit_tool() {
+        let mut settings = allthecodes_config::runtime_settings::SettingsJson::default();
+        let names = filter_tools_for_runtime_settings(get_all_tools(), &settings)
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&"HashEdit".to_string()));
+
+        settings.hashline_mode = Some(true);
+        let names = filter_tools_for_runtime_settings(get_all_tools(), &settings)
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"HashEdit".to_string()));
     }
 
     #[test]

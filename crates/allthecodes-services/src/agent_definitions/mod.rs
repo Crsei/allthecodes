@@ -628,7 +628,7 @@ fn validate_name(name: &str) -> Result<(), String> {
 /// bucket category for the `ToolSelector` UI. Matches the bucket mapping
 /// from upstream `components/agents/ToolSelector.tsx`:
 ///   * read_only — Glob, Grep, Read, WebFetch, WebSearch, TodoWrite, ExitPlanMode
-///   * edit      — Edit, Write, NotebookEdit
+///   * edit      — Edit, HashEdit, Write, NotebookEdit
 ///   * execution — Bash
 ///   * other     — Agent (Task), Skill, LSP, MCP lifecycle, etc.
 ///
@@ -649,7 +649,7 @@ pub fn available_tools() -> Vec<AgentToolInfo> {
         "ExitPlanMode",
         "Thinking",
     ];
-    const EDIT: &[&str] = &["Edit", "Write", "NotebookEdit"];
+    const EDIT: &[&str] = &["Edit", "HashEdit", "Write", "NotebookEdit"];
     const EXECUTION: &[&str] = &["Bash"];
     const OTHER: &[&str] = &[
         "Agent",

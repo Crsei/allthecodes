@@ -30,9 +30,13 @@ impl QueryEngineDeps {
                 &app_state.settings,
                 &app_state.main_loop_model,
             );
+            let settings_filtered = allthecodes_tools::registry::filter_tools_for_runtime_settings(
+                capability_filtered,
+                &app_state.settings,
+            );
             let tools = allthecodes_tools::registry::dedupe_tools_by_name(
                 allthecodes_tools::registry::filter_tools_for_session_gates(
-                    capability_filtered,
+                    settings_filtered,
                     allthecodes_tools::registry::ToolSessionGates {
                         non_interactive: self.query_source.is_non_interactive(),
                         subagent: self.query_source.starts_with_agent(),
