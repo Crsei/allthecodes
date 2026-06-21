@@ -28,6 +28,21 @@ mod static_sections;
 use dynamic_sections::*;
 use static_sections::*;
 
+/// Resolve the custom system prompt override used by runtime entry points.
+///
+/// Priority is CLI/request explicit prompt first, then non-blank settings
+/// `system_prompt`, then the default prompt.
+pub fn select_custom_system_prompt<'a>(
+    explicit_prompt: Option<&'a str>,
+    settings_prompt: Option<&'a str>,
+) -> Option<&'a str> {
+    explicit_prompt.or_else(|| settings_prompt.and_then(non_blank_prompt))
+}
+
+fn non_blank_prompt(prompt: &str) -> Option<&str> {
+    (!prompt.trim().is_empty()).then_some(prompt)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Assembly functions
 // ═══════════════════════════════════════════════════════════════════════════
@@ -237,9 +252,11 @@ pub fn build_system_prompt_with_memory_contexts(
                 "injecting AGENTS.md context into system prompt"
             );
             parts.push(format!(
-                "# Project Instructions (AGENTS.md)\n\n\
-                 IMPORTANT: These instructions OVERRIDE any default behavior \
-                 and you MUST follow them exactly as written.\n\n\
+                "# Project Instructions\n\n\
+                 IMPORTANT: AGENTS.md is the primary project instruction file. \
+                 CLAUDE.md is used only as a compatibility fallback when AGENTS.md \
+                 is absent in the same directory. These instructions OVERRIDE any \
+                 default behavior and you MUST follow them exactly as written.\n\n\
                  {}",
                 context
             ));

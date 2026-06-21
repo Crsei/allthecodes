@@ -159,6 +159,13 @@ pub fn run_dump_system_prompt(cli: &impl DumpSystemPromptCli, tools: &[Arc<dyn T
 
     let dump_lang = dump_settings.as_ref().and_then(|s| s.language.clone());
     let dump_style = dump_settings.as_ref().and_then(|s| s.output_style.clone());
+    let dump_system_prompt = dump_settings
+        .as_ref()
+        .and_then(|s| s.system_prompt.as_deref());
+    let custom_system_prompt = allthecodes_engine::system_prompt::select_custom_system_prompt(
+        cli.system_prompt(),
+        dump_system_prompt,
+    );
     let include_auto_memory = dump_settings
         .as_ref()
         .and_then(|s| s.auto_memory_enabled)
@@ -179,7 +186,7 @@ pub fn run_dump_system_prompt(cli: &impl DumpSystemPromptCli, tools: &[Arc<dyn T
         }
     };
     let (parts, _, _) = allthecodes_engine::system_prompt::build_system_prompt_with_session_memory(
-        cli.system_prompt(),
+        custom_system_prompt,
         cli.append_system_prompt(),
         tools,
         model,

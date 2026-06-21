@@ -535,11 +535,28 @@ fn settings_diagnostics_for_state(state: &WebState) -> Vec<String> {
     }
 }
 
-/// GET /api/system-prompt -- Return the prompt text currently exposed to chat.
+/// GET /api/system-prompt -- Return a runtime baseline system prompt preview.
 pub async fn system_prompt_handler(State(state): State<WebState>) -> impl IntoResponse {
-    let map = state.engine().app_state().settings.settings_map();
+    let engine = state.engine();
+    let app_state = engine.app_state();
+    let config = engine.config_ref();
+    let custom_system_prompt = allthecodes_engine::system_prompt::select_custom_system_prompt(
+        config.custom_system_prompt.as_deref(),
+        app_state.settings.system_prompt.as_deref(),
+    );
+    let (parts, _, _) = allthecodes_engine::system_prompt::build_system_prompt_with_session_memory(
+        custom_system_prompt,
+        config.append_system_prompt.as_deref(),
+        &engine.tools_snapshot(),
+        &app_state.main_loop_model,
+        engine.cwd(),
+        app_state.settings.language.as_deref(),
+        app_state.settings.output_style.as_deref(),
+        app_state.settings.auto_memory_enabled.unwrap_or(false),
+        None,
+    );
     Json(SystemPromptResponse {
-        prompt: effective_system_prompt_from_map(&map),
+        prompt: parts.join("\n\n"),
     })
 }
 
@@ -640,6 +657,43 @@ mod tests {
         assert_eq!(body["capabilities"]["activity_recorder"], json!(true));
         assert_eq!(body["capabilities"]["chrome_relay"], json!(true));
         assert_eq!(body["capabilities"]["skills"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn system_prompt_endpoint_returns_builder_prompt() {
+        let state = make_web_state();
+
+        let response = system_prompt_handler(State(state)).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let prompt = body["prompt"].as_str().expect("prompt string");
+        assert!(prompt.contains("# Doing tasks"));
+        assert!(prompt.contains("https://github.com/Crsei/allthecodes/issues"));
+        assert!(!prompt.contains("You are a helpful AI assistant."));
+    }
+
+    #[tokio::test]
+    async fn system_prompt_endpoint_respects_settings_system_prompt() {
+        let state = make_web_state();
+        state.engine().update_app_state(|s| {
+            s.settings.system_prompt = Some("Settings prompt wins for preview.".to_string());
+        });
+
+        let response = system_prompt_handler(State(state.clone()))
+            .await
+            .into_response();
+        let body = response_json(response).await;
+        let prompt = body["prompt"].as_str().expect("prompt string");
+        assert!(prompt.contains("Settings prompt wins for preview."));
+        assert!(!prompt.contains("# Doing tasks"));
+
+        let state_response = state_handler(State(state)).await.into_response();
+        let state_body = response_json(state_response).await;
+        assert_eq!(
+            state_body["effective_system_prompt"],
+            json!("Settings prompt wins for preview.")
+        );
     }
 
     #[tokio::test]

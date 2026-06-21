@@ -33,6 +33,7 @@ pub(super) async fn build_submit_system_prompt(
     let (
         cfg_language,
         cfg_output_style,
+        cfg_system_prompt,
         include_auto_memory,
         session_memory_context,
         memory_query_text,
@@ -44,6 +45,7 @@ pub(super) async fn build_submit_system_prompt(
         (
             state.app_state.settings.language.clone(),
             state.app_state.settings.output_style.clone(),
+            state.app_state.settings.system_prompt.clone(),
             state
                 .app_state
                 .settings
@@ -91,9 +93,14 @@ pub(super) async fn build_submit_system_prompt(
             .extend(newly_surfaced_memory_keys);
     }
 
+    let custom_system_prompt = system_prompt::select_custom_system_prompt(
+        config.custom_system_prompt.as_deref(),
+        cfg_system_prompt.as_deref(),
+    );
+
     let (system_prompt_parts, user_context, system_context) =
         system_prompt::build_system_prompt_with_memory_contexts(
-            config.custom_system_prompt.as_deref(),
+            custom_system_prompt,
             config.append_system_prompt.as_deref(),
             tools_snapshot,
             model_name,

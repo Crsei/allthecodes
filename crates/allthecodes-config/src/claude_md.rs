@@ -21,7 +21,7 @@ const CLAUDE_MD: &str = "CLAUDE.md";
 // ---------------------------------------------------------------------------
 
 /// Search for project instruction files starting at `cwd` and walking up to
-/// the filesystem root.
+/// the current project boundary.
 ///
 /// In each directory, `AGENTS.md` is preferred over `CLAUDE.md`. When both
 /// exist in the same directory a warning is emitted to stderr and `CLAUDE.md`
@@ -33,6 +33,7 @@ const CLAUDE_MD: &str = "CLAUDE.md";
 pub fn find_agents_md_files(cwd: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut dir = cwd.to_path_buf();
+    let boundary = find_project_boundary(cwd);
 
     loop {
         let agents = dir.join(AGENTS_MD);
@@ -53,6 +54,9 @@ pub fn find_agents_md_files(cwd: &Path) -> Vec<PathBuf> {
             found.push(claude);
         }
 
+        if boundary.as_ref().is_some_and(|root| root == &dir) {
+            break;
+        }
         if !dir.pop() {
             break;
         }
@@ -61,6 +65,34 @@ pub fn find_agents_md_files(cwd: &Path) -> Vec<PathBuf> {
     // Reverse so root-most files come first, project-level files last.
     found.reverse();
     found
+}
+
+fn find_project_boundary(cwd: &Path) -> Option<PathBuf> {
+    let mut dir = cwd.to_path_buf();
+    loop {
+        if has_repo_marker(&dir) || has_cargo_workspace_marker(&dir) {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    Some(cwd.to_path_buf())
+}
+
+fn has_repo_marker(dir: &Path) -> bool {
+    let marker = dir.join(".git");
+    marker.is_dir() || marker.is_file()
+}
+
+fn has_cargo_workspace_marker(dir: &Path) -> bool {
+    let manifest = dir.join("Cargo.toml");
+    let Ok(contents) = std::fs::read_to_string(manifest) else {
+        return false;
+    };
+    contents
+        .lines()
+        .any(|line| line.trim_start().starts_with("[workspace]"))
 }
 
 /// Read the contents of a single project instruction file.
@@ -220,5 +252,42 @@ mod tests {
         assert!(ctx.contains("CLAUDE fallback content"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parent_claude_md_outside_repo_boundary_is_ignored() {
+        let parent = unique_temp_dir("claude_md_boundary");
+        let repo = parent.join("repo");
+        let nested = repo.join("crate").join("src");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(parent.join(CLAUDE_MD), "# Parent CLAUDE content").unwrap();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(AGENTS_MD), "# Repo AGENTS content").unwrap();
+
+        let result = find_agents_md_files(&nested);
+        assert_eq!(result, vec![repo.join(AGENTS_MD)]);
+
+        let ctx = build_agents_md_context(&nested).unwrap();
+        assert!(ctx.contains("Repo AGENTS content"));
+        assert!(!ctx.contains("Parent CLAUDE content"));
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn test_cargo_workspace_boundary_is_used_without_git() {
+        let parent = unique_temp_dir("agents_md_workspace_boundary");
+        let workspace = parent.join("workspace");
+        let nested = workspace.join("member").join("src");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(parent.join(CLAUDE_MD), "# Parent CLAUDE content").unwrap();
+        fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        fs::write(workspace.join(CLAUDE_MD), "# Workspace CLAUDE fallback").unwrap();
+
+        let ctx = build_agents_md_context(&nested).unwrap();
+        assert!(ctx.contains("Workspace CLAUDE fallback"));
+        assert!(!ctx.contains("Parent CLAUDE content"));
+
+        let _ = fs::remove_dir_all(&parent);
     }
 }

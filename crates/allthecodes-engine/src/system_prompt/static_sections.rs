@@ -60,7 +60,7 @@ pub(super) fn doing_tasks_section() -> String {
     ];
     let help_subitems = [
         "/help: Get help with using allthecodes",
-        "To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+        "To give feedback, users should report the issue at https://github.com/Crsei/allthecodes/issues",
     ];
     format!(
         "# Doing tasks\n{}\n{}",
@@ -236,7 +236,7 @@ pub(super) fn tone_and_style_section() -> String {
         "Only use emojis if the user explicitly requests it. Avoid using emojis in all communication unless asked.",
         "Your responses should be short and concise.",
         "When referencing specific functions or pieces of code include the pattern file_path:line_number to allow the user to easily navigate to the source code location.",
-        "When referencing GitHub issues or pull requests, use the owner/repo#123 format (e.g. anthropics/claude-code#100) so they render as clickable links.",
+        "When referencing GitHub issues or pull requests, use the owner/repo#123 format (e.g. Crsei/allthecodes#100) so they render as clickable links.",
         "Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like \"Let me read the file:\" followed by a read tool call should just be \"Let me read the file.\" with a period.",
     ];
     format!("# Tone and style\n{}", format_bullets(&items))

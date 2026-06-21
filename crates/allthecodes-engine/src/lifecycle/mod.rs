@@ -599,6 +599,11 @@ impl QueryEngine {
             .collect()
     }
 
+    /// Get a snapshot of the current tool registry.
+    pub fn tools_snapshot(&self) -> Tools {
+        self.state.read().tools.clone()
+    }
+
     /// Set the audit context (called after AuditSink is initialized).
     pub fn set_audit_context(&self, ctx: AuditContext) {
         self.state.write().audit_ctx = ctx;

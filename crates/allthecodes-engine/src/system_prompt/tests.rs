@@ -70,6 +70,8 @@ fn test_doing_tasks_section() {
     assert!(tasks.contains("OWASP"));
     assert!(tasks.contains("Don't add features"));
     assert!(tasks.contains("/help"));
+    assert!(tasks.contains("https://github.com/Crsei/allthecodes/issues"));
+    assert!(!tasks.contains("anthropics/claude-code/issues"));
 }
 
 #[test]
@@ -321,6 +323,20 @@ fn test_custom_prompt_replaces_default() {
 }
 
 #[test]
+fn test_select_custom_system_prompt_priority() {
+    assert_eq!(
+        select_custom_system_prompt(Some("cli prompt"), Some("settings prompt")),
+        Some("cli prompt")
+    );
+    assert_eq!(
+        select_custom_system_prompt(None, Some("settings prompt")),
+        Some("settings prompt")
+    );
+    assert_eq!(select_custom_system_prompt(None, Some("   \n\t")), None);
+    assert_eq!(select_custom_system_prompt(None, None), None);
+}
+
+#[test]
 fn test_append_prompt() {
     prompt_sections::clear_cache();
     let (parts, _, _) = build_system_prompt(
@@ -387,6 +403,9 @@ fn test_agents_md_injection() {
     let (parts, _, _) = build_system_prompt(None, None, &[], "test", cwd, None, None, false);
     let joined = parts.join("\n");
     assert!(joined.contains("snake_case"));
+    assert!(joined.contains("# Project Instructions\n"));
+    assert!(!joined.contains("# Project Instructions (AGENTS.md)"));
+    assert!(joined.contains("CLAUDE.md is used only as a compatibility fallback"));
     assert!(joined.contains("OVERRIDE"));
 
     let _ = fs::remove_dir_all(&dir);
