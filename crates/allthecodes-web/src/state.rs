@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use allthecodes_config::paths;
 use allthecodes_engine::lifecycle::QueryEngine;
@@ -48,6 +50,34 @@ pub struct WebState {
     pub serialization: SerializationLayer,
     /// Profile-scoped persistence for browser-only UI state.
     pub web_ui_store: WebUiStore,
+    /// Desktop account auth state shared by account auth endpoints.
+    pub account_auth: Arc<Mutex<AccountAuthMemory>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AccountAuthMemory {
+    pub pending: Option<PendingAccountLogin>,
+    pub session: Option<AccountAuthSession>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingAccountLogin {
+    pub account_site_url: String,
+    pub redirect_uri: String,
+    pub state: String,
+    pub code_verifier: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountAuthSession {
+    pub account_site_url: String,
+    pub access_token: String,
+    pub expires_at: String,
+    pub user: Value,
+    pub subscription: Value,
+    pub entitlements: Value,
+    pub credits: Value,
+    pub agent_collaboration: Value,
 }
 
 impl WebState {
@@ -78,6 +108,7 @@ impl WebState {
             terminal_manager,
             serialization: SerializationLayer::new(),
             web_ui_store: WebUiStore::new(paths::data_root().join("web").join("state.db")),
+            account_auth: Arc::new(Mutex::new(AccountAuthMemory::default())),
         }
     }
 

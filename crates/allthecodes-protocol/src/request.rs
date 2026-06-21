@@ -470,6 +470,14 @@ crate::api_definitions! {
     AuthRefresh => "POST /api/auth/refresh" {
         response: Value,
     },
+    AccountAuthLoginStart => "POST /api/account-auth/login/start" {
+        params: Value,
+        response: Value,
+    },
+    AccountAuthLoginComplete => "POST /api/account-auth/login/complete" {
+        params: Value,
+        response: Value,
+    },
     AccountAuthStatus => "GET /api/account-auth/status" {
         response: Value,
     },
@@ -477,6 +485,15 @@ crate::api_definitions! {
         response: Value,
     },
     AccountAuthLogout => "POST /api/account-auth/logout" {
+        response: Value,
+    },
+    AccountAuthBilling => "GET /api/account-auth/billing" {
+        response: Value,
+    },
+    AccountAuthBillingLedger => "GET /api/account-auth/billing/ledger" {
+        response: Value,
+    },
+    AccountAuthBillingOrder => "GET /api/account-auth/billing/orders/{id}" {
         response: Value,
     },
 

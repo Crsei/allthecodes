@@ -448,6 +448,14 @@ pub fn auth_handlers() -> HandlerRegistry {
         .handle(ApiMethod::AuthLogout, post(handlers::auth_logout_handler))
         .handle(ApiMethod::AuthRefresh, post(handlers::auth_refresh_handler))
         .handle(
+            ApiMethod::AccountAuthLoginStart,
+            post(handlers::account_auth_login_start_handler),
+        )
+        .handle(
+            ApiMethod::AccountAuthLoginComplete,
+            post(handlers::account_auth_login_complete_handler),
+        )
+        .handle(
             ApiMethod::AccountAuthStatus,
             get(handlers::account_auth_status_handler),
         )
@@ -458,6 +466,18 @@ pub fn auth_handlers() -> HandlerRegistry {
         .handle(
             ApiMethod::AccountAuthLogout,
             post(handlers::account_auth_logout_handler),
+        )
+        .handle(
+            ApiMethod::AccountAuthBilling,
+            get(handlers::account_billing_snapshot_handler),
+        )
+        .handle(
+            ApiMethod::AccountAuthBillingLedger,
+            get(handlers::account_billing_ledger_handler),
+        )
+        .handle(
+            ApiMethod::AccountAuthBillingOrder,
+            get(handlers::account_billing_order_handler),
         )
 }
 
