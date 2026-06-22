@@ -297,12 +297,38 @@ crate::api_definitions! {
     PluginsList => "GET /api/plugins" {
         response: v1::plugins::PluginsListResponse,
     },
+    PluginsInstalled => "GET /api/plugins/installed" {
+        response: v1::plugins::PluginsListResponse,
+    },
     PluginsMarketplace => "GET /api/plugins/marketplace" {
         response: v1::plugins::PluginsMarketplaceResponse,
     },
     PluginsInstall => "POST /api/plugins/install" {
         params: v1::plugins::PluginInstallRequest,
         response: v1::plugins::PluginInstallResponse,
+    },
+    PluginsUpdate => "POST /api/plugins/update" {
+        params: v1::plugins::PluginUpdateRequest,
+        response: v1::plugins::PluginInstallResponse,
+    },
+    PluginsUninstallById => "POST /api/plugins/uninstall" {
+        params: v1::plugins::PluginUninstallByIdRequest,
+        response: v1::plugins::PluginUninstallResponse,
+    },
+    PluginsEnable => "POST /api/plugins/enable" {
+        params: v1::plugins::PluginIdRequest,
+        response: v1::plugins::PluginLifecycleResponse,
+    },
+    PluginsDisable => "POST /api/plugins/disable" {
+        params: v1::plugins::PluginIdRequest,
+        response: v1::plugins::PluginLifecycleResponse,
+    },
+    PluginsRestart => "POST /api/plugins/restart" {
+        params: v1::plugins::PluginIdRequest,
+        response: v1::plugins::PluginLifecycleResponse,
+    },
+    PluginsTestConnection => "POST /api/plugins/{id}/test-connection" {
+        response: v1::plugins::PluginTestConnectionResponse,
     },
     PluginsUninstall => "POST /api/plugins/{id}/uninstall" {
         params: v1::plugins::PluginUninstallRequest,

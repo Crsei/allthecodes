@@ -126,9 +126,16 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::McpServersUpdate - legacy REST handler, McpProcessor target.
 // ClientRequest::McpServersDelete - legacy REST handler, McpProcessor target.
 // ClientRequest::PluginsList - dispatched.
+// ClientRequest::PluginsInstalled - dispatched.
 // ClientRequest::PluginsMarketplace - dispatched.
 // ClientRequest::PluginsInstall - dispatched.
-// ClientRequest::PluginsUninstall - legacy REST handler, PluginProcessor target.
+// ClientRequest::PluginsUpdate - dispatched.
+// ClientRequest::PluginsUninstallById - dispatched.
+// ClientRequest::PluginsEnable - dispatched.
+// ClientRequest::PluginsDisable - dispatched.
+// ClientRequest::PluginsRestart - dispatched.
+// ClientRequest::PluginsTestConnection - legacy REST path-parameter handler.
+// ClientRequest::PluginsUninstall - legacy REST path-parameter handler.
 // ClientRequest::ChannelsList - legacy REST handler, ChannelsProcessor target.
 // ClientRequest::ChannelsCapabilities - legacy REST handler, ChannelsProcessor target.
 // ClientRequest::ChannelsConnect - legacy REST handler, ChannelsProcessor target.
@@ -293,8 +300,14 @@ pub(crate) const DISPATCHED_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::KanbanBoards,
     ApiMethod::KanbanTaskCreate,
     ApiMethod::PluginsList,
+    ApiMethod::PluginsInstalled,
     ApiMethod::PluginsMarketplace,
     ApiMethod::PluginsInstall,
+    ApiMethod::PluginsUpdate,
+    ApiMethod::PluginsUninstallById,
+    ApiMethod::PluginsEnable,
+    ApiMethod::PluginsDisable,
+    ApiMethod::PluginsRestart,
     ApiMethod::GatewayStatus,
     ApiMethod::GatewaysList,
     ApiMethod::ModelsList,
@@ -743,6 +756,16 @@ pub async fn dispatch(
             .await?;
             Ok(ClientResponse::PluginsList(response))
         }
+        ClientRequest::PluginsInstalled(NoParams {}) => {
+            let response = dispatch_tracked_processor::<handlers::PluginsListProcessor>(
+                state,
+                context,
+                ApiMethod::PluginsInstalled,
+                NoParams {},
+            )
+            .await?;
+            Ok(ClientResponse::PluginsInstalled(response))
+        }
         ClientRequest::PluginsMarketplace(NoParams {}) => {
             let response = dispatch_tracked_processor::<handlers::PluginsMarketplaceProcessor>(
                 state,
@@ -762,6 +785,56 @@ pub async fn dispatch(
             )
             .await?;
             Ok(ClientResponse::PluginsInstall(response))
+        }
+        ClientRequest::PluginsUpdate(params) => {
+            let response = dispatch_tracked_processor::<handlers::PluginsUpdateProcessor>(
+                state,
+                context,
+                ApiMethod::PluginsUpdate,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::PluginsUpdate(response))
+        }
+        ClientRequest::PluginsUninstallById(params) => {
+            let response = dispatch_tracked_processor::<handlers::PluginsUninstallByIdProcessor>(
+                state,
+                context,
+                ApiMethod::PluginsUninstallById,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::PluginsUninstallById(response))
+        }
+        ClientRequest::PluginsEnable(params) => {
+            let response = dispatch_tracked_processor::<handlers::PluginsEnableProcessor>(
+                state,
+                context,
+                ApiMethod::PluginsEnable,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::PluginsEnable(response))
+        }
+        ClientRequest::PluginsDisable(params) => {
+            let response = dispatch_tracked_processor::<handlers::PluginsDisableProcessor>(
+                state,
+                context,
+                ApiMethod::PluginsDisable,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::PluginsDisable(response))
+        }
+        ClientRequest::PluginsRestart(params) => {
+            let response = dispatch_tracked_processor::<handlers::PluginsRestartProcessor>(
+                state,
+                context,
+                ApiMethod::PluginsRestart,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::PluginsRestart(response))
         }
         ClientRequest::GatewayStatus(NoParams {}) => {
             let response = dispatch_tracked_processor::<handlers::GatewayStatusProcessor>(
@@ -1039,9 +1112,60 @@ mod tests {
         assert!(matches!(response, ClientResponse::Capabilities(_)));
     }
 
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn dispatcher_handles_plugin_disable_request() {
+        let (_home, _guard) = temp_home();
+        allthecodes_plugins::clear_plugins();
+        let plugin_source = tempfile::tempdir().expect("plugin source");
+        std::fs::write(
+            plugin_source.path().join("plugin.json"),
+            r#"{
+                "name": "dispatcher-plugin",
+                "display_name": "Dispatcher Plugin",
+                "version": "1.0.0",
+                "description": "Dispatcher test plugin"
+            }"#,
+        )
+        .expect("plugin manifest");
+
+        let state = make_web_state();
+        dispatch(
+            state.clone(),
+            ApiRequestContext::direct(),
+            ClientRequest::PluginsInstall(v1::plugins::PluginInstallRequest::Legacy(
+                v1::plugins::PluginLegacyInstallRequest {
+                    source: plugin_source.path().to_string_lossy().to_string(),
+                    scope: Some("user".to_string()),
+                },
+            )),
+        )
+        .await
+        .expect("plugin install should dispatch");
+
+        let response = dispatch(
+            state,
+            ApiRequestContext::direct(),
+            ClientRequest::PluginsDisable(v1::plugins::PluginIdRequest {
+                id: "dispatcher-plugin@local".to_string(),
+            }),
+        )
+        .await
+        .expect("plugin disable should dispatch");
+
+        match response {
+            ClientResponse::PluginsDisable(body) => {
+                assert_eq!(body.status, "disabled");
+                assert_eq!(body.plugin["id"], "dispatcher-plugin@local");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+        allthecodes_plugins::clear_plugins();
+    }
+
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 40);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 46);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(
