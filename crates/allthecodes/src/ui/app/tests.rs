@@ -833,6 +833,25 @@ fn mouse_wheel_scrolls_prompt_messages() {
 }
 
 #[test]
+fn tick_marks_dirty_for_streaming_thinking_animation() {
+    let mut app = App::new();
+    app.is_streaming = true;
+    app.spinner_state.active = false;
+    app.tick_counter = 0;
+    app.dirty = false;
+
+    for _ in 0..4 {
+        app.tick();
+        assert!(!app.dirty);
+    }
+
+    app.tick();
+
+    assert!(app.dirty);
+    assert_eq!(app.thinking_animation_frame(), Some(1));
+}
+
+#[test]
 fn mouse_wheel_scrolls_transcript_view() {
     let mut app = App::new();
     app.view_mode = ViewMode::Transcript;

@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use anyhow::anyhow;
+use chrono::{DateTime, Utc};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -96,7 +98,7 @@ impl WebState {
         let current_session_id = engine.current_session_id().to_string();
         let mut session_engines = HashMap::new();
         session_engines.insert(current_session_id, engine.clone());
-        Self {
+        let state = Self {
             app_version: Arc::from(app_version.into()),
             engine_slot: Arc::new(RwLock::new(engine)),
             is_streaming,
@@ -109,7 +111,10 @@ impl WebState {
             serialization: SerializationLayer::new(),
             web_ui_store: WebUiStore::new(paths::data_root().join("web").join("state.db")),
             account_auth: Arc::new(Mutex::new(AccountAuthMemory::default())),
-        }
+        };
+        install_plugin_mcp_hooks();
+        state.install_plugin_account_token_provider();
+        state
     }
 
     /// Application version reported to Web clients.
@@ -200,6 +205,69 @@ impl WebState {
             .write()
             .remove(&ChatPermissionKey::new(session_id, tool_use_id));
     }
+
+    fn install_plugin_account_token_provider(&self) {
+        let account_auth = self.account_auth.clone();
+        allthecodes_plugins::set_plugin_account_token_provider(Some(Arc::new(move || {
+            if let Some(session) = account_auth.lock().session.clone() {
+                if account_auth_session_expired(&session) {
+                    return Err(anyhow!("desktop account session is expired"));
+                }
+                return Ok(session.access_token);
+            }
+
+            stored_account_access_token()?.ok_or_else(|| anyhow!("no desktop account session"))
+        })));
+    }
+}
+
+fn account_auth_session_expired(session: &AccountAuthSession) -> bool {
+    let Ok(expires_at) = DateTime::parse_from_rfc3339(&session.expires_at) else {
+        return true;
+    };
+    Utc::now() >= expires_at.with_timezone(&Utc)
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredAccountAuthFile {
+    auth_mode: String,
+    tokens: StoredAccountAuthTokens,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredAccountAuthTokens {
+    access_token: String,
+}
+
+fn stored_account_access_token() -> anyhow::Result<Option<String>> {
+    let path = paths::data_root().join("auth.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = std::fs::read_to_string(&path)?;
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let auth_file: StoredAccountAuthFile = serde_json::from_str(&raw)?;
+    if auth_file.auth_mode != "allthecodes" {
+        return Ok(None);
+    }
+
+    let token = auth_file.tokens.access_token.trim();
+    if token.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(token.to_string()))
+    }
+}
+
+fn install_plugin_mcp_hooks() {
+    allthecodes_mcp::discovery::set_plugin_hook(allthecodes_plugins::discover_plugin_mcp_servers);
+    allthecodes_mcp::discovery::set_scoped_plugin_hook(
+        allthecodes_plugins::discover_plugin_mcp_servers_scoped,
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

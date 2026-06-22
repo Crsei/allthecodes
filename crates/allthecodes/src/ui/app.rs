@@ -559,6 +559,11 @@ impl App {
         self.is_streaming
     }
 
+    fn thinking_animation_frame(&self) -> Option<usize> {
+        self.is_streaming
+            .then_some((self.tick_counter / 5) as usize)
+    }
+
     pub fn queue_prompt(&mut self, text: String) -> usize {
         self.queued_prompts.push_back(text);
         self.dirty = true;
@@ -586,6 +591,9 @@ impl App {
         }
         if self.spinner_state.active && self.tick_counter.is_multiple_of(5) {
             self.spinner_state.tick();
+            self.dirty = true;
+        }
+        if self.is_streaming && self.tick_counter.is_multiple_of(5) {
             self.dirty = true;
         }
         if self.notifications.process_queue() {

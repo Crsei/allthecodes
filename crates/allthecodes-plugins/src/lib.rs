@@ -96,6 +96,21 @@ pub struct PluginEntry {
     pub marketplace: Option<String>,
     /// Local cache path where the plugin is materialized.
     pub cache_path: Option<PathBuf>,
+    /// Stable installed version field for marketplace UI compatibility.
+    #[serde(default)]
+    pub installed_version: Option<String>,
+    /// Whether this entry came from the official allthecodes marketplace.
+    #[serde(default)]
+    pub official: bool,
+    /// Original download URL, when installed from a downloadable artifact.
+    #[serde(default)]
+    pub download_url: Option<String>,
+    /// Homepage URL, when known.
+    #[serde(default)]
+    pub homepage: Option<String>,
+    /// Expected SHA-256 digest for the installed artifact, if supplied.
+    #[serde(default)]
+    pub sha256: Option<String>,
     /// Tools contributed by this plugin.
     pub tools: Vec<String>,
     /// Skills contributed by this plugin.

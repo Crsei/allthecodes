@@ -10,10 +10,16 @@ use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use crate::PluginSource;
 
 pub const DEFAULT_MARKETPLACE_SOURCE_NAME: &str = "default-marketplace-source";
+pub const OFFICIAL_MARKETPLACE_SOURCE_NAME: &str = "official-allthecodes";
+pub const OFFICIAL_MARKETPLACE_URL: &str =
+    "https://download.allthecodes.cc/plugins/marketplace.json";
+pub const OFFICIAL_MARKETPLACE_REFRESH_TTL_SECONDS: i64 = 300;
+const OFFICIAL_DOWNLOAD_HOSTS: &[&str] = &["allthecodes.cc", "download.allthecodes.cc"];
 pub const SUPERPOWERS_PLUGIN_ID: &str = "superpowers";
 const SUPERPOWERS_VERSION: &str = "5.1.0";
 const SUPERPOWERS_REPO: &str = "obra/superpowers";
@@ -66,6 +72,9 @@ pub struct MarketplacePluginEntry {
     /// Expected checksum (SHA-256 hex).
     #[serde(default)]
     pub checksum: Option<String>,
+    /// Expected SHA-256 hex digest, preserved for frontend compatibility.
+    #[serde(default)]
+    pub sha256: Option<String>,
     /// Plugin tags/categories.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -101,6 +110,7 @@ impl MarketplaceIndex {
     pub fn with_builtin_defaults() -> Self {
         let index = Self::new();
         index.register_source(default_marketplace_source());
+        index.register_source(official_marketplace_source());
         index.set_marketplace_entries(
             DEFAULT_MARKETPLACE_SOURCE_NAME,
             default_marketplace_entries(),
@@ -184,6 +194,43 @@ impl MarketplaceIndex {
         now - last > ttl_seconds
     }
 
+    /// Refresh the official marketplace only when its cache is empty or stale.
+    ///
+    /// This is best-effort for UI listing: failures keep the previous cache and
+    /// do not advance the refresh timestamp.
+    pub async fn refresh_official_if_stale(&self, ttl_seconds: i64) -> Result<usize> {
+        let current_entries = self.get_marketplace_entries(OFFICIAL_MARKETPLACE_SOURCE_NAME);
+        if !current_entries.is_empty()
+            && !self.needs_refresh(OFFICIAL_MARKETPLACE_SOURCE_NAME, ttl_seconds)
+        {
+            return Ok(current_entries.len());
+        }
+
+        let Some(source) = self
+            .sources
+            .lock()
+            .get(OFFICIAL_MARKETPLACE_SOURCE_NAME)
+            .cloned()
+        else {
+            return Ok(0);
+        };
+
+        match load_entries_from_source(&source).await {
+            Ok(entries) => {
+                let count = entries.len();
+                self.set_marketplace_entries(OFFICIAL_MARKETPLACE_SOURCE_NAME, entries);
+                Ok(count)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Official plugin marketplace refresh failed; keeping cached entries"
+                );
+                Ok(current_entries.len())
+            }
+        }
+    }
+
     /// Find a plugin entry by ID across all marketplaces.
     pub fn find_plugin(&self, id: &str) -> Option<MarketplacePluginEntry> {
         let cache = self.cache.lock();
@@ -224,9 +271,22 @@ impl MarketplaceIndex {
             let entries = if source.name == DEFAULT_MARKETPLACE_SOURCE_NAME {
                 default_marketplace_entries()
             } else {
-                load_entries_from_source(&source)
-                    .await
-                    .with_context(|| format!("Failed to refresh marketplace '{}'", source.name))?
+                match load_entries_from_source(&source).await {
+                    Ok(entries) => entries,
+                    Err(error) if source.name == OFFICIAL_MARKETPLACE_SOURCE_NAME => {
+                        tracing::warn!(
+                            error = %error,
+                            "Official plugin marketplace refresh failed; keeping cached entries"
+                        );
+                        total += self.get_marketplace_entries(&source.name).len();
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("Failed to refresh marketplace '{}'", source.name)
+                        });
+                    }
+                }
             };
             total += entries.len();
             self.set_marketplace_entries(&source.name, entries);
@@ -282,6 +342,13 @@ pub async fn refresh_all_marketplaces() -> Result<usize> {
     GLOBAL_MARKETPLACE_INDEX.refresh_all().await
 }
 
+/// Best-effort refresh for the official marketplace used by UI listing.
+pub async fn refresh_official_marketplace_if_stale() -> Result<usize> {
+    GLOBAL_MARKETPLACE_INDEX
+        .refresh_official_if_stale(OFFICIAL_MARKETPLACE_REFRESH_TTL_SECONDS)
+        .await
+}
+
 /// Get the marketplace directory path.
 pub fn marketplaces_cache_dir() -> PathBuf {
     crate::marketplaces_dir()
@@ -310,6 +377,7 @@ pub fn default_marketplace_entries() -> Vec<MarketplacePluginEntry> {
         source_name: DEFAULT_MARKETPLACE_SOURCE_NAME.to_string(),
         download_url: Some(SUPERPOWERS_DOWNLOAD_URL.to_string()),
         checksum: None,
+        sha256: None,
         tags: vec![
             "tool".to_string(),
             "skills".to_string(),
@@ -319,6 +387,18 @@ pub fn default_marketplace_entries() -> Vec<MarketplacePluginEntry> {
         homepage: Some(SUPERPOWERS_HOMEPAGE.to_string()),
         license: Some("MIT".to_string()),
     }]
+}
+
+pub fn official_marketplace_source() -> MarketplaceSource {
+    MarketplaceSource {
+        name: OFFICIAL_MARKETPLACE_SOURCE_NAME.to_string(),
+        source: PluginSource::Url {
+            url: OFFICIAL_MARKETPLACE_URL.to_string(),
+        },
+        description: "Official allthecodes plugin marketplace".to_string(),
+        auto_update: true,
+        priority: 0,
+    }
 }
 
 async fn load_entries_from_source(
@@ -342,7 +422,13 @@ async fn load_entries_from_source(
             })?
         }
         PluginSource::Git { url, .. } | PluginSource::Url { url } => {
-            let response = reqwest::get(url)
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(20))
+                .build()
+                .context("Failed to build marketplace HTTP client")?;
+            let response = client
+                .get(url)
+                .send()
                 .await
                 .with_context(|| format!("Failed to fetch marketplace index: {url}"))?;
             if !response.status().is_success() {
@@ -385,23 +471,80 @@ async fn load_entries_from_source(
         if entry.source_name.trim().is_empty() {
             entry.source_name = source.name.clone();
         }
+        normalize_marketplace_entry(entry);
+        if source.name == OFFICIAL_MARKETPLACE_SOURCE_NAME {
+            validate_official_marketplace_entry(entry)?;
+        }
     }
     Ok(entries)
+}
+
+fn normalize_marketplace_entry(entry: &mut MarketplacePluginEntry) {
+    match (&entry.checksum, &entry.sha256) {
+        (Some(checksum), None) => entry.sha256 = Some(checksum.clone()),
+        (None, Some(sha256)) => entry.checksum = Some(sha256.clone()),
+        _ => {}
+    }
+}
+
+pub fn validate_official_marketplace_entry(entry: &MarketplacePluginEntry) -> Result<()> {
+    if entry.id.trim().is_empty() {
+        anyhow::bail!("Official marketplace entry has empty id");
+    }
+    if entry.version.trim().is_empty() {
+        anyhow::bail!(
+            "Official marketplace entry '{}' has empty version",
+            entry.id
+        );
+    }
+    let Some(download_url) = entry.download_url.as_deref() else {
+        anyhow::bail!(
+            "Official marketplace entry '{}' is missing download_url",
+            entry.id
+        );
+    };
+    validate_official_download_url(download_url)
+        .with_context(|| format!("Invalid official download_url for '{}'", entry.id))
+}
+
+pub fn validate_official_download_url(download_url: &str) -> Result<()> {
+    let parsed = url::Url::parse(download_url).context("download_url must be a valid URL")?;
+    if parsed.scheme() != "https" {
+        anyhow::bail!("download_url must use https");
+    }
+    if !parsed
+        .host_str()
+        .is_some_and(|host| OFFICIAL_DOWNLOAD_HOSTS.contains(&host))
+    {
+        anyhow::bail!("download_url host must be allthecodes.cc or download.allthecodes.cc");
+    }
+    Ok(())
 }
 
 fn parse_marketplace_entries(content: &str) -> Result<Vec<MarketplacePluginEntry>> {
     let value: serde_json::Value =
         serde_json::from_str(content).context("Failed to parse marketplace index JSON")?;
-    if value.is_array() {
-        return serde_json::from_value(value).context("Failed to parse marketplace entries array");
-    }
-    for key in ["plugins", "entries"] {
-        if let Some(entries) = value.get(key) {
-            return serde_json::from_value(entries.clone())
-                .with_context(|| format!("Failed to parse marketplace '{key}' array"));
+    let mut entries = if value.is_array() {
+        serde_json::from_value(value).context("Failed to parse marketplace entries array")?
+    } else {
+        let mut parsed = None;
+        for key in ["plugins", "entries"] {
+            if let Some(entries) = value.get(key) {
+                parsed = Some(
+                    serde_json::from_value(entries.clone())
+                        .with_context(|| format!("Failed to parse marketplace '{key}' array"))?,
+                );
+                break;
+            }
         }
+        parsed.ok_or_else(|| {
+            anyhow::anyhow!("Marketplace index must be an array or contain a plugins/entries array")
+        })?
+    };
+    for entry in &mut entries {
+        normalize_marketplace_entry(entry);
     }
-    anyhow::bail!("Marketplace index must be an array or contain a plugins/entries array");
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -480,6 +623,7 @@ mod tests {
                 source_name: "test-mp".into(),
                 download_url: None,
                 checksum: None,
+                sha256: None,
                 tags: vec!["utility".into()],
                 homepage: None,
                 license: None,
@@ -493,6 +637,7 @@ mod tests {
                 source_name: "test-mp".into(),
                 download_url: None,
                 checksum: None,
+                sha256: None,
                 tags: vec![],
                 homepage: None,
                 license: None,
@@ -517,6 +662,7 @@ mod tests {
                 source_name: "mp".into(),
                 download_url: None,
                 checksum: None,
+                sha256: None,
                 tags: vec!["lint".into(), "style".into()],
                 homepage: None,
                 license: None,
@@ -530,6 +676,7 @@ mod tests {
                 source_name: "mp".into(),
                 download_url: None,
                 checksum: None,
+                sha256: None,
                 tags: vec!["lint".into()],
                 homepage: None,
                 license: None,
@@ -561,6 +708,7 @@ mod tests {
             source_name: "mp".into(),
             download_url: None,
             checksum: None,
+            sha256: None,
             tags: vec![],
             homepage: None,
             license: None,
@@ -648,5 +796,162 @@ mod tests {
             index.find_plugin("rust-tools").unwrap().source_name,
             "local-fixture"
         );
+    }
+
+    #[tokio::test]
+    async fn official_refresh_if_stale_populates_empty_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join("marketplace.json");
+        std::fs::write(
+            &index_path,
+            r#"{
+                "plugins": [
+                    {
+                        "id": "eco-boost",
+                        "name": "Eco Boost",
+                        "description": "Eco helper",
+                        "version": "0.1.0",
+                        "download_url": "https://allthecodes.cc/api/downloads/plugins/eco-boost/v0.1.0/eco-boost-0.1.0.zip"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let index = MarketplaceIndex::new();
+        index.register_source(MarketplaceSource {
+            name: OFFICIAL_MARKETPLACE_SOURCE_NAME.into(),
+            source: PluginSource::Local {
+                path: index_path.to_string_lossy().to_string(),
+            },
+            description: "Official fixture".into(),
+            auto_update: true,
+            priority: 0,
+        });
+
+        let count = index.refresh_official_if_stale(300).await.unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(
+            index.get_marketplace_entries(OFFICIAL_MARKETPLACE_SOURCE_NAME)[0].id,
+            "eco-boost"
+        );
+    }
+
+    #[tokio::test]
+    async fn official_refresh_failure_preserves_cache_and_timestamp() {
+        let index = MarketplaceIndex::new();
+        index.register_source(MarketplaceSource {
+            name: OFFICIAL_MARKETPLACE_SOURCE_NAME.into(),
+            source: PluginSource::Local {
+                path: "/path/that/does/not/exist/marketplace.json".into(),
+            },
+            description: "Official fixture".into(),
+            auto_update: true,
+            priority: 0,
+        });
+        index.set_marketplace_entries(
+            OFFICIAL_MARKETPLACE_SOURCE_NAME,
+            vec![MarketplacePluginEntry {
+                id: "cached-plugin".into(),
+                name: "Cached Plugin".into(),
+                description: "".into(),
+                version: "1.0.0".into(),
+                author: None,
+                source_name: OFFICIAL_MARKETPLACE_SOURCE_NAME.into(),
+                download_url: Some(
+                    "https://allthecodes.cc/api/downloads/plugins/cached-plugin/v1.0.0/cached-plugin-1.0.0.zip"
+                        .into(),
+                ),
+                checksum: None,
+                sha256: None,
+                tags: vec![],
+                homepage: None,
+                license: None,
+            }],
+        );
+        index
+            .refresh_times
+            .lock()
+            .insert(OFFICIAL_MARKETPLACE_SOURCE_NAME.into(), 0);
+
+        let count = index.refresh_official_if_stale(300).await.unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(
+            index.get_marketplace_entries(OFFICIAL_MARKETPLACE_SOURCE_NAME)[0].id,
+            "cached-plugin"
+        );
+        assert_eq!(
+            index
+                .refresh_times
+                .lock()
+                .get(OFFICIAL_MARKETPLACE_SOURCE_NAME)
+                .copied(),
+            Some(0)
+        );
+
+        let count = index.refresh_all().await.unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            index
+                .refresh_times
+                .lock()
+                .get(OFFICIAL_MARKETPLACE_SOURCE_NAME)
+                .copied(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn parses_sha256_alias_into_checksum() {
+        let entries = parse_marketplace_entries(
+            r#"{"plugins":[{"id":"eco-boost","name":"Eco Boost","description":"","version":"0.1.0","download_url":"https://allthecodes.cc/api/downloads/plugins/eco-boost/v0.1.0/eco-boost-0.1.0.zip","sha256":"abc"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(entries[0].checksum.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn official_entry_accepts_cdn_download_host() {
+        let entry = MarketplacePluginEntry {
+            id: "eco-boost".into(),
+            name: "Eco Boost".into(),
+            description: "".into(),
+            version: "0.1.0".into(),
+            author: None,
+            source_name: OFFICIAL_MARKETPLACE_SOURCE_NAME.into(),
+            download_url: Some(
+                "https://download.allthecodes.cc/allthecodesapp/plugins/eco-boost/v0.1.0/eco-boost-0.1.0.zip"
+                    .into(),
+            ),
+            checksum: None,
+            sha256: None,
+            tags: vec![],
+            homepage: None,
+            license: None,
+        };
+
+        validate_official_marketplace_entry(&entry).unwrap();
+    }
+
+    #[test]
+    fn official_entry_rejects_non_official_download_host() {
+        let entry = MarketplacePluginEntry {
+            id: "eco-boost".into(),
+            name: "Eco Boost".into(),
+            description: "".into(),
+            version: "0.1.0".into(),
+            author: None,
+            source_name: OFFICIAL_MARKETPLACE_SOURCE_NAME.into(),
+            download_url: Some("https://example.com/plugin.zip".into()),
+            checksum: None,
+            sha256: None,
+            tags: vec![],
+            homepage: None,
+            license: None,
+        };
+
+        assert!(validate_official_marketplace_entry(&entry).is_err());
     }
 }

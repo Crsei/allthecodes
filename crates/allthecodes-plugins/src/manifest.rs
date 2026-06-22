@@ -4,7 +4,7 @@
 //! plugin's identity, capabilities, and requirements.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -226,6 +226,71 @@ pub fn load_manifest(plugin_dir: &Path) -> Result<PluginManifest> {
     Ok(manifest)
 }
 
+/// Additional validation for official marketplace artifacts.
+pub fn validate_official_manifest(
+    manifest: &PluginManifest,
+    plugin_root: &Path,
+    expected_id: &str,
+    expected_version: &str,
+) -> Result<()> {
+    validate_manifest(manifest)?;
+    if manifest.name != expected_id {
+        bail!(
+            "Official plugin manifest name '{}' does not match requested id '{}'",
+            manifest.name,
+            expected_id
+        );
+    }
+    if manifest.version != expected_version {
+        bail!(
+            "Official plugin manifest version '{}' does not match requested version '{}'",
+            manifest.version,
+            expected_version
+        );
+    }
+
+    for server in &manifest.mcp_servers {
+        validate_relative_plugin_path(
+            plugin_root,
+            &server.command,
+            &format!("MCP server '{}' command", server.name),
+        )?;
+    }
+
+    for skill in &manifest.skills {
+        validate_relative_plugin_path(
+            plugin_root,
+            &skill.path,
+            &format!("skill '{}' path", skill.name),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_relative_plugin_path(plugin_root: &Path, value: &str, field: &str) -> Result<PathBuf> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("{field} must not be empty");
+    }
+    let path = Path::new(trimmed);
+    if path.is_absolute() {
+        bail!("{field} must be relative");
+    }
+    let mut relative = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => relative.push(part),
+            Component::CurDir => {}
+            _ => bail!("{field} must stay inside the plugin root"),
+        }
+    }
+    if relative.as_os_str().is_empty() {
+        bail!("{field} must not be empty");
+    }
+    Ok(plugin_root.join(relative))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +470,45 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let back: PluginManifest = serde_json::from_str(&json).unwrap();
         assert!(back.configuration.is_some());
+    }
+
+    #[test]
+    fn official_manifest_rejects_absolute_mcp_command() {
+        let mut m = minimal_manifest();
+        m.mcp_servers = vec![McpServerContribution {
+            name: "server".into(),
+            command: "/usr/bin/server".into(),
+            args: vec![],
+            env: HashMap::new(),
+        }];
+
+        assert!(
+            validate_official_manifest(&m, Path::new("/plugin"), "test-plugin", "1.0.0").is_err()
+        );
+    }
+
+    #[test]
+    fn official_manifest_rejects_skill_path_escape() {
+        let mut m = minimal_manifest();
+        m.skills = vec![SkillContribution {
+            name: "skill".into(),
+            path: "../SKILL.md".into(),
+            description: None,
+        }];
+
+        assert!(
+            validate_official_manifest(&m, Path::new("/plugin"), "test-plugin", "1.0.0").is_err()
+        );
+    }
+
+    #[test]
+    fn official_manifest_rejects_id_version_mismatch() {
+        let m = minimal_manifest();
+        assert!(
+            validate_official_manifest(&m, Path::new("/plugin"), "other-plugin", "1.0.0").is_err()
+        );
+        assert!(
+            validate_official_manifest(&m, Path::new("/plugin"), "test-plugin", "2.0.0").is_err()
+        );
     }
 }

@@ -132,6 +132,7 @@ impl App {
                         verbose: self.verbose,
                         is_transcript_mode: false,
                         show_all_in_transcript: false,
+                        thinking_animation_frame: self.thinking_animation_frame(),
                     },
                 );
             self.vscroll.ensure_up_to_date(
@@ -178,6 +179,7 @@ impl App {
                         verbose: self.verbose,
                         is_transcript_mode: false,
                         show_all_in_transcript: false,
+                        thinking_animation_frame: self.thinking_animation_frame(),
                     },
                 );
             self.vscroll.ensure_up_to_date(
@@ -546,6 +548,7 @@ impl App {
                     verbose: self.verbose,
                     is_transcript_mode: true,
                     show_all_in_transcript: true,
+                    thinking_animation_frame: None,
                 },
             );
         self.vscroll.ensure_up_to_date(

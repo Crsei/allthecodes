@@ -9,8 +9,8 @@
 //! `cc-types::{agent_events, agent_types, agent_channel}` so the IPC runtime
 //! can share them without depending on the root binary crate.
 
-pub mod agent_handlers;
 pub mod adapters;
+pub mod agent_handlers;
 pub mod client;
 pub mod headless;
 pub mod runtime;

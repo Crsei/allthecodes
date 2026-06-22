@@ -115,6 +115,15 @@ static REGISTRY: LazyLock<Mutex<HashMap<String, PluginEntry>>> =
 static DIAGNOSTICS: LazyLock<Mutex<Vec<PluginDiagnostic>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
+type PluginAccountTokenProvider = Arc<dyn Fn() -> anyhow::Result<String> + Send + Sync>;
+
+static ACCOUNT_TOKEN_PROVIDER: LazyLock<Mutex<Option<PluginAccountTokenProvider>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+pub fn set_plugin_account_token_provider(provider: Option<PluginAccountTokenProvider>) {
+    *ACCOUNT_TOKEN_PROVIDER.lock() = provider;
+}
+
 pub fn register_plugin(plugin: PluginEntry) {
     let event = PluginSubsystemEvent::StatusChanged {
         plugin_id: plugin.id.clone(),
@@ -452,11 +461,26 @@ pub fn discover_plugin_mcp_servers_scoped() -> Vec<(String, allthecodes_mcp::Mcp
         };
 
         for mcp in manifest.mcp_servers {
-            let env = if mcp.env.is_empty() {
-                None
-            } else {
-                Some(mcp.env.clone())
-            };
+            let mut env = mcp.env.clone();
+            if is_official_plugin(&plugin) {
+                env.insert(
+                    "ALLTHECODES_COM_BASE_URL".to_string(),
+                    "https://allthecodes.cc".to_string(),
+                );
+                let token = match plugin_account_access_token() {
+                    Ok(token) => token,
+                    Err(error) => {
+                        warn!(
+                            plugin = %plugin.id,
+                            server = %mcp.name,
+                            error = %error,
+                            "Plugin: skipping official MCP server because account OAuth token is unavailable"
+                        );
+                        continue;
+                    }
+                };
+                env.insert("ALLTHECODES_COM_ACCESS_TOKEN".to_string(), token);
+            }
             out.push((
                 plugin.id.clone(),
                 allthecodes_mcp::McpServerConfig {
@@ -467,7 +491,7 @@ pub fn discover_plugin_mcp_servers_scoped() -> Vec<(String, allthecodes_mcp::Mcp
                     url: None,
                     headers: None,
                     oauth: None,
-                    env,
+                    env: Some(env),
                     browser_mcp: None,
                     disabled: None,
                 },
@@ -476,6 +500,24 @@ pub fn discover_plugin_mcp_servers_scoped() -> Vec<(String, allthecodes_mcp::Mcp
     }
 
     out
+}
+
+fn is_official_plugin(plugin: &PluginEntry) -> bool {
+    plugin.official
+        || plugin.marketplace.as_deref().is_some_and(|marketplace| {
+            marketplace == crate::marketplace::OFFICIAL_MARKETPLACE_SOURCE_NAME
+        })
+}
+
+fn plugin_account_access_token() -> anyhow::Result<String> {
+    let Some(provider) = ACCOUNT_TOKEN_PROVIDER.lock().clone() else {
+        anyhow::bail!("allthecodes account auth is not available");
+    };
+    let token = provider()?;
+    if token.trim().is_empty() {
+        anyhow::bail!("allthecodes account access token is empty");
+    }
+    Ok(token)
 }
 
 fn resolve_plugin_mcp_command(plugin_root: &Path, command: String) -> String {
@@ -533,8 +575,15 @@ pub fn discover_plugin_skill_definitions() -> Vec<PluginSkillDefinition> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_plugin_mcp_command;
-    use std::path::Path;
+    use super::{
+        clear_plugins, discover_plugin_mcp_servers_scoped, register_plugin,
+        resolve_plugin_mcp_command, set_plugin_account_token_provider,
+    };
+    use crate::marketplace::OFFICIAL_MARKETPLACE_SOURCE_NAME;
+    use crate::{PluginEntry, PluginSource, PluginStatus};
+    use serial_test::serial;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
     #[test]
     fn plugin_mcp_command_keeps_bare_command_for_path_lookup() {
@@ -564,5 +613,141 @@ mod tests {
             ),
             "/opt/allthecodes/mcp-cli-bridge"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn non_official_plugin_mcp_servers_do_not_require_account_token() {
+        clear_plugins();
+        set_plugin_account_token_provider(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_mcp_manifest(
+            dir.path(),
+            r#"{"CUSTOM":"kept","ALLTHECODES_COM_BASE_URL":"manifest"}"#,
+        );
+        register_plugin(plugin_entry(
+            "third-party",
+            dir.path().to_path_buf(),
+            false,
+            Some("community"),
+        ));
+
+        let discovered = discover_plugin_mcp_servers_scoped();
+
+        assert_eq!(discovered.len(), 1);
+        let env = discovered[0].1.env.as_ref().expect("env");
+        assert_eq!(env.get("CUSTOM").map(String::as_str), Some("kept"));
+        assert_eq!(
+            env.get("ALLTHECODES_COM_BASE_URL").map(String::as_str),
+            Some("manifest")
+        );
+        assert!(!env.contains_key("ALLTHECODES_COM_ACCESS_TOKEN"));
+        clear_plugins();
+    }
+
+    #[test]
+    #[serial]
+    fn official_plugin_mcp_servers_are_skipped_without_account_token() {
+        clear_plugins();
+        set_plugin_account_token_provider(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_mcp_manifest(dir.path(), r#"{}"#);
+        register_plugin(plugin_entry(
+            "official-plugin",
+            dir.path().to_path_buf(),
+            true,
+            Some(OFFICIAL_MARKETPLACE_SOURCE_NAME),
+        ));
+
+        let discovered = discover_plugin_mcp_servers_scoped();
+
+        assert!(discovered.is_empty());
+        clear_plugins();
+    }
+
+    #[test]
+    #[serial]
+    fn official_plugin_mcp_servers_get_account_env_overrides() {
+        clear_plugins();
+        set_plugin_account_token_provider(Some(Arc::new(|| Ok("token-123".to_string()))));
+        let dir = tempfile::tempdir().unwrap();
+        write_mcp_manifest(
+            dir.path(),
+            r#"{"ALLTHECODES_COM_BASE_URL":"manifest","ALLTHECODES_COM_ACCESS_TOKEN":"manifest"}"#,
+        );
+        register_plugin(plugin_entry(
+            "official-plugin",
+            dir.path().to_path_buf(),
+            false,
+            Some(OFFICIAL_MARKETPLACE_SOURCE_NAME),
+        ));
+
+        let discovered = discover_plugin_mcp_servers_scoped();
+
+        assert_eq!(discovered.len(), 1);
+        let env = discovered[0].1.env.as_ref().expect("env");
+        assert_eq!(
+            env.get("ALLTHECODES_COM_BASE_URL").map(String::as_str),
+            Some("https://allthecodes.cc")
+        );
+        assert_eq!(
+            env.get("ALLTHECODES_COM_ACCESS_TOKEN").map(String::as_str),
+            Some("token-123")
+        );
+        set_plugin_account_token_provider(None);
+        clear_plugins();
+    }
+
+    fn write_mcp_manifest(plugin_root: &Path, env_json: &str) {
+        std::fs::write(
+            plugin_root.join("plugin.json"),
+            format!(
+                r#"{{
+                    "name": "test-plugin",
+                    "version": "1.0.0",
+                    "description": "",
+                    "mcp_servers": [
+                        {{
+                            "name": "test-server",
+                            "command": "bin/server",
+                            "args": ["--stdio"],
+                            "env": {}
+                        }}
+                    ]
+                }}"#,
+                env_json
+            ),
+        )
+        .unwrap();
+    }
+
+    fn plugin_entry(
+        id: &str,
+        cache_path: PathBuf,
+        official: bool,
+        marketplace: Option<&str>,
+    ) -> PluginEntry {
+        PluginEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            version: "1.0.0".to_string(),
+            description: String::new(),
+            source: PluginSource::Local {
+                path: cache_path.to_string_lossy().to_string(),
+            },
+            status: PluginStatus::Installed,
+            marketplace: marketplace.map(ToString::to_string),
+            cache_path: Some(cache_path),
+            installed_version: Some("1.0.0".to_string()),
+            official,
+            download_url: None,
+            homepage: None,
+            sha256: None,
+            tools: vec![],
+            skills: vec![],
+            mcp_servers: vec!["test-server".to_string()],
+            installed_at: None,
+            updated_at: None,
+        }
     }
 }

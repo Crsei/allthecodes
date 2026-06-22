@@ -72,6 +72,7 @@ impl Processor for ChatModesListProcessor {
 
     async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
         let bundles = load_mode_bundles().map_err(|e| ProtocolApiError::Internal { message: e })?;
+        crate::handlers::plugins::refresh_plugin_contributed_skills(&self.state);
         let resources = resource_index(&self.state);
         let modes: Vec<allthecodes_protocol::v1::chat_modes::ChatModeResolved> = bundles
             .into_iter()
@@ -125,6 +126,7 @@ impl Processor for ChatModesResourcesProcessor {
     async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
         let engine = self.state.engine();
         let cwd = engine.cwd();
+        crate::handlers::plugins::refresh_plugin_contributed_skills(&self.state);
         let resources = list_resources(std::path::Path::new(&cwd))
             .map_err(|e| ProtocolApiError::Internal { message: e })?;
         // Types are structurally identical; bridge via serialization
@@ -527,7 +529,7 @@ fn built_in_bundles() -> Vec<ChatModeBundle> {
                 "match the task."
             )
             .into(),
-            plugin_ids: vec!["eco-boost@local".into()],
+            plugin_ids: vec!["eco-boost".into()],
             skill_ids: vec!["blunt".into(), "blunt-compress".into()],
             mcp_server_names: vec!["mcp-cli-bridge".into()],
             enabled: true,
@@ -621,7 +623,9 @@ fn resource_index(state: &WebState) -> ResourceIndex {
     let mut index = ResourceIndex::default();
 
     for plugin in get_enabled_plugins() {
-        index.plugins.insert(plugin.id);
+        let plugin_id = plugin.id;
+        insert_plugin_compat_aliases(&mut index.plugins, &plugin_id);
+        index.plugins.insert(plugin_id);
         index.plugins.insert(plugin.name);
     }
     for skill in allthecodes_skills::get_all_skills() {
@@ -635,6 +639,18 @@ fn resource_index(state: &WebState) -> ResourceIndex {
         }
     }
     index
+}
+
+fn insert_plugin_compat_aliases(plugins: &mut BTreeSet<String>, id: &str) {
+    match id {
+        "eco-boost-linux-release" => {
+            plugins.insert("eco-boost".to_string());
+        }
+        "allthecodes-bridge-cli-linux-release" => {
+            plugins.insert("allthecodes-bridge-cli@local".to_string());
+        }
+        _ => {}
+    }
 }
 
 fn list_resources(cwd: &Path) -> Result<ChatModeResourcesResponse, String> {
@@ -749,4 +765,72 @@ fn validation_api_error(code: &'static str, message: impl Into<String>) -> Proto
 
 fn internal_api_error(message: String) -> ProtocolApiError {
     ProtocolApiError::Internal { message }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn eco_boost_builtin_uses_installed_plugin_id() {
+        let eco_boost = built_in_bundles()
+            .into_iter()
+            .find(|bundle| bundle.id == "eco-boost")
+            .expect("eco boost bundle");
+
+        assert_eq!(eco_boost.plugin_ids, vec!["eco-boost"]);
+    }
+
+    #[test]
+    fn eco_boost_resolves_ready_when_declared_resources_exist() {
+        let eco_boost = built_in_bundles()
+            .into_iter()
+            .find(|bundle| bundle.id == "eco-boost")
+            .expect("eco boost bundle");
+        let resources = ResourceIndex {
+            plugins: BTreeSet::from(["eco-boost".to_string()]),
+            skills: BTreeSet::from(["blunt".to_string(), "blunt-compress".to_string()]),
+            mcp_servers: BTreeSet::from(["mcp-cli-bridge".to_string()]),
+        };
+
+        let resolved = resolve_bundle(eco_boost, &resources);
+
+        assert_eq!(resolved.status, "ready");
+        assert!(resolved.missing_plugins.is_empty());
+        assert!(resolved.missing_skills.is_empty());
+        assert!(resolved.missing_mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn release_plugin_ids_satisfy_builtin_mode_dependencies() {
+        let mut plugins = BTreeSet::from([
+            "eco-boost-linux-release".to_string(),
+            "allthecodes-bridge-cli-linux-release".to_string(),
+        ]);
+        insert_plugin_compat_aliases(&mut plugins, "eco-boost-linux-release");
+        insert_plugin_compat_aliases(&mut plugins, "allthecodes-bridge-cli-linux-release");
+
+        let resources = ResourceIndex {
+            plugins,
+            skills: BTreeSet::from(["blunt".to_string(), "blunt-compress".to_string()]),
+            mcp_servers: BTreeSet::from([
+                "mcp-cli-bridge".to_string(),
+                "allthecodes-bridge".to_string(),
+            ]),
+        };
+
+        for mode_id in ["eco-boost", "orchestrator"] {
+            let bundle = built_in_bundles()
+                .into_iter()
+                .find(|bundle| bundle.id == mode_id)
+                .expect("built-in bundle");
+
+            let resolved = resolve_bundle(bundle, &resources);
+
+            assert_eq!(resolved.status, "ready");
+            assert!(resolved.missing_plugins.is_empty());
+        }
+    }
 }

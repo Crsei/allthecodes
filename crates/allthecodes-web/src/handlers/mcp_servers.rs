@@ -228,12 +228,23 @@ fn list_entries(cwd: &Path) -> Result<Vec<McpServerConfigEntry>, String> {
                     url: server.config.url,
                     headers: server.config.headers,
                     oauth: server.config.oauth,
-                    env: server.config.env,
+                    env: redact_server_env(server.config.env),
                     browser_mcp: server.config.browser_mcp,
                     disabled: server.config.disabled,
                 })
                 .collect()
         })
+}
+
+fn redact_server_env(
+    env: Option<std::collections::HashMap<String, String>>,
+) -> Option<std::collections::HashMap<String, String>> {
+    env.map(|mut env| {
+        if let Some(value) = env.get_mut("ALLTHECODES_COM_ACCESS_TOKEN") {
+            *value = "[redacted]".to_string();
+        }
+        env
+    })
 }
 
 fn validate_entry(entry: &McpServerConfigEntry) -> Result<(), String> {

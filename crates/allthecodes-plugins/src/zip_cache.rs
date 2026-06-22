@@ -17,6 +17,24 @@ use std::sync::LazyLock;
 /// Default cache capacity (number of ZIP files).
 const DEFAULT_CACHE_CAPACITY: usize = 100;
 
+/// Strict extraction limits for official plugin ZIP artifacts.
+#[derive(Debug, Clone, Copy)]
+pub struct StrictZipLimits {
+    pub max_entries: usize,
+    pub max_total_uncompressed_bytes: u64,
+    pub max_file_uncompressed_bytes: u64,
+}
+
+impl Default for StrictZipLimits {
+    fn default() -> Self {
+        Self {
+            max_entries: 10_000,
+            max_total_uncompressed_bytes: 512 * 1024 * 1024,
+            max_file_uncompressed_bytes: 256 * 1024 * 1024,
+        }
+    }
+}
+
 /// Thread-safe LRU cache for downloaded plugin ZIP data.
 pub struct ZipCache {
     inner: Mutex<LruCache<String, Vec<u8>>>,
@@ -133,6 +151,152 @@ pub fn extract_zip_to(zip_data: &[u8], dest_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Strict extraction for official plugin ZIP archives.
+pub fn extract_zip_to_strict(
+    zip_data: &[u8],
+    dest_dir: &Path,
+    limits: StrictZipLimits,
+) -> Result<()> {
+    let cursor = std::io::Cursor::new(zip_data);
+    let mut archive = zip::ZipArchive::new(cursor).context("Failed to open ZIP archive")?;
+
+    if archive.len() > limits.max_entries {
+        anyhow::bail!(
+            "ZIP archive has {} entries, exceeding limit {}",
+            archive.len(),
+            limits.max_entries
+        );
+    }
+
+    std::fs::create_dir_all(dest_dir).with_context(|| {
+        format!(
+            "Failed to create destination directory: {}",
+            dest_dir.display()
+        )
+    })?;
+    let dest_root = dest_dir
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize {}", dest_dir.display()))?;
+
+    let mut total_uncompressed = 0u64;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .with_context(|| format!("Failed to read ZIP entry at index {}", i))?;
+        let raw_name = entry.name().to_string();
+        let relative = strict_zip_relative_path(&raw_name)
+            .with_context(|| format!("Invalid ZIP entry path '{}'", raw_name))?;
+
+        if is_zip_symlink(&entry) {
+            anyhow::bail!("Refusing to extract symlink ZIP entry '{}'", raw_name);
+        }
+
+        let size = entry.size();
+        if !entry.is_dir() && size > limits.max_file_uncompressed_bytes {
+            anyhow::bail!(
+                "ZIP entry '{}' expands to {} bytes, exceeding single-file limit {}",
+                raw_name,
+                size,
+                limits.max_file_uncompressed_bytes
+            );
+        }
+        total_uncompressed = total_uncompressed
+            .checked_add(size)
+            .ok_or_else(|| anyhow::anyhow!("ZIP archive expanded size overflow"))?;
+        if total_uncompressed > limits.max_total_uncompressed_bytes {
+            anyhow::bail!(
+                "ZIP archive expands to {} bytes, exceeding total limit {}",
+                total_uncompressed,
+                limits.max_total_uncompressed_bytes
+            );
+        }
+
+        let entry_path = dest_root.join(&relative);
+
+        if entry.is_dir() {
+            std::fs::create_dir_all(&entry_path)
+                .with_context(|| format!("Failed to create directory: {}", entry_path.display()))?;
+            ensure_within_root(&dest_root, &entry_path)?;
+            continue;
+        }
+
+        if let Some(parent) = entry_path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create parent directory: {}", parent.display())
+            })?;
+        }
+        ensure_within_root(&dest_root, &entry_path)?;
+
+        let mut output_file = std::fs::File::create(&entry_path)
+            .with_context(|| format!("Failed to create file: {}", entry_path.display()))?;
+        std::io::copy(&mut entry, &mut output_file)
+            .with_context(|| format!("Failed to extract entry: {}", raw_name))?;
+
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = mode & 0o777;
+            std::fs::set_permissions(&entry_path, std::fs::Permissions::from_mode(mode))
+                .with_context(|| {
+                    format!("Failed to set permissions on {}", entry_path.display())
+                })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn strict_zip_relative_path(raw_name: &str) -> Result<PathBuf> {
+    if raw_name.trim().is_empty() {
+        anyhow::bail!("empty ZIP entry path");
+    }
+    if raw_name.starts_with('/') || raw_name.starts_with('\\') {
+        anyhow::bail!("absolute ZIP entry path");
+    }
+    if raw_name.starts_with("//") || raw_name.starts_with("\\\\") {
+        anyhow::bail!("UNC ZIP entry path");
+    }
+    let bytes = raw_name.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        anyhow::bail!("Windows drive-prefixed ZIP entry path");
+    }
+
+    let mut out = PathBuf::new();
+    for part in raw_name.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => anyhow::bail!("ZIP entry contains parent directory component"),
+            component => out.push(component),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        anyhow::bail!("empty normalized ZIP entry path");
+    }
+    Ok(out)
+}
+
+fn ensure_within_root(root: &Path, target: &Path) -> Result<()> {
+    let parent = if target.extension().is_some() || !target.exists() {
+        target.parent().unwrap_or(root)
+    } else {
+        target
+    };
+    let canonical_parent = parent
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize {}", parent.display()))?;
+    if !canonical_parent.starts_with(root) {
+        anyhow::bail!(
+            "ZIP entry would escape destination directory: {}",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
+fn is_zip_symlink(entry: &zip::read::ZipFile<'_>) -> bool {
+    entry.is_symlink()
 }
 
 /// Safe extraction of a gzip-compressed tar archive to a destination directory.
@@ -346,6 +510,62 @@ mod tests {
         let invalid_data = b"this is not a zip file";
         let dest = tempfile::tempdir().unwrap();
         let result = extract_zip_to(invalid_data, dest.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_zip_rejects_windows_drive_prefix() {
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip_writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            let options = zip::write::FileOptions::<()>::default();
+            zip_writer.start_file("C:/evil.sh", options).unwrap();
+            zip_writer.write_all(b"evil").unwrap();
+            zip_writer.finish().unwrap();
+        }
+
+        let dest = tempfile::tempdir().unwrap();
+        let result = extract_zip_to_strict(&zip_buf, dest.path(), StrictZipLimits::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_zip_rejects_symlink_entries() {
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip_writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            let options = zip::write::FileOptions::<()>::default();
+            zip_writer.add_symlink("link", "target", options).unwrap();
+            zip_writer.finish().unwrap();
+        }
+
+        let dest = tempfile::tempdir().unwrap();
+        let result = extract_zip_to_strict(&zip_buf, dest.path(), StrictZipLimits::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_zip_enforces_entry_count_limit() {
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip_writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            let options = zip::write::FileOptions::<()>::default();
+            zip_writer.start_file("a", options).unwrap();
+            zip_writer.write_all(b"a").unwrap();
+            zip_writer.start_file("b", options).unwrap();
+            zip_writer.write_all(b"b").unwrap();
+            zip_writer.finish().unwrap();
+        }
+
+        let dest = tempfile::tempdir().unwrap();
+        let result = extract_zip_to_strict(
+            &zip_buf,
+            dest.path(),
+            StrictZipLimits {
+                max_entries: 1,
+                ..StrictZipLimits::default()
+            },
+        );
         assert!(result.is_err());
     }
 

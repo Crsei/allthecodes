@@ -29,7 +29,7 @@ pub(super) fn render_assistant_message<'a>(
     let mut first_block = true;
     let mut previous_block_was_tool_use = false;
 
-    for block in &msg.content {
+    for (block_index, block) in msg.content.iter().enumerate() {
         match block {
             ContentBlock::Text { text } => {
                 // If this is an API error message, use error classification
@@ -176,11 +176,17 @@ pub(super) fn render_assistant_message<'a>(
                 thinking,
                 signature: _,
             } => {
+                let block_id = format!("{}:{block_index}", msg.uuid);
+                let animation_frame = (render_context.lookups.last_thinking_block_id.as_deref()
+                    == Some(block_id.as_str()))
+                .then_some(render_context.options.thinking_animation_frame)
+                .flatten();
                 let thinking_lines = render_assistant_thinking_lines(
                     &AssistantThinkingView {
                         thinking: thinking.clone(),
                         verbose: render_context.options.verbose,
                         is_transcript_mode: render_context.options.is_transcript_mode,
+                        animation_frame,
                     },
                     theme,
                 );

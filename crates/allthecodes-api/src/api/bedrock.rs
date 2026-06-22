@@ -48,8 +48,8 @@ use serde_json::{json, Value};
 use crate::api::client::{strip_anthropic_cache_fields, MessagesRequest};
 use crate::api::sigv4::{self, AwsCredentials, SignRequest};
 use crate::api::streaming::parse_sse_event;
-use allthecodes_types::models::to_bedrock_model_id;
 use allthecodes_types::message::StreamEvent;
+use allthecodes_types::models::to_bedrock_model_id;
 
 pub const BEDROCK_ANTHROPIC_VERSION: &str = "bedrock-2023-05-31";
 

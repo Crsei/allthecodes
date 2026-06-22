@@ -8,6 +8,32 @@ use axum::Json;
 use serde_json::json;
 use serial_test::serial;
 
+#[test]
+fn mcp_server_list_redacts_account_access_token_env() {
+    let redacted = redact_server_env(Some(std::collections::HashMap::from([
+        (
+            "ALLTHECODES_COM_ACCESS_TOKEN".to_string(),
+            "secret-token".to_string(),
+        ),
+        (
+            "ALLTHECODES_COM_BASE_URL".to_string(),
+            "https://allthecodes.cc".to_string(),
+        ),
+    ])))
+    .expect("env");
+
+    assert_eq!(
+        redacted
+            .get("ALLTHECODES_COM_ACCESS_TOKEN")
+            .map(String::as_str),
+        Some("[redacted]")
+    );
+    assert_eq!(
+        redacted.get("ALLTHECODES_COM_BASE_URL").map(String::as_str),
+        Some("https://allthecodes.cc")
+    );
+}
+
 #[tokio::test]
 #[serial]
 async fn mcp_servers_crud_uses_editable_settings_scopes() {

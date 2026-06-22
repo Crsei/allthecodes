@@ -7,23 +7,26 @@
 //! - `lookup_plugin_by_source` — resolve plugin from marketplace or source
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use crate::blocklist;
 use crate::dependency_resolver::DependencyResolver;
 use crate::flagging;
 use crate::loader;
-use crate::manifest::{load_manifest, PluginManifest, SkillContribution};
-use crate::marketplace;
+use crate::manifest::{
+    load_manifest, validate_official_manifest, PluginManifest, SkillContribution,
+};
+use crate::marketplace::{self, validate_official_download_url, OFFICIAL_MARKETPLACE_SOURCE_NAME};
 use crate::mcpb::{parse_mcpb_from_bytes, verify_mcpb_integrity};
 use crate::policy::{PluginPolicyEnforcer, PolicyDecision};
 use crate::sources::{resolve_source, ResolveSource};
 use crate::versioning::check_engine_compatibility;
-use crate::zip_cache::{extract_tgz_to, extract_zip_to};
+use crate::zip_cache::{extract_tgz_to, extract_zip_to, extract_zip_to_strict, StrictZipLimits};
 use crate::{PluginEntry, PluginSource, PluginStatus};
 
 /// Installation scope for a plugin.
@@ -101,6 +104,18 @@ pub struct InstallResult {
     /// Whether this was a fresh install (vs upgrade).
     pub fresh_install: bool,
 }
+
+/// Strict official marketplace install request.
+#[derive(Debug, Clone)]
+pub struct OfficialPluginInstallRequest {
+    pub id: String,
+    pub version: String,
+    pub download_url: String,
+    pub sha256: Option<String>,
+    pub homepage: Option<String>,
+}
+
+const MAX_OFFICIAL_ZIP_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Install a plugin from a source specification.
 ///
@@ -251,6 +266,11 @@ pub async fn install_plugin(
         status: PluginStatus::Installed,
         marketplace: marketplace_name,
         cache_path: Some(install_path.clone()),
+        installed_version: Some(manifest.version.clone()),
+        official: false,
+        download_url: None,
+        homepage: None,
+        sha256: None,
         tools: manifest.tools.iter().map(|t| t.name.clone()).collect(),
         skills: manifest.skills.iter().map(|s| s.name.clone()).collect(),
         mcp_servers: manifest
@@ -287,6 +307,226 @@ pub async fn install_plugin(
         install_path,
         fresh_install: true,
     })
+}
+
+/// Install an official marketplace plugin from its signed marketplace fields.
+pub async fn install_official_plugin(
+    request: OfficialPluginInstallRequest,
+    engine_version: Option<&str>,
+    available_plugins: &HashMap<String, String>,
+    all_manifests: &HashMap<String, PluginManifest>,
+) -> std::result::Result<InstallResult, InstallError> {
+    validate_official_download_url(&request.download_url)
+        .map_err(|e| InstallError::ValidationFailed(e.to_string()))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| InstallError::DownloadFailed(e.to_string()))?;
+    let response = client
+        .get(&request.download_url)
+        .send()
+        .await
+        .map_err(|e| InstallError::DownloadFailed(e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(InstallError::DownloadFailed(format!(
+            "Official plugin download returned HTTP {}",
+            response.status()
+        )));
+    }
+    if let Some(length) = response.content_length() {
+        if length > MAX_OFFICIAL_ZIP_BYTES {
+            return Err(InstallError::DownloadFailed(format!(
+                "Official plugin download is {} bytes, exceeding limit {}",
+                length, MAX_OFFICIAL_ZIP_BYTES
+            )));
+        }
+    }
+    if let Some(content_type) = response.headers().get(reqwest::header::CONTENT_TYPE) {
+        let content_type = content_type
+            .to_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !content_type.contains("application/zip")
+            && !content_type.contains("application/octet-stream")
+            && !content_type.contains("application/x-zip-compressed")
+        {
+            return Err(InstallError::DownloadFailed(format!(
+                "Official plugin download returned unsupported content type '{}'",
+                content_type
+            )));
+        }
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| InstallError::DownloadFailed(e.to_string()))?;
+    if bytes.len() as u64 > MAX_OFFICIAL_ZIP_BYTES {
+        return Err(InstallError::DownloadFailed(format!(
+            "Official plugin download is {} bytes, exceeding limit {}",
+            bytes.len(),
+            MAX_OFFICIAL_ZIP_BYTES
+        )));
+    }
+    if let Some(expected) = request.sha256.as_deref() {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual = hex::encode(hasher.finalize());
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(InstallError::ValidationFailed(format!(
+                "Official plugin SHA-256 mismatch: expected {}, got {}",
+                expected, actual
+            )));
+        }
+    }
+
+    install_official_plugin_from_zip(
+        request,
+        &bytes,
+        engine_version,
+        available_plugins,
+        all_manifests,
+    )
+}
+
+pub fn install_official_plugin_from_zip(
+    request: OfficialPluginInstallRequest,
+    zip_data: &[u8],
+    engine_version: Option<&str>,
+    available_plugins: &HashMap<String, String>,
+    all_manifests: &HashMap<String, PluginManifest>,
+) -> std::result::Result<InstallResult, InstallError> {
+    validate_official_download_url(&request.download_url)
+        .map_err(|e| InstallError::ValidationFailed(e.to_string()))?;
+    validate_official_path_segment("plugin id", &request.id)?;
+    validate_official_path_segment("plugin version", &request.version)?;
+
+    let installed = loader::load_installed_plugins();
+    if installed
+        .iter()
+        .any(|p| p.id == request.id && p.version == request.version)
+    {
+        return Err(InstallError::AlreadyInstalled(request.id));
+    }
+
+    let plugins_root = crate::plugins_dir();
+    let target_root = plugins_root.join(&request.id).join(&request.version);
+    if target_root.exists() {
+        return Err(InstallError::AlreadyInstalled(format!(
+            "{}@{}",
+            request.id, request.version
+        )));
+    }
+
+    let tmp_root = plugins_root.join(".tmp").join(format!(
+        "{}-{}-{}",
+        sanitize_id(&request.id),
+        sanitize_id(&request.version),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    if let Some(parent) = tmp_root.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if tmp_root.exists() {
+        std::fs::remove_dir_all(&tmp_root)?;
+    }
+    std::fs::create_dir_all(&tmp_root)?;
+
+    let result = (|| -> std::result::Result<InstallResult, InstallError> {
+        extract_zip_to_strict(zip_data, &tmp_root, StrictZipLimits::default())
+            .map_err(|e| InstallError::ValidationFailed(e.to_string()))?;
+        let plugin_root = normalize_official_plugin_root(&tmp_root)?;
+        let manifest = load_manifest(&plugin_root)
+            .map_err(|e| InstallError::ValidationFailed(format!("Invalid manifest: {}", e)))?;
+        validate_official_manifest(&manifest, &plugin_root, &request.id, &request.version)
+            .map_err(|e| InstallError::ValidationFailed(e.to_string()))?;
+
+        if let Some(ref min_ver) = manifest.min_app_version {
+            if let Some(engine_ver) = engine_version {
+                if !check_engine_compatibility(Some(min_ver.as_str()), engine_ver) {
+                    return Err(InstallError::EngineIncompatible {
+                        required: min_ver.clone(),
+                        current: engine_ver.to_string(),
+                    });
+                }
+            }
+        }
+
+        let _deps = DependencyResolver::resolve_dependencies(&manifest, available_plugins)
+            .map_err(|e| InstallError::MissingDependency(e.to_string()))?;
+        if let Err(e) = DependencyResolver::check_dependency_cycle(&manifest, all_manifests) {
+            warn!(error = %e, "Dependency cycle detected during official install");
+        }
+
+        if let Some(parent) = target_root.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&plugin_root, &target_root).with_context(|| {
+            format!(
+                "Failed to move official plugin from {} to {}",
+                plugin_root.display(),
+                target_root.display()
+            )
+        })?;
+
+        let entry = PluginEntry {
+            id: manifest.name.clone(),
+            name: manifest
+                .display_name
+                .clone()
+                .unwrap_or_else(|| manifest.name.clone()),
+            version: manifest.version.clone(),
+            description: manifest.description.clone(),
+            source: PluginSource::Marketplace {
+                id: manifest.name.clone(),
+                source_name: OFFICIAL_MARKETPLACE_SOURCE_NAME.to_string(),
+            },
+            status: PluginStatus::Installed,
+            marketplace: Some(OFFICIAL_MARKETPLACE_SOURCE_NAME.to_string()),
+            cache_path: Some(target_root.clone()),
+            installed_version: Some(manifest.version.clone()),
+            official: true,
+            download_url: Some(request.download_url.clone()),
+            homepage: request.homepage.clone(),
+            sha256: request.sha256.clone(),
+            tools: manifest.tools.iter().map(|t| t.name.clone()).collect(),
+            skills: manifest.skills.iter().map(|s| s.name.clone()).collect(),
+            mcp_servers: manifest
+                .mcp_servers
+                .iter()
+                .map(|m| m.name.clone())
+                .collect(),
+            installed_at: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+            ),
+            updated_at: None,
+        };
+
+        let mut installed = loader::load_installed_plugins();
+        installed.retain(|p| p.id != entry.id);
+        installed.push(entry.clone());
+        loader::save_installed_plugins(&installed)?;
+        crate::register_plugin(entry.clone());
+
+        Ok(InstallResult {
+            plugin: entry,
+            install_path: target_root,
+            fresh_install: true,
+        })
+    })();
+
+    if tmp_root.exists() {
+        let _ = std::fs::remove_dir_all(&tmp_root);
+    }
+
+    result
 }
 
 /// Enhanced uninstall with optional purge and scope awareness.
@@ -507,6 +747,61 @@ fn normalize_install_path(install_path: PathBuf) -> std::result::Result<PathBuf,
     Ok(install_path)
 }
 
+fn normalize_official_plugin_root(
+    extract_dir: &Path,
+) -> std::result::Result<PathBuf, InstallError> {
+    if extract_dir.join("plugin.json").is_file() {
+        return Ok(extract_dir.to_path_buf());
+    }
+
+    let Some(content_root) = single_top_level_dir(extract_dir)? else {
+        return Err(InstallError::ValidationFailed(
+            "Official plugin ZIP must contain plugin.json at root or under a single top-level directory"
+                .to_string(),
+        ));
+    };
+    if content_root.join("plugin.json").is_file() {
+        return Ok(content_root);
+    }
+
+    Err(InstallError::ValidationFailed(
+        "Official plugin ZIP does not contain plugin.json".to_string(),
+    ))
+}
+
+fn validate_official_path_segment(
+    label: &str,
+    value: &str,
+) -> std::result::Result<(), InstallError> {
+    if value.is_empty() {
+        return Err(InstallError::ValidationFailed(format!(
+            "Official {} must not be empty",
+            label
+        )));
+    }
+    if value == "." || value == ".." {
+        return Err(InstallError::ValidationFailed(format!(
+            "Official {} must be a single path segment",
+            label
+        )));
+    }
+    if value.contains('/') || value.contains('\\') || value.contains(':') {
+        return Err(InstallError::ValidationFailed(format!(
+            "Official {} must be a single path segment",
+            label
+        )));
+    }
+
+    let mut components = Path::new(value).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(segment)), None) if segment == value => Ok(()),
+        _ => Err(InstallError::ValidationFailed(format!(
+            "Official {} must be a single path segment",
+            label
+        ))),
+    }
+}
+
 fn single_top_level_dir(root: &Path) -> std::result::Result<Option<PathBuf>, InstallError> {
     let mut dirs = Vec::new();
     for entry in std::fs::read_dir(root)? {
@@ -637,6 +932,30 @@ fn relative_path_string(root: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    struct EnvGuard {
+        old_home: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set_home(path: &Path) -> Self {
+            let old_home = std::env::var("ALLTHECODES_HOME").ok();
+            std::env::set_var("ALLTHECODES_HOME", path);
+            crate::clear_plugins();
+            Self { old_home }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            crate::clear_plugins();
+            match &self.old_home {
+                Some(value) => std::env::set_var("ALLTHECODES_HOME", value),
+                None => std::env::remove_var("ALLTHECODES_HOME"),
+            }
+        }
+    }
 
     #[test]
     fn test_sanitize_id() {
@@ -780,5 +1099,141 @@ mod tests {
             manifest.skills[0].path,
             "superpowers-5.1.0/skills/brainstorming/SKILL.md"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn official_zip_installs_to_versioned_root_and_registry() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set_home(home.path());
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip_writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            let options = zip::write::FileOptions::<()>::default().unix_permissions(0o755);
+            zip_writer
+                .start_file("eco-boost/plugin.json", options)
+                .unwrap();
+            zip_writer
+                .write_all(
+                    br#"{
+                        "name": "eco-boost",
+                        "display_name": "Eco Boost",
+                        "version": "0.1.0",
+                        "description": "Eco helper",
+                        "mcp_servers": [
+                            {"name": "eco", "command": "bin/eco", "args": ["--stdio"]}
+                        ],
+                        "skills": [
+                            {"name": "eco", "path": "skills/eco/SKILL.md"}
+                        ]
+                    }"#,
+                )
+                .unwrap();
+            zip_writer.start_file("eco-boost/bin/eco", options).unwrap();
+            zip_writer.write_all(b"#!/bin/sh\n").unwrap();
+            zip_writer
+                .start_file("eco-boost/skills/eco/SKILL.md", options)
+                .unwrap();
+            zip_writer.write_all(b"# Eco\n").unwrap();
+            zip_writer.finish().unwrap();
+        }
+
+        let result = install_official_plugin_from_zip(
+            OfficialPluginInstallRequest {
+                id: "eco-boost".into(),
+                version: "0.1.0".into(),
+                download_url: "https://allthecodes.cc/api/downloads/plugins/eco-boost/v0.1.0/eco-boost-0.1.0.zip".into(),
+                sha256: None,
+                homepage: Some("https://allthecodes.cc/plugins/eco-boost".into()),
+            },
+            &zip_buf,
+            Some("1.0.0"),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(result.plugin.id, "eco-boost");
+        assert!(result.install_path.ends_with("plugins/eco-boost/0.1.0"));
+        assert!(result.install_path.join("plugin.json").is_file());
+        let installed = loader::load_installed_plugins();
+        assert_eq!(installed.len(), 1);
+        assert!(installed[0].official);
+        assert_eq!(
+            installed[0].download_url.as_deref(),
+            Some(
+                "https://allthecodes.cc/api/downloads/plugins/eco-boost/v0.1.0/eco-boost-0.1.0.zip"
+            )
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn official_zip_id_mismatch_preserves_registry() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set_home(home.path());
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip_writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            let options = zip::write::FileOptions::<()>::default();
+            zip_writer.start_file("plugin.json", options).unwrap();
+            zip_writer
+                .write_all(br#"{"name":"wrong","version":"0.1.0","description":""}"#)
+                .unwrap();
+            zip_writer.finish().unwrap();
+        }
+
+        let result = install_official_plugin_from_zip(
+            OfficialPluginInstallRequest {
+                id: "eco-boost".into(),
+                version: "0.1.0".into(),
+                download_url: "https://allthecodes.cc/api/downloads/plugins/eco-boost/v0.1.0/eco-boost-0.1.0.zip".into(),
+                sha256: None,
+                homepage: None,
+            },
+            &zip_buf,
+            Some("1.0.0"),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        assert!(result.is_err());
+        assert!(loader::load_installed_plugins().is_empty());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn official_zip_rejects_path_like_request_segments_before_writing() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set_home(home.path());
+
+        for (id, version) in [
+            ("../eco-boost", "0.1.0"),
+            ("eco/boost", "0.1.0"),
+            ("eco\\boost", "0.1.0"),
+            ("C:eco-boost", "0.1.0"),
+            ("eco-boost", "../0.1.0"),
+            ("eco-boost", "0/1/0"),
+            ("eco-boost", "0\\1\\0"),
+            ("eco-boost", "C:0.1.0"),
+        ] {
+            let result = install_official_plugin_from_zip(
+                OfficialPluginInstallRequest {
+                    id: id.into(),
+                    version: version.into(),
+                    download_url: "https://allthecodes.cc/api/downloads/plugins/eco-boost/v0.1.0/eco-boost-0.1.0.zip".into(),
+                    sha256: None,
+                    homepage: None,
+                },
+                &[],
+                Some("1.0.0"),
+                &HashMap::new(),
+                &HashMap::new(),
+            );
+
+            assert!(matches!(result, Err(InstallError::ValidationFailed(_))));
+            assert!(loader::load_installed_plugins().is_empty());
+            assert!(!crate::plugins_dir().join("eco-boost").exists());
+        }
     }
 }

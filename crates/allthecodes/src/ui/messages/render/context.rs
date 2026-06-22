@@ -26,6 +26,7 @@ pub(crate) struct MessageRenderOptions {
     pub(crate) verbose: bool,
     pub(crate) is_transcript_mode: bool,
     pub(crate) show_all_in_transcript: bool,
+    pub(crate) thinking_animation_frame: Option<usize>,
 }
 
 #[derive(Debug, Clone)]

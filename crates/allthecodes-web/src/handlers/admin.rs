@@ -485,9 +485,7 @@ pub(crate) fn normalize_settings_path(path: &str) -> Option<&'static str> {
         "projects.max_tokens" | "max_tokens" => "max_tokens",
         "projects.streaming" | "streaming" => "streaming",
         "projects.show_token_usage" | "show_token_usage" => "show_token_usage",
-        "projects.show_reasoning_details" | "show_reasoning_details" => {
-            "show_reasoning_details"
-        }
+        "projects.show_reasoning_details" | "show_reasoning_details" => "show_reasoning_details",
         "projects.markdown" | "projects.markdown_rendering" | "markdown_rendering" => {
             "markdown_rendering"
         }
@@ -717,9 +715,7 @@ fn apply_value_to_raw(raw: &mut RawSettings, key: &str, value: Value) -> Result<
         "max_tokens" => raw.max_tokens = Some(u64_value(key, &value)?),
         "streaming" => raw.streaming = Some(bool_value(key, &value)?),
         "show_token_usage" => raw.show_token_usage = Some(bool_value(key, &value)?),
-        "show_reasoning_details" => {
-            raw.show_reasoning_details = Some(bool_value(key, &value)?)
-        }
+        "show_reasoning_details" => raw.show_reasoning_details = Some(bool_value(key, &value)?),
         "markdown_rendering" => raw.markdown_rendering = Some(bool_value(key, &value)?),
         "single_dollar_math" => raw.single_dollar_math = Some(bool_value(key, &value)?),
         "infographic" => raw.infographic = Some(bool_value(key, &value)?),

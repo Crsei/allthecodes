@@ -779,6 +779,7 @@ mod tests {
                 verbose: false,
                 is_transcript_mode: true,
                 show_all_in_transcript: true,
+                thinking_animation_frame: None,
             },
         );
         let transcript = super::render_single_message_with_context(
@@ -791,6 +792,149 @@ mod tests {
         let rendered = lines_to_text(transcript);
         assert!(rendered.contains("∴ Thinking"));
         assert!(rendered.contains("inspect files"));
+    }
+
+    #[test]
+    fn thinking_animation_frame_reaches_prompt_rendering() {
+        let message = Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Thinking {
+                thinking: "inspect files".to_string(),
+                signature: None,
+            }],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        });
+        let context = super::build_message_render_context_with_options(
+            std::slice::from_ref(&message),
+            None,
+            false,
+            super::MessageRenderOptions {
+                verbose: true,
+                thinking_animation_frame: Some(1),
+                ..super::MessageRenderOptions::default()
+            },
+        );
+
+        let rendered =
+            super::render_single_message_with_context(&message, 0, &Theme::default(), 80, &context);
+
+        assert_eq!(
+            rendered[0]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "∴ Thinking…"
+        );
+        assert!(
+            rendered[0].spans.len() > 1,
+            "animated label should be segmented into styled spans"
+        );
+    }
+
+    #[test]
+    fn thinking_animation_frame_only_applies_to_latest_thinking_block() {
+        let theme = Theme::default();
+        let first = Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Thinking {
+                thinking: "first".to_string(),
+                signature: None,
+            }],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        });
+        let second = Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1,
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Thinking {
+                thinking: "second".to_string(),
+                signature: None,
+            }],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        });
+        let messages = vec![first.clone(), second.clone()];
+        let context = super::build_message_render_context_with_options(
+            &messages,
+            None,
+            false,
+            super::MessageRenderOptions {
+                verbose: true,
+                thinking_animation_frame: Some(1),
+                ..super::MessageRenderOptions::default()
+            },
+        );
+
+        let first_rendered =
+            super::render_single_message_with_context(&first, 0, &theme, 80, &context);
+        let second_rendered =
+            super::render_single_message_with_context(&second, 1, &theme, 80, &context);
+
+        assert_eq!(first_rendered[0].spans.len(), 1);
+        assert_eq!(first_rendered[0].spans[0].style, theme.thinking);
+        assert!(
+            second_rendered[0].spans.len() > 1,
+            "latest thinking label should animate"
+        );
+    }
+
+    #[test]
+    fn transcript_mode_does_not_animate_thinking_label() {
+        let theme = Theme::default();
+        let message = Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Thinking {
+                thinking: "inspect files".to_string(),
+                signature: None,
+            }],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        });
+        let context = super::build_message_render_context_with_options(
+            std::slice::from_ref(&message),
+            None,
+            false,
+            super::MessageRenderOptions {
+                is_transcript_mode: true,
+                show_all_in_transcript: true,
+                thinking_animation_frame: Some(1),
+                ..super::MessageRenderOptions::default()
+            },
+        );
+
+        let rendered = super::render_single_message_with_context(&message, 0, &theme, 80, &context);
+
+        assert_eq!(
+            rendered[0]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "∴ Thinking…"
+        );
+        assert_eq!(rendered[0].spans.len(), 1);
+        assert_eq!(rendered[0].spans[0].style, theme.thinking);
     }
 
     #[test]
@@ -1043,6 +1187,7 @@ mod tests {
             &messages,
             super::MessageRenderOptions {
                 verbose: true,
+                thinking_animation_frame: None,
                 ..super::MessageRenderOptions::default()
             },
         );
