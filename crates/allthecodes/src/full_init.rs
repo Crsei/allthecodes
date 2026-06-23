@@ -111,6 +111,7 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
     if !all_plugins.is_empty() {
         info!(count = all_plugins.len(), "plugins loaded");
     }
+    web::state::install_plugin_runtime_hooks();
 
     // B.3a-i: Wire plugin LSP declarations into the LSP config provider
     // (Phase 2 integration: Serial Integration Lane)

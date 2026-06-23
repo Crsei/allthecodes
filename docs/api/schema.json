@@ -269,6 +269,26 @@
     {
       "errors": [],
       "experimental": null,
+      "method": "POST",
+      "operation": "ChatModesEnable",
+      "params": null,
+      "path": "/api/chat-modes/{id}/enable",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "ChatModesDisable",
+      "params": null,
+      "path": "/api/chat-modes/{id}/disable",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
       "method": "DELETE",
       "operation": "ChatModesDelete",
       "params": null,
@@ -570,6 +590,16 @@
       "errors": [],
       "experimental": null,
       "method": "GET",
+      "operation": "PluginsInstalled",
+      "params": null,
+      "path": "/api/plugins/installed",
+      "response": "PluginsListResponse",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "GET",
       "operation": "PluginsMarketplace",
       "params": null,
       "path": "/api/plugins/marketplace",
@@ -584,6 +614,66 @@
       "params": "PluginInstallRequest",
       "path": "/api/plugins/install",
       "response": "PluginInstallResponse",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "PluginsUpdate",
+      "params": "PluginUpdateRequest",
+      "path": "/api/plugins/update",
+      "response": "PluginInstallResponse",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "PluginsUninstallById",
+      "params": "PluginUninstallByIdRequest",
+      "path": "/api/plugins/uninstall",
+      "response": "PluginUninstallResponse",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "PluginsEnable",
+      "params": "PluginIdRequest",
+      "path": "/api/plugins/enable",
+      "response": "PluginLifecycleResponse",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "PluginsDisable",
+      "params": "PluginIdRequest",
+      "path": "/api/plugins/disable",
+      "response": "PluginLifecycleResponse",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "PluginsRestart",
+      "params": "PluginIdRequest",
+      "path": "/api/plugins/restart",
+      "response": "PluginLifecycleResponse",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "PluginsTestConnection",
+      "params": null,
+      "path": "/api/plugins/{id}/test-connection",
+      "response": "PluginTestConnectionResponse",
       "serialization": "concurrent"
     },
     {
@@ -1063,6 +1153,86 @@
       "operation": "AuthRefresh",
       "params": null,
       "path": "/api/auth/refresh",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "AccountAuthLoginStart",
+      "params": "JsonValue",
+      "path": "/api/account-auth/login/start",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "AccountAuthLoginComplete",
+      "params": "JsonValue",
+      "path": "/api/account-auth/login/complete",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "GET",
+      "operation": "AccountAuthStatus",
+      "params": null,
+      "path": "/api/account-auth/status",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "AccountAuthRefresh",
+      "params": null,
+      "path": "/api/account-auth/refresh",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "POST",
+      "operation": "AccountAuthLogout",
+      "params": null,
+      "path": "/api/account-auth/logout",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "GET",
+      "operation": "AccountAuthBilling",
+      "params": null,
+      "path": "/api/account-auth/billing",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "GET",
+      "operation": "AccountAuthBillingLedger",
+      "params": null,
+      "path": "/api/account-auth/billing/ledger",
+      "response": "JsonValue",
+      "serialization": "concurrent"
+    },
+    {
+      "errors": [],
+      "experimental": null,
+      "method": "GET",
+      "operation": "AccountAuthBillingOrder",
+      "params": null,
+      "path": "/api/account-auth/billing/orders/{id}",
       "response": "JsonValue",
       "serialization": "concurrent"
     },
@@ -3236,8 +3406,31 @@
           },
           "type": "object"
         },
+        "PluginIdRequest": {
+          "description": "Request body for plugin lifecycle operations that target one plugin ID.",
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
         "PluginInstallRequest": {
-          "description": "Request body for POST /api/plugins/install",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginLegacyInstallRequest"
+            },
+            {
+              "$ref": "#/definitions/PluginOfficialInstallRequest"
+            }
+          ],
+          "description": "Request body for POST /api/plugins/install"
+        },
+        "PluginLegacyInstallRequest": {
+          "description": "Legacy request body for POST /api/plugins/install",
           "properties": {
             "scope": {
               "default": null,
@@ -3255,6 +3448,56 @@
           ],
           "type": "object"
         },
+        "PluginOfficialInstallRequest": {
+          "description": "Official marketplace install/update request body.",
+          "properties": {
+            "download_url": {
+              "type": "string"
+            },
+            "homepage": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "sha256": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "download_url",
+            "id",
+            "version"
+          ],
+          "type": "object"
+        },
+        "PluginUninstallByIdRequest": {
+          "description": "Request body for POST /api/plugins/uninstall.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "purge": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
         "PluginUninstallRequest": {
           "description": "Request body for POST /api/plugins/{id}/uninstall",
           "properties": {
@@ -3264,6 +3507,17 @@
             }
           },
           "type": "object"
+        },
+        "PluginUpdateRequest": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginOfficialInstallRequest"
+            },
+            {
+              "$ref": "#/definitions/PluginIdRequest"
+            }
+          ],
+          "description": "Request body for POST /api/plugins/update."
         },
         "ProfileCreateRequest": {
           "properties": {
@@ -4215,6 +4469,44 @@
           "type": "object"
         },
         {
+          "description": "Enable a chat mode and prepare its project resources.",
+          "properties": {
+            "method": {
+              "enum": [
+                "ChatModesEnable"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Disable a chat mode and disable unshared mode plugins.",
+          "properties": {
+            "method": {
+              "enum": [
+                "ChatModesDisable"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Delete a chat mode.",
           "properties": {
             "method": {
@@ -4761,6 +5053,24 @@
           "properties": {
             "method": {
               "enum": [
+                "PluginsInstalled"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "PluginsMarketplace"
               ],
               "type": "string"
@@ -4785,6 +5095,114 @@
             },
             "params": {
               "$ref": "#/definitions/PluginInstallRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsUpdate"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/PluginUpdateRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsUninstallById"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/PluginUninstallByIdRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsEnable"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/PluginIdRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsDisable"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/PluginIdRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsRestart"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/PluginIdRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsTestConnection"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
             }
           },
           "required": [
@@ -5624,6 +6042,146 @@
             "method": {
               "enum": [
                 "AuthRefresh"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthLoginStart"
+              ],
+              "type": "string"
+            },
+            "params": true
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthLoginComplete"
+              ],
+              "type": "string"
+            },
+            "params": true
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthStatus"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthRefresh"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthLogout"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthBilling"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthBillingLedger"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/NoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthBillingOrder"
               ],
               "type": "string"
             },
@@ -8544,12 +9102,123 @@
             "install_path": {
               "type": "string"
             },
-            "plugin": true
+            "plugin": true,
+            "status": {
+              "default": "",
+              "type": "string"
+            }
           },
           "required": [
             "fresh_install",
             "install_path",
             "plugin"
+          ],
+          "type": "object"
+        },
+        "PluginLifecycleResponse": {
+          "description": "Generic response for plugin lifecycle operations.",
+          "properties": {
+            "plugin": true,
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "plugin",
+            "status"
+          ],
+          "type": "object"
+        },
+        "PluginMcpConnectionCheck": {
+          "description": "One diagnostic check within an MCP connection test.",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "name",
+            "status"
+          ],
+          "type": "object"
+        },
+        "PluginMcpConnectionTestResult": {
+          "description": "Per-MCP-server connection diagnostic.",
+          "properties": {
+            "checks": {
+              "default": [],
+              "items": {
+                "$ref": "#/definitions/PluginMcpConnectionCheck"
+              },
+              "type": "array"
+            },
+            "command": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "resources": {
+              "default": null,
+              "format": "uint",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "server": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "tools": {
+              "default": null,
+              "format": "uint",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "message",
+            "server",
+            "status"
+          ],
+          "type": "object"
+        },
+        "PluginTestConnectionResponse": {
+          "description": "Response body for POST /api/plugins/{id}/test-connection.",
+          "properties": {
+            "plugin": true,
+            "servers": {
+              "items": {
+                "$ref": "#/definitions/PluginMcpConnectionTestResult"
+              },
+              "type": "array"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "plugin",
+            "servers",
+            "status"
           ],
           "type": "object"
         },
@@ -10045,6 +10714,40 @@
           "type": "object"
         },
         {
+          "description": "Enable a chat mode and prepare its project resources.",
+          "properties": {
+            "method": {
+              "enum": [
+                "ChatModesEnable"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Disable a chat mode and disable unshared mode plugins.",
+          "properties": {
+            "method": {
+              "enum": [
+                "ChatModesDisable"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Delete a chat mode.",
           "properties": {
             "method": {
@@ -10573,6 +11276,24 @@
           "properties": {
             "method": {
               "enum": [
+                "PluginsInstalled"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/PluginsListResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "PluginsMarketplace"
               ],
               "type": "string"
@@ -10597,6 +11318,114 @@
             },
             "result": {
               "$ref": "#/definitions/PluginInstallResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsUpdate"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/PluginInstallResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsUninstallById"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/PluginUninstallResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsEnable"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/PluginLifecycleResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsDisable"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/PluginLifecycleResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsRestart"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/PluginLifecycleResponse"
+            }
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "PluginsTestConnection"
+              ],
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/definitions/PluginTestConnectionResponse"
             }
           },
           "required": [
@@ -11380,6 +12209,134 @@
             "method": {
               "enum": [
                 "AuthRefresh"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthLoginStart"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthLoginComplete"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthStatus"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthRefresh"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthLogout"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthBilling"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthBillingLedger"
+              ],
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "method",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "AccountAuthBillingOrder"
               ],
               "type": "string"
             },
@@ -15171,26 +16128,87 @@
       "title": "PersonUpdateRequest",
       "type": "object"
     },
-    "PluginInstallRequest": {
+    "PluginIdRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Request body for POST /api/plugins/install",
+      "description": "Request body for plugin lifecycle operations that target one plugin ID.",
       "properties": {
-        "scope": {
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "source": {
+        "id": {
           "type": "string"
         }
       },
       "required": [
-        "source"
+        "id"
       ],
-      "title": "PluginInstallRequest",
+      "title": "PluginIdRequest",
       "type": "object"
+    },
+    "PluginInstallRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PluginLegacyInstallRequest"
+        },
+        {
+          "$ref": "#/definitions/PluginOfficialInstallRequest"
+        }
+      ],
+      "definitions": {
+        "PluginLegacyInstallRequest": {
+          "description": "Legacy request body for POST /api/plugins/install",
+          "properties": {
+            "scope": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "type": "object"
+        },
+        "PluginOfficialInstallRequest": {
+          "description": "Official marketplace install/update request body.",
+          "properties": {
+            "download_url": {
+              "type": "string"
+            },
+            "homepage": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "sha256": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "download_url",
+            "id",
+            "version"
+          ],
+          "type": "object"
+        }
+      },
+      "description": "Request body for POST /api/plugins/install",
+      "title": "PluginInstallRequest"
     },
     "PluginInstallResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -15202,7 +16220,11 @@
         "install_path": {
           "type": "string"
         },
-        "plugin": true
+        "plugin": true,
+        "status": {
+          "default": "",
+          "type": "string"
+        }
       },
       "required": [
         "fresh_install",
@@ -15210,6 +16232,137 @@
         "plugin"
       ],
       "title": "PluginInstallResponse",
+      "type": "object"
+    },
+    "PluginLifecycleResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Generic response for plugin lifecycle operations.",
+      "properties": {
+        "plugin": true,
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin",
+        "status"
+      ],
+      "title": "PluginLifecycleResponse",
+      "type": "object"
+    },
+    "PluginTestConnectionResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "PluginMcpConnectionCheck": {
+          "description": "One diagnostic check within an MCP connection test.",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "name",
+            "status"
+          ],
+          "type": "object"
+        },
+        "PluginMcpConnectionTestResult": {
+          "description": "Per-MCP-server connection diagnostic.",
+          "properties": {
+            "checks": {
+              "default": [],
+              "items": {
+                "$ref": "#/definitions/PluginMcpConnectionCheck"
+              },
+              "type": "array"
+            },
+            "command": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "resources": {
+              "default": null,
+              "format": "uint",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "server": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "tools": {
+              "default": null,
+              "format": "uint",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "message",
+            "server",
+            "status"
+          ],
+          "type": "object"
+        }
+      },
+      "description": "Response body for POST /api/plugins/{id}/test-connection.",
+      "properties": {
+        "plugin": true,
+        "servers": {
+          "items": {
+            "$ref": "#/definitions/PluginMcpConnectionTestResult"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin",
+        "servers",
+        "status"
+      ],
+      "title": "PluginTestConnectionResponse",
+      "type": "object"
+    },
+    "PluginUninstallByIdRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Request body for POST /api/plugins/uninstall.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "purge": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "PluginUninstallByIdRequest",
       "type": "object"
     },
     "PluginUninstallRequest": {
@@ -15239,6 +16392,67 @@
       ],
       "title": "PluginUninstallResponse",
       "type": "object"
+    },
+    "PluginUpdateRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PluginOfficialInstallRequest"
+        },
+        {
+          "$ref": "#/definitions/PluginIdRequest"
+        }
+      ],
+      "definitions": {
+        "PluginIdRequest": {
+          "description": "Request body for plugin lifecycle operations that target one plugin ID.",
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "PluginOfficialInstallRequest": {
+          "description": "Official marketplace install/update request body.",
+          "properties": {
+            "download_url": {
+              "type": "string"
+            },
+            "homepage": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "sha256": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "download_url",
+            "id",
+            "version"
+          ],
+          "type": "object"
+        }
+      },
+      "description": "Request body for POST /api/plugins/update.",
+      "title": "PluginUpdateRequest"
     },
     "PluginsListResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",

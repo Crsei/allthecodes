@@ -2271,9 +2271,57 @@
         "title": "PersonUpdateRequest",
         "type": "object"
       },
+      "PluginIdRequest": {
+        "description": "Request body for plugin lifecycle operations that target one plugin ID.",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "PluginInstallRequest": {
         "$schema": "http://json-schema.org/draft-07/schema#",
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/PluginLegacyInstallRequest"
+          },
+          {
+            "$ref": "#/components/schemas/PluginOfficialInstallRequest"
+          }
+        ],
         "description": "Request body for POST /api/plugins/install",
+        "title": "PluginInstallRequest"
+      },
+      "PluginInstallResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Response body for POST /api/plugins/install",
+        "properties": {
+          "fresh_install": {
+            "type": "boolean"
+          },
+          "install_path": {
+            "type": "string"
+          },
+          "plugin": true,
+          "status": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fresh_install",
+          "install_path",
+          "plugin"
+        ],
+        "title": "PluginInstallResponse",
+        "type": "object"
+      },
+      "PluginLegacyInstallRequest": {
+        "description": "Legacy request body for POST /api/plugins/install",
         "properties": {
           "scope": {
             "default": null,
@@ -2289,27 +2337,169 @@
         "required": [
           "source"
         ],
-        "title": "PluginInstallRequest",
         "type": "object"
       },
-      "PluginInstallResponse": {
+      "PluginLifecycleResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "Response body for POST /api/plugins/install",
+        "description": "Generic response for plugin lifecycle operations.",
         "properties": {
-          "fresh_install": {
-            "type": "boolean"
-          },
-          "install_path": {
+          "plugin": true,
+          "status": {
             "type": "string"
-          },
-          "plugin": true
+          }
         },
         "required": [
-          "fresh_install",
-          "install_path",
-          "plugin"
+          "plugin",
+          "status"
         ],
-        "title": "PluginInstallResponse",
+        "title": "PluginLifecycleResponse",
+        "type": "object"
+      },
+      "PluginMcpConnectionCheck": {
+        "description": "One diagnostic check within an MCP connection test.",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "PluginMcpConnectionTestResult": {
+        "description": "Per-MCP-server connection diagnostic.",
+        "properties": {
+          "checks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PluginMcpConnectionCheck"
+            },
+            "type": "array"
+          },
+          "command": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "resources": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "server": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tools": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message",
+          "server",
+          "status"
+        ],
+        "type": "object"
+      },
+      "PluginOfficialInstallRequest": {
+        "description": "Official marketplace install/update request body.",
+        "properties": {
+          "download_url": {
+            "type": "string"
+          },
+          "homepage": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "sha256": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "download_url",
+          "id",
+          "version"
+        ],
+        "type": "object"
+      },
+      "PluginTestConnectionResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Response body for POST /api/plugins/{id}/test-connection.",
+        "properties": {
+          "plugin": true,
+          "servers": {
+            "items": {
+              "$ref": "#/components/schemas/PluginMcpConnectionTestResult"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin",
+          "servers",
+          "status"
+        ],
+        "title": "PluginTestConnectionResponse",
+        "type": "object"
+      },
+      "PluginUninstallByIdRequest": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Request body for POST /api/plugins/uninstall.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "purge": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "PluginUninstallByIdRequest",
         "type": "object"
       },
       "PluginUninstallRequest": {
@@ -2339,6 +2529,19 @@
         ],
         "title": "PluginUninstallResponse",
         "type": "object"
+      },
+      "PluginUpdateRequest": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/PluginOfficialInstallRequest"
+          },
+          {
+            "$ref": "#/components/schemas/PluginIdRequest"
+          }
+        ],
+        "description": "Request body for POST /api/plugins/update.",
+        "title": "PluginUpdateRequest"
       },
       "PluginsListResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -3974,6 +4177,240 @@
         "x-allthecodes-serialization": "per-key:session_id"
       }
     },
+    "/api/account-auth/billing": {
+      "get": {
+        "operationId": "AccountAuthBilling",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/account-auth/billing/ledger": {
+      "get": {
+        "operationId": "AccountAuthBillingLedger",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/account-auth/billing/orders/{id}": {
+      "get": {
+        "operationId": "AccountAuthBillingOrder",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/account-auth/login/complete": {
+      "post": {
+        "operationId": "AccountAuthLoginComplete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/account-auth/login/start": {
+      "post": {
+        "operationId": "AccountAuthLoginStart",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/account-auth/logout": {
+      "post": {
+        "operationId": "AccountAuthLogout",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/account-auth/refresh": {
+      "post": {
+        "operationId": "AccountAuthRefresh",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/account-auth/status": {
+      "get": {
+        "operationId": "AccountAuthStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
     "/api/activity-recorder/clear": {
       "post": {
         "operationId": "ActivityRecorderClear",
@@ -4943,6 +5380,78 @@
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/chat-modes/{id}/disable": {
+      "post": {
+        "operationId": "ChatModesDisable",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/chat-modes/{id}/enable": {
+      "post": {
+        "operationId": "ChatModesEnable",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -8147,6 +8656,82 @@
         "x-allthecodes-serialization": "concurrent"
       }
     },
+    "/api/plugins/disable": {
+      "post": {
+        "operationId": "PluginsDisable",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginIdRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginLifecycleResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/plugins/enable": {
+      "post": {
+        "operationId": "PluginsEnable",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginIdRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginLifecycleResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
     "/api/plugins/install": {
       "post": {
         "operationId": "PluginsInstall",
@@ -8185,6 +8770,34 @@
         "x-allthecodes-serialization": "concurrent"
       }
     },
+    "/api/plugins/installed": {
+      "get": {
+        "operationId": "PluginsInstalled",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginsListResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
     "/api/plugins/marketplace": {
       "get": {
         "operationId": "PluginsMarketplace",
@@ -8194,6 +8807,158 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PluginsMarketplaceResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/plugins/restart": {
+      "post": {
+        "operationId": "PluginsRestart",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginIdRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginLifecycleResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/plugins/uninstall": {
+      "post": {
+        "operationId": "PluginsUninstallById",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginUninstallByIdRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginUninstallResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/plugins/update": {
+      "post": {
+        "operationId": "PluginsUpdate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginInstallResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      }
+    },
+    "/api/plugins/{id}/test-connection": {
+      "post": {
+        "operationId": "PluginsTestConnection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginTestConnectionResponse"
                 }
               }
             },

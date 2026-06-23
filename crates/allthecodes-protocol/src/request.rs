@@ -181,6 +181,14 @@ crate::api_definitions! {
         params: v1::chat_modes::ChatModeBundleUpsertRequest,
         response: Value,
     },
+    /// Enable a chat mode and prepare its project resources.
+    ChatModesEnable => "POST /api/chat-modes/{id}/enable" {
+        response: Value,
+    },
+    /// Disable a chat mode and disable unshared mode plugins.
+    ChatModesDisable => "POST /api/chat-modes/{id}/disable" {
+        response: Value,
+    },
     /// Delete a chat mode.
     ChatModesDelete => "DELETE /api/chat-modes/{id}" {
         response: Value,

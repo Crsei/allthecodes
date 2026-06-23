@@ -133,6 +133,8 @@ fn normalize_submit_overrides(mut overrides: SubmitMessageOverrides) -> SubmitMe
     overrides.skill_ids = overrides
         .skill_ids
         .map(|skills| unique_non_empty_strings(skills.into_iter()));
+    overrides.system_prompt_append_parts =
+        unique_non_empty_strings(overrides.system_prompt_append_parts.into_iter());
     overrides
 }
 
@@ -550,6 +552,9 @@ impl QueryEngine {
                     .system_prompt_parts
                     .extend(selected_skill_instruction_parts(skill_ids, Some(session_id.as_str())));
             }
+            prompt_build
+                .system_prompt_parts
+                .extend(overrides.system_prompt_append_parts.clone());
 
             // ================================================================
             // PHASE D: Query Loop -- full message dispatch
@@ -818,5 +823,31 @@ impl QueryEngine {
             });
         };
         Box::pin(stream)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_submit_overrides_keeps_system_prompt_append_parts_separate() {
+        let overrides = normalize_submit_overrides(SubmitMessageOverrides {
+            system_prompt_append_parts: vec![
+                "  <mode>Focus</mode>  ".to_string(),
+                "".to_string(),
+                "<mode>Focus</mode>".to_string(),
+                "<mode>Review</mode>".to_string(),
+            ],
+            ..Default::default()
+        });
+
+        assert_eq!(
+            overrides.system_prompt_append_parts,
+            vec![
+                "<mode>Focus</mode>".to_string(),
+                "<mode>Review</mode>".to_string()
+            ]
+        );
     }
 }

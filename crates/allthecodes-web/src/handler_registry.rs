@@ -171,6 +171,14 @@ pub fn chat_mode_handlers() -> HandlerRegistry {
             put(handlers::chat_modes_upsert_handler),
         )
         .handle(
+            ApiMethod::ChatModesEnable,
+            post(handlers::chat_modes_enable_handler),
+        )
+        .handle(
+            ApiMethod::ChatModesDisable,
+            post(handlers::chat_modes_disable_handler),
+        )
+        .handle(
             ApiMethod::ChatModesDelete,
             delete(handlers::chat_modes_delete_handler),
         )

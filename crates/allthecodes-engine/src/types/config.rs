@@ -140,6 +140,7 @@ pub struct SubmitMessageOverrides {
     pub allowed_tools: Option<Vec<String>>,
     pub skill_ids: Option<Vec<String>>,
     pub context_mode: Option<SubmitContextMode>,
+    pub system_prompt_append_parts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

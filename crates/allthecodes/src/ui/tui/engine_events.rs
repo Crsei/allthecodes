@@ -1,8 +1,9 @@
 use crate::ui::app::App;
 use crate::ui::permissions::PermissionChoice;
 use allthecodes_engine::lifecycle::QueryEngine;
-use allthecodes_engine::types::config::QuerySource;
+use allthecodes_engine::types::config::{QuerySource, SubmitMessageOverrides};
 use allthecodes_engine::types::tool::ToolProgress;
+use allthecodes_services::chat_modes;
 use allthecodes_services::prompt_suggestion::PromptSuggestionService;
 use allthecodes_types::callbacks::{
     AskUserRequestPayload, PermissionEventPayload, PermissionRequestPayload,
@@ -266,7 +267,9 @@ pub(super) fn spawn_engine_query(
     tx: mpsc::UnboundedSender<EngineEvent>,
 ) {
     tokio::spawn(async move {
-        let stream = engine.submit_message(&prompt, QuerySource::ReplMainThread);
+        let overrides = chat_mode_submit_overrides(&engine);
+        let stream =
+            engine.submit_message_with_overrides(&prompt, QuerySource::ReplMainThread, overrides);
         futures::pin_mut!(stream);
 
         while let Some(msg) = stream.next().await {
@@ -277,6 +280,25 @@ pub(super) fn spawn_engine_query(
 
         let _ = tx.send(EngineEvent::Done);
     });
+}
+
+fn chat_mode_submit_overrides(engine: &QueryEngine) -> SubmitMessageOverrides {
+    let preference = chat_modes::chat_mode_preference_for_cwd_session(
+        engine.cwd(),
+        engine.current_session_id().as_str(),
+    );
+    let system_prompt_append_parts = match chat_modes::resolve_mode_activation(
+        std::path::Path::new(engine.cwd()),
+        Some(&preference.effective_chat_mode),
+    ) {
+        Ok(Some(activation)) => vec![activation.system_prompt_append],
+        _ => Vec::new(),
+    };
+
+    SubmitMessageOverrides {
+        system_prompt_append_parts,
+        ..Default::default()
+    }
 }
 
 // ---------------------------------------------------------------------------

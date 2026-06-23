@@ -221,6 +221,10 @@ pub async fn chat_handler(
         allowed_tools: req.allowed_tools.clone(),
         skill_ids: req.skill_ids.clone(),
         context_mode,
+        system_prompt_append_parts: activation
+            .as_ref()
+            .map(|activation| vec![activation.system_prompt_append.clone()])
+            .unwrap_or_default(),
     };
     info!(
         message = %req.message,
@@ -234,14 +238,10 @@ pub async fn chat_handler(
     engine.reset_abort();
     state.set_session_streaming(&active_session_id, true);
 
-    // Get the stream from the engine
-    let prompt = match activation {
-        Some(activation) => {
-            info!(mode = %activation.mode_id, "chat mode activation applied");
-            format!("{}{}", activation.prompt_prefix, req.message)
-        }
-        None => req.message.clone(),
-    };
+    if let Some(activation) = activation.as_ref() {
+        info!(mode = %activation.mode_id, "chat mode activation applied");
+    }
+    let prompt = req.message.clone();
     let (sse_tx, sse_rx) = tokio::sync::mpsc::unbounded_channel::<ChatSseItem>();
     let permission_state = state.clone();
     let permission_session_id = active_session_id.clone();
@@ -481,10 +481,10 @@ pub async fn state_handler(State(state): State<WebState>) -> impl IntoResponse {
         .map(|(key, source)| (key.clone(), source.as_str().to_string()))
         .collect::<HashMap<_, _>>();
     let settings_diagnostics = settings_diagnostics_for_state(&state);
-    let effective_system_prompt = effective_system_prompt_from_map(&settings_map);
     let session_id = state.engine().current_session_id().to_string();
     let chat_mode_preference =
         crate::handlers::chat_mode_preference_for_cwd_session(state.engine().cwd(), &session_id);
+    let effective_system_prompt = effective_system_prompt_for_session(&state, &session_id);
 
     Json(StateResponse {
         model: app_state.main_loop_model.clone(),
@@ -537,6 +537,25 @@ fn settings_diagnostics_for_state(state: &WebState) -> Vec<String> {
 
 /// GET /api/system-prompt -- Return a runtime baseline system prompt preview.
 pub async fn system_prompt_handler(State(state): State<WebState>) -> impl IntoResponse {
+    let session_id = state.engine().current_session_id().to_string();
+    Json(SystemPromptResponse {
+        prompt: effective_system_prompt_for_session(&state, &session_id),
+    })
+}
+
+fn effective_system_prompt_for_session(state: &WebState, session_id: &str) -> String {
+    let mut parts = base_system_prompt_parts(state);
+    let preference =
+        crate::handlers::chat_mode_preference_for_cwd_session(state.engine().cwd(), session_id);
+    if let Ok(Some(activation)) =
+        crate::handlers::resolve_mode_activation(state, Some(&preference.effective_chat_mode))
+    {
+        parts.push(activation.system_prompt_append);
+    }
+    parts.join("\n\n")
+}
+
+fn base_system_prompt_parts(state: &WebState) -> Vec<String> {
     let engine = state.engine();
     let app_state = engine.app_state();
     let config = engine.config_ref();
@@ -555,9 +574,7 @@ pub async fn system_prompt_handler(State(state): State<WebState>) -> impl IntoRe
         app_state.settings.auto_memory_enabled.unwrap_or(false),
         None,
     );
-    Json(SystemPromptResponse {
-        prompt: parts.join("\n\n"),
-    })
+    parts
 }
 
 /// GET /api/coding-agents/status -- Probe local agent commands for General settings.
@@ -575,14 +592,6 @@ pub async fn coding_agent_status_handler() -> impl IntoResponse {
         probe_agent("claude_code", "Claude Code CLI", &["claude", "claude-code"]),
         probe_agent("codex", "Codex CLI", &["codex"]),
     ])
-}
-
-fn effective_system_prompt_from_map(map: &HashMap<String, Value>) -> String {
-    map.get("system_prompt")
-        .and_then(Value::as_str)
-        .filter(|prompt| !prompt.trim().is_empty())
-        .unwrap_or("You are a helpful AI assistant.")
-        .to_string()
 }
 
 fn probe_agent(id: &str, label: &str, commands: &[&str]) -> CodingAgentStatus {
@@ -690,10 +699,11 @@ mod tests {
 
         let state_response = state_handler(State(state)).await.into_response();
         let state_body = response_json(state_response).await;
-        assert_eq!(
-            state_body["effective_system_prompt"],
-            json!("Settings prompt wins for preview.")
-        );
+        let effective = state_body["effective_system_prompt"]
+            .as_str()
+            .expect("effective system prompt string");
+        assert!(effective.contains("Settings prompt wins for preview."));
+        assert!(!effective.contains("# Doing tasks"));
     }
 
     #[tokio::test]

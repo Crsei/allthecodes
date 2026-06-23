@@ -10,6 +10,7 @@ pub mod brief;
 pub mod browser;
 pub mod btw;
 pub mod channels;
+pub mod chat_mode;
 pub mod chrome_cmd;
 pub mod clear;
 pub mod commit;
@@ -735,6 +736,12 @@ pub fn get_all_commands() -> Vec<Command> {
             &["coord"],
             "Enable or inspect coordinator mode for Agent Teams",
             coordinator::CoordinatorHandler,
+        ),
+        command(
+            "chat-mode",
+            &["mode"],
+            "List, select, enable, disable, or set the default chat mode",
+            chat_mode::ChatModeHandler,
         ),
         command(
             "permissions",

@@ -1,6 +1,7 @@
 //! Background / utility services extracted from the root crate.
 
 pub mod agent_definitions;
+pub mod chat_modes;
 pub mod file_search;
 pub mod langfuse;
 pub mod lsp_lifecycle;

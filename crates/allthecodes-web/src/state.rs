@@ -263,6 +263,22 @@ fn stored_account_access_token() -> anyhow::Result<Option<String>> {
     }
 }
 
+/// Install plugin MCP discovery plus a startup-safe account token provider.
+///
+/// `WebState` installs a richer provider later that can use its in-memory
+/// account session. During early process startup the MCP manager is created
+/// before `WebState`, so it still needs discovery hooks and stored auth.
+pub fn install_plugin_runtime_hooks() {
+    install_plugin_mcp_hooks();
+    install_stored_plugin_account_token_provider();
+}
+
+fn install_stored_plugin_account_token_provider() {
+    allthecodes_plugins::set_plugin_account_token_provider(Some(Arc::new(|| {
+        stored_account_access_token()?.ok_or_else(|| anyhow!("no desktop account session"))
+    })));
+}
+
 fn install_plugin_mcp_hooks() {
     allthecodes_mcp::discovery::set_plugin_hook(allthecodes_plugins::discover_plugin_mcp_servers);
     allthecodes_mcp::discovery::set_scoped_plugin_hook(

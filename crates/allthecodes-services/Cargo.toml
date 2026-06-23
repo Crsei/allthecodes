@@ -44,8 +44,11 @@ allthecodes-db = { workspace = true, optional = true }
 allthecodes-engine = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
 allthecodes-langfuse = { workspace = true }
+allthecodes-mcp = { workspace = true }
 allthecodes-observability = { workspace = true, optional = true }
+allthecodes-plugins = { workspace = true }
 allthecodes-session = { workspace = true }
+allthecodes-skills = { workspace = true }
 allthecodes-types = { workspace = true }
 
 [dev-dependencies]
