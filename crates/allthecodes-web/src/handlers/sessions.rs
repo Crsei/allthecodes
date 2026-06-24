@@ -73,6 +73,10 @@ pub(crate) fn handlers() -> HandlerRegistry {
             ApiMethod::SessionMessageRollback,
             post(session_message_rollback_handler),
         )
+        .handle(
+            ApiMethod::SessionListAllProfiles,
+            get(sessions_all_profiles_handler),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +859,14 @@ impl Processor for SessionMessageRollbackProcessor {
 pub async fn sessions_list_handler(State(state): State<WebState>) -> Response {
     rest_processor_response::<SessionListProcessor>(state, ApiMethod::SessionList, NoParams {})
         .await
+}
+
+/// GET /api/sessions/all-profiles -- List sessions across all profiles.
+pub async fn sessions_all_profiles_handler(State(_state): State<WebState>) -> Response {
+    crate::api_errors::protocol_error_response(ProtocolApiError::NotImplemented {
+        capability: "profile_scoped_aggregate_sessions".to_string(),
+    })
+    .into_response()
 }
 
 /// GET /api/sessions/:id -- Load a session's message history for preview.

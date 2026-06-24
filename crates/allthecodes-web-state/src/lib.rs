@@ -68,6 +68,20 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_workspace_layouts_owner
         ON workspace_layouts(owner_profile_id, updated_at)
     "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS messaging_sections (
+        id TEXT PRIMARY KEY NOT NULL,
+        owner_profile_id TEXT NOT NULL DEFAULT 'local',
+        name TEXT NOT NULL,
+        session_ids_json TEXT NOT NULL DEFAULT '[]',
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    )
+    "#,
+    r#"
+    CREATE INDEX IF NOT EXISTS idx_messaging_sections_owner
+        ON messaging_sections(owner_profile_id, position)
+    "#,
 ];
 
 #[derive(Clone)]
@@ -540,6 +554,127 @@ impl WebUiStore {
         Ok(result.rows_affected() > 0)
     }
 
+    // ── Messaging sections ──────────────────────────────────────────────────
+
+    pub async fn list_messaging_sections(
+        &self,
+        owner_profile_id: &str,
+    ) -> Result<Vec<MessagingSectionRow>> {
+        self.ensure_ready().await?;
+        let owner = normalize_owner(owner_profile_id);
+        let rows = sqlx::query(
+            "SELECT id, owner_profile_id, name, session_ids_json, position, created_at \
+             FROM messaging_sections WHERE owner_profile_id = ? ORDER BY position ASC, created_at ASC",
+        )
+        .bind(owner)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list messaging sections")?;
+        rows.into_iter().map(messaging_section_from_row).collect()
+    }
+
+    pub async fn create_messaging_section(
+        &self,
+        owner_profile_id: &str,
+        section: &MessagingSectionRow,
+    ) -> Result<()> {
+        self.ensure_ready().await?;
+        let owner = normalize_owner(owner_profile_id);
+        sqlx::query(
+            "INSERT INTO messaging_sections (id, owner_profile_id, name, session_ids_json, position, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&section.id)
+        .bind(owner)
+        .bind(&section.name)
+        .bind(&section.session_ids_json)
+        .bind(section.position as i64)
+        .bind(&section.created_at)
+        .execute(&self.pool)
+        .await
+        .context("failed to create messaging section")?;
+        Ok(())
+    }
+
+    pub async fn update_messaging_section(
+        &self,
+        owner_profile_id: &str,
+        id: &str,
+        name: Option<&str>,
+        session_ids_json: Option<&str>,
+        position: Option<usize>,
+    ) -> Result<Option<MessagingSectionRow>> {
+        self.ensure_ready().await?;
+        let owner = normalize_owner(owner_profile_id);
+        // Build dynamic SET clauses
+        let mut sets = Vec::new();
+        if name.is_some() {
+            sets.push("name = ?");
+        }
+        if session_ids_json.is_some() {
+            sets.push("session_ids_json = ?");
+        }
+        if position.is_some() {
+            sets.push("position = ?");
+        }
+        if sets.is_empty() {
+            return self.get_messaging_section(&owner, id).await;
+        }
+        let sql = format!(
+            "UPDATE messaging_sections SET {} WHERE owner_profile_id = ? AND id = ? RETURNING id, owner_profile_id, name, session_ids_json, position, created_at",
+            sets.join(", ")
+        );
+        let mut query = sqlx::query(&sql);
+        if let Some(n) = name {
+            query = query.bind(n);
+        }
+        if let Some(s) = session_ids_json {
+            query = query.bind(s);
+        }
+        if let Some(p) = position {
+            query = query.bind(p as i64);
+        }
+        query = query.bind(owner);
+        query = query.bind(id);
+        let row = query
+            .fetch_optional(&self.pool)
+            .await
+            .context("failed to update messaging section")?;
+        row.map(messaging_section_from_row).transpose()
+    }
+
+    pub async fn delete_messaging_section(&self, owner_profile_id: &str, id: &str) -> Result<bool> {
+        self.ensure_ready().await?;
+        let owner = normalize_owner(owner_profile_id);
+        let result =
+            sqlx::query("DELETE FROM messaging_sections WHERE owner_profile_id = ? AND id = ?")
+                .bind(owner)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .context("failed to delete messaging section")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn get_messaging_section(
+        &self,
+        owner_profile_id: &str,
+        id: &str,
+    ) -> Result<Option<MessagingSectionRow>> {
+        self.ensure_ready().await?;
+        let owner = normalize_owner(owner_profile_id);
+        let row = sqlx::query(
+            "SELECT id, owner_profile_id, name, session_ids_json, position, created_at \
+             FROM messaging_sections WHERE owner_profile_id = ? AND id = ?",
+        )
+        .bind(owner)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to get messaging section")?;
+        row.map(messaging_section_from_row).transpose()
+    }
+
     async fn ensure_ready(&self) -> Result<()> {
         self.ready
             .get_or_try_init(|| async {
@@ -888,6 +1023,36 @@ fn layout_from_row(row: sqlx::sqlite::SqliteRow) -> Result<WorkspaceLayout> {
 
 fn now_iso() -> String {
     Utc::now().to_rfc3339()
+}
+
+/// A messaging section row stored in SQLite.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessagingSectionRow {
+    pub id: String,
+    pub owner_profile_id: String,
+    pub name: String,
+    pub session_ids_json: String,
+    pub position: usize,
+    pub created_at: String,
+}
+
+impl MessagingSectionRow {
+    /// Convenience: parse the JSON array of session ids.
+    pub fn session_ids(&self) -> Vec<String> {
+        serde_json::from_str(&self.session_ids_json).unwrap_or_default()
+    }
+}
+
+fn messaging_section_from_row(row: sqlx::sqlite::SqliteRow) -> Result<MessagingSectionRow> {
+    let position: i64 = row.try_get("position")?;
+    Ok(MessagingSectionRow {
+        id: row.try_get("id")?,
+        owner_profile_id: row.try_get("owner_profile_id")?,
+        name: row.try_get("name")?,
+        session_ids_json: row.try_get("session_ids_json")?,
+        position: position as usize,
+        created_at: row.try_get("created_at")?,
+    })
 }
 
 fn new_id() -> String {

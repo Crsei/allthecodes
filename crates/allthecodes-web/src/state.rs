@@ -1,6 +1,6 @@
 //! Shared state for the web server layer.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -18,6 +18,15 @@ use allthecodes_web_state::WebUiStore;
 use crate::ipc_streams::IpcSessionHub;
 use crate::serialization::SerializationLayer;
 use crate::ws::terminal::{PtyDiagnostics, TerminalManager};
+
+/// An in-memory queue entry used by the queue/edit/send-now API.
+#[derive(Debug, Clone)]
+pub struct QueueEntry {
+    pub id: String,
+    pub text: String,
+    pub session_id: String,
+    pub created_at: String,
+}
 
 /// Shared state passed to all Axum handlers via State extractor.
 ///
@@ -52,6 +61,8 @@ pub struct WebState {
     pub serialization: SerializationLayer,
     /// Profile-scoped persistence for browser-only UI state.
     pub web_ui_store: WebUiStore,
+    /// In-memory prompt queue for the queue/edit/send-now API.
+    pub queue: Arc<RwLock<VecDeque<QueueEntry>>>,
     /// Desktop account auth state shared by account auth endpoints.
     pub account_auth: Arc<Mutex<AccountAuthMemory>>,
 }
@@ -110,6 +121,7 @@ impl WebState {
             terminal_manager,
             serialization: SerializationLayer::new(),
             web_ui_store: WebUiStore::new(paths::data_root().join("web").join("state.db")),
+            queue: Arc::new(RwLock::new(VecDeque::new())),
             account_auth: Arc::new(Mutex::new(AccountAuthMemory::default())),
         };
         install_plugin_mcp_hooks();

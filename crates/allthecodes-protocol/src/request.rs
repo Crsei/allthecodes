@@ -840,6 +840,129 @@ crate::api_definitions! {
         params: Value,
         response: Value,
     },
+
+    // ── Queue ────────────────────────────────────────────────────────────
+    /// List all queued prompts.
+    QueueList => "GET /api/queue" {
+        response: v1::queue::QueueListResponse,
+    },
+    /// Add a prompt to the queue.
+    QueueAdd => "POST /api/queue" {
+        params: v1::queue::QueueAddRequest,
+        response: v1::queue::QueueAddResponse,
+        serialization: PerProcess,
+    },
+    /// Edit a queued prompt's text.
+    QueueUpdate => "PATCH /api/queue/{id}" {
+        params: v1::queue::QueueUpdateRequest,
+        response: v1::queue::QueueUpdateResponse,
+        serialization: PerProcess,
+    },
+    /// Remove a prompt from the queue.
+    QueueRemove => "DELETE /api/queue/{id}" {
+        response: v1::queue::QueueRemoveResponse,
+        serialization: PerProcess,
+    },
+    /// Immediately send a queued prompt (move to front and submit).
+    QueueSendNow => "POST /api/queue/{id}/send-now" {
+        response: v1::queue::QueueSendNowResponse,
+        serialization: PerProcess,
+    },
+
+    // ── Tasks ────────────────────────────────────────────────────────────
+    /// List active tasks across sessions.
+    TaskList => "GET /api/tasks" {
+        response: v1::tasks::TaskListResponse,
+    },
+    /// Get detail for a single task.
+    TaskDetail => "GET /api/tasks/{id}" {
+        params: v1::tasks::TaskDetailParams,
+        response: v1::tasks::TaskDetailResponse,
+        errors: [NotFound],
+    },
+
+    // ── Mentions ─────────────────────────────────────────────────────────
+    /// Autocomplete @mention chips (sessions, files, skills).
+    MentionAutocomplete => "GET /api/mentions/autocomplete" {
+        params: v1::mentions::MentionAutocompleteQuery,
+        response: v1::mentions::MentionAutocompleteResponse,
+    },
+
+    // ── Sidebar pin / order ──────────────────────────────────────────────
+    /// Pin a session to the sidebar.
+    SidebarPin => "POST /api/sidebar/pin" {
+        params: v1::sidebar::SidebarPinRequest,
+        response: v1::sidebar::SidebarPinResponse,
+        serialization: PerProcess,
+    },
+    /// Unpin a session from the sidebar.
+    SidebarUnpin => "POST /api/sidebar/unpin" {
+        params: v1::sidebar::SidebarUnpinRequest,
+        response: v1::sidebar::SidebarUnpinResponse,
+        serialization: PerProcess,
+    },
+    /// Reorder pinned and unpinned sessions in the sidebar.
+    SidebarReorder => "POST /api/sidebar/reorder" {
+        params: v1::sidebar::SidebarReorderRequest,
+        response: v1::sidebar::SidebarReorderResponse,
+        serialization: PerProcess,
+    },
+
+    // ── Cross-profile sessions ───────────────────────────────────────────
+    /// List sessions across all profiles.
+    SessionListAllProfiles => "GET /api/sessions/all-profiles" {
+        response: v1::SessionListResponse,
+    },
+
+    // ── Messaging sections ───────────────────────────────────────────────
+    /// List messaging sections.
+    MessagingSectionsList => "GET /api/messaging/sections" {
+        params: v1::messaging::MessagingSectionsQuery,
+        response: v1::messaging::MessagingSectionsListResponse,
+    },
+    /// Create a messaging section.
+    MessagingSectionCreate => "POST /api/messaging/sections" {
+        params: v1::messaging::MessagingSectionCreateRequest,
+        response: v1::messaging::MessagingSectionCreateResponse,
+        serialization: PerProcess,
+    },
+    /// Update a messaging section.
+    MessagingSectionUpdate => "PATCH /api/messaging/sections/{id}" {
+        params: v1::messaging::MessagingSectionUpdateRequest,
+        response: v1::messaging::MessagingSectionUpdateResponse,
+        serialization: PerProcess,
+    },
+    /// Delete a messaging section.
+    MessagingSectionDelete => "DELETE /api/messaging/sections/{id}" {
+        response: v1::messaging::MessagingSectionDeleteResponse,
+        serialization: PerProcess,
+    },
+
+    // ── Image generation ─────────────────────────────────────────────────
+    /// Generate an image via an AI image provider.
+    ImageGenerate => "POST /api/images/generate" {
+        params: v1::image_generate::ImageGenerateRequest,
+        response: v1::image_generate::ImageGenerateResponse,
+        serialization: PerProcess,
+    },
+
+    // ── Voice (TTS / STT) ────────────────────────────────────────────────
+    /// List available voice providers and voices.
+    VoiceProviders => "GET /api/voice/providers" {
+        response: v1::voice::VoiceProvidersResponse,
+    },
+    /// Convert text to speech via TTS.
+    VoiceTts => "POST /api/voice/tts" {
+        params: v1::voice::TtsRequest,
+        response: v1::voice::TtsResponse,
+        serialization: PerProcess,
+    },
+    /// Transcribe audio to text via STT.
+    VoiceStt => "POST /api/voice/stt" {
+        params: v1::voice::SttRequest,
+        response: v1::voice::SttResponse,
+        serialization: PerProcess,
+    },
 }
 
 #[cfg(test)]

@@ -136,6 +136,13 @@ pub fn all_api_handlers() -> HandlerRegistry {
         .extend(job_handlers())
         .extend(group_chat_handlers())
         .extend(backend_service_handlers())
+        .extend(handlers::queue::handlers())
+        .extend(handlers::tasks::handlers())
+        .extend(handlers::mentions::handlers())
+        .extend(handlers::sidebar::handlers())
+        .extend(handlers::messaging::handlers())
+        .extend(handlers::image_generate::handlers())
+        .extend(handlers::voice::handlers())
 }
 
 pub fn chat_handlers() -> HandlerRegistry {
