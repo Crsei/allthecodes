@@ -227,6 +227,29 @@ pub struct McpServerConfigEntry {
     /// disabled entries at connection time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
+    /// Name of an environment variable whose value is used as the HTTP
+    /// `Authorization: Bearer <value>` header for streamable-http / sse
+    /// transports. Not resolved here — the transport layer reads the env var.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "bearerTokenEnvVar",
+        alias = "bearer_token_env_var"
+    )]
+    pub bearer_token_env_var: Option<String>,
+    /// HTTP headers where the value is sourced from an environment variable.
+    /// Maps header-name → env-var-name. The transport layer resolves values
+    /// from the environment at connection time.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "envHttpHeaders",
+        alias = "env_http_headers"
+    )]
+    pub env_http_headers: Option<HashMap<String, String>>,
+    /// Authentication mode: `"oauth"` (default) or `"chatgpt"` (reserved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
     /// Where this entry lives. Non-editable scopes (plugin/ide) are
     /// returned for display but reject `UpsertConfig` / `RemoveConfig`.
     pub scope: ConfigScope,
@@ -645,6 +668,9 @@ mod tests {
             browser_mcp: None,
             disabled: None,
             scope: ConfigScope::User,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
 
         let json = serde_json::to_string(&entry).expect("serialize entry");
@@ -677,6 +703,9 @@ mod tests {
             browser_mcp: Some(true),
             disabled: None,
             scope: ConfigScope::Project,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
         let value = serde_json::to_value(&entry).unwrap();
         assert_eq!(value["url"], "https://example.com/mcp");
@@ -699,11 +728,15 @@ mod tests {
                     "https://auth.example.com/.well-known/oauth-authorization-server".into(),
                 ),
                 scopes: Some(vec!["tools.read".into()]),
+                oauth_resource: None,
             }),
             env: None,
             browser_mcp: None,
             disabled: None,
             scope: ConfigScope::Project,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
 
         let json = serde_json::to_string(&entry).expect("serialize entry");

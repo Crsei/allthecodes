@@ -18,7 +18,7 @@ mod streamable_http;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -53,6 +53,7 @@ use streamable_http::{StreamableHttpSender, StreamableHttpTarget};
 
 type PendingRequest = oneshot::Sender<Result<Value>>;
 pub(crate) type PendingRequests = Arc<Mutex<HashMap<u64, PendingRequest>>>;
+const STREAMABLE_HTTP_RETRY_DELAYS_MS: [u64; 2] = [250, 1_000];
 
 // ---------------------------------------------------------------------------
 // McpClient
@@ -81,7 +82,7 @@ pub struct McpClient {
     /// Stdin writer for the subprocess.
     pub(super) stdin_writer: Option<Arc<Mutex<tokio::process::ChildStdin>>>,
     /// Handle to the background reader task.
-    pub(super) reader_handle: Option<tokio::task::JoinHandle<()>>,
+    pub(super) reader_handle: Arc<StdMutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Handle to the child process.
     pub(super) child: Option<tokio::process::Child>,
     /// HTTP POST sender for SSE transport.
@@ -93,6 +94,7 @@ pub struct McpClient {
     /// Pending requests: id -> oneshot sender for the response.
     pub(super) pending: PendingRequests,
     pub(super) runtime: McpRuntimeContext,
+    streamable_http_recovery_lock: Mutex<()>,
 }
 
 impl McpClient {
@@ -111,13 +113,14 @@ impl McpClient {
             server_info: ServerInfo::default(),
             instructions: None,
             stdin_writer: None,
-            reader_handle: None,
+            reader_handle: Arc::new(StdMutex::new(None)),
             child: None,
             sse_sender: None,
             streamable_http_sender: None,
             next_id: Arc::new(AtomicU64::new(1)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             runtime,
+            streamable_http_recovery_lock: Mutex::new(()),
         }
     }
 
@@ -230,7 +233,7 @@ impl McpClient {
             http_client: remote_http_client,
             runtime: self.runtime.clone(),
         });
-        self.reader_handle = Some(reader_handle);
+        self.replace_reader_handle(Some(reader_handle));
         self.state = McpConnectionState::Connected;
 
         self.runtime
@@ -308,16 +311,7 @@ impl McpClient {
             PROTOCOL_VERSION
         };
 
-        let params = json!({
-            "protocolVersion": protocol_version,
-            "capabilities": {
-                "roots": {}
-            },
-            "clientInfo": {
-                "name": CLIENT_NAME,
-                "version": CLIENT_VERSION
-            }
-        });
+        let params = initialize_params(protocol_version);
 
         let response = self
             .send_request("initialize", Some(params))
@@ -351,7 +345,7 @@ impl McpClient {
         if let Some(sender) = &self.streamable_http_sender {
             match sender.open_get_stream().await {
                 Ok(Some(handle)) => {
-                    self.reader_handle = Some(handle);
+                    self.replace_reader_handle(Some(handle));
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -383,9 +377,7 @@ impl McpClient {
             }
         }
 
-        if let Some(handle) = self.reader_handle.take() {
-            handle.abort();
-        }
+        self.abort_reader_handle();
 
         if let Some(mut child) = self.child.take() {
             let _ = child.kill().await;
@@ -650,23 +642,44 @@ impl McpClient {
     }
 
     /// Write a JSON-RPC line to the active transport with an HTTP read bound.
+    /// On session expiry for streamable-http, automatically re-initializes
+    /// and reruns the current JSON-RPC operation.
     async fn write_line_with_timeout(&self, line: &str, timeout_secs: u64) -> Result<()> {
-        if let Some(sender) = &self.streamable_http_sender {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(timeout_secs),
-                sender.post_json(line),
-            )
-            .await
+        if self.streamable_http_sender.is_some() {
+            let method = extract_method_name(line);
+            for (attempt, retry_delay_ms) in STREAMABLE_HTTP_RETRY_DELAYS_MS
+                .iter()
+                .copied()
+                .map(Some)
+                .chain(std::iter::once(None))
+                .enumerate()
             {
-                Ok(result) => return result,
-                Err(_) => {
-                    bail!(
-                        "MCP Streamable HTTP request to server '{}' timed out after {}s",
-                        self.config.name,
-                        timeout_secs
-                    );
+                let result = self
+                    .post_streamable_line_without_recovery(line, timeout_secs)
+                    .await;
+                match result {
+                    Err(ref error) if is_session_expired_error(error) => {
+                        return self.recover_session(line, timeout_secs).await;
+                    }
+                    Err(ref error)
+                        if retry_delay_ms.is_some()
+                            && is_retryable_streamable_http_error(method.as_deref(), error) =>
+                    {
+                        let delay_ms = retry_delay_ms.expect("checked is_some");
+                        warn!(
+                            server = %self.config.name,
+                            method = ?method,
+                            attempt = attempt + 1,
+                            delay_ms = delay_ms,
+                            error = %error,
+                            "MCP: Streamable HTTP request failed with retryable status; retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                    other => return other,
                 }
             }
+            unreachable!("streamable HTTP retry loop always returns on final attempt");
         }
 
         if let Some(sender) = &self.sse_sender {
@@ -697,6 +710,188 @@ impl McpClient {
         Ok(())
     }
 
+    /// Attempt recovery from a Streamable HTTP session expiry.
+    ///
+    /// Reruns the current operation after recovery. This intentionally matches
+    /// the upstream Streamable HTTP behavior, including tool calls.
+    async fn recover_session(&self, failed_line: &str, timeout_secs: u64) -> Result<()> {
+        let method = extract_method_name(failed_line);
+        let _guard = self.streamable_http_recovery_lock.lock().await;
+
+        if matches!(method.as_deref(), Some("tools/call")) {
+            warn!(
+                server = %self.config.name,
+                method = ?method,
+                "MCP: session expired; rerunning tool call after recovery"
+            );
+        }
+
+        info!(
+            server = %self.config.name,
+            method = ?method,
+            "MCP: session expired, reinitializing before retry"
+        );
+
+        let init_result = self
+            .send_streamable_request_without_recovery(
+                "initialize",
+                Some(initialize_params("2025-11-25")),
+                timeout_secs,
+            )
+            .await
+            .context("MCP Streamable HTTP recovery initialize failed")?;
+        let init_result: InitializeResult = serde_json::from_value(init_result)
+            .context("failed to parse recovery initialize response")?;
+
+        let sender = self.streamable_http_sender.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("MCP Streamable HTTP sender not available for recovery")
+        })?;
+        sender
+            .set_protocol_version(init_result.protocol_version.clone())
+            .await;
+
+        self.send_streamable_notification_without_recovery(
+            "notifications/initialized",
+            None,
+            timeout_secs,
+        )
+        .await
+        .context("MCP Streamable HTTP recovery initialized notification failed")?;
+
+        match sender.open_get_stream().await {
+            Ok(Some(handle)) => self.replace_reader_handle(Some(handle)),
+            Ok(None) => {}
+            Err(error) => {
+                warn!(
+                    server = %self.config.name,
+                    error = %error,
+                    "MCP: Streamable HTTP GET listener unavailable after recovery"
+                );
+            }
+        }
+
+        match self
+            .post_streamable_line_without_recovery(failed_line, timeout_secs)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) if is_session_expired_error(&e) => {
+                bail!(
+                    "MCP Streamable HTTP session for server '{}' expired and recovery failed: {}",
+                    self.config.name,
+                    e
+                );
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn send_streamable_request_without_recovery(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        timeout_secs: u64,
+    ) -> Result<Value> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request = JsonRpcRequest::new(id, method, params);
+        let request_json =
+            serde_json::to_string(&request).context("failed to serialize JSON-RPC request")?;
+
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.pending.lock().await;
+            pending.insert(id, tx);
+        }
+
+        if let Err(error) = self
+            .post_streamable_line_without_recovery(&request_json, timeout_secs)
+            .await
+        {
+            let mut pending = self.pending.lock().await;
+            pending.remove(&id);
+            return Err(error);
+        }
+
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                bail!(
+                    "MCP server '{}' closed connection while waiting for response to '{}'",
+                    self.config.name,
+                    method
+                );
+            }
+            Err(_) => {
+                let mut pending = self.pending.lock().await;
+                pending.remove(&id);
+                bail!(
+                    "MCP request '{}' to server '{}' timed out after {}s",
+                    method,
+                    self.config.name,
+                    timeout_secs
+                );
+            }
+        }
+    }
+
+    async fn send_streamable_notification_without_recovery(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        timeout_secs: u64,
+    ) -> Result<()> {
+        let notification = JsonRpcNotification::new(method, params);
+        let json = serde_json::to_string(&notification)
+            .context("failed to serialize JSON-RPC notification")?;
+        self.post_streamable_line_without_recovery(&json, timeout_secs)
+            .await
+    }
+
+    async fn post_streamable_line_without_recovery(
+        &self,
+        line: &str,
+        timeout_secs: u64,
+    ) -> Result<()> {
+        let sender = self.streamable_http_sender.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "MCP Streamable HTTP sender not available for server '{}'",
+                self.config.name
+            )
+        })?;
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            sender.post_json(line),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                bail!(
+                    "MCP Streamable HTTP request to server '{}' timed out after {}s",
+                    self.config.name,
+                    timeout_secs
+                );
+            }
+        }
+    }
+
+    fn replace_reader_handle(&self, handle: Option<tokio::task::JoinHandle<()>>) {
+        let mut reader_handle = self
+            .reader_handle
+            .lock()
+            .expect("MCP reader handle mutex poisoned");
+        if let Some(existing) = reader_handle.take() {
+            existing.abort();
+        }
+        *reader_handle = handle;
+    }
+
+    fn abort_reader_handle(&self) {
+        self.replace_reader_handle(None);
+    }
+
     // -----------------------------------------------------------------------
     // Capability checks
     // -----------------------------------------------------------------------
@@ -714,13 +909,53 @@ impl McpClient {
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        if let Some(handle) = self.reader_handle.take() {
-            handle.abort();
-        }
+        self.abort_reader_handle();
         if let Some(ref mut child) = self.child {
             let _ = child.start_kill();
         }
     }
+}
+
+/// Check if an error indicates a Streamable HTTP session expiry (HTTP 404).
+fn is_session_expired_error(error: &anyhow::Error) -> bool {
+    let msg = format!("{:#}", error);
+    msg.contains("session expired")
+}
+
+fn is_retryable_streamable_http_error(method: Option<&str>, error: &anyhow::Error) -> bool {
+    matches!(
+        method,
+        Some("initialize" | "notifications/initialized" | "tools/list")
+    ) && retryable_http_status_from_error(error).is_some()
+}
+
+fn retryable_http_status_from_error(error: &anyhow::Error) -> Option<u16> {
+    let msg = format!("{:#}", error);
+    [408_u16, 429, 500, 502, 503, 504]
+        .into_iter()
+        .find(|status| msg.contains(&format!("HTTP {}", status)))
+}
+
+/// Extract the JSON-RPC method name from a request body JSON string.
+fn extract_method_name(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()?
+        .get("method")?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
+fn initialize_params(protocol_version: &str) -> Value {
+    json!({
+        "protocolVersion": protocol_version,
+        "capabilities": {
+            "roots": {}
+        },
+        "clientInfo": {
+            "name": CLIENT_NAME,
+            "version": CLIENT_VERSION
+        }
+    })
 }
 
 #[cfg(test)]

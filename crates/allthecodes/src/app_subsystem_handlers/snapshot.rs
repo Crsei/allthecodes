@@ -202,6 +202,9 @@ pub fn build_mcp_server_config_entries(cwd: &std::path::Path) -> Vec<McpServerCo
                 browser_mcp: None,
                 disabled: Some(true),
                 scope: ConfigScope::User,
+                bearer_token_env_var: None,
+                env_http_headers: None,
+                auth: None,
             }];
         }
     };
@@ -214,13 +217,41 @@ pub fn build_mcp_server_config_entries(cwd: &std::path::Path) -> Vec<McpServerCo
             command: s.config.command,
             args: s.config.args,
             url: s.config.url,
-            headers: s.config.headers,
+            headers: redact_server_headers(s.config.headers),
             oauth: s.config.oauth,
             env: s.config.env,
             browser_mcp: s.config.browser_mcp,
             disabled: s.config.disabled,
+            bearer_token_env_var: s.config.bearer_token_env_var,
+            env_http_headers: s.config.env_http_headers,
+            auth: s.config.auth,
         })
         .collect()
+}
+
+fn redact_server_headers(
+    headers: Option<std::collections::HashMap<String, String>>,
+) -> Option<std::collections::HashMap<String, String>> {
+    headers.map(|mut headers| {
+        for (name, value) in headers.iter_mut() {
+            if is_sensitive_header_name(name) {
+                *value = "[redacted]".to_string();
+            }
+        }
+        headers
+    })
+}
+
+fn is_sensitive_header_name(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    lower == "authorization"
+        || lower == "proxy-authorization"
+        || lower == "x-api-key"
+        || lower == "api-key"
+        || lower == "x-auth-token"
+        || lower == "x-access-token"
+        || lower.contains("token")
+        || lower.contains("secret")
 }
 
 /// Map the discovery-layer `DiscoveryScope` onto the IPC `ConfigScope`.

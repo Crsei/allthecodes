@@ -79,7 +79,7 @@ impl McpClient {
         let reader_handle = tokio::spawn(async move {
             reader_loop(stdout, pending, server_name, runtime).await;
         });
-        self.reader_handle = Some(reader_handle);
+        self.replace_reader_handle(Some(reader_handle));
 
         self.child = Some(child);
         self.state = McpConnectionState::Connected;

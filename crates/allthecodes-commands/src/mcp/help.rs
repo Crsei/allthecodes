@@ -26,8 +26,13 @@ pub(super) fn help_text() -> String {
        --oauth-client-id=<id>                  OAuth public client id\n  \
        --oauth-callback-port=<port>            OAuth loopback redirect port\n  \
        --oauth-scope=<scope>                   OAuth scope (repeatable)\n  \
-       --browser           tag this server as a browser-MCP server\n\n\
-     Discovery sources (low → high precedence):\n\
+       --browser           tag this server as a browser-MCP server\n\
+       --header=K=V         additional non-sensitive HTTP header (repeatable)\n\
+       --bearer-token-env-var=ENV   read bearer token from environment variable\n\
+       --env-http-header=Header=EnvVar  HTTP header from env var (repeatable)\n\
+       --oauth-resource=<url>       OAuth resource parameter (RFC 8707)\n\
+       --auth=oauth                 authentication mode (chatgpt is reserved)\n\n\
+     Discovery sources (low -> high precedence):\n\
      - plugin-contributed MCP servers\n\
      - ~/.allthecodes/settings.json (user scope)\n\
      - .allthecodes/settings.json in the current project (project scope)\n"

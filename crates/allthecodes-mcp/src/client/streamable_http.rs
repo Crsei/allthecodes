@@ -18,7 +18,7 @@ use super::super::{JsonRpcResponse, McpRuntimeContext, SharedMcpEventSink};
 
 use super::http_utils::{
     handle_streamable_http_status, is_event_stream_response, reqwest_error_to_io,
-    reqwest_header_map, validate_header_value, validate_session_id,
+    reqwest_header_map, validate_header_value, validate_session_id, www_authenticate_challenge,
 };
 
 use super::PendingRequests;
@@ -104,7 +104,34 @@ impl StreamableHttpSender {
             )
         })?;
         self.capture_session_id(response.headers()).await?;
-        handle_streamable_http_status(response.status(), &self.server_name, &self.runtime)?;
+
+        // Detect session expiry (404 with an active session)
+        if response.status() == StatusCode::NOT_FOUND && self.session_id.lock().await.is_some() {
+            *self.session_id.lock().await = None;
+            self.runtime
+                .emit_event(super::super::McpSubsystemEvent::ServerStateChanged {
+                    server_name: self.server_name.clone(),
+                    state: "session-expired".to_string(),
+                    error: Some(format!(
+                        "MCP Streamable HTTP server '{}' returned 404 for an active session — session expired",
+                        self.server_name
+                    )),
+            });
+            bail!(
+                "MCP Streamable HTTP session expired for server '{}' (HTTP 404); reconnecting",
+                self.server_name
+            );
+        }
+
+        // Extract WWW-Authenticate before handling status, so we can include
+        // it in the error message
+        let challenge = www_authenticate_challenge(response.headers(), response.status());
+        handle_streamable_http_status(
+            response.status(),
+            &self.server_name,
+            &self.runtime,
+            challenge,
+        )?;
 
         if response.status() == StatusCode::ACCEPTED {
             if expected_id.is_some() {
@@ -162,8 +189,19 @@ impl StreamableHttpSender {
         })?;
 
         match response.status() {
-            StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_FOUND => return Ok(None),
-            status => handle_streamable_http_status(status, &self.server_name, &self.runtime)?,
+            StatusCode::METHOD_NOT_ALLOWED => return Ok(None),
+            StatusCode::NOT_FOUND if self.session_id.lock().await.is_some() => {
+                *self.session_id.lock().await = None;
+                bail!(
+                    "MCP Streamable HTTP session expired for server '{}' while opening GET stream (HTTP 404)",
+                    self.server_name
+                );
+            }
+            StatusCode::NOT_FOUND => return Ok(None),
+            status => {
+                let challenge = www_authenticate_challenge(response.headers(), status);
+                handle_streamable_http_status(status, &self.server_name, &self.runtime, challenge)?;
+            }
         }
 
         if !is_event_stream_response(response.headers()) {
@@ -202,7 +240,10 @@ impl StreamableHttpSender {
         })?;
         match response.status() {
             StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_FOUND => {}
-            status => handle_streamable_http_status(status, &self.server_name, &self.runtime)?,
+            status => {
+                let challenge = www_authenticate_challenge(response.headers(), status);
+                handle_streamable_http_status(status, &self.server_name, &self.runtime, challenge)?;
+            }
         }
         *self.session_id.lock().await = None;
         Ok(())

@@ -22,7 +22,7 @@ use super::http_utils::{
     build_sse_get_request, build_sse_post_request, handle_sse_event_stream_status,
     handle_sse_post_status, is_loopback_host, parse_authority, read_http_response_head,
     reqwest_error_to_io, reqwest_header_map, same_origin, strip_fragment,
-    validate_remote_https_url, validate_sse_url,
+    validate_remote_https_url, validate_sse_url, www_authenticate_challenge,
 };
 
 // ---------------------------------------------------------------------------
@@ -255,7 +255,7 @@ async fn post_loopback_sse_json(
     let status = read_http_response_head(&mut reader)
         .await
         .context("failed to read MCP SSE POST response headers")?;
-    handle_sse_post_status(StatusCode::from_u16(status)?, server_name, runtime)?;
+    handle_sse_post_status(StatusCode::from_u16(status)?, server_name, runtime, None)?;
 
     Ok(())
 }
@@ -279,7 +279,8 @@ async fn post_remote_https_sse_json(
             server_name
         )
     })?;
-    handle_sse_post_status(response.status(), server_name, runtime)?;
+    let challenge = www_authenticate_challenge(response.headers(), response.status());
+    handle_sse_post_status(response.status(), server_name, runtime, challenge)?;
 
     Ok(())
 }
@@ -310,7 +311,7 @@ pub(super) async fn connect_loopback_sse_stream(
     let status = read_http_response_head(&mut reader)
         .await
         .context("failed to read MCP SSE response headers")?;
-    handle_sse_event_stream_status(StatusCode::from_u16(status)?, server_name)?;
+    handle_sse_event_stream_status(StatusCode::from_u16(status)?, server_name, None)?;
 
     Ok(reader)
 }
@@ -337,7 +338,8 @@ pub(super) async fn connect_remote_https_sse_stream(
         .send()
         .await
         .with_context(|| format!("failed to connect to MCP SSE server '{}'", server_name))?;
-    handle_sse_event_stream_status(response.status(), server_name)?;
+    let challenge = www_authenticate_challenge(response.headers(), response.status());
+    handle_sse_event_stream_status(response.status(), server_name, challenge)?;
     if let Some(content_type) = response.headers().get(CONTENT_TYPE) {
         let content_type = content_type.to_str().unwrap_or_default();
         if !content_type

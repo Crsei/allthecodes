@@ -359,6 +359,9 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
                         env: None,
                         browser_mcp: Some(true),
                         disabled: None,
+                        bearer_token_env_var: None,
+                        env_http_headers: None,
+                        auth: None,
                     });
                     info!(
                         "MCP: registered first-party claude-in-chrome bridge (spawns --claude-in-chrome-mcp subprocess)"

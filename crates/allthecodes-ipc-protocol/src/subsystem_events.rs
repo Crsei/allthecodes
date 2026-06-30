@@ -798,6 +798,9 @@ mod tests {
                 browser_mcp: None,
                 disabled: None,
                 scope: ConfigScope::User,
+                bearer_token_env_var: None,
+                env_http_headers: None,
+                auth: None,
             }],
         };
         let value = serde_json::to_value(&event).unwrap();

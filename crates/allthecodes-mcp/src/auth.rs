@@ -221,7 +221,12 @@ pub async fn start_authorization(config: &McpServerConfig) -> Result<McpOAuthSta
         if !scopes.is_empty() {
             pairs.append_pair("scope", &scopes.join(" "));
         }
-        if let Some(resource) = config.url.as_deref() {
+        // Use oauth_resource from config, fall back to MCP server URL
+        let resource = oauth
+            .oauth_resource
+            .as_deref()
+            .or_else(|| config.url.as_deref());
+        if let Some(resource) = resource {
             pairs.append_pair("resource", resource);
         }
     }
@@ -453,7 +458,7 @@ async fn exchange_code_for_token(
         ("client_id".to_string(), pending.client_id.clone()),
         ("code_verifier".to_string(), pending.code_verifier.clone()),
     ];
-    if let Some(resource) = config.url.as_deref() {
+    if let Some(resource) = resource_for_tokens(config) {
         form.push(("resource".to_string(), resource.to_string()));
     }
     post_token_form(&token_endpoint, form).await
@@ -478,7 +483,7 @@ async fn refresh_stored_token(
     if !token.scopes.is_empty() {
         form.push(("scope".to_string(), token.scopes.join(" ")));
     }
-    if let Some(resource) = config.url.as_deref() {
+    if let Some(resource) = resource_for_tokens(config) {
         form.push(("resource".to_string(), resource.to_string()));
     }
 
@@ -754,6 +759,17 @@ fn is_loopback_url(url: &Url) -> bool {
     matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
 }
 
+/// Resolve the OAuth `resource` parameter (RFC 8707) for token requests.
+/// Uses `oauth_resource` from the OAuth config when set, falling back to
+/// the MCP server URL.
+fn resource_for_tokens(config: &McpServerConfig) -> Option<String> {
+    config
+        .oauth
+        .as_ref()
+        .and_then(|o| o.oauth_resource.clone())
+        .or_else(|| config.url.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,10 +813,14 @@ mod tests {
                 callback_port: Some(18888),
                 auth_server_metadata_url: Some(url),
                 scopes: Some(vec!["tools.read".to_string()]),
+                oauth_resource: None,
             }),
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         }
     }
 

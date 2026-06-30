@@ -41,4 +41,14 @@ pub struct McpOAuthConfig {
     /// OAuth scopes to request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
+    /// Optional OAuth resource parameter (RFC 8707) to include during
+    /// authorization and token requests. When absent, the MCP server URL
+    /// is used as the resource if available.
+    #[serde(
+        default,
+        rename = "oauthResource",
+        alias = "oauth_resource",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oauth_resource: Option<String>,
 }

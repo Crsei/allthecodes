@@ -344,6 +344,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         });
         client.state = McpConnectionState::Connected;
         client.resources = resources;

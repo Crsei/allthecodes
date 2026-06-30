@@ -494,6 +494,9 @@ pub fn discover_plugin_mcp_servers_scoped() -> Vec<(String, allthecodes_mcp::Mcp
                     env: Some(env),
                     browser_mcp: None,
                     disabled: None,
+                    bearer_token_env_var: None,
+                    env_http_headers: None,
+                    auth: None,
                 },
             ));
         }

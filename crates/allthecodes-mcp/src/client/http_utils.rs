@@ -1,7 +1,8 @@
+use std::env;
 use std::io;
 
 use anyhow::{bail, Context, Result};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, WWW_AUTHENTICATE};
 use reqwest::StatusCode;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
@@ -9,7 +10,7 @@ use url::Url;
 
 use super::super::McpRuntimeContext;
 use super::super::McpServerConfig;
-use super::auth_error::McpAuthNeededError;
+use super::auth_error::{McpAuthNeededError, WwwAuthenticateChallenge};
 
 use allthecodes_types::mcp::CONNECT_TIMEOUT_SECS;
 
@@ -87,6 +88,42 @@ pub(super) fn reqwest_error_to_io(error: reqwest::Error) -> io::Error {
     io::Error::other(error)
 }
 
+pub(super) fn www_authenticate_challenge(
+    headers: &HeaderMap,
+    status: StatusCode,
+) -> Option<WwwAuthenticateChallenge> {
+    if status != StatusCode::UNAUTHORIZED && status != StatusCode::FORBIDDEN {
+        return None;
+    }
+
+    let values = headers
+        .get_all(WWW_AUTHENTICATE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return None;
+    }
+
+    if status == StatusCode::FORBIDDEN {
+        for value in &values {
+            if let Some(required_scope) = parse_bearer_insufficient_scope(value) {
+                return Some(WwwAuthenticateChallenge {
+                    header: (*value).to_string(),
+                    required_scope,
+                    insufficient_scope: true,
+                });
+            }
+        }
+    }
+
+    values.first().map(|value| WwwAuthenticateChallenge {
+        header: (*value).to_string(),
+        required_scope: None,
+        insufficient_scope: false,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // URL / authority parsing
 // ---------------------------------------------------------------------------
@@ -134,18 +171,51 @@ pub(super) fn strip_fragment(value: &str) -> &str {
 // ---------------------------------------------------------------------------
 
 pub(super) fn normalized_http_transport_headers(config: &McpServerConfig) -> Vec<(String, String)> {
-    let mut headers = config
-        .headers
-        .as_ref()
-        .map(|headers| {
-            headers
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut headers = Vec::new();
+    if let Some(static_headers) = &config.headers {
+        for (name, value) in static_headers {
+            upsert_header(&mut headers, name.clone(), value.clone());
+        }
+    }
 
-    headers.sort_by(|(left, _), (right, _)| left.cmp(right));
+    // Append env_http_headers: resolve env var values at connection time
+    if let Some(env_headers) = &config.env_http_headers {
+        for (name, env_var) in env_headers {
+            if let Ok(value) = env::var(env_var) {
+                if !value.trim().is_empty() {
+                    // Validate the header name/value like static headers
+                    if let Err(e) = validate_header_name(name) {
+                        tracing::warn!(
+                            server = %config.name,
+                            header = name,
+                            error = %e,
+                            "MCP: skipping env_http_header with invalid name"
+                        );
+                        continue;
+                    }
+                    if let Err(e) = validate_header_value(name, &value) {
+                        tracing::warn!(
+                            server = %config.name,
+                            header = name,
+                            env_var = env_var,
+                            error = %e,
+                            "MCP: skipping env_http_header with invalid value"
+                        );
+                        continue;
+                    }
+                    upsert_header(&mut headers, name.clone(), value);
+                }
+            } else {
+                tracing::debug!(
+                    server = %config.name,
+                    header = name,
+                    env_var = env_var,
+                    "MCP: env_http_header env var not set, skipping"
+                );
+            }
+        }
+    }
+
     headers
 }
 
@@ -153,16 +223,217 @@ pub(super) async fn normalized_http_transport_headers_with_auth(
     config: &McpServerConfig,
 ) -> Result<Vec<(String, String)>> {
     let mut headers = normalized_http_transport_headers(config);
+
+    if let Some(env_var) = &config.bearer_token_env_var {
+        match env::var(env_var) {
+            Ok(token) => {
+                let token = token.trim();
+                if token.is_empty() {
+                    bail!(
+                        "Environment variable {} for MCP server '{}' is empty",
+                        env_var,
+                        config.name
+                    );
+                }
+                let value = format!("Bearer {}", token);
+                validate_header_value("Authorization", &value)?;
+                upsert_header(&mut headers, "Authorization".to_string(), value);
+                return Ok(headers);
+            }
+            Err(env::VarError::NotPresent) => {
+                bail!(
+                    "Environment variable {} for MCP server '{}' is not set",
+                    env_var,
+                    config.name
+                );
+            }
+            Err(env::VarError::NotUnicode(_)) => {
+                bail!(
+                    "Environment variable {} for MCP server '{}' contains invalid Unicode",
+                    env_var,
+                    config.name
+                );
+            }
+        }
+    }
+
     let has_explicit_authorization = headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
     if !has_explicit_authorization {
+        if matches!(config.auth.as_deref(), Some("chatgpt")) {
+            bail!(
+                "MCP server '{}' uses auth=chatgpt, but ChatGPT MCP auth is not implemented yet",
+                config.name
+            );
+        }
+
         if let Some(value) = super::super::auth::authorization_header(config).await? {
-            headers.push(("Authorization".to_string(), value));
-            headers.sort_by(|(left, _), (right, _)| left.cmp(right));
+            upsert_header(&mut headers, "Authorization".to_string(), value);
         }
     }
     Ok(headers)
+}
+
+fn upsert_header(headers: &mut Vec<(String, String)>, name: String, value: String) {
+    if let Some((_, existing_value)) = headers
+        .iter_mut()
+        .find(|(existing_name, _)| existing_name.eq_ignore_ascii_case(&name))
+    {
+        *existing_value = value;
+    } else {
+        headers.push((name, value));
+    }
+}
+
+fn parse_bearer_insufficient_scope(header: &str) -> Option<Option<String>> {
+    let mut in_bearer = false;
+    let mut insufficient_scope = false;
+    let mut required_scope: Option<String> = None;
+    let mut invalid_scope = false;
+
+    for segment in split_unquoted_commas(header)? {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+
+        if let Some((scheme, rest)) = challenge_start(segment) {
+            if in_bearer && insufficient_scope {
+                return Some(required_scope.filter(|_| !invalid_scope));
+            }
+            in_bearer = scheme.eq_ignore_ascii_case("bearer");
+            insufficient_scope = false;
+            required_scope = None;
+            invalid_scope = false;
+            if in_bearer {
+                parse_bearer_auth_param(
+                    rest,
+                    &mut insufficient_scope,
+                    &mut required_scope,
+                    &mut invalid_scope,
+                );
+            }
+            continue;
+        }
+
+        if in_bearer {
+            parse_bearer_auth_param(
+                segment,
+                &mut insufficient_scope,
+                &mut required_scope,
+                &mut invalid_scope,
+            );
+        }
+    }
+
+    if in_bearer && insufficient_scope {
+        Some(required_scope.filter(|_| !invalid_scope))
+    } else {
+        None
+    }
+}
+
+fn split_unquoted_commas(value: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut in_quote = false;
+    let mut escaped = false;
+    for (index, ch) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_quote => escaped = true,
+            '"' => in_quote = !in_quote,
+            ',' if !in_quote => {
+                parts.push(&value[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if in_quote || escaped {
+        return None;
+    }
+    parts.push(&value[start..]);
+    Some(parts)
+}
+
+fn challenge_start(segment: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = segment.split_once(char::is_whitespace)?;
+    if scheme.contains('=') {
+        return None;
+    }
+    Some((scheme, rest.trim()))
+}
+
+fn parse_bearer_auth_param(
+    segment: &str,
+    insufficient_scope: &mut bool,
+    required_scope: &mut Option<String>,
+    invalid_scope: &mut bool,
+) {
+    let Some((name, raw_value)) = segment.split_once('=') else {
+        return;
+    };
+    let Some(value) = parse_auth_param_value(raw_value.trim()) else {
+        if name.trim().eq_ignore_ascii_case("scope") {
+            *invalid_scope = true;
+        }
+        return;
+    };
+
+    if name.trim().eq_ignore_ascii_case("error") && value == "insufficient_scope" {
+        *insufficient_scope = true;
+    } else if name.trim().eq_ignore_ascii_case("scope") {
+        if required_scope.is_some() {
+            *invalid_scope = true;
+        } else if valid_scope(&value) {
+            *required_scope = Some(value);
+        } else {
+            *invalid_scope = true;
+        }
+    }
+}
+
+fn parse_auth_param_value(raw: &str) -> Option<String> {
+    if let Some(stripped) = raw.strip_prefix('"') {
+        if !stripped.ends_with('"') {
+            return None;
+        }
+        let inner = &stripped[..stripped.len() - 1];
+        let mut out = String::new();
+        let mut chars = inner.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                out.push(chars.next()?);
+            } else {
+                out.push(ch);
+            }
+        }
+        Some(out)
+    } else if raw
+        .bytes()
+        .all(|b| matches!(b, b'!' | b'#'..=b'\'' | b'*' | b'+' | b'-' | b'.' | b'0'..=b'9' | b'A'..=b'Z' | b'^' | b'_' | b'`' | b'a'..=b'z' | b'|' | b'~' | b':' | b'/'))
+    {
+        Some(raw.to_string())
+    } else {
+        None
+    }
+}
+
+fn valid_scope(scope: &str) -> bool {
+    !scope.is_empty()
+        && !scope.contains("  ")
+        && scope.split(' ').all(|token| {
+            !token.is_empty()
+                && token
+                    .bytes()
+                    .all(|b| matches!(b, b'!' | b'#'..=b'[' | b']'..=b'~'))
+                && !token.contains(['"', '\\'])
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -248,13 +519,13 @@ pub(super) async fn read_http_response_head(reader: &mut BufReader<TcpStream>) -
 // Status code handling
 // ---------------------------------------------------------------------------
 
-pub(super) fn handle_sse_event_stream_status(status: StatusCode, server_name: &str) -> Result<()> {
+pub(super) fn handle_sse_event_stream_status(
+    status: StatusCode,
+    server_name: &str,
+    challenge: Option<WwwAuthenticateChallenge>,
+) -> Result<()> {
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return Err(McpAuthNeededError {
-            server_name: server_name.to_string(),
-            status,
-        }
-        .into());
+        return Err(McpAuthNeededError::new(server_name.to_string(), status, challenge).into());
     }
     if status.is_redirection() {
         bail!(
@@ -277,24 +548,18 @@ pub(super) fn handle_sse_post_status(
     status: StatusCode,
     server_name: &str,
     runtime: &McpRuntimeContext,
+    challenge: Option<WwwAuthenticateChallenge>,
 ) -> Result<()> {
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         runtime.emit_event(super::super::McpSubsystemEvent::ServerStateChanged {
             server_name: server_name.to_string(),
             state: "auth-needed".to_string(),
             error: Some(
-                McpAuthNeededError {
-                    server_name: server_name.to_string(),
-                    status,
-                }
-                .to_string(),
+                McpAuthNeededError::new(server_name.to_string(), status, challenge.clone())
+                    .to_string(),
             ),
         });
-        return Err(McpAuthNeededError {
-            server_name: server_name.to_string(),
-            status,
-        }
-        .into());
+        return Err(McpAuthNeededError::new(server_name.to_string(), status, challenge).into());
     }
     if status.is_redirection() {
         bail!(
@@ -317,24 +582,18 @@ pub(super) fn handle_streamable_http_status(
     status: StatusCode,
     server_name: &str,
     runtime: &McpRuntimeContext,
+    challenge: Option<WwwAuthenticateChallenge>,
 ) -> Result<()> {
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         runtime.emit_event(super::super::McpSubsystemEvent::ServerStateChanged {
             server_name: server_name.to_string(),
             state: "auth-needed".to_string(),
             error: Some(
-                McpAuthNeededError {
-                    server_name: server_name.to_string(),
-                    status,
-                }
-                .to_string(),
+                McpAuthNeededError::new(server_name.to_string(), status, challenge.clone())
+                    .to_string(),
             ),
         });
-        return Err(McpAuthNeededError {
-            server_name: server_name.to_string(),
-            status,
-        }
-        .into());
+        return Err(McpAuthNeededError::new(server_name.to_string(), status, challenge).into());
     }
     if status.is_redirection() {
         bail!(
@@ -510,3 +769,11 @@ pub(super) fn redact_url_for_log(url: &str) -> String {
             .to_string(),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[path = "http_utils_tests.rs"]
+mod tests;

@@ -226,14 +226,30 @@ fn list_entries(cwd: &Path) -> Result<Vec<McpServerConfigEntry>, String> {
                     command: server.config.command,
                     args: server.config.args,
                     url: server.config.url,
-                    headers: server.config.headers,
+                    headers: redact_server_headers(server.config.headers),
                     oauth: server.config.oauth,
                     env: redact_server_env(server.config.env),
                     browser_mcp: server.config.browser_mcp,
                     disabled: server.config.disabled,
+                    bearer_token_env_var: server.config.bearer_token_env_var,
+                    env_http_headers: server.config.env_http_headers,
+                    auth: server.config.auth,
                 })
                 .collect()
         })
+}
+
+fn redact_server_headers(
+    headers: Option<std::collections::HashMap<String, String>>,
+) -> Option<std::collections::HashMap<String, String>> {
+    headers.map(|mut headers| {
+        for (name, value) in headers.iter_mut() {
+            if is_sensitive_header_name(name) {
+                *value = "[redacted]".to_string();
+            }
+        }
+        headers
+    })
 }
 
 fn redact_server_env(
@@ -257,10 +273,38 @@ fn validate_entry(entry: &McpServerConfigEntry) -> Result<(), String> {
             entry.scope.label()
         ));
     }
+    if let Some(headers) = &entry.headers {
+        for name in headers.keys() {
+            if is_sensitive_header_name(name) {
+                return Err(format!(
+                    "refusing static sensitive HTTP header `{}`; use bearerTokenEnvVar or envHttpHeaders instead",
+                    name
+                ));
+            }
+        }
+    }
+    if matches!(entry.auth.as_deref(), Some("chatgpt")) {
+        return Err("auth=chatgpt is reserved but not implemented yet".to_string());
+    }
     match entry.transport.as_str() {
         "stdio" => {
             if entry.command.as_deref().unwrap_or("").trim().is_empty() {
                 return Err("stdio MCP servers require `command`".to_string());
+            }
+            if entry.headers.as_ref().map(|h| !h.is_empty()).unwrap_or(false)
+                || entry.bearer_token_env_var.is_some()
+                || entry
+                    .env_http_headers
+                    .as_ref()
+                    .map(|h| !h.is_empty())
+                    .unwrap_or(false)
+                || entry.auth.is_some()
+                || entry.oauth.is_some()
+            {
+                return Err(
+                    "stdio MCP servers do not support HTTP headers, bearer env vars, env HTTP headers, auth, or OAuth config"
+                        .to_string(),
+                );
             }
         }
         "sse" | "streamable-http" => {
@@ -275,6 +319,18 @@ fn validate_entry(entry: &McpServerConfigEntry) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn is_sensitive_header_name(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    lower == "authorization"
+        || lower == "proxy-authorization"
+        || lower == "x-api-key"
+        || lower == "api-key"
+        || lower == "x-auth-token"
+        || lower == "x-access-token"
+        || lower.contains("token")
+        || lower.contains("secret")
 }
 
 fn settings_path_for_scope(cwd: &Path, scope: &ConfigScope) -> Result<PathBuf, String> {
@@ -317,6 +373,9 @@ fn entry_to_settings_value(entry: &McpServerConfigEntry) -> Value {
         env: entry.env.clone(),
         browser_mcp: entry.browser_mcp,
         disabled: entry.disabled,
+        bearer_token_env_var: entry.bearer_token_env_var.clone(),
+        env_http_headers: entry.env_http_headers.clone(),
+        auth: entry.auth.clone(),
     };
     let mut value = serde_json::to_value(cfg).unwrap_or(Value::Null);
     if let Some(object) = value.as_object_mut() {

@@ -244,11 +244,14 @@ fn entry_to_settings_value(entry: &McpServerConfigEntry) -> serde_json::Value {
         command: entry.command.clone(),
         args: entry.args.clone(),
         url: entry.url.clone(),
-        headers: entry.headers.clone(),
+        headers: filter_sensitive_static_headers(entry.headers.clone()),
         oauth: entry.oauth.clone(),
         env: entry.env.clone(),
         browser_mcp: entry.browser_mcp,
         disabled: entry.disabled,
+        bearer_token_env_var: entry.bearer_token_env_var.clone(),
+        env_http_headers: entry.env_http_headers.clone(),
+        auth: entry.auth.clone(),
     };
     // `McpServerConfig` serializes `name` as a field; the settings file uses
     // the map key for naming, so drop it from the inner object.
@@ -257,6 +260,31 @@ fn entry_to_settings_value(entry: &McpServerConfigEntry) -> serde_json::Value {
         obj.remove("name");
     }
     value
+}
+
+fn filter_sensitive_static_headers(
+    headers: Option<std::collections::HashMap<String, String>>,
+) -> Option<std::collections::HashMap<String, String>> {
+    headers
+        .map(|headers| {
+            headers
+                .into_iter()
+                .filter(|(name, _)| !is_sensitive_header_name(name))
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .filter(|headers| !headers.is_empty())
+}
+
+fn is_sensitive_header_name(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    lower == "authorization"
+        || lower == "proxy-authorization"
+        || lower == "x-api-key"
+        || lower == "api-key"
+        || lower == "x-auth-token"
+        || lower == "x-access-token"
+        || lower.contains("token")
+        || lower.contains("secret")
 }
 
 #[cfg(test)]

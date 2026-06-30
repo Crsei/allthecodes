@@ -258,6 +258,9 @@ fn invalid_server_placeholder(name: &str) -> McpServerConfig {
         env: None,
         browser_mcp: None,
         disabled: Some(true),
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     }
 }
 

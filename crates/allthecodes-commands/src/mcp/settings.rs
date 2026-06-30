@@ -25,6 +25,15 @@ pub(super) fn describe_entry(entry: &McpServerConfigEntry) -> String {
     if entry.oauth.is_some() {
         parts.push("oauth=configured".to_string());
     }
+    if entry.bearer_token_env_var.is_some() {
+        parts.push("bearerTokenEnvVar=set".to_string());
+    }
+    if entry.env_http_headers.is_some() {
+        parts.push("envHttpHeaders=set".to_string());
+    }
+    if let Some(auth) = &entry.auth {
+        parts.push(format!("auth={}", auth));
+    }
     if let Some(env) = &entry.env {
         if !env.is_empty() {
             let mut keys: Vec<&String> = env.keys().collect();
@@ -54,6 +63,9 @@ pub(super) fn discover_config_entries(cwd: &std::path::Path) -> Vec<McpServerCon
                 env: s.config.env,
                 browser_mcp: s.config.browser_mcp,
                 disabled: s.config.disabled,
+                bearer_token_env_var: s.config.bearer_token_env_var,
+                env_http_headers: s.config.env_http_headers,
+                auth: s.config.auth,
             })
             .collect(),
         Err(err) => {
@@ -70,6 +82,9 @@ pub(super) fn discover_config_entries(cwd: &std::path::Path) -> Vec<McpServerCon
                 env: None,
                 browser_mcp: None,
                 disabled: Some(true),
+                bearer_token_env_var: None,
+                env_http_headers: None,
+                auth: None,
             }]
         }
     }
@@ -199,15 +214,43 @@ pub(super) fn entry_to_settings_value(entry: &McpServerConfigEntry) -> serde_jso
         command: entry.command.clone(),
         args: entry.args.clone(),
         url: entry.url.clone(),
-        headers: entry.headers.clone(),
+        headers: filter_sensitive_static_headers(entry.headers.clone()),
         oauth: entry.oauth.clone(),
         env: entry.env.clone(),
         browser_mcp: entry.browser_mcp,
         disabled: entry.disabled,
+        bearer_token_env_var: entry.bearer_token_env_var.clone(),
+        env_http_headers: entry.env_http_headers.clone(),
+        auth: entry.auth.clone(),
     };
     let mut v = serde_json::to_value(&cfg).unwrap_or(serde_json::Value::Null);
     if let Some(obj) = v.as_object_mut() {
         obj.remove("name");
     }
     v
+}
+
+fn filter_sensitive_static_headers(
+    headers: Option<std::collections::HashMap<String, String>>,
+) -> Option<std::collections::HashMap<String, String>> {
+    headers
+        .map(|headers| {
+            headers
+                .into_iter()
+                .filter(|(name, _)| !is_sensitive_header_name(name))
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .filter(|headers| !headers.is_empty())
+}
+
+fn is_sensitive_header_name(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    lower == "authorization"
+        || lower == "proxy-authorization"
+        || lower == "x-api-key"
+        || lower == "api-key"
+        || lower == "x-auth-token"
+        || lower == "x-access-token"
+        || lower.contains("token")
+        || lower.contains("secret")
 }

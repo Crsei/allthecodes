@@ -106,6 +106,9 @@ fn test_mcp_client_new() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let client = McpClient::new(config);
@@ -131,6 +134,34 @@ fn test_mcp_connect_retry_delay_uses_capped_exponential_backoff() {
     assert_eq!(crate::manager::connect_retry_delay_ms(20), 250);
 }
 
+#[test]
+fn test_streamable_http_transient_retry_scope() {
+    let retryable = anyhow::anyhow!("MCP Streamable HTTP server returned HTTP 503");
+    let not_retryable_status = anyhow::anyhow!("MCP Streamable HTTP server returned HTTP 404");
+
+    assert_eq!(super::STREAMABLE_HTTP_RETRY_DELAYS_MS, [250, 1_000]);
+    assert!(super::is_retryable_streamable_http_error(
+        Some("initialize"),
+        &retryable
+    ));
+    assert!(super::is_retryable_streamable_http_error(
+        Some("notifications/initialized"),
+        &retryable
+    ));
+    assert!(super::is_retryable_streamable_http_error(
+        Some("tools/list"),
+        &retryable
+    ));
+    assert!(!super::is_retryable_streamable_http_error(
+        Some("tools/call"),
+        &retryable
+    ));
+    assert!(!super::is_retryable_streamable_http_error(
+        Some("tools/list"),
+        &not_retryable_status
+    ));
+}
+
 #[tokio::test]
 async fn test_mcp_manager_disconnect_server_removes_client() {
     let mut manager = McpManager::new();
@@ -145,6 +176,9 @@ async fn test_mcp_manager_disconnect_server_removes_client() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
     manager
         .clients
@@ -169,6 +203,9 @@ async fn test_mcp_manager_connect_disabled_removes_existing_client() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
     manager
         .clients
@@ -185,6 +222,9 @@ async fn test_mcp_manager_connect_disabled_removes_existing_client() {
         env: None,
         browser_mcp: None,
         disabled: Some(true),
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     manager.connect_server(disabled).await.unwrap();
@@ -205,6 +245,9 @@ async fn test_mcp_manager_reconnect_invalid_config_drops_stale_client() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
     manager
         .clients
@@ -221,6 +264,9 @@ async fn test_mcp_manager_reconnect_invalid_config_drops_stale_client() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let error = manager.reconnect_server(invalid).await.unwrap_err();
@@ -241,6 +287,9 @@ fn test_jsonrpc_request_ids_increment() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
     let client = McpClient::new(config);
 
@@ -331,6 +380,9 @@ async fn test_connect_stdio_missing_command() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -391,7 +443,7 @@ fn test_sse_remote_endpoint_rejects_plain_http() {
 
 #[test]
 fn test_sse_auth_status_is_classified() {
-    let err = handle_sse_event_stream_status(reqwest::StatusCode::UNAUTHORIZED, "remote-sse")
+    let err = handle_sse_event_stream_status(reqwest::StatusCode::UNAUTHORIZED, "remote-sse", None)
         .unwrap_err();
     assert!(crate::client::is_auth_needed_error(&err));
     assert!(err.to_string().contains("requires authentication"));
@@ -471,6 +523,9 @@ async fn test_connect_sse_loopback_initializes_over_endpoint() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -496,6 +551,9 @@ async fn test_connect_sse_rejects_insecure_remote_http() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -522,6 +580,9 @@ async fn test_connect_sse_rejects_header_injection() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -545,6 +606,9 @@ async fn test_connect_sse_rejects_reserved_header_override() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -566,6 +630,9 @@ async fn test_connect_sse_rejects_missing_url() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -697,6 +764,9 @@ async fn test_streamable_http_loopback_initializes_and_lists_tools() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -706,6 +776,308 @@ async fn test_streamable_http_loopback_initializes_and_lists_tools() {
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "search");
     assert_eq!(tools[0].server_name, "stream-http");
+    client.disconnect().await;
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_streamable_http_post_404_recovers_session_and_retries_tools_list() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut init_stream, _) = listener.accept().await.unwrap();
+        let (init_head, init_body) = read_http_request(&mut init_stream).await;
+        let init_request: Value = serde_json::from_str(&init_body).unwrap();
+        let init_id = init_request["id"].as_u64().unwrap();
+        let init_response = json!({
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "stream-http", "version": "1.0.0" }
+            }
+        });
+        write_http_response(
+            &mut init_stream,
+            "200 OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("MCP-Session-Id", "session-1"),
+            ],
+            &serde_json::to_string(&init_response).unwrap(),
+        )
+        .await;
+        assert!(init_head.starts_with("POST /mcp HTTP/1.1"));
+        assert!(header_value(&init_head, HEADER_MCP_SESSION_ID).is_none());
+
+        let (mut initialized_stream, _) = listener.accept().await.unwrap();
+        let (initialized_head, initialized_body) = read_http_request(&mut initialized_stream).await;
+        write_http_response(&mut initialized_stream, "202 Accepted", &[], "").await;
+        assert_eq!(
+            header_value(&initialized_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+        let initialized_notification: Value = serde_json::from_str(&initialized_body).unwrap();
+        assert_eq!(
+            initialized_notification["method"],
+            "notifications/initialized"
+        );
+
+        let (mut get_stream, _) = listener.accept().await.unwrap();
+        let (get_head, _) = read_http_request(&mut get_stream).await;
+        write_http_response(&mut get_stream, "405 Method Not Allowed", &[], "").await;
+        assert!(get_head.starts_with("GET /mcp HTTP/1.1"));
+        assert_eq!(
+            header_value(&get_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+
+        let (mut expired_tools_stream, _) = listener.accept().await.unwrap();
+        let (expired_tools_head, expired_tools_body) =
+            read_http_request(&mut expired_tools_stream).await;
+        let expired_tools_request: Value = serde_json::from_str(&expired_tools_body).unwrap();
+        let tools_id = expired_tools_request["id"].as_u64().unwrap();
+        assert_eq!(expired_tools_request["method"], "tools/list");
+        assert_eq!(
+            header_value(&expired_tools_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+        write_http_response(&mut expired_tools_stream, "404 Not Found", &[], "").await;
+
+        let (mut recovery_init_stream, _) = listener.accept().await.unwrap();
+        let (recovery_init_head, recovery_init_body) =
+            read_http_request(&mut recovery_init_stream).await;
+        let recovery_init_request: Value = serde_json::from_str(&recovery_init_body).unwrap();
+        let recovery_init_id = recovery_init_request["id"].as_u64().unwrap();
+        let recovery_init_response = json!({
+            "jsonrpc": "2.0",
+            "id": recovery_init_id,
+            "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "stream-http", "version": "1.0.0" }
+            }
+        });
+        write_http_response(
+            &mut recovery_init_stream,
+            "200 OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("MCP-Session-Id", "session-2"),
+            ],
+            &serde_json::to_string(&recovery_init_response).unwrap(),
+        )
+        .await;
+        assert!(recovery_init_head.starts_with("POST /mcp HTTP/1.1"));
+        assert!(header_value(&recovery_init_head, HEADER_MCP_SESSION_ID).is_none());
+        assert_eq!(recovery_init_request["method"], "initialize");
+
+        let (mut recovery_initialized_stream, _) = listener.accept().await.unwrap();
+        let (recovery_initialized_head, recovery_initialized_body) =
+            read_http_request(&mut recovery_initialized_stream).await;
+        write_http_response(&mut recovery_initialized_stream, "202 Accepted", &[], "").await;
+        assert_eq!(
+            header_value(&recovery_initialized_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-2"
+        );
+        let recovery_initialized_notification: Value =
+            serde_json::from_str(&recovery_initialized_body).unwrap();
+        assert_eq!(
+            recovery_initialized_notification["method"],
+            "notifications/initialized"
+        );
+
+        let (mut recovery_get_stream, _) = listener.accept().await.unwrap();
+        let (recovery_get_head, _) = read_http_request(&mut recovery_get_stream).await;
+        write_http_response(&mut recovery_get_stream, "405 Method Not Allowed", &[], "").await;
+        assert!(recovery_get_head.starts_with("GET /mcp HTTP/1.1"));
+        assert_eq!(
+            header_value(&recovery_get_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-2"
+        );
+
+        let (mut retried_tools_stream, _) = listener.accept().await.unwrap();
+        let (retried_tools_head, retried_tools_body) =
+            read_http_request(&mut retried_tools_stream).await;
+        let retried_tools_request: Value = serde_json::from_str(&retried_tools_body).unwrap();
+        assert_eq!(retried_tools_request["method"], "tools/list");
+        assert_eq!(retried_tools_request["id"].as_u64().unwrap(), tools_id);
+        assert_eq!(
+            header_value(&retried_tools_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-2"
+        );
+        let tools_response = json!({
+            "jsonrpc": "2.0",
+            "id": tools_id,
+            "result": {
+                "tools": [{
+                    "name": "search",
+                    "description": "search things",
+                    "inputSchema": {"type": "object"}
+                }]
+            }
+        });
+        write_http_response(
+            &mut retried_tools_stream,
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            &serde_json::to_string(&tools_response).unwrap(),
+        )
+        .await;
+    });
+
+    let config = McpServerConfig {
+        name: "stream-http".to_string(),
+        transport: "streamable-http".to_string(),
+        command: None,
+        args: None,
+        url: Some(format!("http://127.0.0.1:{}/mcp", addr.port())),
+        headers: None,
+        oauth: None,
+        env: None,
+        browser_mcp: None,
+        disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
+    };
+
+    let mut client = McpClient::new(config);
+    client.connect().await.unwrap();
+    client.initialize().await.unwrap();
+    let tools = client.list_tools().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "search");
+    assert_eq!(tools[0].server_name, "stream-http");
+    client.disconnect().await;
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_streamable_http_tools_list_transient_status_retries() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut init_stream, _) = listener.accept().await.unwrap();
+        let (init_head, init_body) = read_http_request(&mut init_stream).await;
+        let init_request: Value = serde_json::from_str(&init_body).unwrap();
+        let init_id = init_request["id"].as_u64().unwrap();
+        let init_response = json!({
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "stream-http", "version": "1.0.0" }
+            }
+        });
+        write_http_response(
+            &mut init_stream,
+            "200 OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("MCP-Session-Id", "session-1"),
+            ],
+            &serde_json::to_string(&init_response).unwrap(),
+        )
+        .await;
+        assert!(init_head.starts_with("POST /mcp HTTP/1.1"));
+
+        let (mut initialized_stream, _) = listener.accept().await.unwrap();
+        let (initialized_head, initialized_body) = read_http_request(&mut initialized_stream).await;
+        write_http_response(&mut initialized_stream, "202 Accepted", &[], "").await;
+        assert_eq!(
+            header_value(&initialized_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+        let initialized_notification: Value = serde_json::from_str(&initialized_body).unwrap();
+        assert_eq!(
+            initialized_notification["method"],
+            "notifications/initialized"
+        );
+
+        let (mut get_stream, _) = listener.accept().await.unwrap();
+        let (get_head, _) = read_http_request(&mut get_stream).await;
+        write_http_response(&mut get_stream, "405 Method Not Allowed", &[], "").await;
+        assert!(get_head.starts_with("GET /mcp HTTP/1.1"));
+        assert_eq!(
+            header_value(&get_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+
+        let (mut first_tools_stream, _) = listener.accept().await.unwrap();
+        let (first_tools_head, first_tools_body) = read_http_request(&mut first_tools_stream).await;
+        let first_tools_request: Value = serde_json::from_str(&first_tools_body).unwrap();
+        let tools_id = first_tools_request["id"].as_u64().unwrap();
+        assert_eq!(first_tools_request["method"], "tools/list");
+        assert_eq!(
+            header_value(&first_tools_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+        write_http_response(
+            &mut first_tools_stream,
+            "503 Service Unavailable",
+            &[("Content-Type", "text/plain")],
+            "busy",
+        )
+        .await;
+
+        let (mut retry_tools_stream, _) = listener.accept().await.unwrap();
+        let (retry_tools_head, retry_tools_body) = read_http_request(&mut retry_tools_stream).await;
+        let retry_tools_request: Value = serde_json::from_str(&retry_tools_body).unwrap();
+        assert_eq!(retry_tools_request["method"], "tools/list");
+        assert_eq!(retry_tools_request["id"].as_u64().unwrap(), tools_id);
+        assert_eq!(
+            header_value(&retry_tools_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+        let tools_response = json!({
+            "jsonrpc": "2.0",
+            "id": tools_id,
+            "result": {
+                "tools": [{
+                    "name": "search",
+                    "description": "search things",
+                    "inputSchema": {"type": "object"}
+                }]
+            }
+        });
+        write_http_response(
+            &mut retry_tools_stream,
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            &serde_json::to_string(&tools_response).unwrap(),
+        )
+        .await;
+    });
+
+    let config = McpServerConfig {
+        name: "stream-http".to_string(),
+        transport: "streamable-http".to_string(),
+        command: None,
+        args: None,
+        url: Some(format!("http://127.0.0.1:{}/mcp", addr.port())),
+        headers: None,
+        oauth: None,
+        env: None,
+        browser_mcp: None,
+        disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
+    };
+
+    let mut client = McpClient::new(config);
+    client.connect().await.unwrap();
+    client.initialize().await.unwrap();
+    let tools = client.list_tools().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "search");
     client.disconnect().await;
 
     server.await.unwrap();
@@ -724,6 +1096,9 @@ async fn test_connect_streamable_http_rejects_insecure_remote_http() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -747,6 +1122,9 @@ async fn test_connect_streamable_http_rejects_reserved_header_override() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -768,6 +1146,9 @@ async fn test_disconnect_idempotent() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -791,6 +1172,9 @@ async fn test_list_tools_not_connected() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let mut client = McpClient::new(config);
@@ -812,6 +1196,9 @@ async fn test_call_tool_not_connected() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     };
 
     let client = McpClient::new(config);
@@ -833,6 +1220,9 @@ async fn test_mcp_manager_connect_all_invalid_server() {
         env: None,
         browser_mcp: None,
         disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     }];
 
     let result = manager.connect_all(configs).await;

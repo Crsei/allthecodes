@@ -109,6 +109,9 @@ pub(super) fn make_mcp_entry(name: &str, scope: ConfigScope) -> McpServerConfigE
         browser_mcp: None,
         disabled: None,
         scope,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
     }
 }
 

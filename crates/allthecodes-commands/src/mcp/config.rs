@@ -36,15 +36,36 @@ pub(super) fn handle_add(rest: &[&str], ctx: &mut CommandContext) -> Result<Comm
         command: flags.command.clone(),
         args: (!flags.args.is_empty()).then(|| flags.args.clone()),
         url: flags.url.clone(),
-        headers: None,
+        headers: (!flags.header.is_empty()).then(|| {
+            flags
+                .header
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashMap<String, String>>()
+        }),
         oauth: oauth_from_flags(&flags, None),
         env: (!flags.env.is_empty()).then(|| flags.env.clone()),
         browser_mcp: flags.browser,
         disabled: None,
+        bearer_token_env_var: flags.bearer_token_env_var.clone(),
+        env_http_headers: (!flags.env_http_header.is_empty()).then(|| {
+            flags
+                .env_http_header
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashMap<String, String>>()
+        }),
+        auth: flags.auth.clone(),
     };
     if entry.transport == "stdio" && entry.command.is_none() {
         return Ok(CommandResult::Output(
             "`stdio` transport requires --command=<cmd>. Use --transport=sse or --transport=streamable-http with --url=<url> for remote servers."
+                .to_string(),
+        ));
+    }
+    if entry.transport == "stdio" && has_http_only_fields(&entry) {
+        return Ok(CommandResult::Output(
+            "`stdio` transport does not support HTTP headers, bearer env vars, env HTTP headers, auth, or OAuth config."
                 .to_string(),
         ));
     }
@@ -113,6 +134,33 @@ pub(super) fn handle_edit(rest: &[&str], ctx: &mut CommandContext) -> Result<Com
     let url = flags.url.clone().or(current.url.clone());
     let oauth = oauth_from_flags(&flags, current.oauth.as_ref()).or(current.oauth.clone());
     let browser_mcp = flags.browser.or(current.browser_mcp);
+    let headers = if !flags.header.is_empty() {
+        Some(
+            flags
+                .header
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashMap<String, String>>(),
+        )
+    } else {
+        current.headers.clone()
+    };
+    let bearer_token_env_var = flags
+        .bearer_token_env_var
+        .clone()
+        .or(current.bearer_token_env_var.clone());
+    let env_http_headers = if !flags.env_http_header.is_empty() {
+        Some(
+            flags
+                .env_http_header
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashMap<String, String>>(),
+        )
+    } else {
+        current.env_http_headers.clone()
+    };
+    let auth = flags.auth.clone().or(current.auth.clone());
 
     let entry = McpServerConfigEntry {
         name: (*name).to_string(),
@@ -121,11 +169,14 @@ pub(super) fn handle_edit(rest: &[&str], ctx: &mut CommandContext) -> Result<Com
         command,
         args,
         url,
-        headers: current.headers.clone(),
+        headers,
         oauth,
         env,
         browser_mcp,
         disabled: current.disabled,
+        bearer_token_env_var,
+        env_http_headers,
+        auth,
     };
     if matches!(entry.transport.as_str(), "sse" | "streamable-http") && entry.url.is_none() {
         return Ok(CommandResult::Output(format!(
@@ -133,7 +184,29 @@ pub(super) fn handle_edit(rest: &[&str], ctx: &mut CommandContext) -> Result<Com
             entry.transport
         )));
     }
+    if entry.transport == "stdio" && has_http_only_fields(&entry) {
+        return Ok(CommandResult::Output(
+            "`stdio` transport does not support HTTP headers, bearer env vars, env HTTP headers, auth, or OAuth config."
+                .to_string(),
+        ));
+    }
     persist_upsert(&ctx.cwd, entry).map(CommandResult::Output)
+}
+
+fn has_http_only_fields(entry: &McpServerConfigEntry) -> bool {
+    entry
+        .headers
+        .as_ref()
+        .map(|headers| !headers.is_empty())
+        .unwrap_or(false)
+        || entry.bearer_token_env_var.is_some()
+        || entry
+            .env_http_headers
+            .as_ref()
+            .map(|headers| !headers.is_empty())
+            .unwrap_or(false)
+        || entry.auth.is_some()
+        || entry.oauth.is_some()
 }
 
 fn persist_upsert(cwd: &std::path::Path, entry: McpServerConfigEntry) -> Result<String> {

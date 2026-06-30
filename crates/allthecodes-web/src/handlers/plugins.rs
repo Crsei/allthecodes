@@ -990,6 +990,9 @@ fn plugin_mcp_test_configs(
                 env: Some(env),
                 browser_mcp: None,
                 disabled: None,
+                bearer_token_env_var: None,
+                env_http_headers: None,
+                auth: None,
             }
         })
         .collect()

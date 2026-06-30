@@ -19,7 +19,12 @@ pub(super) struct ParsedFlags {
     pub(super) oauth_client_id: Option<String>,
     pub(super) oauth_callback_port: Option<u16>,
     pub(super) oauth_scopes: Vec<String>,
+    pub(super) oauth_resource: Option<String>,
     pub(super) browser: Option<bool>,
+    pub(super) header: Vec<(String, String)>,
+    pub(super) bearer_token_env_var: Option<String>,
+    pub(super) env_http_header: Vec<(String, String)>,
+    pub(super) auth: Option<String>,
     pub(super) error: Option<String>,
 }
 
@@ -43,6 +48,7 @@ impl ParsedFlags {
             || self.oauth_client_id.is_some()
             || self.oauth_callback_port.is_some()
             || !self.oauth_scopes.is_empty()
+            || self.oauth_resource.is_some()
     }
 }
 
@@ -112,12 +118,72 @@ pub(super) fn parse_flags(rest: &[&str]) -> ParsedFlags {
                     None
                 }
             };
+        } else if let Some(stripped) = raw.strip_prefix("--header=") {
+            if let Some(eq) = stripped.find('=') {
+                let (k, v) = stripped.split_at(eq);
+                if is_sensitive_static_header(k) {
+                    out.error = Some(format!(
+                        "refusing static sensitive HTTP header `{}`; use --bearer-token-env-var or --env-http-header instead",
+                        k
+                    ));
+                } else {
+                    out.header.push((k.to_string(), v[1..].to_string()));
+                }
+            } else {
+                out.error = Some(format!("malformed --header value: {}", stripped));
+            }
+        } else if let Some(stripped) = raw.strip_prefix("--bearer-token-env-var=") {
+            if stripped.trim().is_empty() {
+                out.error = Some("--bearer-token-env-var must not be empty".to_string());
+            } else {
+                out.bearer_token_env_var = Some(stripped.to_string());
+            }
+        } else if let Some(stripped) = raw.strip_prefix("--env-http-header=") {
+            if let Some(eq) = stripped.find('=') {
+                let (k, v) = stripped.split_at(eq);
+                out.env_http_header
+                    .push((k.to_string(), v[1..].to_string()));
+            } else {
+                out.error = Some(format!(
+                    "malformed --env-http-header value: {} (expected Header=EnvVar)",
+                    stripped
+                ));
+            }
+        } else if let Some(stripped) = raw.strip_prefix("--oauth-resource=") {
+            if stripped.trim().is_empty() {
+                out.error = Some("--oauth-resource must not be empty".to_string());
+            } else {
+                out.oauth_resource = Some(stripped.to_string());
+            }
+        } else if let Some(stripped) = raw.strip_prefix("--auth=") {
+            match stripped {
+                "oauth" => out.auth = Some(stripped.to_string()),
+                "chatgpt" => {
+                    out.error =
+                        Some("auth=chatgpt is reserved but not implemented yet".to_string());
+                }
+                other => {
+                    out.error = Some(format!("invalid --auth `{}` (expected oauth)", other));
+                }
+            }
         } else {
             out.error = Some(format!("unknown flag `{}`", raw));
         }
     }
 
     out
+}
+
+fn is_sensitive_static_header(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    lower == "authorization"
+        || lower == "proxy-authorization"
+        || lower == "x-api-key"
+        || lower == "api-key"
+        || lower == "x-auth-token"
+        || lower == "x-access-token"
+        || lower.contains("token")
+        || lower.contains("secret")
 }
 
 pub(super) fn parse_auth_complete_args(rest: &[&str]) -> ParsedAuthCompleteArgs {
@@ -162,6 +228,9 @@ pub(super) fn oauth_from_flags(
     if !flags.oauth_scopes.is_empty() {
         oauth.scopes = Some(flags.oauth_scopes.clone());
     }
+    if let Some(value) = &flags.oauth_resource {
+        oauth.oauth_resource = Some(value.clone());
+    }
     Some(oauth)
 }
 
@@ -183,4 +252,37 @@ pub(super) fn parse_mcpjson_decision_args(rest: &[&str]) -> ParsedMcpjsonDecisio
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_flags_rejects_static_sensitive_header() {
+        let parsed = parse_flags(&["--header=Authorization=Bearer secret"]);
+
+        assert!(parsed.error.unwrap().contains("refusing static sensitive HTTP header"));
+    }
+
+    #[test]
+    fn parse_flags_accepts_env_http_header_for_sensitive_names() {
+        let parsed = parse_flags(&["--env-http-header=Authorization=MCP_TOKEN"]);
+
+        assert!(parsed.error.is_none());
+        assert_eq!(
+            parsed.env_http_header,
+            vec![("Authorization".to_string(), "MCP_TOKEN".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_flags_rejects_reserved_chatgpt_auth() {
+        let parsed = parse_flags(&["--auth=chatgpt"]);
+
+        assert_eq!(
+            parsed.error.as_deref(),
+            Some("auth=chatgpt is reserved but not implemented yet")
+        );
+    }
 }

@@ -171,6 +171,32 @@ pub struct McpServerConfig {
     /// matching the upstream "Disable / Enable" menu option for every scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
+    /// Name of an environment variable whose value is used as the HTTP
+    /// `Authorization: Bearer <value>` header for streamable-http / sse
+    /// transports. Takes precedence over static/env headers and OAuth.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "bearerTokenEnvVar",
+        alias = "bearer_token_env_var"
+    )]
+    pub bearer_token_env_var: Option<String>,
+    /// HTTP headers where the value is sourced from an environment variable.
+    /// Maps header-name → env-var-name. Resolved at connection time and
+    /// merged after static `headers` but before `bearer_token_env_var`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "envHttpHeaders",
+        alias = "env_http_headers"
+    )]
+    pub env_http_headers: Option<HashMap<String, String>>,
+    /// Authentication mode: `"oauth"` (default) uses stored MCP OAuth
+    /// credentials; `"chatgpt"` is reserved for future first-party ChatGPT
+    /// MCP provider support. When absent or `"oauth"`, the system behaves
+    /// as before — OAuth tokens are tried after explicit/bearer headers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
 }
 
 fn default_transport() -> String {
