@@ -26,6 +26,7 @@
 //! {"type":"error","message":"...","recoverable":false}
 //! ```
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -37,16 +38,19 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use allthecodes_engine::lifecycle::QueryEngine;
+use allthecodes_ipc::adapters::extract_tool_result_output;
 use allthecodes_ipc_protocol::{BackendMessage, FrontendMessage};
 use allthecodes_server::{
     ConnectionClosedReason, ConnectionId, ConnectionOrigin, EventSeq, OriginRejection,
     TransportEvent, TransportKind,
 };
+use allthecodes_tool_display::ToolClassifier;
 use allthecodes_types::callbacks::{
     AskUserRequestPayload, PermissionRequestPayload, PermissionResponsePayload,
 };
 use allthecodes_types::message::{ContentBlock, StreamEvent, ToolResultContent};
-use allthecodes_types::sdk::{SdkMessage, SdkStreamEvent};
+use allthecodes_types::sdk::{SdkMessage, SdkStreamEvent, SdkUserReplay};
+use allthecodes_types::tool_operation::{OperationStatus, ToolOperation};
 
 use crate::ipc_streams::{ipc_seq_marker, IpcSessionHub};
 use crate::state::WebState;
@@ -574,9 +578,10 @@ async fn submit_prompt_via_ipc(
     use futures::StreamExt;
 
     let mut draft_id: Option<String> = None;
+    let mut tool_use_cache: ToolUseContextCache = HashMap::new();
 
     while let Some(sdk_msg) = stream.next().await {
-        let backend_msgs = sdk_to_backend_messages(sdk_msg, &mut draft_id);
+        let backend_msgs = sdk_to_backend_messages(sdk_msg, &mut draft_id, &mut tool_use_cache);
         for backend_msg in backend_msgs {
             if hub.runtime().send_backend(backend_msg).await.is_err() {
                 state.set_session_streaming(_session_id, false);
@@ -594,12 +599,19 @@ async fn submit_prompt_via_ipc(
     engine.clear_ask_user_callback();
 }
 
+type ToolUseContextCache = HashMap<String, (String, serde_json::Value)>;
+
 /// Convert an SdkMessage to zero or more BackendMessage events.
-fn sdk_to_backend_messages(msg: SdkMessage, draft_id: &mut Option<String>) -> Vec<BackendMessage> {
+fn sdk_to_backend_messages(
+    msg: SdkMessage,
+    draft_id: &mut Option<String>,
+    tool_use_cache: &mut ToolUseContextCache,
+) -> Vec<BackendMessage> {
     match msg {
-        SdkMessage::StreamEvent(ev) => stream_event_to_backend(ev, draft_id),
+        SdkMessage::StreamEvent(ev) => stream_event_to_backend(ev, draft_id, tool_use_cache),
         SdkMessage::Assistant(assistant) => {
             *draft_id = None;
+            cache_tool_uses_from_blocks(&assistant.message.content, tool_use_cache);
             vec![BackendMessage::AssistantMessage {
                 id: assistant.message.uuid.to_string(),
                 content: serde_json::to_value(&assistant.message.content).unwrap_or_default(),
@@ -621,6 +633,7 @@ fn sdk_to_backend_messages(msg: SdkMessage, draft_id: &mut Option<String>) -> Ve
                 output_tokens: result.usage.total_output_tokens,
                 cost_usd: result.total_cost_usd,
             });
+            tool_use_cache.clear();
             msgs
         }
         SdkMessage::ApiRetry(retry) => {
@@ -656,7 +669,8 @@ fn sdk_to_backend_messages(msg: SdkMessage, draft_id: &mut Option<String>) -> Ve
                 message_id: tombstone.message.uuid.to_string(),
             }]
         }
-        SdkMessage::SystemInit(_) | SdkMessage::UserReplay(_) => vec![],
+        SdkMessage::UserReplay(replay) => user_replay_to_backend_messages(replay, tool_use_cache),
+        SdkMessage::SystemInit(_) => vec![],
     }
 }
 
@@ -664,6 +678,7 @@ fn sdk_to_backend_messages(msg: SdkMessage, draft_id: &mut Option<String>) -> Ve
 fn stream_event_to_backend(
     ev: SdkStreamEvent,
     draft_id: &mut Option<String>,
+    tool_use_cache: &mut ToolUseContextCache,
 ) -> Vec<BackendMessage> {
     match ev.event {
         StreamEvent::ContentBlockStart {
@@ -700,22 +715,44 @@ fn stream_event_to_backend(
                     }]
                 }
                 ContentBlock::ToolUse { id, name, input } => {
-                    vec![BackendMessage::ToolUse { id, name, input }]
+                    let operation =
+                        ToolClassifier::classify(&name, &input, OperationStatus::InProgress);
+                    tool_use_cache.insert(id.clone(), (name.clone(), input.clone()));
+                    vec![BackendMessage::ToolUse {
+                        id,
+                        name,
+                        input,
+                        operation: Some(operation),
+                    }]
                 }
                 ContentBlock::ServerToolUse { id, name, input } => {
-                    vec![BackendMessage::ToolUse { id, name, input }]
+                    let operation =
+                        ToolClassifier::classify(&name, &input, OperationStatus::InProgress);
+                    tool_use_cache.insert(id.clone(), (name.clone(), input.clone()));
+                    vec![BackendMessage::ToolUse {
+                        id,
+                        name,
+                        input,
+                        operation: Some(operation),
+                    }]
                 }
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
                     is_error,
                 } => {
-                    let output = tool_result_content_to_string(&content);
+                    let (output, content_blocks) = tool_result_content_to_output(&content);
+                    let operation =
+                        tool_result_operation(tool_use_cache, &tool_use_id, &output, is_error);
                     vec![BackendMessage::ToolResult {
                         tool_use_id,
                         output,
                         is_error,
-                        content_blocks: None,
+                        content_blocks,
+                        result_summary: operation
+                            .as_ref()
+                            .and_then(|operation| operation.result_summary.clone()),
+                        operation,
                     }]
                 }
                 ContentBlock::ConnectorText {
@@ -788,18 +825,96 @@ fn stream_event_to_backend(
     }
 }
 
-/// Convert ToolResultContent to a plain string.
-fn tool_result_content_to_string(content: &ToolResultContent) -> String {
-    match content {
-        ToolResultContent::Text(t) => t.clone(),
-        ToolResultContent::Blocks(blocks) => blocks
-            .iter()
-            .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.clone()),
-                _ => None,
+fn cache_tool_uses_from_blocks(blocks: &[ContentBlock], tool_use_cache: &mut ToolUseContextCache) {
+    for block in blocks {
+        match block {
+            ContentBlock::ToolUse { id, name, input }
+            | ContentBlock::ServerToolUse { id, name, input } => {
+                tool_use_cache.insert(id.clone(), (name.clone(), input.clone()));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn user_replay_to_backend_messages(
+    replay: SdkUserReplay,
+    tool_use_cache: &mut ToolUseContextCache,
+) -> Vec<BackendMessage> {
+    let Some(blocks) = replay.content_blocks else {
+        return vec![];
+    };
+    let replay_tool_preview = if blocks
+        .iter()
+        .filter(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        .count()
+        == 1
+    {
+        replay.tool_use_result
+    } else {
+        None
+    };
+
+    blocks
+        .into_iter()
+        .filter_map(|block| {
+            let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } = block
+            else {
+                return None;
+            };
+            let (output, content_blocks) = tool_result_content_to_output(&content);
+            let output = replay_tool_preview.clone().unwrap_or(output);
+            let operation = tool_result_operation(tool_use_cache, &tool_use_id, &output, is_error);
+
+            Some(BackendMessage::ToolResult {
+                tool_use_id,
+                output,
+                is_error,
+                content_blocks,
+                result_summary: operation
+                    .as_ref()
+                    .and_then(|operation| operation.result_summary.clone()),
+                operation,
             })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        })
+        .collect()
+}
+
+fn tool_result_operation(
+    tool_use_cache: &mut ToolUseContextCache,
+    tool_use_id: &str,
+    output: &str,
+    is_error: bool,
+) -> Option<ToolOperation> {
+    let (tool_name, tool_input) = tool_use_cache.remove(tool_use_id)?;
+    let status = if is_error {
+        OperationStatus::Error
+    } else {
+        OperationStatus::Resolved
+    };
+    Some(ToolClassifier::classify_with_result(
+        &tool_name,
+        &tool_input,
+        status,
+        Some(output),
+        is_error,
+    ))
+}
+
+/// Convert ToolResultContent to a plain string plus optional structured blocks.
+fn tool_result_content_to_output(
+    content: &ToolResultContent,
+) -> (
+    String,
+    Option<Vec<allthecodes_ipc_protocol::ToolResultContentInfo>>,
+) {
+    match content {
+        ToolResultContent::Text(t) => (t.clone(), None),
+        ToolResultContent::Blocks(blocks) => extract_tool_result_output(blocks),
     }
 }
 
@@ -993,6 +1108,109 @@ mod tests {
         assert!(matches!(
             parsed,
             FrontendMessage::QuestionResponse { id, text, .. } if id == "q-1" && text == "yes"
+        ));
+    }
+
+    #[test]
+    fn stream_tool_events_include_operation_metadata() {
+        let mut draft_id = None;
+        let mut cache = ToolUseContextCache::new();
+
+        let tool_use = stream_event_to_backend(
+            SdkStreamEvent {
+                event: StreamEvent::ContentBlockStart {
+                    index: 0,
+                    content_block: ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "Bash".to_string(),
+                        input: serde_json::json!({"command": "cargo test"}),
+                    },
+                },
+                session_id: "session-1".to_string(),
+                uuid: uuid::Uuid::nil(),
+            },
+            &mut draft_id,
+            &mut cache,
+        );
+
+        assert!(matches!(
+            &tool_use[0],
+            BackendMessage::ToolUse {
+                operation: Some(operation),
+                ..
+            } if operation.kind == allthecodes_types::tool_operation::OperationKind::Execute
+                && operation.subtype == Some(allthecodes_types::tool_operation::OperationSubtype::Test)
+        ));
+
+        let tool_result = stream_event_to_backend(
+            SdkStreamEvent {
+                event: StreamEvent::ContentBlockStart {
+                    index: 1,
+                    content_block: ContentBlock::ToolResult {
+                        tool_use_id: "tool-1".to_string(),
+                        content: ToolResultContent::Text(
+                            r#"{"exit_code":0,"stdout":"ok\n","stderr":""}"#.to_string(),
+                        ),
+                        is_error: false,
+                    },
+                },
+                session_id: "session-1".to_string(),
+                uuid: uuid::Uuid::nil(),
+            },
+            &mut draft_id,
+            &mut cache,
+        );
+
+        assert!(matches!(
+            &tool_result[0],
+            BackendMessage::ToolResult {
+                result_summary: Some(summary),
+                operation: Some(operation),
+                ..
+            } if summary.exit_code == Some(0)
+                && operation.subtype == Some(allthecodes_types::tool_operation::OperationSubtype::Test)
+        ));
+    }
+
+    #[test]
+    fn user_replay_tool_result_uses_cached_tool_context() {
+        let mut cache = ToolUseContextCache::new();
+        cache.insert(
+            "tool-1".to_string(),
+            (
+                "Read".to_string(),
+                serde_json::json!({"file_path": "Cargo.toml"}),
+            ),
+        );
+
+        let messages = user_replay_to_backend_messages(
+            SdkUserReplay {
+                content: "[tool result]".to_string(),
+                session_id: "session-1".to_string(),
+                uuid: uuid::Uuid::nil(),
+                timestamp: 0,
+                is_replay: true,
+                is_synthetic: false,
+                tool_use_result: None,
+                source_tool_assistant_uuid: None,
+                content_blocks: Some(vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: ToolResultContent::Text("line 1\nline 2\n".to_string()),
+                    is_error: false,
+                }]),
+            },
+            &mut cache,
+        );
+
+        assert!(matches!(
+            &messages[0],
+            BackendMessage::ToolResult {
+                result_summary: Some(summary),
+                operation: Some(operation),
+                ..
+            } if operation.kind == allthecodes_types::tool_operation::OperationKind::Read
+                && operation.target.as_deref() == Some("Cargo.toml")
+                && summary.file_lines == Some(2)
         ));
     }
 }

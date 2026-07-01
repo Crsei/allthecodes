@@ -31,6 +31,7 @@ use allthecodes_types::permission_events::{
     HookPermissionDecisionEvent, PermissionDecisionDebugEvent,
 };
 use allthecodes_types::plan_workflow::PlanWorkflowRecord;
+use allthecodes_types::tool_operation::{OperationResultSummary, ToolOperation};
 
 use crate::subsystem_events::{
     AgentSettingsCommand, AgentSettingsEvent, IdeCommand, IdeEvent, LspCommand, LspEvent,
@@ -218,6 +219,8 @@ pub enum BackendMessage {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operation: Option<ToolOperation>,
     },
     /// Result of a tool invocation.
     ToolResult {
@@ -228,6 +231,10 @@ pub enum BackendMessage {
         /// (e.g. images from Computer Use screenshot).
         #[serde(skip_serializing_if = "Option::is_none")]
         content_blocks: Option<Vec<ToolResultContentInfo>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result_summary: Option<OperationResultSummary>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operation: Option<ToolOperation>,
     },
     /// Intermediate progress report from a long-running tool invocation.
     ///
@@ -255,6 +262,8 @@ pub enum BackendMessage {
         /// Configured tool timeout in milliseconds (if any).
         #[serde(skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operation: Option<ToolOperation>,
     },
     /// Ask the UI to show a permission dialog for a tool call.
     PermissionRequest {
@@ -264,6 +273,8 @@ pub enum BackendMessage {
         #[serde(default)]
         input: Value,
         options: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operation: Option<ToolOperation>,
     },
     /// Ask the user a question.  The frontend should display the question
     /// and send back a [`FrontendMessage::QuestionResponse`] with the same `id`.

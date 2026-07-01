@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use allthecodes_protocol::{ApiErrorBody, ClientRequest};
+use allthecodes_types::tool_operation::ToolOperation;
 
 use crate::normalized::{
     legacy_backend_to_payload as legacy_backend_to_normalized_payload, LegacyBackendPayload,
@@ -310,18 +311,30 @@ pub fn legacy_backend_to_payload(
             command,
             input,
             options,
-        } => Ok(IpcPayload::ServerRequest(ServerRequestEnvelope {
-            request_id: tool_use_id.clone(),
-            method: ServerRequestMethod::PermissionDecision,
-            params: json!({
+            operation,
+        } => {
+            let mut params = json!({
                 "tool_use_id": tool_use_id,
                 "tool": tool,
                 "command": command,
                 "input": input,
                 "options": options,
-            }),
-            timeout_ms: None,
-        })),
+            });
+            if let Some(operation) = operation {
+                params["operation"] = serde_json::to_value(operation).map_err(|error| {
+                    IpcPayloadAdapterError::InvalidPayload {
+                        message: error.to_string(),
+                    }
+                })?;
+            }
+
+            Ok(IpcPayload::ServerRequest(ServerRequestEnvelope {
+                request_id: tool_use_id.clone(),
+                method: ServerRequestMethod::PermissionDecision,
+                params,
+                timeout_ms: None,
+            }))
+        }
         BackendMessage::QuestionRequest {
             id,
             text,
@@ -417,6 +430,7 @@ fn server_request_to_legacy_backend(
                 .cloned()
                 .unwrap_or(Value::Object(serde_json::Map::new())),
             options: required_string_vec(&request.params, "options")?,
+            operation: optional_operation(&request.params)?,
         }),
         ServerRequestMethod::AskUserQuestion => Ok(BackendMessage::QuestionRequest {
             id: required_string(&request.params, "id")?,
@@ -503,11 +517,28 @@ fn optional_string_vec(
         .transpose()
 }
 
+fn optional_operation(params: &Value) -> Result<Option<ToolOperation>, IpcPayloadAdapterError> {
+    let Some(value) = params.get("operation") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(value.clone())
+        .map(Some)
+        .map_err(|error| IpcPayloadAdapterError::InvalidPayload {
+            message: format!("invalid operation field: {error}"),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::IpcEnvelope;
     use allthecodes_protocol::ClientResponse;
+    use allthecodes_types::tool_operation::{
+        OperationConfidence, OperationKind, OperationRisk, OperationStatus, ToolOperation,
+    };
 
     fn ready_message() -> BackendMessage {
         BackendMessage::Ready {
@@ -582,12 +613,28 @@ mod tests {
 
     #[test]
     fn legacy_permission_request_maps_to_server_request_and_back() {
+        let operation = ToolOperation {
+            kind: OperationKind::Permission,
+            subtype: None,
+            status: OperationStatus::InProgress,
+            risk: OperationRisk::Low,
+            confidence: OperationConfidence::High,
+            label: "Permission: ls".to_string(),
+            target: None,
+            command_summary: Some("ls".to_string()),
+            result_summary: None,
+            raw_tool_name: "Bash".to_string(),
+            raw_input: json!({ "command": "ls" }),
+            raw_output: None,
+            side_channels: vec![],
+        };
         let legacy = BackendMessage::PermissionRequest {
             tool_use_id: "tool-1".to_string(),
             tool: "Bash".to_string(),
             command: "ls".to_string(),
             input: json!({ "command": "ls" }),
             options: vec!["allow".to_string(), "deny".to_string()],
+            operation: Some(operation.clone()),
         };
         let payload = legacy_backend_to_payload(&legacy).unwrap();
 
@@ -596,18 +643,28 @@ mod tests {
             IpcPayload::ServerRequest(ServerRequestEnvelope {
                 request_id,
                 method: ServerRequestMethod::PermissionDecision,
+                params,
                 ..
             }) if request_id == "tool-1"
+                && params["operation"]["kind"] == "permission"
         ));
 
         let remapped = payload_to_legacy_backend(&payload).unwrap();
         assert!(matches!(
             remapped,
-            BackendMessage::PermissionRequest { tool_use_id, tool, command, options, .. }
+            BackendMessage::PermissionRequest {
+                tool_use_id,
+                tool,
+                command,
+                options,
+                operation: Some(remapped_operation),
+                ..
+            }
                 if tool_use_id == "tool-1"
                     && tool == "Bash"
                     && command == "ls"
                     && options == vec!["allow", "deny"]
+                    && remapped_operation == operation
         ));
     }
 

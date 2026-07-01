@@ -1,0 +1,11 @@
+[package]
+name = "allthecodes-tool-display"
+version = "0.1.0"
+edition = "2021"
+description = "Shared operation classifier and display model for tool calls — used by TUI, Web, and IPC protocol."
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+allthecodes-types = { path = "../allthecodes-types", default-features = false }
+shell-words = { workspace = true }

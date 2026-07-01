@@ -66,6 +66,7 @@ dependencies = [
  "allthecodes-startup",
  "allthecodes-tasks",
  "allthecodes-teams",
+ "allthecodes-tool-display",
  "allthecodes-tools",
  "allthecodes-types",
  "allthecodes-utils",
@@ -99,6 +100,7 @@ dependencies = [
  "lru",
  "lsp-types",
  "notify-rust",
+ "once_cell",
  "opentelemetry",
  "opentelemetry-langfuse",
  "opentelemetry_sdk",
@@ -446,6 +448,7 @@ dependencies = [
  "allthecodes-ipc-protocol",
  "allthecodes-protocol",
  "allthecodes-server",
+ "allthecodes-tool-display",
  "allthecodes-types",
  "anyhow",
  "async-trait",
@@ -847,6 +850,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "allthecodes-tool-display"
+version = "0.1.0"
+dependencies = [
+ "allthecodes-types",
+ "serde",
+ "serde_json",
+ "shell-words",
+]
+
+[[package]]
 name = "allthecodes-tools"
 version = "0.1.0"
 dependencies = [
@@ -950,6 +963,7 @@ dependencies = [
  "allthecodes-services",
  "allthecodes-session",
  "allthecodes-skills",
+ "allthecodes-tool-display",
  "allthecodes-types",
  "allthecodes-utils",
  "allthecodes-web-state",
@@ -973,6 +987,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "urlencoding",
+ "uuid",
 ]
 
 [[package]]

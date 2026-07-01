@@ -9,6 +9,7 @@ anyhow = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
 allthecodes-protocol = { workspace = true }
 allthecodes-server = { workspace = true }
+allthecodes-tool-display = { path = "../allthecodes-tool-display" }
 allthecodes-types = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

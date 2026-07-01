@@ -2,24 +2,56 @@
 //!
 //! Pure mapping layer extracted from `headless.rs`.  Each [`SdkMessage`] variant
 //! is translated into one or more [`BackendMessage`]s and written via the
-//! [`FrontendSink`].  This module has **no** runtime state — it only depends on
-//! the protocol types, the engine (for message/suggestion reads), and the
-//! suggestion service.
+//! [`FrontendSink`].  The only retained state is per-session tool-use context
+//! used to classify later tool-result replay events.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use once_cell::sync::Lazy;
+
 use parking_lot::Mutex;
+
 use tracing::debug;
 
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_ipc::adapters::{extract_tool_result_output, stream_event_to_backend_message};
 use allthecodes_ipc::transport::FrontendSink;
 use allthecodes_services::prompt_suggestion::PromptSuggestionService;
+use allthecodes_tool_display::ToolClassifier;
 use allthecodes_types::message::{ContentBlock, Message, StreamEvent, ToolResultContent};
 use allthecodes_types::sdk::SdkMessage;
+use allthecodes_types::tool_operation::OperationStatus;
 
 use crate::ui::status_line::payload::{build_payload_from_snapshot, StatusLineSnapshot};
 use allthecodes_ipc_protocol::BackendMessage;
+
+/// Cache mapping (session_id, tool_use_id) -> (tool_name, tool_input) so that
+/// ToolResult events arriving later can be classified with the original tool
+/// context without leaking between sessions.
+type ToolUseCacheKey = (String, String);
+
+static TOOL_USE_CACHE: Lazy<Mutex<HashMap<ToolUseCacheKey, (String, serde_json::Value)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn cache_tool_use(session_id: &str, id: &str, name: &str, input: &serde_json::Value) {
+    TOOL_USE_CACHE.lock().insert(
+        (session_id.to_string(), id.to_string()),
+        (name.to_string(), input.clone()),
+    );
+}
+
+fn remove_tool_use(session_id: &str, id: &str) -> Option<(String, serde_json::Value)> {
+    TOOL_USE_CACHE
+        .lock()
+        .remove(&(session_id.to_string(), id.to_string()))
+}
+
+fn clear_session_tool_uses(session_id: &str) {
+    TOOL_USE_CACHE
+        .lock()
+        .retain(|(cached_session_id, _), _| cached_session_id != session_id);
+}
 
 // ---------------------------------------------------------------------------
 // SdkMessage ->BackendMessage mapping
@@ -54,11 +86,17 @@ pub fn handle_sdk_message(
             // First send individual ToolUse messages for each tool call
             // so the frontend can render them immediately.
             for block in &a.message.content {
-                if let ContentBlock::ToolUse { id, name, input } = block {
+                if let ContentBlock::ToolUse { id, name, input }
+                | ContentBlock::ServerToolUse { id, name, input } = block
+                {
+                    let operation =
+                        ToolClassifier::classify(name, input, OperationStatus::InProgress);
+                    cache_tool_use(&a.session_id, id, name, input);
                     let _ = sink.send(&BackendMessage::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
                         input: input.clone(),
+                        operation: Some(operation),
                     });
                 }
             }
@@ -102,11 +140,32 @@ pub fn handle_sdk_message(
                             ToolResultContent::Text(t) => (t.clone(), None),
                             ToolResultContent::Blocks(inner) => extract_tool_result_output(inner),
                         };
+                        let output_display = replay_tool_preview.clone().unwrap_or(output);
+                        let status = if *is_error {
+                            OperationStatus::Error
+                        } else {
+                            OperationStatus::Resolved
+                        };
+                        let operation = remove_tool_use(&replay.session_id, tool_use_id).map(
+                            |(tool_name, tool_input)| {
+                                ToolClassifier::classify_with_result(
+                                    &tool_name,
+                                    &tool_input,
+                                    status,
+                                    Some(&output_display),
+                                    *is_error,
+                                )
+                            },
+                        );
                         let _ = sink.send(&BackendMessage::ToolResult {
                             tool_use_id: tool_use_id.clone(),
-                            output: replay_tool_preview.clone().unwrap_or(output),
+                            output: output_display,
                             is_error: *is_error,
                             content_blocks: content_infos,
+                            result_summary: operation
+                                .as_ref()
+                                .and_then(|operation| operation.result_summary.clone()),
+                            operation,
                         });
                         maybe_send_plan_workflow_from_tool_result(content, sink);
                     }
@@ -160,6 +219,7 @@ pub fn handle_sdk_message(
 
         // ── Result ──────────────────────────────────────────────
         SdkMessage::Result(r) => {
+            clear_session_tool_uses(&r.session_id);
             // Always send StreamEnd to clear UI streaming state
             let _ = sink.send(&BackendMessage::StreamEnd {
                 message_id: message_id.to_string(),
@@ -468,6 +528,30 @@ mod tests {
         let (output, infos) = extract_tool_result_output(&blocks);
         assert_eq!(output, "(no output)");
         assert!(infos.is_none());
+    }
+
+    #[test]
+    fn tool_use_cache_is_scoped_by_session() {
+        cache_tool_use(
+            "session-a",
+            "tool-1",
+            "Read",
+            &serde_json::json!({"file_path": "a.rs"}),
+        );
+        cache_tool_use(
+            "session-b",
+            "tool-1",
+            "Bash",
+            &serde_json::json!({"command": "cargo test"}),
+        );
+
+        let first = remove_tool_use("session-a", "tool-1").expect("session-a tool use");
+        let second = remove_tool_use("session-b", "tool-1").expect("session-b tool use");
+
+        assert_eq!(first.0, "Read");
+        assert_eq!(first.1["file_path"], "a.rs");
+        assert_eq!(second.0, "Bash");
+        assert_eq!(second.1["command"], "cargo test");
     }
 
     #[test]

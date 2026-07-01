@@ -40,12 +40,20 @@ pub fn install_permission_callback<H>(
         Box::pin(async move {
             let tool_use_id = request.tool_use_id.clone();
             let tool_name = request.tool_name.clone();
+            let tool_input = request.tool_input.clone();
+            let operation = allthecodes_tool_display::ToolClassifier::classify_permission(
+                &tool_name,
+                &tool_input,
+                Some(&request.message),
+                allthecodes_types::tool_operation::OperationStatus::InProgress,
+            );
             let _ = sink.send(&BackendMessage::PermissionRequest {
                 tool_use_id: tool_use_id.clone(),
                 tool: tool_name.clone(),
                 command: request.legacy_command(),
-                input: request.tool_input,
+                input: tool_input,
                 options: request.options,
+                operation: Some(operation),
             });
 
             let (tx, rx) = oneshot::channel();
@@ -104,6 +112,7 @@ where
             total_lines,
             total_bytes,
             timeout_ms,
+            operation: None,
         });
     });
     host.set_tool_progress_callback(callback);
@@ -155,6 +164,7 @@ where
 mod tests {
     use super::*;
     use allthecodes_types::callbacks::ToolProgress;
+    use allthecodes_types::tool_operation::OperationKind;
     use parking_lot::Mutex;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -207,20 +217,24 @@ mod tests {
 
         wait_until(|| pending.lock().contains_key("tool-1")).await;
 
-        assert!(matches!(
-            &sink.captured()[0],
-            BackendMessage::PermissionRequest {
-                tool_use_id,
-                tool,
-                command,
-                input,
-                options,
-            } if tool_use_id == "tool-1"
-                && tool == "Bash"
-                && command == "Bash: echo hi"
-                && input == &serde_json::json!({"command":"echo hi"})
-                && options == &vec!["allow".to_string(), "deny".to_string()]
-        ));
+        let captured = sink.captured();
+        let BackendMessage::PermissionRequest {
+            tool_use_id,
+            tool,
+            command,
+            input,
+            options,
+            operation: Some(operation),
+        } = &captured[0]
+        else {
+            panic!("expected permission request with operation metadata");
+        };
+        assert_eq!(tool_use_id, "tool-1");
+        assert_eq!(tool, "Bash");
+        assert_eq!(command, "Bash: echo hi");
+        assert_eq!(input, &serde_json::json!({"command":"echo hi"}));
+        assert_eq!(options, &vec!["allow".to_string(), "deny".to_string()]);
+        assert_eq!(operation.kind, OperationKind::Permission);
 
         let tx = pending.lock().remove("tool-1").expect("pending sender");
         tx.send(PermissionResponsePayload::decision("allow"))
@@ -345,6 +359,7 @@ mod tests {
                 total_lines,
                 total_bytes,
                 timeout_ms,
+                ..
             } if tool_use_id == "tool-1"
                 && tool == "Bash"
                 && output == "line"

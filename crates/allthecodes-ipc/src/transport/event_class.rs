@@ -152,6 +152,7 @@ mod tests {
             total_lines: None,
             total_bytes: None,
             timeout_ms: None,
+            operation: None,
         }
     }
 
@@ -169,6 +170,7 @@ mod tests {
             command: "ls".to_string(),
             input: serde_json::json!({ "command": "ls" }),
             options: vec!["allow".to_string(), "deny".to_string()],
+            operation: None,
         };
         let question = BackendMessage::QuestionRequest {
             id: "question-1".to_string(),

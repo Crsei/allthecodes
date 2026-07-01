@@ -28,6 +28,7 @@ pub mod sdk;
 pub mod state;
 pub mod status_line;
 pub mod teams;
+pub mod tool_operation;
 pub mod transitions;
 
 pub use output::{

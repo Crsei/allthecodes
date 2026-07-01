@@ -31,6 +31,7 @@ allthecodes-protocol = { workspace = true }
 allthecodes-services = { workspace = true }
 allthecodes-session = { workspace = true }
 allthecodes-skills = { workspace = true }
+allthecodes-tool-display = { path = "../allthecodes-tool-display" }
 allthecodes-types = { workspace = true }
 allthecodes-utils = { workspace = true }
 allthecodes-server = { workspace = true }
@@ -53,3 +54,4 @@ serial_test = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true, features = ["util"] }
+uuid = { workspace = true }

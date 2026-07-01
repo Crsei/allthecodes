@@ -11,6 +11,7 @@ use crate::subsystem_types::SubsystemStatusSnapshot;
 use allthecodes_types::permission_events::{
     HookPermissionDecisionEvent, PermissionDecisionDebugEvent,
 };
+use allthecodes_types::tool_operation::{OperationResultSummary, ToolOperation};
 
 /// Backward-compatible alias for the legacy backend wire enum.
 pub type LegacyBackendMessage = BackendMessage;
@@ -68,6 +69,8 @@ pub enum ToolEvent {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operation: Option<ToolOperation>,
     },
     ToolResult {
         tool_use_id: String,
@@ -75,6 +78,10 @@ pub enum ToolEvent {
         is_error: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         content_blocks: Option<Vec<ToolResultContentInfo>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result_summary: Option<OperationResultSummary>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operation: Option<ToolOperation>,
     },
     ToolProgress {
         tool_use_id: String,
@@ -87,6 +94,8 @@ pub enum ToolEvent {
         total_bytes: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operation: Option<ToolOperation>,
     },
 }
 
@@ -100,6 +109,8 @@ pub enum PermissionEvent {
         #[serde(default)]
         input: Value,
         options: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operation: Option<ToolOperation>,
     },
     QuestionRequest {
         id: String,
@@ -300,23 +311,31 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
                 messages: messages.clone(),
             })
         }
-        BackendMessage::ToolUse { id, name, input } => {
-            LegacyBackendPayload::Tool(ToolEvent::ToolUse {
-                id: id.clone(),
-                name: name.clone(),
-                input: input.clone(),
-            })
-        }
+        BackendMessage::ToolUse {
+            id,
+            name,
+            input,
+            operation,
+        } => LegacyBackendPayload::Tool(ToolEvent::ToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input: input.clone(),
+            operation: operation.clone(),
+        }),
         BackendMessage::ToolResult {
             tool_use_id,
             output,
             is_error,
             content_blocks,
+            result_summary,
+            operation,
         } => LegacyBackendPayload::Tool(ToolEvent::ToolResult {
             tool_use_id: tool_use_id.clone(),
             output: output.clone(),
             is_error: *is_error,
             content_blocks: content_blocks.clone(),
+            result_summary: result_summary.clone(),
+            operation: operation.clone(),
         }),
         BackendMessage::ToolProgress {
             tool_use_id,
@@ -326,6 +345,7 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
             total_lines,
             total_bytes,
             timeout_ms,
+            operation,
         } => LegacyBackendPayload::Tool(ToolEvent::ToolProgress {
             tool_use_id: tool_use_id.clone(),
             tool: tool.clone(),
@@ -334,6 +354,7 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
             total_lines: *total_lines,
             total_bytes: *total_bytes,
             timeout_ms: *timeout_ms,
+            operation: operation.clone(),
         }),
         BackendMessage::PermissionRequest {
             tool_use_id,
@@ -341,12 +362,14 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
             command,
             input,
             options,
+            operation,
         } => LegacyBackendPayload::Permission(PermissionEvent::PermissionRequest {
             tool_use_id: tool_use_id.clone(),
             tool: tool.clone(),
             command: command.clone(),
             input: input.clone(),
             options: options.clone(),
+            operation: operation.clone(),
         }),
         BackendMessage::QuestionRequest {
             id,
@@ -459,13 +482,14 @@ mod tests {
             id: "tool-1".to_string(),
             name: "Read".to_string(),
             input: serde_json::json!({"file_path":"Cargo.toml"}),
+            operation: None,
         };
 
         let payload = legacy_backend_to_payload(&msg);
 
         assert!(matches!(
             payload,
-            LegacyBackendPayload::Tool(ToolEvent::ToolUse { id, name, input })
+            LegacyBackendPayload::Tool(ToolEvent::ToolUse { id, name, input, .. })
                 if id == "tool-1" && name == "Read" && input["file_path"] == "Cargo.toml"
         ));
     }
@@ -477,6 +501,8 @@ mod tests {
             output: "done".to_string(),
             is_error: false,
             content_blocks: None,
+            result_summary: None,
+            operation: None,
         };
 
         let payload = legacy_backend_to_payload(&msg);
@@ -500,6 +526,7 @@ mod tests {
             command: "rm -rf target".to_string(),
             input: serde_json::json!({"command":"rm -rf target"}),
             options: vec!["allow".to_string(), "deny".to_string()],
+            operation: None,
         };
 
         let payload = legacy_backend_to_payload(&msg);

@@ -164,6 +164,7 @@ allthecodes-voice = { workspace = true }
 allthecodes-web = { workspace = true }
 allthecodes-worktree = { workspace = true }
 allthecodes-gateway = { workspace = true }
+allthecodes-tool-display = { path = "../allthecodes-tool-display" }
 allthecodes-server = { workspace = true }
 
 # Daemon
@@ -180,6 +181,7 @@ tempfile = { workspace = true }
 
 # 闂佸憡鐟崹杈ㄦ櫠閻ｅ本鍋橀悘鐐靛亾閻庮喖霉閻樺搫鐓愰柣鎿勭節楠?(sandbox/availability.rs 闂佹椿娼块崝宀勬偩閻樿绠抽柕蹇ョ磿閵?bwrap/sandbox-exec)
 which = { workspace = true }
+once_cell = "1.21.4"
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

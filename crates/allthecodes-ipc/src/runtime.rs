@@ -733,6 +733,7 @@ mod tests {
             total_lines: None,
             total_bytes: None,
             timeout_ms: None,
+            operation: None,
         }
     }
 
