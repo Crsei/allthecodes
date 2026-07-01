@@ -12,8 +12,8 @@ use tracing::{info, warn};
 
 use super::client::McpClient;
 use super::{
-    McpResource, McpResourceWithServer, McpRuntimeContext, McpServerConfig, McpToolDef,
-    ReadResourceResult, SharedMcpEventSink,
+    McpResource, McpResourceWithServer, McpRuntimeContext, McpServerConfig, McpSubsystemEvent,
+    McpToolDef, ReadResourceResult, SharedMcpEventSink,
 };
 
 const CONNECT_RETRY_ATTEMPTS: usize = 3;
@@ -48,6 +48,10 @@ impl McpManager {
         for client in self.clients.values_mut() {
             client.set_event_sink(event_sink.clone());
         }
+    }
+
+    pub fn emit_event(&self, event: McpSubsystemEvent) {
+        self.runtime.emit_event(event);
     }
 
     /// Connect to all configured MCP servers.

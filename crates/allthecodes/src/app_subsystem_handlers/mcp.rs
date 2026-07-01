@@ -407,10 +407,12 @@ fn query_mcp_auth(cwd: &Path, server_name: &str) -> Vec<BackendMessage> {
         Ok(status) => vec![BackendMessage::McpEvent {
             event: McpEvent::AuthStatus {
                 server_name: server_name.to_string(),
+                status: status.status.as_str().to_string(),
                 configured: status.configured,
                 authorized: status.authorized,
                 expired: status.expired,
                 can_refresh: status.can_refresh,
+                message: status.message,
                 token_store_path: status.token_store_path.display().to_string(),
             },
         }],
@@ -423,16 +425,31 @@ fn spawn_mcp_oauth_wait_task(
     handle: allthecodes_mcp::oauth_login::McpOAuthLoginHandle,
 ) {
     tokio::spawn(async move {
-        match handle.wait().await {
-            Ok(_) => tracing::info!(
-                server = %server_name,
-                "MCP OAuth callback completed and credentials were stored"
-            ),
-            Err(err) => tracing::warn!(
-                server = %server_name,
-                error = %err,
-                "MCP OAuth callback did not complete"
-            ),
+        let (success, error) = match handle.wait().await {
+            Ok(_) => {
+                tracing::info!(
+                    server = %server_name,
+                    "MCP OAuth callback completed and credentials were stored"
+                );
+                (true, None)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    server = %server_name,
+                    error = %err,
+                    "MCP OAuth callback did not complete"
+                );
+                (false, Some(err.to_string()))
+            }
+        };
+        if let Some(manager) = allthecodes_mcp::runtime::current_manager() {
+            manager.lock().await.emit_event(
+                allthecodes_mcp::McpSubsystemEvent::OAuthLoginCompleted {
+                    server_name,
+                    success,
+                    error,
+                },
+            );
         }
     });
 }

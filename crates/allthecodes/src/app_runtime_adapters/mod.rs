@@ -523,6 +523,17 @@ fn install_root_subsystem_event_sinks(event_tx: tokio::sync::broadcast::Sender<S
                     meta,
                 },
             ),
+            allthecodes_mcp::McpSubsystemEvent::OAuthLoginCompleted {
+                server_name,
+                success,
+                error,
+            } => SubsystemEvent::Mcp(
+                allthecodes_ipc_protocol::subsystem_events::McpEvent::AuthCompleted {
+                    server_name,
+                    success,
+                    error,
+                },
+            ),
         };
         let _ = mcp_tx.send(adapted);
     });

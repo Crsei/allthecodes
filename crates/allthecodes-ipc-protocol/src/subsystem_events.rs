@@ -135,11 +135,21 @@ pub enum McpEvent {
     /// Redacted OAuth credential status for an MCP server.
     AuthStatus {
         server_name: String,
+        status: String,
         configured: bool,
         authorized: bool,
         expired: bool,
         can_refresh: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
         token_store_path: String,
+    },
+    /// Async OAuth login completion notification for loopback callback flows.
+    AuthCompleted {
+        server_name: String,
+        success: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 }
 
@@ -830,6 +840,40 @@ mod tests {
         let value = serde_json::to_value(&event).unwrap();
         assert_eq!(value["kind"], "config_error");
         assert_eq!(value["error"], "invalid url");
+    }
+
+    #[test]
+    fn mcp_event_auth_status_serializes_codex_style_status() {
+        let event = McpEvent::AuthStatus {
+            server_name: "remote".into(),
+            status: "not_logged_in".into(),
+            configured: true,
+            authorized: false,
+            expired: false,
+            can_refresh: false,
+            message: Some("OAuth is configured".into()),
+            token_store_path: "/tmp/allthecodes/mcp-oauth.json".into(),
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["kind"], "auth_status");
+        assert_eq!(value["status"], "not_logged_in");
+        assert_eq!(value["authorized"], false);
+        assert_eq!(value["message"], "OAuth is configured");
+    }
+
+    #[test]
+    fn mcp_event_auth_completed_serializes_without_token() {
+        let event = McpEvent::AuthCompleted {
+            server_name: "remote".into(),
+            success: false,
+            error: Some("OAuth callback timed out".into()),
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["kind"], "auth_completed");
+        assert_eq!(value["server_name"], "remote");
+        assert_eq!(value["success"], false);
+        assert_eq!(value["error"], "OAuth callback timed out");
+        assert!(value.get("access_token").is_none());
     }
 
     #[test]

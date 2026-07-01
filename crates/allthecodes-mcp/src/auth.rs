@@ -38,11 +38,32 @@ pub struct McpOAuthStart {
 /// Redacted credential status for command and IPC surfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpOAuthCredentialStatus {
+    pub status: McpAuthStatusKind,
     pub configured: bool,
     pub authorized: bool,
     pub expired: bool,
     pub can_refresh: bool,
+    pub message: Option<String>,
     pub token_store_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpAuthStatusKind {
+    Unsupported,
+    NotLoggedIn,
+    BearerToken,
+    OAuth,
+}
+
+impl McpAuthStatusKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::NotLoggedIn => "not_logged_in",
+            Self::BearerToken => "bearer_token",
+            Self::OAuth => "oauth",
+        }
+    }
 }
 
 /// Token persisted for one MCP server. `Debug` is intentionally redacted.
@@ -299,16 +320,110 @@ pub fn clear_stored_token(config: &McpServerConfig) -> Result<bool> {
 pub fn credential_status(config: &McpServerConfig) -> Result<McpOAuthCredentialStatus> {
     let token =
         oauth_store_ops::load_token(credentials_store_mode(config), &server_auth_key(config))?;
+    let bearer = bearer_token_env_status(config);
+    let status = if bearer.available {
+        McpAuthStatusKind::BearerToken
+    } else if bearer.configured {
+        McpAuthStatusKind::NotLoggedIn
+    } else if config.oauth.is_none() {
+        McpAuthStatusKind::Unsupported
+    } else if token.is_some() {
+        McpAuthStatusKind::OAuth
+    } else {
+        McpAuthStatusKind::NotLoggedIn
+    };
+    let authorized = matches!(
+        status,
+        McpAuthStatusKind::BearerToken | McpAuthStatusKind::OAuth
+    );
+    let message = auth_status_message(config, status, bearer.message);
     Ok(McpOAuthCredentialStatus {
-        configured: config.oauth.is_some(),
-        authorized: token.is_some(),
+        status,
+        configured: config.oauth.is_some() || bearer.configured,
+        authorized,
         expired: token.as_ref().map(token_is_expired).unwrap_or(false),
         can_refresh: token
             .as_ref()
             .and_then(|t| t.refresh_token.as_ref())
             .is_some(),
+        message,
         token_store_path: token_store_path(),
     })
+}
+
+struct BearerTokenEnvStatus {
+    configured: bool,
+    available: bool,
+    message: Option<String>,
+}
+
+fn bearer_token_env_status(config: &McpServerConfig) -> BearerTokenEnvStatus {
+    let Some(env_var) = config.bearer_token_env_var.as_deref() else {
+        return BearerTokenEnvStatus {
+            configured: false,
+            available: false,
+            message: None,
+        };
+    };
+    let env_var = env_var.trim();
+    if env_var.is_empty() {
+        return BearerTokenEnvStatus {
+            configured: true,
+            available: false,
+            message: Some("bearer token environment variable name is empty".to_string()),
+        };
+    }
+    match std::env::var(env_var) {
+        Ok(value) if !value.trim().is_empty() => BearerTokenEnvStatus {
+            configured: true,
+            available: true,
+            message: None,
+        },
+        Ok(_) => BearerTokenEnvStatus {
+            configured: true,
+            available: false,
+            message: Some(format!(
+                "bearer token environment variable `{env_var}` is empty"
+            )),
+        },
+        Err(std::env::VarError::NotPresent) => BearerTokenEnvStatus {
+            configured: true,
+            available: false,
+            message: Some(format!(
+                "bearer token environment variable `{env_var}` is not set"
+            )),
+        },
+        Err(std::env::VarError::NotUnicode(_)) => BearerTokenEnvStatus {
+            configured: true,
+            available: false,
+            message: Some(format!(
+                "bearer token environment variable `{env_var}` is not valid Unicode"
+            )),
+        },
+    }
+}
+
+fn auth_status_message(
+    config: &McpServerConfig,
+    status: McpAuthStatusKind,
+    bearer_message: Option<String>,
+) -> Option<String> {
+    if bearer_message.is_some() {
+        return bearer_message;
+    }
+    match status {
+        McpAuthStatusKind::Unsupported if matches!(config.auth.as_deref(), Some("chatgpt")) => {
+            Some("auth=chatgpt is reserved but not implemented for MCP servers".to_string())
+        }
+        McpAuthStatusKind::Unsupported => Some(
+            "MCP server has no OAuth configuration or bearer token environment variable"
+                .to_string(),
+        ),
+        McpAuthStatusKind::NotLoggedIn => {
+            Some("OAuth is configured, but no stored OAuth credentials are available".to_string())
+        }
+        McpAuthStatusKind::BearerToken | McpAuthStatusKind::OAuth => None,
+    }
 }
 
 fn credentials_store_mode(config: &McpServerConfig) -> McpCredentialsStoreMode {
@@ -1128,6 +1243,69 @@ mod tests {
         assert!(clear_stored_token(&config).unwrap());
         assert!(read_oauth_store().unwrap().servers.is_empty());
         assert!(read_pending_store().unwrap().pending.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn credential_status_reports_unsupported_without_auth_config() {
+        let temp = TempDir::new().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path().to_str().unwrap());
+        let config = McpServerConfig {
+            name: "plain".to_string(),
+            transport: "streamable-http".to_string(),
+            command: None,
+            args: None,
+            url: Some("https://mcp.example.com/mcp".to_string()),
+            headers: None,
+            oauth: None,
+            env: None,
+            browser_mcp: None,
+            disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
+        };
+
+        let status = credential_status(&config).unwrap();
+
+        assert_eq!(status.status, McpAuthStatusKind::Unsupported);
+        assert!(!status.configured);
+        assert!(!status.authorized);
+        assert!(status.message.as_deref().unwrap().contains("no OAuth"));
+    }
+
+    #[test]
+    #[serial]
+    fn credential_status_reports_not_logged_in_for_oauth_without_token() {
+        let temp = TempDir::new().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path().to_str().unwrap());
+        let config =
+            oauth_config("http://127.0.0.1:9/.well-known/oauth-authorization-server".to_string());
+
+        let status = credential_status(&config).unwrap();
+
+        assert_eq!(status.status, McpAuthStatusKind::NotLoggedIn);
+        assert!(status.configured);
+        assert!(!status.authorized);
+    }
+
+    #[test]
+    #[serial]
+    fn credential_status_reports_bearer_token_env() {
+        let temp = TempDir::new().unwrap();
+        let _home_guard = EnvGuard::set("ALLTHECODES_HOME", temp.path().to_str().unwrap());
+        let _token_guard = EnvGuard::set("MCP_STATUS_TOKEN", "secret-token");
+        let mut config =
+            oauth_config("http://127.0.0.1:9/.well-known/oauth-authorization-server".to_string());
+        config.oauth = None;
+        config.bearer_token_env_var = Some("MCP_STATUS_TOKEN".to_string());
+
+        let status = credential_status(&config).unwrap();
+
+        assert_eq!(status.status, McpAuthStatusKind::BearerToken);
+        assert!(status.configured);
+        assert!(status.authorized);
+        assert!(status.message.is_none());
     }
 
     #[test]

@@ -120,12 +120,18 @@ pub(super) async fn handle_auth(rest: &[&str], ctx: &CommandContext) -> Result<C
             };
             match allthecodes_mcp::auth::credential_status(&config) {
                 Ok(status) => Ok(CommandResult::Output(format!(
-                    "OAuth status for MCP server `{}`: configured={} authorized={} expired={} refreshable={}\nToken store: {}",
+                    "OAuth status for MCP server `{}`: status={} configured={} authorized={} expired={} refreshable={}{}\nToken store: {}",
                     config.name,
+                    status.status.as_str(),
                     status.configured,
                     status.authorized,
                     status.expired,
                     status.can_refresh,
+                    status
+                        .message
+                        .as_deref()
+                        .map(|message| format!(" message={message}"))
+                        .unwrap_or_default(),
                     status.token_store_path.display()
                 ))),
                 Err(err) => Ok(CommandResult::Output(format!(

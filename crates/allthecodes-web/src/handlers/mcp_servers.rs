@@ -1,6 +1,8 @@
 //! MCP server settings REST handlers.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
@@ -16,6 +18,15 @@ use allthecodes_mcp::McpServerConfig;
 
 use crate::state::WebState;
 use allthecodes_protocol::ApiError as ProtocolApiError;
+
+#[derive(Clone)]
+struct McpOAuthFlowSnapshot {
+    state: String,
+    error: Option<String>,
+}
+
+static MCP_OAUTH_FLOW_STATUS: OnceLock<Mutex<HashMap<String, McpOAuthFlowSnapshot>>> =
+    OnceLock::new();
 
 #[derive(Serialize)]
 pub struct McpServersListResponse {
@@ -150,6 +161,248 @@ pub async fn mcp_servers_marketplace_handler() -> impl IntoResponse {
             install: false,
         },
     })
+}
+
+/// POST /api/mcp-servers/{name}/oauth/start
+///
+/// Starts an OAuth authorization flow for the named MCP server using auto
+/// loopback callback discovery. Returns the authorization URL the user must
+/// open in a browser.
+pub async fn mcp_servers_auth_start_handler(
+    State(state): State<WebState>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    let cwd = engine_cwd(&state);
+    let config = match find_mcp_config(&cwd, &name) {
+        Ok(cfg) => cfg,
+        Err(error) => return not_found(error),
+    };
+    match allthecodes_mcp::oauth_login::start_auto_authorization(&config).await {
+        Ok((handle, start)) => {
+            record_oauth_flow_status(config.name.clone(), "pending", None);
+            spawn_web_oauth_wait_task(config.name.clone(), handle);
+            Json(serde_json::json!({
+                "authorization_url": start.authorization_url,
+                "state": start.state,
+                "redirect_uri": start.redirect_uri,
+                "token_store_path": start.token_store_path.to_string_lossy(),
+            }))
+            .into_response()
+        }
+        Err(error) => {
+            let message = format!("Failed to start OAuth authorization: {error}");
+            record_oauth_flow_status(config.name.clone(), "failed", Some(message.clone()));
+            oauth_problem_response(message)
+        }
+    }
+}
+
+/// POST /api/mcp-servers/{name}/oauth/complete
+///
+/// Completes an OAuth authorization manually with the code (and optional
+/// state) returned by the authorization server. Used when the auto loopback
+/// callback could not receive the code.
+///
+/// Request body (JSON):
+/// - `code` (required): The authorization code.
+/// - `state` (optional): The state to validate.
+#[derive(Deserialize)]
+pub struct McpAuthCompleteRequest {
+    pub code: String,
+    pub state: Option<String>,
+}
+
+pub async fn mcp_servers_auth_complete_handler(
+    State(state): State<WebState>,
+    AxumPath(name): AxumPath<String>,
+    Json(req): Json<McpAuthCompleteRequest>,
+) -> Response {
+    let cwd = engine_cwd(&state);
+    let config = match find_mcp_config(&cwd, &name) {
+        Ok(cfg) => cfg,
+        Err(error) => return not_found(error),
+    };
+    match allthecodes_mcp::auth::complete_authorization(&config, &req.code, req.state.as_deref())
+        .await
+    {
+        Ok(token) => {
+            record_oauth_flow_status(config.name.clone(), "completed", None);
+            Json(serde_json::json!({
+                "authorized": true,
+                "token_type": token.token_type,
+                "expires_at": token.expires_at,
+                "scopes": token.scopes,
+            }))
+            .into_response()
+        }
+        Err(error) => {
+            let message = format!("Failed to complete OAuth authorization: {error}");
+            record_oauth_flow_status(config.name.clone(), "failed", Some(message.clone()));
+            oauth_problem_response(message)
+        }
+    }
+}
+
+/// GET /api/mcp-servers/{name}/oauth/status
+///
+/// Returns redacted OAuth credential status for the named MCP server.
+pub async fn mcp_servers_auth_status_handler(
+    State(state): State<WebState>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    let cwd = engine_cwd(&state);
+    let config = match find_mcp_config(&cwd, &name) {
+        Ok(cfg) => cfg,
+        Err(error) => return not_found(error),
+    };
+    match allthecodes_mcp::auth::credential_status(&config) {
+        Ok(status) => {
+            let flow = oauth_flow_json(oauth_flow_status(&config.name));
+            Json(serde_json::json!({
+                "status": status.status.as_str(),
+                "configured": status.configured,
+                "authorized": status.authorized,
+                "expired": status.expired,
+                "can_refresh": status.can_refresh,
+                "message": status.message,
+                "oauth_flow": flow,
+                "token_store_path": status.token_store_path.to_string_lossy(),
+            }))
+            .into_response()
+        }
+        Err(error) => {
+            let body = ProtocolApiError::Internal {
+                message: format!("Failed to query OAuth status: {error}"),
+            }
+            .into_body();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+        }
+    }
+}
+
+/// DELETE /api/mcp-servers/{name}/oauth
+///
+/// Clears stored OAuth credentials for the named MCP server.
+pub async fn mcp_servers_auth_clear_handler(
+    State(state): State<WebState>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    let cwd = engine_cwd(&state);
+    let config = match find_mcp_config(&cwd, &name) {
+        Ok(cfg) => cfg,
+        Err(error) => return not_found(error),
+    };
+    match allthecodes_mcp::auth::clear_stored_token(&config) {
+        Ok(true) => {
+            clear_oauth_flow_status(&config.name);
+            Json(serde_json::json!({"cleared": true})).into_response()
+        }
+        Ok(false) => {
+            clear_oauth_flow_status(&config.name);
+            Json(serde_json::json!({"cleared": false, "message": "No stored OAuth credentials found"})).into_response()
+        }
+        Err(error) => {
+            let body = ProtocolApiError::Internal {
+                message: format!("Failed to clear OAuth credentials: {error}"),
+            }
+            .into_body();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+        }
+    }
+}
+
+fn spawn_web_oauth_wait_task(
+    server_name: String,
+    handle: allthecodes_mcp::oauth_login::McpOAuthLoginHandle,
+) {
+    tokio::spawn(async move {
+        match handle.wait().await {
+            Ok(_) => record_oauth_flow_status(server_name, "completed", None),
+            Err(error) => {
+                record_oauth_flow_status(server_name, "failed", Some(error.to_string()));
+            }
+        }
+    });
+}
+
+fn oauth_flow_store() -> &'static Mutex<HashMap<String, McpOAuthFlowSnapshot>> {
+    MCP_OAUTH_FLOW_STATUS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn record_oauth_flow_status(server_name: String, state: &str, error: Option<String>) {
+    if let Ok(mut status) = oauth_flow_store().lock() {
+        status.insert(
+            server_name,
+            McpOAuthFlowSnapshot {
+                state: state.to_string(),
+                error,
+            },
+        );
+    }
+}
+
+fn clear_oauth_flow_status(server_name: &str) {
+    if let Ok(mut status) = oauth_flow_store().lock() {
+        status.remove(server_name);
+    }
+}
+
+fn oauth_flow_status(server_name: &str) -> Option<McpOAuthFlowSnapshot> {
+    oauth_flow_store()
+        .lock()
+        .ok()
+        .and_then(|status| status.get(server_name).cloned())
+}
+
+fn oauth_flow_json(flow: Option<McpOAuthFlowSnapshot>) -> serde_json::Value {
+    flow.map(|flow| {
+        let error_code = flow.error.as_deref().map(oauth_error_code);
+        serde_json::json!({
+            "state": flow.state,
+            "error": flow.error,
+            "error_code": error_code,
+        })
+    })
+    .unwrap_or(serde_json::Value::Null)
+}
+
+fn oauth_problem_response(message: String) -> Response {
+    let code = oauth_error_code(&message);
+    let status = oauth_error_status(code);
+    let body = ProtocolApiError::BadRequest { code, message }.into_body();
+    (status, Json(body)).into_response()
+}
+
+fn oauth_error_code(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        "oauth_timeout"
+    } else if lower.contains("has no oauth configuration")
+        || lower.contains("no oauth configuration")
+        || lower.contains("unsupported")
+        || lower.contains("no authorization support")
+    {
+        "auth_unsupported"
+    } else {
+        "oauth_error"
+    }
+}
+
+fn oauth_error_status(code: &str) -> StatusCode {
+    match code {
+        "oauth_timeout" => StatusCode::GATEWAY_TIMEOUT,
+        "auth_unsupported" => StatusCode::BAD_REQUEST,
+        _ => StatusCode::BAD_REQUEST,
+    }
+}
+
+fn find_mcp_config(cwd: &Path, name: &str) -> Result<McpServerConfig, String> {
+    discover_mcp_servers_scoped(cwd)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|server| server.config.name == name)
+        .map(|server| server.config)
+        .ok_or_else(|| format!("MCP server '{}' not found", name))
 }
 
 fn upsert_entry(
@@ -291,7 +544,11 @@ fn validate_entry(entry: &McpServerConfigEntry) -> Result<(), String> {
             if entry.command.as_deref().unwrap_or("").trim().is_empty() {
                 return Err("stdio MCP servers require `command`".to_string());
             }
-            if entry.headers.as_ref().map(|h| !h.is_empty()).unwrap_or(false)
+            if entry
+                .headers
+                .as_ref()
+                .map(|h| !h.is_empty())
+                .unwrap_or(false)
                 || entry.bearer_token_env_var.is_some()
                 || entry
                     .env_http_headers

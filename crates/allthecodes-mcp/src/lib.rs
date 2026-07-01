@@ -65,6 +65,11 @@ pub enum McpSubsystemEvent {
         content: String,
         meta: Value,
     },
+    OAuthLoginCompleted {
+        server_name: String,
+        success: bool,
+        error: Option<String>,
+    },
 }
 
 /// Host-provided sink for MCP subsystem events.

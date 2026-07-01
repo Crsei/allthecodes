@@ -301,6 +301,23 @@ crate::api_definitions! {
     McpServersDelete => "DELETE /api/mcp-servers/{name}" {
         response: Value,
     },
+    /// Start MCP OAuth authorization flow with auto loopback callback.
+    McpServersAuthStart => "POST /api/mcp-servers/{name}/oauth/start" {
+        response: Value,
+    },
+    /// Complete MCP OAuth authorization manually with an authorization code.
+    McpServersAuthComplete => "POST /api/mcp-servers/{name}/oauth/complete" {
+        params: Value,
+        response: Value,
+    },
+    /// Query redacted MCP OAuth credential status.
+    McpServersAuthStatus => "GET /api/mcp-servers/{name}/oauth/status" {
+        response: Value,
+    },
+    /// Clear stored MCP OAuth credentials.
+    McpServersAuthClear => "DELETE /api/mcp-servers/{name}/oauth" {
+        response: Value,
+    },
 
     PluginsList => "GET /api/plugins" {
         response: v1::plugins::PluginsListResponse,
@@ -1029,6 +1046,38 @@ mod tests {
             .collect();
 
         assert_eq!(agents_path, vec!["GET", "POST"]);
+    }
+
+    #[test]
+    fn mcp_oauth_endpoints_use_oauth_paths() {
+        let endpoints = [
+            (
+                ApiMethod::McpServersAuthStart,
+                "POST",
+                "/api/mcp-servers/{name}/oauth/start",
+            ),
+            (
+                ApiMethod::McpServersAuthComplete,
+                "POST",
+                "/api/mcp-servers/{name}/oauth/complete",
+            ),
+            (
+                ApiMethod::McpServersAuthStatus,
+                "GET",
+                "/api/mcp-servers/{name}/oauth/status",
+            ),
+            (
+                ApiMethod::McpServersAuthClear,
+                "DELETE",
+                "/api/mcp-servers/{name}/oauth",
+            ),
+        ];
+
+        for (operation, http_method, path) in endpoints {
+            let endpoint = operation.endpoint();
+            assert_eq!(endpoint.http_method, http_method);
+            assert_eq!(endpoint.path, path);
+        }
     }
 
     #[test]

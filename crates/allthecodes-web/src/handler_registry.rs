@@ -290,6 +290,22 @@ pub fn mcp_server_handlers() -> HandlerRegistry {
             ApiMethod::McpServersDelete,
             delete(handlers::mcp_servers_delete_handler),
         )
+        .handle(
+            ApiMethod::McpServersAuthStart,
+            post(handlers::mcp_servers_auth_start_handler),
+        )
+        .handle(
+            ApiMethod::McpServersAuthComplete,
+            post(handlers::mcp_servers_auth_complete_handler),
+        )
+        .handle(
+            ApiMethod::McpServersAuthStatus,
+            get(handlers::mcp_servers_auth_status_handler),
+        )
+        .handle(
+            ApiMethod::McpServersAuthClear,
+            delete(handlers::mcp_servers_auth_clear_handler),
+        )
 }
 
 pub fn plugin_handlers() -> HandlerRegistry {
