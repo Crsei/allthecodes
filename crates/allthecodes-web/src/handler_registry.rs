@@ -655,6 +655,11 @@ pub fn sidebar_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
         .handle(ApiMethod::GitLog, get(handlers::git_log_handler))
         .handle(ApiMethod::GitDiff, get(handlers::git_diff_handler))
+        .handle(ApiMethod::GitMetadata, get(handlers::git_metadata_handler))
+        .handle(
+            ApiMethod::GitWorktrees,
+            get(handlers::git_worktrees_handler),
+        )
         .handle(ApiMethod::Proxy, get(handlers::proxy_handler))
         .handle(ApiMethod::Usage, get(handlers::usage_handler))
 }
@@ -664,6 +669,11 @@ pub fn file_handlers() -> HandlerRegistry {
         .handle(ApiMethod::FilesTree, get(handlers::files_tree_handler))
         .handle(ApiMethod::FilesStat, get(handlers::files_stat_handler))
         .handle(ApiMethod::FilesRead, get(handlers::files_read_handler))
+        .handle(
+            ApiMethod::FilesPreview,
+            get(handlers::files_preview_handler),
+        )
+        .handle(ApiMethod::FilesMedia, get(handlers::files_media_handler))
         .handle(ApiMethod::FilesWrite, put(handlers::files_write_handler))
         .handle(ApiMethod::FilesUpload, post(handlers::files_upload_handler))
         .handle(

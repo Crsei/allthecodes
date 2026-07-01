@@ -5,19 +5,21 @@
 //! Every endpoint performs mandatory canonicalization and rejects paths that
 //! escape the workspace root (path-traversal protection, including symlink attacks).
 
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
 pub use allthecodes_protocol::v1::files::{
-    FileCopyRequest, FileDeleteRequest, FileDownloadQuery, FileEntry, FileMkdirRequest,
-    FileMoveRequest, FileMutationResponse, FileReadQuery, FileReadResponse, FileRenameRequest,
-    FileStat, FileStatQuery, FileTreeQuery, FileTreeResponse, FileUploadItem, FileUploadRequest,
-    FileUploadResponse, FileUploadResult, FileWriteRequest,
+    FileCopyRequest, FileDeleteRequest, FileDownloadQuery, FileEntry, FileMediaQuery,
+    FileMkdirRequest, FileMoveRequest, FileMutationResponse, FilePreviewQuery, FilePreviewResponse,
+    FileReadQuery, FileReadResponse, FileRenameRequest, FileStat, FileStatQuery, FileTreeQuery,
+    FileTreeResponse, FileUploadItem, FileUploadRequest, FileUploadResponse, FileUploadResult,
+    FileWriteRequest,
 };
 use allthecodes_protocol::{ApiError as ProtocolApiError, ApiMethod, SerializationScope};
 use async_trait::async_trait;
+use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use sha2::{Digest, Sha256};
@@ -34,6 +36,12 @@ use crate::state::WebState;
 const DEFAULT_READ_MAX_BYTES: u64 = 1_000_000; // 1 MiB
 /// Absolute maximum bytes a client can request via max_bytes.
 const MAX_READ_MAX_BYTES: u64 = 50_000_000; // 50 MiB
+/// Default maximum bytes returned inline by the preview endpoint.
+const DEFAULT_PREVIEW_MAX_BYTES: u64 = 200_000;
+/// Absolute maximum inline preview size.
+const MAX_PREVIEW_MAX_BYTES: u64 = 2_000_000;
+/// Maximum no-range media response loaded into memory.
+const MAX_MEDIA_FULL_BYTES: u64 = 50_000_000;
 /// Maximum directory entries returned by tree listing.
 const MAX_TREE_CHILDREN: usize = 10_000;
 
@@ -357,6 +365,36 @@ impl Processor for FilesReadProcessor {
 
     async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
         files_read(&self.state, params)
+    }
+}
+
+#[derive(Clone)]
+pub struct FilesPreviewProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for FilesPreviewProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for FilesPreviewProcessor {
+    type Request = FilePreviewQuery;
+    type Response = FilePreviewResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "files.preview"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        files_preview(&self.state, params)
     }
 }
 
@@ -852,6 +890,162 @@ fn files_read(
         lines,
         profile_id,
     })
+}
+
+/// GET /api/files/preview — Return bounded inline preview metadata/content.
+pub async fn files_preview_handler(
+    State(state): State<WebState>,
+    Query(query): Query<FilePreviewQuery>,
+) -> Response {
+    rest_processor_response::<FilesPreviewProcessor>(state, ApiMethod::FilesPreview, query).await
+}
+
+fn files_preview(
+    state: &WebState,
+    query: FilePreviewQuery,
+) -> Result<FilePreviewResponse, ProtocolApiError> {
+    let root = workspace_root(state)?;
+    let path_str = match query.path.as_deref() {
+        Some(p) if !p.is_empty() => p,
+        _ => return Err(bad_request("path query parameter is required")),
+    };
+
+    let resolved = resolve_existing(&root, path_str)?;
+    if resolved.is_dir() {
+        return Err(bad_request("Cannot preview a directory"));
+    }
+
+    let meta = std::fs::metadata(&resolved)
+        .map_err(|err| internal_error(format!("Cannot read metadata: {err}")))?;
+    let hash = file_hash(&resolved)
+        .map_err(|err| internal_error(format!("Cannot compute hash: {err}")))?;
+    let file_size = meta.len();
+    let max_bytes = query
+        .max_bytes
+        .unwrap_or(DEFAULT_PREVIEW_MAX_BYTES)
+        .min(MAX_PREVIEW_MAX_BYTES);
+
+    let mut data = Vec::with_capacity(max_bytes.min(file_size) as usize);
+    let file = std::fs::File::open(&resolved)
+        .map_err(|err| internal_error(format!("Cannot open file: {err}")))?;
+    file.take(max_bytes)
+        .read_to_end(&mut data)
+        .map_err(|err| internal_error(format!("Cannot read file: {err}")))?;
+
+    let mime = guess_content_type(&resolved).to_string();
+    let media_kind = media_kind_for(&mime, &resolved, &data).to_string();
+    let is_binary = is_binary_content(&data);
+    let truncated = (data.len() as u64) < file_size;
+    let modified = meta.modified().ok().map(format_time);
+
+    let (content, encoding, lines, is_binary) = if is_binary {
+        (None, None, None, true)
+    } else {
+        match String::from_utf8(data) {
+            Ok(content) => {
+                let lines = line_count(&content);
+                (Some(content), Some("utf-8".to_string()), Some(lines), false)
+            }
+            Err(_) => (None, None, None, true),
+        }
+    };
+
+    Ok(FilePreviewResponse {
+        path: resolved.to_string_lossy().to_string(),
+        profile_id: query.profile_id,
+        mime,
+        media_kind,
+        language: language_for_path(&resolved).map(str::to_string),
+        hash,
+        size: file_size,
+        truncated,
+        is_binary,
+        content,
+        encoding,
+        lines,
+        modified,
+    })
+}
+
+/// GET /api/files/media — Return bounded media bytes with Range support.
+pub async fn files_media_handler(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<FileMediaQuery>,
+) -> Response {
+    let root = match workspace_root(&state) {
+        Ok(root) => root,
+        Err(error) => return protocol_error_response(error),
+    };
+    let path_str = match query.path.as_deref() {
+        Some(p) if !p.is_empty() => p,
+        _ => return protocol_error_response(bad_request("path query parameter is required")),
+    };
+    let resolved = match resolve_existing(&root, path_str) {
+        Ok(path) => path,
+        Err(error) => return protocol_error_response(error),
+    };
+    if resolved.is_dir() {
+        return protocol_error_response(bad_request("Cannot read a directory as media"));
+    }
+
+    let meta = match std::fs::metadata(&resolved) {
+        Ok(meta) => meta,
+        Err(err) => {
+            return protocol_error_response(internal_error(format!("Cannot read metadata: {err}")));
+        }
+    };
+    let file_size = meta.len();
+    let range = match parse_range_header(headers.get(header::RANGE), file_size) {
+        Ok(range) => range,
+        Err(()) => return range_not_satisfiable_response(file_size),
+    };
+
+    if range.is_none() && file_size > MAX_MEDIA_FULL_BYTES {
+        return protocol_error_response(ProtocolApiError::BadRequest {
+            code: "media_range_required",
+            message: "Large media files require a Range header".to_string(),
+        });
+    }
+
+    let (start, end, status) = match range {
+        Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
+        None => (0, file_size.saturating_sub(1), StatusCode::OK),
+    };
+    let len = if file_size == 0 { 0 } else { end - start + 1 };
+    let mut data = vec![0; len as usize];
+    if len > 0 {
+        let mut file = match std::fs::File::open(&resolved) {
+            Ok(file) => file,
+            Err(err) => {
+                return protocol_error_response(internal_error(format!("Cannot open file: {err}")));
+            }
+        };
+        if let Err(err) = file.seek(SeekFrom::Start(start)) {
+            return protocol_error_response(internal_error(format!("Cannot seek file: {err}")));
+        }
+        if let Err(err) = file.read_exact(&mut data) {
+            return protocol_error_response(internal_error(format!("Cannot read file: {err}")));
+        }
+    }
+
+    let mut response = Response::new(Body::from(data));
+    *response.status_mut() = status;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header_value_or_octet_stream(guess_content_type(&resolved)),
+    );
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Ok(value) = HeaderValue::from_str(&len.to_string()) {
+        headers.insert(header::CONTENT_LENGTH, value);
+    }
+    if status == StatusCode::PARTIAL_CONTENT {
+        if let Ok(value) = HeaderValue::from_str(&format!("bytes {start}-{end}/{file_size}")) {
+            headers.insert(header::CONTENT_RANGE, value);
+        }
+    }
+    response
 }
 
 /// PUT /api/files/write — Write content to a file with optional hash/revision
@@ -1380,8 +1574,14 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
 }
 
 fn guess_content_type(path: &Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
-        "txt" | "md" | "rst" | "adoc" => "text/plain; charset=utf-8",
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "txt" | "rst" | "adoc" => "text/plain; charset=utf-8",
+        "md" | "markdown" => "text/markdown; charset=utf-8",
         "html" | "htm" | "xhtml" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8",
@@ -1408,8 +1608,118 @@ fn guess_content_type(path: &Path) -> &'static str {
         "go" => "text/x-go; charset=utf-8",
         "java" => "text/x-java; charset=utf-8",
         "ts" | "tsx" => "application/typescript; charset=utf-8",
-        _ => "application/octet-stream",
+        _ => mime_guess::from_path(path)
+            .first_raw()
+            .unwrap_or("application/octet-stream"),
     }
+}
+
+fn media_kind_for(mime: &str, path: &Path, data: &[u8]) -> &'static str {
+    let mime = mime.split(';').next().unwrap_or(mime).trim();
+    if mime.starts_with("image/") {
+        return "image";
+    }
+    if mime.starts_with("audio/") {
+        return "audio";
+    }
+    if mime.starts_with("video/") {
+        return "video";
+    }
+    if mime == "application/pdf" {
+        return "pdf";
+    }
+    if mime == "application/zip" || mime == "application/gzip" {
+        return "archive";
+    }
+    if mime.starts_with("text/")
+        || matches!(
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or(""),
+            "json" | "js" | "mjs" | "cjs" | "ts" | "tsx" | "yaml" | "yml" | "xml"
+        )
+        || !is_binary_content(data)
+    {
+        return "text";
+    }
+    "binary"
+}
+
+fn language_for_path(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|extension| extension.to_str())? {
+        "adoc" => Some("asciidoc"),
+        "bash" | "fish" | "sh" | "zsh" => Some("shell"),
+        "c" | "h" => Some("c"),
+        "cc" | "cpp" | "cxx" | "hpp" | "hxx" => Some("cpp"),
+        "css" => Some("css"),
+        "go" => Some("go"),
+        "html" | "htm" | "xhtml" => Some("html"),
+        "java" => Some("java"),
+        "js" | "mjs" | "cjs" => Some("javascript"),
+        "json" => Some("json"),
+        "md" | "markdown" => Some("markdown"),
+        "py" => Some("python"),
+        "rs" => Some("rust"),
+        "toml" => Some("toml"),
+        "ts" => Some("typescript"),
+        "tsx" => Some("tsx"),
+        "xml" => Some("xml"),
+        "yaml" | "yml" => Some("yaml"),
+        _ => None,
+    }
+}
+
+fn parse_range_header(
+    value: Option<&HeaderValue>,
+    file_size: u64,
+) -> Result<Option<(u64, u64)>, ()> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let raw = value.to_str().map_err(|_| ())?.trim();
+    let Some(spec) = raw.strip_prefix("bytes=") else {
+        return Err(());
+    };
+    if spec.contains(',') || file_size == 0 {
+        return Err(());
+    }
+    let (start_raw, end_raw) = spec.split_once('-').ok_or(())?;
+    if start_raw.is_empty() {
+        let suffix_len = end_raw.parse::<u64>().map_err(|_| ())?;
+        if suffix_len == 0 {
+            return Err(());
+        }
+        let start = file_size.saturating_sub(suffix_len);
+        return Ok(Some((start, file_size - 1)));
+    }
+
+    let start = start_raw.parse::<u64>().map_err(|_| ())?;
+    if start >= file_size {
+        return Err(());
+    }
+    let end = if end_raw.is_empty() {
+        file_size - 1
+    } else {
+        end_raw.parse::<u64>().map_err(|_| ())?.min(file_size - 1)
+    };
+    if start > end {
+        return Err(());
+    }
+    Ok(Some((start, end)))
+}
+
+fn range_not_satisfiable_response(file_size: u64) -> Response {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+    if let Ok(value) = HeaderValue::from_str(&format!("bytes */{file_size}")) {
+        response.headers_mut().insert(header::CONTENT_RANGE, value);
+    }
+    response
+}
+
+fn header_value_or_octet_stream(value: &str) -> HeaderValue {
+    HeaderValue::from_str(value)
+        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"))
 }
 
 #[cfg(test)]

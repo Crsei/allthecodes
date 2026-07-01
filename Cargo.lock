@@ -975,6 +975,8 @@ dependencies = [
  "base64",
  "chrono",
  "futures",
+ "git2",
+ "mime_guess",
  "parking_lot",
  "portable-pty",
  "reqwest",

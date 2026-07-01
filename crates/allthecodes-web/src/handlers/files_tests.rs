@@ -328,6 +328,82 @@ async fn files_read_with_profile_id_echoes_it() {
 
 #[tokio::test]
 #[serial]
+async fn files_preview_returns_text_metadata() {
+    let project = tempfile::tempdir().expect("project");
+    std::fs::write(project.path().join("readme.md"), b"# Hello\n\nWorld!").expect("seed file");
+    let state = make_web_state_with_cwd(project.path());
+
+    let response = files_preview_handler(
+        State(state),
+        Query(FilePreviewQuery {
+            path: Some("readme.md".to_string()),
+            profile_id: Some("prof-preview".to_string()),
+            max_bytes: Some(7),
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(
+        body["path"],
+        json!(project.path().join("readme.md").to_string_lossy())
+    );
+    assert_eq!(body["profile_id"], json!("prof-preview"));
+    assert_eq!(body["mime"], json!("text/markdown; charset=utf-8"));
+    assert_eq!(body["media_kind"], json!("text"));
+    assert_eq!(body["language"], json!("markdown"));
+    assert_eq!(body["content"], json!("# Hello"));
+    assert_eq!(body["encoding"], json!("utf-8"));
+    assert_eq!(body["lines"], json!(1));
+    assert_eq!(body["truncated"], json!(true));
+    assert_eq!(body["is_binary"], json!(false));
+    assert!(body["hash"].as_str().unwrap().len() >= 10);
+    assert!(body["modified"].as_str().is_some());
+}
+
+#[tokio::test]
+#[serial]
+async fn files_media_serves_byte_range() {
+    let project = tempfile::tempdir().expect("project");
+    std::fs::write(project.path().join("media.txt"), b"hello world").expect("seed file");
+    let state = make_web_state_with_cwd(project.path());
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        header::RANGE,
+        axum::http::HeaderValue::from_static("bytes=0-4"),
+    );
+
+    let response = files_media_handler(
+        State(state),
+        headers,
+        Query(FileMediaQuery {
+            path: Some("media.txt".to_string()),
+            profile_id: None,
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers().get(header::CONTENT_RANGE).unwrap(),
+        "bytes 0-4/11"
+    );
+    assert_eq!(
+        response.headers().get(header::ACCEPT_RANGES).unwrap(),
+        "bytes"
+    );
+    assert_eq!(response.headers().get(header::CONTENT_LENGTH).unwrap(), "5");
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    assert_eq!(&body[..], b"hello");
+}
+
+#[tokio::test]
+#[serial]
 async fn files_mkdir_creates_directory() {
     let project = tempfile::tempdir().expect("project");
     let state = make_web_state_with_cwd(project.path());

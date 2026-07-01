@@ -685,6 +685,14 @@ crate::api_definitions! {
         params: v1::git::GitDiffParams,
         response: v1::git::GitDiffResponse,
     },
+    GitMetadata => "GET /api/git/metadata" {
+        params: v1::git::GitMetadataParams,
+        response: v1::git::GitMetadataResponse,
+    },
+    GitWorktrees => "GET /api/git/worktrees" {
+        params: v1::git::GitWorktreesParams,
+        response: v1::git::GitWorktreesResponse,
+    },
     Proxy => "GET /api/proxy" {
         response: Value,
     },
@@ -703,6 +711,14 @@ crate::api_definitions! {
     FilesRead => "GET /api/files/read" {
         params: v1::files::FileReadQuery,
         response: v1::files::FileReadResponse,
+    },
+    FilesPreview => "GET /api/files/preview" {
+        params: v1::files::FilePreviewQuery,
+        response: v1::files::FilePreviewResponse,
+    },
+    FilesMedia => "GET /api/files/media" {
+        params: v1::files::FileMediaQuery,
+        response: EmptyResponse,
     },
     FilesWrite => "PUT /api/files/write" {
         params: v1::files::FileWriteRequest,

@@ -72,7 +72,12 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps.insert("jobs".into(), true);
     caps.insert("group_chat".into(), true);
     caps.insert("files".into(), true);
+    caps.insert("files.preview".into(), true);
+    caps.insert("files.media".into(), true);
     caps.insert("logs".into(), true);
+    caps.insert("logs.diagnostics".into(), true);
+    caps.insert("git.metadata".into(), true);
+    caps.insert("git.worktrees".into(), true);
     caps.insert("backend_services".into(), true);
     caps
 }
@@ -166,6 +171,12 @@ mod tests {
         );
         assert_eq!(
             features.get("git").map(|feature| feature.available),
+            Some(true)
+        );
+        assert_eq!(
+            features
+                .get("files.preview")
+                .map(|feature| feature.available),
             Some(true)
         );
         assert!(!features.contains_key("allthecodes:update-check"));

@@ -283,6 +283,7 @@ pub(crate) const DISPATCHED_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::FilesTree,
     ApiMethod::FilesStat,
     ApiMethod::FilesRead,
+    ApiMethod::FilesPreview,
     ApiMethod::FilesWrite,
     ApiMethod::FilesUpload,
     ApiMethod::FilesMkdir,
@@ -323,6 +324,7 @@ const DEDICATED_TRANSPORT_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::TerminalSessionWs,
     ApiMethod::TuiWs,
     ApiMethod::FilesDownload,
+    ApiMethod::FilesMedia,
 ];
 
 pub(crate) fn dispatcher_migration_state(operation: ApiMethod) -> ApiDispatcherMigrationState {
@@ -585,6 +587,16 @@ pub async fn dispatch(
             )
             .await?;
             Ok(ClientResponse::FilesRead(response))
+        }
+        ClientRequest::FilesPreview(params) => {
+            let response = dispatch_tracked_processor::<handlers::FilesPreviewProcessor>(
+                state,
+                context,
+                ApiMethod::FilesPreview,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::FilesPreview(response))
         }
         ClientRequest::FilesWrite(params) => {
             let response = dispatch_tracked_processor::<handlers::FilesWriteProcessor>(
@@ -1165,7 +1177,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 46);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 47);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(
@@ -1188,6 +1200,7 @@ mod tests {
             ApiMethod::TerminalSessionWs,
             ApiMethod::TuiWs,
             ApiMethod::FilesDownload,
+            ApiMethod::FilesMedia,
         ] {
             assert_eq!(
                 dispatcher_migration_state(operation),
