@@ -51,4 +51,13 @@ pub struct McpOAuthConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub oauth_resource: Option<String>,
+    /// Credential store backend selection.
+    ///
+    /// * `"auto"` (default): try system keyring first, fall back to file store.
+    /// * `"file"`: use JSON file at `{data_root}/mcp-oauth.json` only.
+    /// * `"keyring"`: use system keyring only.
+    ///
+    /// When `None` or absent, behaves as `"auto"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_store: Option<String>,
 }

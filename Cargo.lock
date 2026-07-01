@@ -530,6 +530,7 @@ dependencies = [
  "bytes",
  "chrono",
  "futures",
+ "keyring",
  "parking_lot",
  "rand 0.8.5",
  "reqwest",

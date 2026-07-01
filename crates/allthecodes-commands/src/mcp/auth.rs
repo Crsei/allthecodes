@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use super::flags::parse_auth_complete_args;
 use super::{CommandContext, CommandResult};
+use allthecodes_mcp::oauth_login::McpOAuthLoginHandle;
 use allthecodes_mcp::McpServerConfig;
 
 pub(super) async fn handle_auth(rest: &[&str], ctx: &CommandContext) -> Result<CommandResult> {
@@ -16,12 +17,16 @@ pub(super) async fn handle_auth(rest: &[&str], ctx: &CommandContext) -> Result<C
                 Ok(config) => config,
                 Err(message) => return Ok(CommandResult::Output(message)),
             };
-            match allthecodes_mcp::auth::start_authorization(&config).await {
-                Ok(start) => Ok(CommandResult::Output(format!(
+            match allthecodes_mcp::oauth_login::start_auto_authorization(&config).await {
+                Ok((handle, start)) => {
+                    spawn_oauth_wait_task(config.name.clone(), handle);
+                    Ok(CommandResult::Output(format!(
                     "OAuth authorization started for MCP server `{}`.\n\
                      Open this URL in a browser:\n{}\n\n\
-                     Redirect URI: {}\n\
-                     Then run: /mcp auth complete {} --code=<code> --state={}\n\
+                     Redirect URI: {}\n\n\
+                     allthecodes is waiting for the browser callback and will store credentials automatically.\n\
+                     If the callback cannot be received but the provider shows a code, run:\n\
+                     /mcp auth complete {} --code=<code> --state={}\n\
                      Token store: {}",
                     config.name,
                     start.authorization_url,
@@ -29,7 +34,8 @@ pub(super) async fn handle_auth(rest: &[&str], ctx: &CommandContext) -> Result<C
                     config.name,
                     start.state,
                     start.token_store_path.display()
-                ))),
+                    )))
+                }
                 Err(err) => Ok(CommandResult::Output(format!(
                     "Failed to start OAuth for MCP server `{}`: {}",
                     config.name, err
@@ -141,4 +147,20 @@ fn find_mcp_config(cwd: &std::path::Path, server_name: &str) -> Result<McpServer
         .into_iter()
         .find(|cfg| cfg.name == server_name)
         .ok_or_else(|| format!("No MCP server named `{}` found.", server_name))
+}
+
+fn spawn_oauth_wait_task(server_name: String, handle: McpOAuthLoginHandle) {
+    tokio::spawn(async move {
+        match handle.wait().await {
+            Ok(_) => tracing::info!(
+                server = %server_name,
+                "MCP OAuth callback completed and credentials were stored"
+            ),
+            Err(err) => tracing::warn!(
+                server = %server_name,
+                error = %err,
+                "MCP OAuth callback did not complete"
+            ),
+        }
+    });
 }

@@ -23,6 +23,7 @@ url = { workspace = true }
 
 allthecodes-config = { workspace = true }
 allthecodes-types = { path = "../allthecodes-types", default-features = false }
+keyring = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

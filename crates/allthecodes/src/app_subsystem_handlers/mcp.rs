@@ -334,25 +334,28 @@ async fn start_mcp_auth(cwd: &Path, server_name: &str) -> Vec<BackendMessage> {
         Ok(config) => config,
         Err(message) => return vec![mcp_config_error_message(server_name, message)],
     };
-    match allthecodes_mcp::auth::start_authorization(&config).await {
-        Ok(start) => vec![
-            BackendMessage::McpEvent {
-                event: McpEvent::AuthStarted {
-                    server_name: server_name.to_string(),
-                    authorization_url: start.authorization_url,
-                    state: start.state,
-                    redirect_uri: start.redirect_uri,
-                    token_store_path: start.token_store_path.display().to_string(),
+    match allthecodes_mcp::oauth_login::start_auto_authorization(&config).await {
+        Ok((handle, start)) => {
+            spawn_mcp_oauth_wait_task(config.name.clone(), handle);
+            vec![
+                BackendMessage::McpEvent {
+                    event: McpEvent::AuthStarted {
+                        server_name: server_name.to_string(),
+                        authorization_url: start.authorization_url,
+                        state: start.state,
+                        redirect_uri: start.redirect_uri,
+                        token_store_path: start.token_store_path.display().to_string(),
+                    },
                 },
-            },
-            BackendMessage::SystemInfo {
-                text: format!(
-                    "OAuth authorization started for MCP server `{}`. Complete it with the returned code.",
-                    server_name
-                ),
-                level: "info".to_string(),
-            },
-        ],
+                BackendMessage::SystemInfo {
+                    text: format!(
+                        "OAuth authorization started for MCP server `{}`. allthecodes is waiting for the browser callback; use CompleteAuth only if the provider returns a manual code.",
+                        server_name
+                    ),
+                    level: "info".to_string(),
+                },
+            ]
+        }
         Err(err) => vec![mcp_config_error_message(server_name, err.to_string())],
     }
 }
@@ -413,6 +416,25 @@ fn query_mcp_auth(cwd: &Path, server_name: &str) -> Vec<BackendMessage> {
         }],
         Err(err) => vec![mcp_config_error_message(server_name, err.to_string())],
     }
+}
+
+fn spawn_mcp_oauth_wait_task(
+    server_name: String,
+    handle: allthecodes_mcp::oauth_login::McpOAuthLoginHandle,
+) {
+    tokio::spawn(async move {
+        match handle.wait().await {
+            Ok(_) => tracing::info!(
+                server = %server_name,
+                "MCP OAuth callback completed and credentials were stored"
+            ),
+            Err(err) => tracing::warn!(
+                server = %server_name,
+                error = %err,
+                "MCP OAuth callback did not complete"
+            ),
+        }
+    });
 }
 
 pub(crate) fn mcp_config_error_message(server_name: &str, error: String) -> BackendMessage {

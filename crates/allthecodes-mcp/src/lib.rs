@@ -13,6 +13,8 @@ pub mod channel;
 pub mod client;
 pub mod discovery;
 pub mod manager;
+pub mod oauth_login;
+pub mod oauth_store;
 pub mod runtime;
 pub mod transport;
 

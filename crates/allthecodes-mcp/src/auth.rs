@@ -20,6 +20,7 @@ use tracing::warn;
 use url::Url;
 
 use super::{McpOAuthConfig, McpServerConfig};
+use crate::oauth_store::{store_ops as oauth_store_ops, McpCredentialsStoreMode};
 
 const DEFAULT_CLIENT_ID: &str = "allthecodes";
 const DEFAULT_CALLBACK_PORT: u16 = 1455;
@@ -80,50 +81,50 @@ impl fmt::Debug for StoredMcpOAuthToken {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-struct OAuthStore {
+pub(crate) struct OAuthStore {
     #[serde(default)]
-    servers: BTreeMap<String, StoredMcpOAuthToken>,
+    pub(crate) servers: BTreeMap<String, StoredMcpOAuthToken>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-struct OAuthPendingStore {
+pub(crate) struct OAuthPendingStore {
     #[serde(default)]
-    pending: BTreeMap<String, PendingMcpOAuthAuthorization>,
+    pub(crate) pending: BTreeMap<String, PendingMcpOAuthAuthorization>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingMcpOAuthAuthorization {
-    server_name: String,
-    server_url: Option<String>,
-    state: String,
-    code_verifier: String,
-    redirect_uri: String,
-    client_id: String,
-    scopes: Vec<String>,
-    authorization_endpoint: String,
-    token_endpoint: String,
-    authorization_server: String,
-    created_at: i64,
+pub(crate) struct PendingMcpOAuthAuthorization {
+    pub(crate) server_name: String,
+    pub(crate) server_url: Option<String>,
+    pub(crate) state: String,
+    pub(crate) code_verifier: String,
+    pub(crate) redirect_uri: String,
+    pub(crate) client_id: String,
+    pub(crate) scopes: Vec<String>,
+    pub(crate) authorization_endpoint: String,
+    pub(crate) token_endpoint: String,
+    pub(crate) authorization_server: String,
+    pub(crate) created_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct ProtectedResourceMetadata {
+pub(crate) struct ProtectedResourceMetadata {
     #[serde(default)]
     authorization_servers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct AuthorizationServerMetadata {
+pub(crate) struct AuthorizationServerMetadata {
     #[serde(default)]
-    issuer: Option<String>,
-    authorization_endpoint: String,
-    token_endpoint: String,
+    pub(crate) issuer: Option<String>,
+    pub(crate) authorization_endpoint: String,
+    pub(crate) token_endpoint: String,
     #[serde(default)]
-    scopes_supported: Vec<String>,
+    pub(crate) scopes_supported: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct OAuthTokenResponse {
+pub(crate) struct OAuthTokenResponse {
     access_token: String,
     #[serde(default)]
     refresh_token: Option<String>,
@@ -163,8 +164,8 @@ pub async fn authorization_header(config: &McpServerConfig) -> Result<Option<Str
     }
 
     let key = server_auth_key(config);
-    let mut store = read_oauth_store()?;
-    let Some(mut token) = store.servers.get(&key).cloned() else {
+    let store_mode = credentials_store_mode(config);
+    let Some(mut token) = oauth_store_ops::load_token(store_mode, &key)? else {
         return Ok(None);
     };
 
@@ -172,8 +173,7 @@ pub async fn authorization_header(config: &McpServerConfig) -> Result<Option<Str
         match refresh_stored_token(config, &token).await {
             Ok(refreshed) => {
                 token = refreshed;
-                store.servers.insert(key, token.clone());
-                write_oauth_store(&store)?;
+                oauth_store_ops::save_token(store_mode, &key, &token)?;
             }
             Err(err) => {
                 warn!(
@@ -279,18 +279,14 @@ pub async fn complete_authorization(
 
     let response = exchange_code_for_token(config, &pending, code).await?;
     let token = token_from_response(&pending, response)?;
-    let mut store = read_oauth_store()?;
-    store.servers.insert(key, token.clone());
-    write_oauth_store(&store)?;
+    oauth_store_ops::save_token(credentials_store_mode(config), &key, &token)?;
     Ok(token)
 }
 
 /// Remove stored MCP OAuth credentials for one server.
 pub fn clear_stored_token(config: &McpServerConfig) -> Result<bool> {
     let key = server_auth_key(config);
-    let mut store = read_oauth_store()?;
-    let removed = store.servers.remove(&key).is_some();
-    write_oauth_store(&store)?;
+    let removed = oauth_store_ops::delete_token(credentials_store_mode(config), &key)?;
 
     let mut pending = read_pending_store()?;
     pending.pending.remove(&key);
@@ -301,8 +297,8 @@ pub fn clear_stored_token(config: &McpServerConfig) -> Result<bool> {
 
 /// Return a redacted, non-refreshing credential status snapshot.
 pub fn credential_status(config: &McpServerConfig) -> Result<McpOAuthCredentialStatus> {
-    let store = read_oauth_store()?;
-    let token = store.servers.get(&server_auth_key(config)).cloned();
+    let token =
+        oauth_store_ops::load_token(credentials_store_mode(config), &server_auth_key(config))?;
     Ok(McpOAuthCredentialStatus {
         configured: config.oauth.is_some(),
         authorized: token.is_some(),
@@ -315,7 +311,16 @@ pub fn credential_status(config: &McpServerConfig) -> Result<McpOAuthCredentialS
     })
 }
 
-fn require_oauth_config(config: &McpServerConfig) -> Result<&McpOAuthConfig> {
+fn credentials_store_mode(config: &McpServerConfig) -> McpCredentialsStoreMode {
+    McpCredentialsStoreMode::from_config(
+        config
+            .oauth
+            .as_ref()
+            .and_then(|oauth| oauth.credentials_store.as_deref()),
+    )
+}
+
+pub(crate) fn require_oauth_config(config: &McpServerConfig) -> Result<&McpOAuthConfig> {
     config.oauth.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
             "MCP server `{}` has no OAuth configuration; add oauth metadata to its MCP config",
@@ -324,7 +329,7 @@ fn require_oauth_config(config: &McpServerConfig) -> Result<&McpOAuthConfig> {
     })
 }
 
-fn validate_oauth_config(oauth: &McpOAuthConfig) -> Result<()> {
+pub(crate) fn validate_oauth_config(oauth: &McpOAuthConfig) -> Result<()> {
     if let Some(url) = oauth.auth_server_metadata_url.as_deref() {
         let parsed = Url::parse(url).context("invalid OAuth authorization-server metadata URL")?;
         validate_oauth_endpoint_url(&parsed, "OAuth authorization-server metadata URL")?;
@@ -344,7 +349,7 @@ fn validate_oauth_config(oauth: &McpOAuthConfig) -> Result<()> {
     Ok(())
 }
 
-async fn discover_authorization_server_metadata(
+pub(crate) async fn discover_authorization_server_metadata(
     config: &McpServerConfig,
 ) -> Result<AuthorizationServerMetadata> {
     let oauth = require_oauth_config(config)?;
@@ -434,7 +439,7 @@ async fn fetch_auth_server_metadata(
     Ok(metadata)
 }
 
-fn validate_metadata(metadata: &AuthorizationServerMetadata) -> Result<()> {
+pub(crate) fn validate_metadata(metadata: &AuthorizationServerMetadata) -> Result<()> {
     let authorization_endpoint = Url::parse(&metadata.authorization_endpoint)
         .context("invalid OAuth authorization endpoint")?;
     let token_endpoint =
@@ -444,7 +449,7 @@ fn validate_metadata(metadata: &AuthorizationServerMetadata) -> Result<()> {
     Ok(())
 }
 
-async fn exchange_code_for_token(
+pub(crate) async fn exchange_code_for_token(
     config: &McpServerConfig,
     pending: &PendingMcpOAuthAuthorization,
     code: &str,
@@ -542,7 +547,7 @@ async fn post_token_form(
         .context("failed to parse MCP OAuth token response")
 }
 
-fn token_from_response(
+pub(crate) fn token_from_response(
     pending: &PendingMcpOAuthAuthorization,
     response: OAuthTokenResponse,
 ) -> Result<StoredMcpOAuthToken> {
@@ -595,7 +600,7 @@ fn redirect_uri(oauth: &McpOAuthConfig) -> String {
     format!("http://127.0.0.1:{port}/mcp/oauth/callback")
 }
 
-fn save_pending_authorization(
+pub(crate) fn save_pending_authorization(
     config: &McpServerConfig,
     pending: PendingMcpOAuthAuthorization,
 ) -> Result<()> {
@@ -604,19 +609,19 @@ fn save_pending_authorization(
     write_pending_store(&store)
 }
 
-fn read_oauth_store() -> Result<OAuthStore> {
+pub(crate) fn read_oauth_store() -> Result<OAuthStore> {
     read_json_or_default(token_store_path())
 }
 
-fn write_oauth_store(store: &OAuthStore) -> Result<()> {
+pub(crate) fn write_oauth_store(store: &OAuthStore) -> Result<()> {
     write_json_atomic(token_store_path(), store)
 }
 
-fn read_pending_store() -> Result<OAuthPendingStore> {
+pub(crate) fn read_pending_store() -> Result<OAuthPendingStore> {
     read_json_or_default(pending_store_path())
 }
 
-fn write_pending_store(store: &OAuthPendingStore) -> Result<()> {
+pub(crate) fn write_pending_store(store: &OAuthPendingStore) -> Result<()> {
     write_json_atomic(pending_store_path(), store)
 }
 
@@ -649,10 +654,25 @@ where
     std::fs::write(&tmp, pretty).with_context(|| format!("failed to write {}", tmp.display()))?;
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
+
+    // Set private permissions (0600) on Unix so the file is readable only
+    // by the owning user.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to set 0600 permissions on OAuth store"
+            );
+        }
+    }
+
     Ok(())
 }
 
-fn server_auth_key(config: &McpServerConfig) -> String {
+pub(crate) fn server_auth_key(config: &McpServerConfig) -> String {
     let endpoint = config
         .url
         .as_deref()
@@ -668,17 +688,17 @@ fn token_is_expired(token: &StoredMcpOAuthToken) -> bool {
         .unwrap_or(false)
 }
 
-fn now_timestamp() -> i64 {
+pub(crate) fn now_timestamp() -> i64 {
     Utc::now().timestamp()
 }
 
-fn generate_random_urlsafe() -> String {
+pub(crate) fn generate_random_urlsafe() -> String {
     let mut buf = [0_u8; 32];
     rand::thread_rng().fill_bytes(&mut buf);
     URL_SAFE_NO_PAD.encode(buf)
 }
 
-fn pkce_challenge(verifier: &str) -> String {
+pub(crate) fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
@@ -762,7 +782,7 @@ fn is_loopback_url(url: &Url) -> bool {
 /// Resolve the OAuth `resource` parameter (RFC 8707) for token requests.
 /// Uses `oauth_resource` from the OAuth config when set, falling back to
 /// the MCP server URL.
-fn resource_for_tokens(config: &McpServerConfig) -> Option<String> {
+pub(crate) fn resource_for_tokens(config: &McpServerConfig) -> Option<String> {
     config
         .oauth
         .as_ref()
@@ -814,6 +834,7 @@ mod tests {
                 auth_server_metadata_url: Some(url),
                 scopes: Some(vec!["tools.read".to_string()]),
                 oauth_resource: None,
+                credentials_store: Some("file".to_string()),
             }),
             env: None,
             browser_mcp: None,
