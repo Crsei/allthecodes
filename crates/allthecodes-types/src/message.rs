@@ -144,7 +144,7 @@ pub enum InfoLevel {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactMetadata {
     pub pre_compact_token_count: u64,
     pub post_compact_token_count: u64,
@@ -169,7 +169,7 @@ impl CompactMetadata {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MicrocompactMetadata {
     pub trigger: String,
     pub pre_tokens: u64,
@@ -178,7 +178,7 @@ pub struct MicrocompactMetadata {
     pub cleared_attachment_uuids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreservedSegment {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary_message_uuid: Option<String>,

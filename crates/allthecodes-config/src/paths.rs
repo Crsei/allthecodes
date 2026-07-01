@@ -126,6 +126,10 @@ pub fn transcripts_dir() -> PathBuf {
     data_root().join("transcripts")
 }
 
+pub fn rollouts_dir() -> PathBuf {
+    data_root().join("rollouts")
+}
+
 pub fn memory_dir_global() -> PathBuf {
     data_root().join("memory")
 }
@@ -451,6 +455,7 @@ mod tests {
         assert_eq!(exports_dir(), base.join("exports"));
         assert_eq!(audits_dir(), base.join("audits"));
         assert_eq!(transcripts_dir(), base.join("transcripts"));
+        assert_eq!(rollouts_dir(), base.join("rollouts"));
         assert_eq!(memory_dir_global(), base.join("memory"));
         assert_eq!(auto_memory_dir(), base.join("auto_memory"));
         assert_eq!(session_insights_dir(), base.join("session-insights"));

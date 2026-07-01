@@ -105,6 +105,12 @@ fn system_message_to_serializable_data(
 /// This is a best-effort reconstruction. Fields that cannot be recovered from
 /// the simplified serialization are set to defaults. A production
 /// implementation would store the full typed data.
+///
+/// Phase 0 record/replay baseline: legacy `SerializableMessage` currently
+/// reconstructs user/assistant/system messages only. Progress and attachment
+/// entries remain persisted in JSON/SQLite but are dropped when loading through
+/// this compatibility path; new record logs store a typed message envelope
+/// instead.
 pub(super) fn serializable_to_messages(msgs: &[SerializableMessage]) -> Vec<Message> {
     use allthecodes_types::message::*;
     use uuid::Uuid;

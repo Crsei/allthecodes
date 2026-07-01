@@ -338,7 +338,10 @@ use file_store::{persist_session_file_for_path, write_session_file_to_path};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use allthecodes_types::message::{Message, MessageContent, SystemSubtype, UserMessage};
+    use allthecodes_types::message::{
+        AssistantMessage, Attachment, AttachmentMessage, ContentBlock, Message, MessageContent,
+        ProgressMessage, SystemMessage, SystemSubtype, ToolResultContent, UserMessage,
+    };
     use anyhow::Result;
     #[cfg(feature = "sqlite-storage")]
     use sqlx::Row;
@@ -475,6 +478,154 @@ mod tests {
         })
     }
 
+    fn phase0_legacy_serializable_messages() -> Vec<SerializableMessage> {
+        vec![
+            SerializableMessage {
+                msg_type: "user".into(),
+                uuid: "10000000-0000-0000-0000-000000000001".into(),
+                timestamp: 1,
+                data: serde_json::json!({
+                    "content": "phase0 user text",
+                    "is_meta": false
+                }),
+            },
+            SerializableMessage {
+                msg_type: "assistant".into(),
+                uuid: "10000000-0000-0000-0000-000000000002".into(),
+                timestamp: 2,
+                data: serde_json::json!({
+                    "content": [
+                        { "type": "text", "text": "phase0 assistant text" },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_phase0",
+                            "name": "Read",
+                            "input": { "file_path": "src/lib.rs" }
+                        }
+                    ],
+                    "stop_reason": "tool_use",
+                    "cost_usd": 0.01,
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 20,
+                        "reasoning_output_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0
+                    }
+                }),
+            },
+            SerializableMessage {
+                msg_type: "user".into(),
+                uuid: "10000000-0000-0000-0000-000000000003".into(),
+                timestamp: 3,
+                data: serde_json::json!({
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_phase0",
+                        "content": "file contents",
+                        "is_error": false
+                    }],
+                    "is_meta": false
+                }),
+            },
+            SerializableMessage {
+                msg_type: "system".into(),
+                uuid: "10000000-0000-0000-0000-000000000004".into(),
+                timestamp: 4,
+                data: serde_json::json!({
+                    "content": "phase0 system warning",
+                    "subtype": "Warning"
+                }),
+            },
+            SerializableMessage {
+                msg_type: "progress".into(),
+                uuid: "10000000-0000-0000-0000-000000000005".into(),
+                timestamp: 5,
+                data: serde_json::json!({
+                    "tool_use_id": "toolu_phase0",
+                    "data": { "message": "running" }
+                }),
+            },
+            SerializableMessage {
+                msg_type: "attachment".into(),
+                uuid: "10000000-0000-0000-0000-000000000006".into(),
+                timestamp: 6,
+                data: serde_json::json!({
+                    "attachment": {
+                        "type": "edited_text_file",
+                        "path": "src/lib.rs"
+                    }
+                }),
+            },
+        ]
+    }
+
+    fn phase0_typed_messages() -> Vec<Message> {
+        vec![
+            Message::User(UserMessage {
+                uuid: Uuid::parse_str("20000000-0000-0000-0000-000000000001").unwrap(),
+                timestamp: 1,
+                role: "user".into(),
+                content: MessageContent::Text("phase0 user text".into()),
+                is_meta: false,
+                tool_use_result: None,
+                source_tool_assistant_uuid: None,
+            }),
+            Message::Assistant(AssistantMessage {
+                uuid: Uuid::parse_str("20000000-0000-0000-0000-000000000002").unwrap(),
+                timestamp: 2,
+                role: "assistant".into(),
+                content: vec![
+                    ContentBlock::Text {
+                        text: "phase0 assistant text".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "toolu_phase0".into(),
+                        name: "Read".into(),
+                        input: serde_json::json!({ "file_path": "src/lib.rs" }),
+                    },
+                ],
+                usage: None,
+                stop_reason: Some("tool_use".into()),
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.01,
+            }),
+            Message::User(UserMessage {
+                uuid: Uuid::parse_str("20000000-0000-0000-0000-000000000003").unwrap(),
+                timestamp: 3,
+                role: "user".into(),
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "toolu_phase0".into(),
+                    content: ToolResultContent::Text("file contents".into()),
+                    is_error: false,
+                }]),
+                is_meta: false,
+                tool_use_result: None,
+                source_tool_assistant_uuid: None,
+            }),
+            Message::System(SystemMessage {
+                uuid: Uuid::parse_str("20000000-0000-0000-0000-000000000004").unwrap(),
+                timestamp: 4,
+                subtype: SystemSubtype::Warning,
+                content: "phase0 system warning".into(),
+            }),
+            Message::Progress(ProgressMessage {
+                uuid: Uuid::parse_str("20000000-0000-0000-0000-000000000005").unwrap(),
+                timestamp: 5,
+                tool_use_id: "toolu_phase0".into(),
+                data: serde_json::json!({ "message": "running" }),
+            }),
+            Message::Attachment(AttachmentMessage {
+                uuid: Uuid::parse_str("20000000-0000-0000-0000-000000000006").unwrap(),
+                timestamp: 6,
+                attachment: Attachment::EditedTextFile {
+                    path: "src/lib.rs".into(),
+                },
+            }),
+        ]
+    }
+
     #[cfg(feature = "sqlite-storage")]
     fn query_sqlite_counts() -> Result<(i64, i64)> {
         allthecodes_db::run_sqlite_sync("allthecodes-session-test-sqlite", async move {
@@ -489,6 +640,144 @@ mod tests {
                 .try_get(0)?;
             Ok((sessions, messages))
         })
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    fn query_sqlite_message_types(session_id: &str) -> Result<Vec<String>> {
+        let session_id = session_id.to_string();
+        allthecodes_db::run_sqlite_sync("allthecodes-session-test-sqlite", async move {
+            let pool = allthecodes_db::DbPoolManager::new().state_pool()?;
+            let rows = sqlx::query(
+                "SELECT msg_type FROM session_messages WHERE session_id = ? ORDER BY position",
+            )
+            .bind(session_id)
+            .fetch_all(&pool)
+            .await?;
+            rows.into_iter()
+                .map(|row| row.try_get::<String, _>(0))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Into::into)
+        })
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_phase0_legacy_session_json_load_and_resume_baseline() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        write_fixture_session(
+            "phase0-json",
+            phase0_legacy_serializable_messages(),
+            "/proj",
+        )
+        .unwrap();
+
+        let loaded = load_session("phase0-json").unwrap();
+        let resumed = crate::resume::resume_session("phase0-json").unwrap();
+
+        assert_eq!(loaded.len(), 4);
+        assert_eq!(resumed.len(), loaded.len());
+        assert!(loaded.iter().any(|message| {
+            matches!(
+                message,
+                Message::Assistant(AssistantMessage { content, .. })
+                    if content.iter().any(|block| matches!(
+                        block,
+                        ContentBlock::ToolUse { name, .. } if name == "Read"
+                    ))
+            )
+        }));
+        assert!(loaded.iter().any(|message| {
+            matches!(
+                message,
+                Message::User(UserMessage {
+                    content: MessageContent::Blocks(blocks),
+                    ..
+                }) if blocks.iter().any(|block| matches!(
+                    block,
+                    ContentBlock::ToolResult { tool_use_id, .. }
+                        if tool_use_id == "toolu_phase0"
+                ))
+            )
+        }));
+        assert!(loaded
+            .iter()
+            .any(|message| matches!(message, Message::System(_))));
+        assert!(!loaded
+            .iter()
+            .any(|message| matches!(message, Message::Progress(_))));
+        assert!(!loaded
+            .iter()
+            .any(|message| matches!(message, Message::Attachment(_))));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_phase0_transcript_fixture_payload_baseline() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        let messages = phase0_typed_messages();
+
+        crate::transcript::record_transcript("phase0-transcript", &messages).unwrap();
+
+        let content =
+            std::fs::read_to_string(crate::transcript::get_transcript_file("phase0-transcript"))
+                .unwrap();
+        let lines = content
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 6);
+        assert_eq!(lines[0]["msg_type"], "user");
+        assert_eq!(
+            lines[1]["payload"]["content_summary"][0],
+            "phase0 assistant text"
+        );
+        assert_eq!(
+            lines[1]["payload"]["content_summary"][1],
+            "[tool_use: Read]"
+        );
+        assert_eq!(lines[4]["msg_type"], "progress");
+        assert_eq!(lines[4]["payload"]["tool_use_id"], "toolu_phase0");
+        assert_eq!(lines[5]["msg_type"], "attachment");
+        assert_eq!(
+            lines[5]["payload"]["attachment"]["type"],
+            "edited_text_file"
+        );
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_phase0_sqlite_projection_keeps_current_message_rows() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        let messages = phase0_typed_messages();
+
+        save_session("phase0-sqlite", &messages, "/proj").unwrap();
+
+        let message_types = query_sqlite_message_types("phase0-sqlite").unwrap();
+        assert_eq!(
+            message_types,
+            vec![
+                "user",
+                "assistant",
+                "user",
+                "system",
+                "progress",
+                "attachment"
+            ]
+        );
+
+        let loaded = load_session("phase0-sqlite").unwrap();
+        assert_eq!(loaded.len(), 4);
+        assert!(!loaded
+            .iter()
+            .any(|message| matches!(message, Message::Progress(_))));
+        assert!(!loaded
+            .iter()
+            .any(|message| matches!(message, Message::Attachment(_))));
     }
 
     #[cfg(feature = "sqlite-storage")]

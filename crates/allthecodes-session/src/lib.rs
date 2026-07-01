@@ -12,6 +12,7 @@ pub mod export;
 pub mod fork;
 pub mod memdir;
 pub mod migrations;
+pub mod record_replay;
 pub mod request_snapshot;
 pub mod resume;
 pub mod session_export;

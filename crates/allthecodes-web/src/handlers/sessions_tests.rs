@@ -1,11 +1,15 @@
 use super::*;
 use crate::handlers::test_support::*;
+use allthecodes_types::message::{
+    AssistantMessage, ContentBlock, Message, MessageContent, UserMessage,
+};
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 use serial_test::serial;
+use uuid::Uuid;
 
 #[tokio::test]
 #[serial]
@@ -60,6 +64,66 @@ async fn session_archive_handler_archives_inactive_session() {
     assert_eq!(body["message"], json!("Session archived"));
     assert!(!allthecodes_session::storage::get_session_file(session_id).exists());
     assert!(allthecodes_session::storage::get_archived_session_file(session_id).exists());
+}
+
+#[tokio::test]
+#[serial]
+async fn session_detail_handler_returns_current_storage_baseline() {
+    let (_home, _guard) = temp_home();
+    let state = make_web_state();
+    let session_id = "phase0-web-detail";
+    let messages = vec![
+        Message::User(UserMessage {
+            uuid: Uuid::parse_str("30000000-0000-0000-0000-000000000001").unwrap(),
+            timestamp: 1,
+            role: "user".into(),
+            content: MessageContent::Text("phase0 web user".into()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        }),
+        Message::Assistant(AssistantMessage {
+            uuid: Uuid::parse_str("30000000-0000-0000-0000-000000000002").unwrap(),
+            timestamp: 2,
+            role: "assistant".into(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "phase0 web assistant".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "toolu_web_phase0".into(),
+                    name: "Read".into(),
+                    input: json!({ "file_path": "src/lib.rs" }),
+                },
+            ],
+            usage: None,
+            stop_reason: Some("tool_use".into()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        }),
+    ];
+    allthecodes_session::storage::save_session(session_id, &messages, ".")
+        .expect("seed web detail session");
+
+    let response = session_detail_handler(AxumPath(session_id.to_string()), State(state))
+        .await
+        .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["session_id"], json!(session_id));
+    assert_eq!(body["messages"][0]["role"], json!("user"));
+    assert_eq!(body["messages"][0]["content"], json!("phase0 web user"));
+    assert_eq!(body["messages"][1]["role"], json!("assistant"));
+    assert_eq!(
+        body["messages"][1]["content"],
+        json!("phase0 web assistant")
+    );
+    assert_eq!(
+        body["messages"][1]["content_blocks"][1]["type"],
+        json!("tool_use")
+    );
 }
 
 #[tokio::test]
