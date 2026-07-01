@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use anyhow::{Context, Result, bail};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use rand::RngCore;
 use reqwest::StatusCode;
@@ -20,7 +20,7 @@ use tracing::warn;
 use url::Url;
 
 use super::{McpOAuthConfig, McpServerConfig};
-use crate::oauth_store::{store_ops as oauth_store_ops, McpCredentialsStoreMode};
+use crate::oauth_store::{McpCredentialsStoreMode, store_ops as oauth_store_ops};
 
 const DEFAULT_CLIENT_ID: &str = "allthecodes";
 const DEFAULT_CALLBACK_PORT: u16 = 1455;
@@ -722,6 +722,15 @@ pub(crate) fn save_pending_authorization(
     let mut store = read_pending_store()?;
     store.pending.insert(server_auth_key(config), pending);
     write_pending_store(&store)
+}
+
+pub(crate) fn remove_pending_authorization(auth_key: &str) -> Result<bool> {
+    let mut store = read_pending_store()?;
+    let removed = store.pending.remove(auth_key).is_some();
+    if removed {
+        write_pending_store(&store)?;
+    }
+    Ok(removed)
 }
 
 pub(crate) fn read_oauth_store() -> Result<OAuthStore> {

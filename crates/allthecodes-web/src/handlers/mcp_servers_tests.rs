@@ -1,10 +1,10 @@
 use super::*;
 use crate::handlers::test_support::*;
 use allthecodes_ipc_protocol::subsystem_types::ConfigScope;
+use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use serde_json::json;
 use serial_test::serial;
 
@@ -187,6 +187,99 @@ async fn mcp_servers_oauth_status_uses_codex_style_status_without_tokens() {
     assert!(
         !body.to_string().contains("access_token"),
         "status response must not leak token fields"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn mcp_servers_oauth_clear_unknown_server_returns_404() {
+    let (_home, _guard) = temp_home();
+    let project = tempfile::tempdir().expect("project");
+    let state = make_web_state_with_cwd(project.path());
+
+    let response =
+        mcp_servers_auth_clear_handler(State(state), AxumPath("missing-remote".to_string()))
+            .await
+            .into_response();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], json!("not_found"));
+    assert!(!body.to_string().contains("access_token"));
+}
+
+#[tokio::test]
+#[serial]
+async fn mcp_servers_oauth_clear_removes_token_and_flow_status() {
+    let (_home, _guard) = temp_home();
+    let project = tempfile::tempdir().expect("project");
+    let state = make_web_state_with_cwd(project.path());
+
+    let mut user = allthecodes_config::settings::RawSettings::default();
+    user.extra.insert(
+        "mcpServers".to_string(),
+        json!({
+            "remote-oauth": {
+                "type": "streamable-http",
+                "url": "https://mcp.example.com/mcp",
+                "oauth": {
+                    "authServerMetadataUrl": "https://auth.example.com/.well-known/oauth-authorization-server",
+                    "credentialsStore": "file"
+                }
+            }
+        }),
+    );
+    allthecodes_config::settings::write_user_settings(&user).expect("seed user settings");
+
+    let token_store_path = allthecodes_mcp::auth::token_store_path();
+    std::fs::create_dir_all(token_store_path.parent().unwrap()).expect("token store parent");
+    std::fs::write(
+        &token_store_path,
+        serde_json::to_string_pretty(&json!({
+            "servers": {
+                "remote-oauth|streamable-http|https://mcp.example.com/mcp": {
+                    "access_token": "stored-secret",
+                    "refresh_token": "refresh-secret",
+                    "token_type": "Bearer",
+                    "expires_at": 4102444800i64,
+                    "scopes": ["tools.read"],
+                    "authorization_server": "https://auth.example.com",
+                    "token_endpoint": "https://auth.example.com/token",
+                    "client_id": "test-client"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .expect("seed token store");
+    record_oauth_flow_status(
+        "remote-oauth".to_string(),
+        "failed",
+        Some("OAuth callback timed out".to_string()),
+    );
+
+    let response =
+        mcp_servers_auth_clear_handler(State(state.clone()), AxumPath("remote-oauth".to_string()))
+            .await
+            .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["cleared"], json!(true));
+    assert!(!body.to_string().contains("stored-secret"));
+    assert!(!body.to_string().contains("refresh-secret"));
+
+    let response =
+        mcp_servers_auth_status_handler(State(state), AxumPath("remote-oauth".to_string()))
+            .await
+            .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["status"], json!("not_logged_in"));
+    assert!(body["oauth_flow"].is_null());
+    assert!(
+        !body.to_string().contains("access_token"),
+        "status response must not leak token fields after clear"
     );
 }
 

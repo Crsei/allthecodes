@@ -4,14 +4,14 @@ use crate::transport::dispatch_response;
 use crate::{JsonRpcError, JsonRpcResponse, McpConnectionState, McpServerConfig};
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 use super::http_utils::{handle_sse_event_stream_status, redact_url_for_log};
 use super::sse::{SseConnectTarget, SsePostTarget};
@@ -672,9 +672,11 @@ async fn test_streamable_http_loopback_initializes_and_lists_tools() {
         )
         .await;
         assert!(init_head.starts_with("POST /mcp HTTP/1.1"));
-        assert!(header_value(&init_head, "accept")
-            .unwrap()
-            .contains("application/json"));
+        assert!(
+            header_value(&init_head, "accept")
+                .unwrap()
+                .contains("application/json")
+        );
         assert_eq!(
             header_value(&init_head, HEADER_MCP_PROTOCOL_VERSION).unwrap(),
             "2025-11-25"
@@ -955,6 +957,220 @@ async fn test_streamable_http_post_404_recovers_session_and_retries_tools_list()
     client.disconnect().await;
 
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_streamable_http_get_404_with_active_session_clears_session() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut init_stream, _) = listener.accept().await.unwrap();
+        let (init_head, init_body) = read_http_request(&mut init_stream).await;
+        let init_request: Value = serde_json::from_str(&init_body).unwrap();
+        let init_id = init_request["id"].as_u64().unwrap();
+        let init_response = json!({
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "stream-http", "version": "1.0.0" }
+            }
+        });
+        write_http_response(
+            &mut init_stream,
+            "200 OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("MCP-Session-Id", "session-1"),
+            ],
+            &serde_json::to_string(&init_response).unwrap(),
+        )
+        .await;
+        assert!(init_head.starts_with("POST /mcp HTTP/1.1"));
+        assert!(header_value(&init_head, HEADER_MCP_SESSION_ID).is_none());
+
+        let (mut initialized_stream, _) = listener.accept().await.unwrap();
+        let (initialized_head, initialized_body) = read_http_request(&mut initialized_stream).await;
+        write_http_response(&mut initialized_stream, "202 Accepted", &[], "").await;
+        assert_eq!(
+            header_value(&initialized_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+        let initialized_notification: Value = serde_json::from_str(&initialized_body).unwrap();
+        assert_eq!(
+            initialized_notification["method"],
+            "notifications/initialized"
+        );
+
+        let (mut get_stream, _) = listener.accept().await.unwrap();
+        let (get_head, get_body) = read_http_request(&mut get_stream).await;
+        write_http_response(&mut get_stream, "404 Not Found", &[], "").await;
+        assert!(get_head.starts_with("GET /mcp HTTP/1.1"));
+        assert_eq!(
+            header_value(&get_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+        assert!(get_body.is_empty());
+
+        let (mut tools_stream, _) = listener.accept().await.unwrap();
+        let (tools_head, tools_body) = read_http_request(&mut tools_stream).await;
+        let tools_request: Value = serde_json::from_str(&tools_body).unwrap();
+        let tools_id = tools_request["id"].as_u64().unwrap();
+        assert_eq!(tools_request["method"], "tools/list");
+        assert!(
+            header_value(&tools_head, HEADER_MCP_SESSION_ID).is_none(),
+            "GET 404 should clear the active session before the next POST"
+        );
+        let tools_response = json!({
+            "jsonrpc": "2.0",
+            "id": tools_id,
+            "result": {
+                "tools": [{
+                    "name": "search",
+                    "description": "search things",
+                    "inputSchema": {"type": "object"}
+                }]
+            }
+        });
+        write_http_response(
+            &mut tools_stream,
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            &serde_json::to_string(&tools_response).unwrap(),
+        )
+        .await;
+    });
+
+    let config = McpServerConfig {
+        name: "stream-http".to_string(),
+        transport: "streamable-http".to_string(),
+        command: None,
+        args: None,
+        url: Some(format!("http://127.0.0.1:{}/mcp", addr.port())),
+        headers: None,
+        oauth: None,
+        env: None,
+        browser_mcp: None,
+        disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
+    };
+
+    let mut client = McpClient::new(config);
+    client.connect().await.unwrap();
+    client.initialize().await.unwrap();
+    let tools = client.list_tools().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "search");
+    client.disconnect().await;
+
+    server.await.unwrap();
+}
+
+async fn run_streamable_http_disconnect_delete_status(status: &'static str) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut init_stream, _) = listener.accept().await.unwrap();
+        let (init_head, init_body) = read_http_request(&mut init_stream).await;
+        let init_request: Value = serde_json::from_str(&init_body).unwrap();
+        let init_id = init_request["id"].as_u64().unwrap();
+        let init_response = json!({
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "stream-http", "version": "1.0.0" }
+            }
+        });
+        write_http_response(
+            &mut init_stream,
+            "200 OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("MCP-Session-Id", "session-1"),
+            ],
+            &serde_json::to_string(&init_response).unwrap(),
+        )
+        .await;
+        assert!(init_head.starts_with("POST /mcp HTTP/1.1"));
+
+        let (mut initialized_stream, _) = listener.accept().await.unwrap();
+        let (initialized_head, initialized_body) = read_http_request(&mut initialized_stream).await;
+        write_http_response(&mut initialized_stream, "202 Accepted", &[], "").await;
+        assert_eq!(
+            header_value(&initialized_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+        let initialized_notification: Value = serde_json::from_str(&initialized_body).unwrap();
+        assert_eq!(
+            initialized_notification["method"],
+            "notifications/initialized"
+        );
+
+        let (mut get_stream, _) = listener.accept().await.unwrap();
+        let (get_head, _) = read_http_request(&mut get_stream).await;
+        write_http_response(&mut get_stream, "405 Method Not Allowed", &[], "").await;
+        assert!(get_head.starts_with("GET /mcp HTTP/1.1"));
+        assert_eq!(
+            header_value(&get_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+
+        let (mut delete_stream, _) = listener.accept().await.unwrap();
+        let (delete_head, delete_body) = read_http_request(&mut delete_stream).await;
+        write_http_response(&mut delete_stream, status, &[], "").await;
+        assert!(delete_head.starts_with("DELETE /mcp HTTP/1.1"));
+        assert_eq!(
+            header_value(&delete_head, HEADER_MCP_SESSION_ID).unwrap(),
+            "session-1"
+        );
+        assert_eq!(header_value(&delete_head, "accept").unwrap(), "*/*");
+        assert!(delete_body.is_empty());
+    });
+
+    let config = McpServerConfig {
+        name: "stream-http".to_string(),
+        transport: "streamable-http".to_string(),
+        command: None,
+        args: None,
+        url: Some(format!("http://127.0.0.1:{}/mcp", addr.port())),
+        headers: None,
+        oauth: None,
+        env: None,
+        browser_mcp: None,
+        disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
+    };
+
+    let mut client = McpClient::new(config);
+    client.connect().await.unwrap();
+    client.initialize().await.unwrap();
+    client.disconnect().await;
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_streamable_http_disconnect_delete_success_clears_session() {
+    run_streamable_http_disconnect_delete_status("200 OK").await;
+}
+
+#[tokio::test]
+async fn test_streamable_http_disconnect_delete_404_is_non_fatal() {
+    run_streamable_http_disconnect_delete_status("404 Not Found").await;
+}
+
+#[tokio::test]
+async fn test_streamable_http_disconnect_delete_405_is_non_fatal() {
+    run_streamable_http_disconnect_delete_status("405 Method Not Allowed").await;
 }
 
 #[tokio::test]

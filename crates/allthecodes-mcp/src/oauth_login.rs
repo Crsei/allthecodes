@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -20,13 +20,13 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use crate::auth::{
+    AuthorizationServerMetadata, McpOAuthStart, PendingMcpOAuthAuthorization, StoredMcpOAuthToken,
     discover_authorization_server_metadata, exchange_code_for_token, generate_random_urlsafe,
-    now_timestamp, pkce_challenge, require_oauth_config, save_pending_authorization,
-    server_auth_key, token_from_response, token_store_path, validate_metadata,
-    validate_oauth_config, AuthorizationServerMetadata, McpOAuthStart,
-    PendingMcpOAuthAuthorization, StoredMcpOAuthToken,
+    now_timestamp, pkce_challenge, remove_pending_authorization, require_oauth_config,
+    save_pending_authorization, server_auth_key, token_from_response, token_store_path,
+    validate_metadata, validate_oauth_config,
 };
-use crate::oauth_store::{store_ops as oauth_store_ops, McpCredentialsStoreMode};
+use crate::oauth_store::{McpCredentialsStoreMode, store_ops as oauth_store_ops};
 use crate::{McpOAuthConfig, McpServerConfig};
 
 /// Default OAuth callback timeout: 300 seconds.
@@ -47,6 +47,7 @@ const CALLBACK_PATH: &str = "/mcp/oauth/callback";
 pub struct McpOAuthLoginHandle {
     authorization_url: String,
     completion: oneshot::Receiver<Result<StoredMcpOAuthToken>>,
+    auth_key: String,
     timeout: Duration,
 }
 
@@ -61,11 +62,19 @@ impl McpOAuthLoginHandle {
     /// Returns an error on timeout, callback parsing failure, state mismatch,
     /// token exchange failure, or storage failure.
     pub async fn wait(self) -> Result<StoredMcpOAuthToken> {
-        let callback = tokio::time::timeout(self.timeout, self.completion)
+        let result = tokio::time::timeout(self.timeout, self.completion)
             .await
-            .context("OAuth callback timed out (no response received within the timeout period)")?
-            .context("OAuth callback task cancelled")?;
-        callback
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "OAuth callback timed out (no response received within the timeout period)"
+                )
+            })
+            .and_then(|completion| completion.context("OAuth callback task cancelled"))
+            .and_then(|callback| callback);
+        if result.is_err() {
+            let _ = remove_pending_authorization(&self.auth_key);
+        }
+        result
     }
 
     /// Split into parts: the authorization URL and the completion receiver.
@@ -105,6 +114,21 @@ pub(crate) async fn start_auto_login(
     config: &McpServerConfig,
     metadata: &AuthorizationServerMetadata,
     oauth: &McpOAuthConfig,
+) -> Result<(McpOAuthLoginHandle, McpOAuthStart)> {
+    start_auto_login_with_timeout(
+        config,
+        metadata,
+        oauth,
+        Duration::from_secs(DEFAULT_OAUTH_TIMEOUT_SECS),
+    )
+    .await
+}
+
+async fn start_auto_login_with_timeout(
+    config: &McpServerConfig,
+    metadata: &AuthorizationServerMetadata,
+    oauth: &McpOAuthConfig,
+    timeout: Duration,
 ) -> Result<(McpOAuthLoginHandle, McpOAuthStart)> {
     // Resolve store mode early so wait() doesn't need the config.
     let store_mode = McpCredentialsStoreMode::from_config(oauth.credentials_store.as_deref());
@@ -178,7 +202,6 @@ pub(crate) async fn start_auto_login(
 
     // 6. Spawn the callback listener
     let (tx, rx) = oneshot::channel();
-    let timeout = Duration::from_secs(DEFAULT_OAUTH_TIMEOUT_SECS);
     let state_clone = state.clone();
     let store_mode_clone = store_mode;
     let auth_key_clone = auth_key.clone();
@@ -191,14 +214,19 @@ pub(crate) async fn start_auto_login(
             config_clone,
             &auth_key_clone,
             store_mode_clone,
+            timeout,
         )
         .await;
+        if result.is_err() {
+            let _ = remove_pending_authorization(&auth_key_clone);
+        }
         let _ = tx.send(result);
     });
 
     let handle = McpOAuthLoginHandle {
         authorization_url: authorization_url.to_string(),
         completion: rx,
+        auth_key,
         timeout,
     };
 
@@ -224,15 +252,13 @@ async fn listen_for_callback(
     config: McpServerConfig,
     auth_key: &str,
     store_mode: McpCredentialsStoreMode,
+    timeout: Duration,
 ) -> Result<StoredMcpOAuthToken> {
     // Accept a single connection with a generous timeout
-    let (mut stream, _) = tokio::time::timeout(
-        Duration::from_secs(DEFAULT_OAUTH_TIMEOUT_SECS),
-        listener.accept(),
-    )
-    .await
-    .context("timed out waiting for OAuth callback connection")?
-    .context("failed to accept OAuth callback connection")?;
+    let (mut stream, _) = tokio::time::timeout(timeout, listener.accept())
+        .await
+        .context("timed out waiting for OAuth callback connection")?
+        .context("failed to accept OAuth callback connection")?;
 
     // Read the HTTP request (max 4096 bytes)
     let mut buf = vec![0_u8; 4096];
@@ -422,6 +448,42 @@ mod tests {
                 Some(value) => std::env::set_var(self.key, value),
                 None => std::env::remove_var(self.key),
             }
+        }
+    }
+
+    fn auto_login_test_config(name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            transport: "streamable-http".to_string(),
+            command: None,
+            args: None,
+            url: Some("https://mcp.example.com/mcp".to_string()),
+            headers: None,
+            oauth: Some(McpOAuthConfig {
+                client_id: Some("test-client".to_string()),
+                callback_port: None,
+                auth_server_metadata_url: Some(
+                    "http://127.0.0.1:9/.well-known/oauth-authorization-server".to_string(),
+                ),
+                scopes: Some(vec!["tools.read".to_string()]),
+                oauth_resource: None,
+                credentials_store: Some("file".to_string()),
+            }),
+            env: None,
+            browser_mcp: None,
+            disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
+        }
+    }
+
+    fn auto_login_test_metadata() -> AuthorizationServerMetadata {
+        AuthorizationServerMetadata {
+            issuer: Some("http://127.0.0.1:9".to_string()),
+            authorization_endpoint: "http://127.0.0.1:9/authorize".to_string(),
+            token_endpoint: "http://127.0.0.1:9/token".to_string(),
+            scopes_supported: vec!["tools.read".to_string()],
         }
     }
 
@@ -728,11 +790,98 @@ mod tests {
         assert!(handle.authorization_url().contains("/authorize?"));
         assert!(handle.authorization_url().contains("code_challenge="));
         assert!(!start_info.state.is_empty());
-        assert!(start_info
-            .redirect_uri
-            .contains(format!("{CALLBACK_PATH}").as_str()));
+        assert!(
+            start_info
+                .redirect_uri
+                .contains(format!("{CALLBACK_PATH}").as_str())
+        );
 
         drop(handle);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn auto_login_timeout_clears_pending_state() {
+        let temp = TempDir::new().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path().to_str().unwrap());
+        let config = auto_login_test_config("timeout-server");
+        let metadata = auto_login_test_metadata();
+        let oauth = config.oauth.as_ref().unwrap();
+        let auth_key = server_auth_key(&config);
+
+        let (handle, _start) =
+            start_auto_login_with_timeout(&config, &metadata, oauth, Duration::from_millis(25))
+                .await
+                .unwrap();
+        assert!(
+            crate::auth::read_pending_store()
+                .unwrap()
+                .pending
+                .contains_key(&auth_key)
+        );
+
+        let error = handle.wait().await.unwrap_err();
+
+        assert!(error.to_string().contains("timed out"));
+        assert!(
+            !crate::auth::read_pending_store()
+                .unwrap()
+                .pending
+                .contains_key(&auth_key)
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn auto_login_callback_error_clears_pending_state() {
+        let temp = TempDir::new().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path().to_str().unwrap());
+        let config = auto_login_test_config("callback-error-server");
+        let metadata = auto_login_test_metadata();
+        let oauth = config.oauth.as_ref().unwrap();
+        let auth_key = server_auth_key(&config);
+
+        let (handle, start) =
+            start_auto_login_with_timeout(&config, &metadata, oauth, Duration::from_secs(5))
+                .await
+                .unwrap();
+        assert!(
+            crate::auth::read_pending_store()
+                .unwrap()
+                .pending
+                .contains_key(&auth_key)
+        );
+
+        let redirect = Url::parse(&start.redirect_uri).unwrap();
+        let mut callback_stream =
+            tokio::net::TcpStream::connect(format!("127.0.0.1:{}", redirect.port().unwrap()))
+                .await
+                .unwrap();
+        let callback_request = format!(
+            "GET {}?error=access_denied&error_description=denied&state={} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            redirect.path(),
+            start.state
+        );
+        callback_stream
+            .write_all(callback_request.as_bytes())
+            .await
+            .unwrap();
+        let callback_response = read_http_message(&mut callback_stream).await;
+        assert!(callback_response.starts_with("HTTP/1.1 400 Bad Request"));
+
+        let error = handle.wait().await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("OAuth provider returned error: access_denied")
+        );
+        assert!(
+            !crate::auth::read_pending_store()
+                .unwrap()
+                .pending
+                .contains_key(&auth_key)
+        );
     }
 
     #[tokio::test]
