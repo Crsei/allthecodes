@@ -1,14 +1,17 @@
+pub mod account_auth;
 pub mod agents;
 pub mod capabilities;
 pub mod chat;
 pub mod chat_modes;
 pub mod files;
 pub mod gateways;
+pub mod git;
 pub mod health;
 pub mod hooks;
 pub mod image_generate;
 pub mod kanban;
 pub mod launchpad;
+pub mod logs;
 pub mod mentions;
 pub mod messaging;
 pub mod models;
@@ -22,6 +25,7 @@ pub mod sessions;
 pub mod sidebar;
 pub mod skills;
 pub mod tasks;
+pub mod terminal;
 pub mod voice;
 pub mod workspaces;
 

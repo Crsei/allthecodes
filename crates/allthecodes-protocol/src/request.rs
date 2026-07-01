@@ -522,30 +522,32 @@ crate::api_definitions! {
         response: Value,
     },
     AccountAuthLoginStart => "POST /api/account-auth/login/start" {
-        params: Value,
-        response: Value,
+        params: v1::account_auth::AccountLoginStartRequest,
+        response: v1::account_auth::AccountLoginStartResponse,
     },
     AccountAuthLoginComplete => "POST /api/account-auth/login/complete" {
-        params: Value,
-        response: Value,
+        params: v1::account_auth::AccountLoginCompleteRequest,
+        response: v1::account_auth::AccountAuthStatusResponse,
     },
     AccountAuthStatus => "GET /api/account-auth/status" {
-        response: Value,
+        response: v1::account_auth::AccountAuthStatusResponse,
     },
     AccountAuthRefresh => "POST /api/account-auth/refresh" {
-        response: Value,
+        response: v1::account_auth::AccountAuthStatusResponse,
     },
     AccountAuthLogout => "POST /api/account-auth/logout" {
-        response: Value,
+        response: v1::account_auth::AccountAuthLogoutResponse,
     },
     AccountAuthBilling => "GET /api/account-auth/billing" {
-        response: Value,
+        response: v1::account_auth::AccountBillingSnapshotResponse,
     },
     AccountAuthBillingLedger => "GET /api/account-auth/billing/ledger" {
-        response: Value,
+        params: v1::account_auth::AccountBillingLedgerQuery,
+        response: v1::account_auth::AccountBillingLedgerResponse,
     },
     AccountAuthBillingOrder => "GET /api/account-auth/billing/orders/{id}" {
-        response: Value,
+        params: v1::account_auth::AccountBillingOrderParams,
+        response: v1::account_auth::AccountBillingOrderResponse,
     },
 
     ProfilesList => "GET /api/profiles" {
@@ -627,35 +629,43 @@ crate::api_definitions! {
         response: Value,
     },
     Logs => "GET /api/logs" {
-        response: Value,
+        params: v1::logs::LogsQuery,
+        response: v1::logs::LogsResponse,
     },
     LogsExport => "GET /api/logs/export" {
+        params: v1::logs::LogsExportQuery,
         response: Value,
     },
     DiagnosticsSnapshot => "GET /api/diagnostics/snapshot" {
-        response: Value,
+        params: v1::logs::DiagnosticsQuery,
+        response: v1::logs::DiagnosticsSnapshot,
     },
     DiagnosticsTraces => "GET /api/diagnostics/traces" {
-        response: Value,
+        params: v1::logs::TracesQuery,
+        response: v1::logs::TracesResponse,
     },
 
     TerminalProfiles => "GET /api/terminal/profiles" {
-        response: EmptyResponse,
+        response: v1::terminal::TerminalProfilesResponse,
     },
     TerminalSessionsList => "GET /api/terminal/sessions" {
-        response: EmptyResponse,
+        response: v1::terminal::TerminalSessionsResponse,
     },
     TerminalSessionsCreate => "POST /api/terminal/sessions" {
-        response: EmptyResponse,
+        params: v1::terminal::TerminalCreateRequest,
+        response: v1::terminal::TerminalSessionSnapshot,
     },
     TerminalSessionDetail => "GET /api/terminal/sessions/{id}" {
-        response: EmptyResponse,
+        params: v1::terminal::TerminalSessionParams,
+        response: v1::terminal::TerminalSessionSnapshot,
     },
     TerminalSessionOutput => "GET /api/terminal/sessions/{id}/output" {
-        response: EmptyResponse,
+        params: v1::terminal::TerminalOutputQuery,
+        response: v1::terminal::TerminalOutputResponse,
     },
     TerminalSessionDelete => "DELETE /api/terminal/sessions/{id}" {
-        response: EmptyResponse,
+        params: v1::terminal::TerminalSessionParams,
+        response: v1::terminal::TerminalSessionSnapshot,
     },
     TerminalSessionWs => "ANY /api/terminal/sessions/{id}/ws" {
         response: EmptyResponse,
@@ -668,10 +678,12 @@ crate::api_definitions! {
     },
 
     GitLog => "GET /api/git/log" {
-        response: Value,
+        params: v1::git::GitLogParams,
+        response: v1::git::GitLogResponse,
     },
     GitDiff => "GET /api/git/diff" {
-        response: Value,
+        params: v1::git::GitDiffParams,
+        response: v1::git::GitDiffResponse,
     },
     Proxy => "GET /api/proxy" {
         response: Value,

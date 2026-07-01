@@ -2,13 +2,19 @@
 
 use std::collections::HashMap;
 
+use allthecodes_protocol::v1::capabilities::{
+    BackendCapabilityFacts, BuildCapabilityFacts, CapabilityFeatureStatus, ProtocolCapabilityFacts,
+    SchemaCapabilityFacts,
+};
 use allthecodes_protocol::ApiError as ProtocolApiError;
 use allthecodes_protocol::ApiMethod;
 use allthecodes_protocol::NoParams;
+use allthecodes_protocol::API_METADATA;
 use async_trait::async_trait;
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::get;
+use chrono::{SecondsFormat, Utc};
 
 use crate::api_dispatcher::rest_processor_response;
 use crate::handler_registry::HandlerRegistry;
@@ -71,6 +77,27 @@ pub fn capabilities_map() -> HashMap<String, bool> {
     caps
 }
 
+fn feature_status_map(
+    capabilities: &HashMap<String, bool>,
+) -> HashMap<String, CapabilityFeatureStatus> {
+    capabilities
+        .iter()
+        .map(|(name, available)| {
+            (
+                name.clone(),
+                CapabilityFeatureStatus {
+                    available: *available,
+                    reason: if *available {
+                        None
+                    } else {
+                        Some("Not available in this backend build".to_string())
+                    },
+                },
+            )
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct CapabilitiesProcessor {
     state: WebState,
@@ -97,8 +124,50 @@ impl Processor for CapabilitiesProcessor {
     }
 
     async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let capabilities = capabilities_map();
         Ok(Self::Response {
-            capabilities: capabilities_map(),
+            features: Some(feature_status_map(&capabilities)),
+            capabilities,
+            backend: Some(BackendCapabilityFacts {
+                name: "allthecodes".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                status: Some("running".to_string()),
+            }),
+            protocol: Some(ProtocolCapabilityFacts {
+                version: "v1".to_string(),
+                route_count: Some(API_METADATA.len()),
+            }),
+            schema: Some(SchemaCapabilityFacts {
+                version: "v1".to_string(),
+                format: Some("json-schema".to_string()),
+            }),
+            build: Some(BuildCapabilityFacts {
+                package_version: env!("CARGO_PKG_VERSION").to_string(),
+                target: option_env!("TARGET").map(str::to_string),
+                profile: option_env!("PROFILE").map(str::to_string),
+            }),
+            checked_at: Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capability_features_mirror_legacy_map() {
+        let capabilities = capabilities_map();
+        let features = feature_status_map(&capabilities);
+
+        assert_eq!(
+            features.get("chat").map(|feature| feature.available),
+            Some(true)
+        );
+        assert_eq!(
+            features.get("git").map(|feature| feature.available),
+            Some(true)
+        );
+        assert!(!features.contains_key("allthecodes:update-check"));
     }
 }

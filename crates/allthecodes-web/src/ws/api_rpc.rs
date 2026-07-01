@@ -272,7 +272,7 @@ mod tests {
 
     use allthecodes_engine::lifecycle::QueryEngine;
     use allthecodes_engine::types::config::QueryEngineConfig;
-    use allthecodes_protocol::{ClientRequest, ClientResponse, NoParams};
+    use allthecodes_protocol::{v1, ClientRequest, ClientResponse, NoParams};
 
     use super::*;
 
@@ -334,7 +334,18 @@ mod tests {
     #[tokio::test]
     async fn unsupported_request_returns_error_frame() {
         let dispatcher = ApiDispatcher::new(make_web_state());
-        let request = JsonRpcFrame::request(9, ClientRequest::TerminalSessionsCreate(NoParams {}));
+        let request = JsonRpcFrame::request(
+            9,
+            ClientRequest::TerminalSessionsCreate(v1::terminal::TerminalCreateRequest {
+                profile: "shell".to_string(),
+                cwd: None,
+                label: None,
+                command: None,
+                session_id: None,
+                persist: None,
+                initial_size: None,
+            }),
+        );
         let text = serde_json::to_string(&request).expect("request should serialize");
 
         let response = handle_api_rpc_text(&dispatcher, &test_context(), &text).await;

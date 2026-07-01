@@ -11,6 +11,9 @@ use crate::request::{ApiOperationMetadata, ApiTypeMetadata, SerializationPolicy,
 use crate::request::{ClientRequest, ClientResponse, EmptyResponse, NoParams};
 
 const FRONTEND_GENERATED_RELATIVE_DIR: &str = "../../../allthecodes-web/src/lib/generated";
+const FRONTEND_GENERATED_FIX_BUGS_RELATIVE_DIR: &str =
+    "../../../allthecodes-web-fix-bugs/src/lib/generated";
+const FRONTEND_GENERATED_DIR_ENV: &str = "ALLTHECODES_FRONTEND_GENERATED_DIR";
 const FRONTEND_TYPES_FILE: &str = "api-types.ts";
 const FRONTEND_ROUTES_FILE: &str = "api-routes.ts";
 const FRONTEND_SCHEMA_FILE: &str = "api-schema.json";
@@ -46,6 +49,13 @@ pub fn default_frontend_schema_path(manifest_dir: &Path) -> PathBuf {
 }
 
 pub fn default_frontend_generated_dir(manifest_dir: &Path) -> PathBuf {
+    if let Some(path) = std::env::var_os(FRONTEND_GENERATED_DIR_ENV) {
+        return PathBuf::from(path);
+    }
+    let fix_bugs_dir = manifest_dir.join(FRONTEND_GENERATED_FIX_BUGS_RELATIVE_DIR);
+    if fix_bugs_dir.exists() {
+        return fix_bugs_dir;
+    }
     manifest_dir.join(FRONTEND_GENERATED_RELATIVE_DIR)
 }
 

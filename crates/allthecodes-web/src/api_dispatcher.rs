@@ -1295,7 +1295,15 @@ mod tests {
         let error = dispatch(
             make_web_state(),
             ApiRequestContext::direct(),
-            ClientRequest::TerminalSessionsCreate(NoParams {}),
+            ClientRequest::TerminalSessionsCreate(v1::terminal::TerminalCreateRequest {
+                profile: "shell".to_string(),
+                cwd: None,
+                label: None,
+                command: None,
+                session_id: None,
+                persist: None,
+                initial_size: None,
+            }),
         )
         .await
         .expect_err("terminal transport must remain out of dispatcher");
