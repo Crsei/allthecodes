@@ -5,6 +5,7 @@ use allthecodes_types::message::{ContentBlock, MessageContent, ToolResultContent
 
 use super::context::MessageRenderContext;
 use super::copy_text::{content_block_copy_text, image_reference};
+use super::grouping::is_suppressed_tool_result;
 use crate::ui::messages::assistant_text_message::{classify_assistant_text, render_api_error};
 use crate::ui::messages::file_edit_tool_updated_message::{
     render_file_edit_tool_updated_message, FileEditMessageStyle, FileEditToolUpdatedView,
@@ -167,6 +168,16 @@ fn render_tool_result_user_message<'a>(
         } => Some((tool_use_id, content, *is_error)),
         _ => None,
     })?;
+
+    // When operation pipeline is active, suppress tool results for tools
+    // that are consumed by the operation batch (Read/Search/Edit/Write, not shell).
+    if !render_context.options.verbose {
+        if let Some(tool_use) = render_context.tool_use(tool_result.0) {
+            if is_suppressed_tool_result(&tool_use.tool_name) {
+                return Some(Vec::new());
+            }
+        }
+    }
 
     if let Some(tool_use) = render_context.tool_use(tool_result.0) {
         if tool_use.is_shell() {

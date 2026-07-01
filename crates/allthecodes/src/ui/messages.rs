@@ -42,6 +42,8 @@ pub mod task_assignment_message;
 pub mod team_mem_collapsed;
 #[path = "messages/team_mem_saved.rs"]
 pub mod team_mem_saved;
+#[path = "messages/tool_operation_content.rs"]
+pub mod tool_operation_content;
 #[path = "messages/user_agent_notification_message.rs"]
 pub mod user_agent_notification_message;
 #[path = "messages/user_bash_input_message.rs"]

@@ -4,6 +4,7 @@ use crate::ui::theme::Theme;
 use ratatui::text::{Line, Span};
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct CollapsedReadSearchView {
     pub read_count: usize,
     pub search_count: usize,
@@ -12,6 +13,7 @@ pub struct CollapsedReadSearchView {
     pub latest_hint: Option<String>,
 }
 
+#[allow(dead_code)]
 pub fn render_collapsed_read_search_lines(
     view: &CollapsedReadSearchView,
     theme: &Theme,

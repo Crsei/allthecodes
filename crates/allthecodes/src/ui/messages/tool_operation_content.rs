@@ -9,11 +9,11 @@
 //! `development/tui/command-operation-display-plan.md`.
 
 use crate::ui::theme::Theme;
-use ratatui::text::{Line, Span};
 use allthecodes_tool_display::{
     OperationKind, OperationRisk, OperationSideChannel, OperationStatus, OperationSubtype,
     ToolOperation,
 };
+use ratatui::text::{Line, Span};
 
 /// A display-ready operation view used by the TUI renderer.
 ///
@@ -85,20 +85,34 @@ impl ToolOperationView {
 
     /// Create a batch summary view from a list of operations of the same kind.
     pub fn from_batch(operations: &[&ToolOperation]) -> Self {
-        let kind = operations.first().map(|op| op.kind).unwrap_or(OperationKind::Unknown);
+        let kind = operations
+            .first()
+            .map(|op| op.kind)
+            .unwrap_or(OperationKind::Unknown);
         let subtype = operations.first().and_then(|op| op.subtype);
         let count = operations.len();
 
         // Determine aggregate status
-        let any_error = operations.iter().any(|op| op.status == OperationStatus::Error);
-        let all_resolved = operations.iter().all(|op| op.status == OperationStatus::Resolved);
-        let any_in_progress = operations.iter().any(|op| op.status == OperationStatus::InProgress);
+        let any_error = operations
+            .iter()
+            .any(|op| op.status == OperationStatus::Error);
+        let all_resolved = operations
+            .iter()
+            .all(|op| op.status == OperationStatus::Resolved);
+        let any_in_progress = operations
+            .iter()
+            .any(|op| op.status == OperationStatus::InProgress);
+        let any_cancelled = operations
+            .iter()
+            .any(|op| op.status == OperationStatus::Cancelled);
         let status = if any_error {
             OperationStatus::Error
         } else if all_resolved {
             OperationStatus::Resolved
         } else if any_in_progress {
             OperationStatus::InProgress
+        } else if any_cancelled {
+            OperationStatus::Cancelled
         } else {
             OperationStatus::Resolved
         };
@@ -137,9 +151,14 @@ fn risk_level(risk: OperationRisk) -> u8 {
         OperationRisk::Medium => 2,
         OperationRisk::High => 3,
         OperationRisk::Destructive => 4,
+    }
 }
 
-fn build_batch_label(kind: OperationKind, subtype: Option<OperationSubtype>, count: usize) -> String {
+fn build_batch_label(
+    kind: OperationKind,
+    subtype: Option<OperationSubtype>,
+    count: usize,
+) -> String {
     let category = match kind {
         OperationKind::Read => "reads",
         OperationKind::Search => "searches",
@@ -165,15 +184,45 @@ fn build_batch_label(kind: OperationKind, subtype: Option<OperationSubtype>, cou
     format!("{count} {category}")
 }
 
+fn operation_kind_prefix(kind: OperationKind, subtype: Option<OperationSubtype>) -> &'static str {
+    match (kind, subtype) {
+        (OperationKind::Read, _) => "Read",
+        (OperationKind::Search, _) => "Search",
+        (OperationKind::Create, _) => "Create",
+        (OperationKind::Modify, _) => "Edit",
+        (OperationKind::Delete, _) => "Delete",
+        (OperationKind::Execute, Some(OperationSubtype::Build)) => "Build",
+        (OperationKind::Execute, Some(OperationSubtype::Test)) => "Test",
+        (OperationKind::Execute, Some(OperationSubtype::Format)) => "Format",
+        (OperationKind::Execute, Some(OperationSubtype::Install)) => "Install",
+        (OperationKind::Execute, _) => "Run",
+        (OperationKind::Permission, _) => "Permission",
+        (OperationKind::Network, _) => "Network",
+        (OperationKind::Delegate, _) => "Delegate",
+        (OperationKind::Plan, _) => "Plan",
+        (OperationKind::Status, Some(OperationSubtype::Todo)) => "Todo",
+        (OperationKind::Status, _) => "Status",
+        (OperationKind::System, _) => "System",
+        (OperationKind::Unknown, _) => "Operation",
+    }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
 /// Render the main operation row for a single operation or batch.
 ///
 /// Supports an optional `width` parameter for narrow-terminal priority:
 /// - Width < 30: drop everything except bullet, label, and minimal status.
 /// - Width < 45: drop result summary and risk labels.
-pub fn render_tool_operation_lines(
-    view: &ToolOperationView,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
+pub fn render_tool_operation_lines(view: &ToolOperationView, theme: &Theme) -> Vec<Line<'static>> {
     render_tool_operation_lines_with_width(view, theme, None)
 }
 
@@ -197,12 +246,30 @@ fn render_tool_operation_lines_with_width(
         theme.tool_name
     };
 
-    let label = if view.is_batch {
-        view.label.clone()
+    let prefix = operation_kind_prefix(view.kind, view.subtype);
+    let mut label = if view.is_batch {
+        if view.batch_count > 1 && !view.label.starts_with(&view.batch_count.to_string()) {
+            format!("{} {}", view.batch_count, view.label)
+        } else {
+            view.label.clone()
+        }
     } else {
         view.label.clone()
     };
+    if label.trim().is_empty() {
+        label = prefix.to_string();
+    }
     spans.push(Span::styled(label, kind_style));
+
+    if !view.is_batch {
+        if let Some(target) = view
+            .target
+            .as_deref()
+            .filter(|target| !target.is_empty() && !view.label.contains(*target))
+        {
+            spans.push(Span::styled(format!(" {target}"), theme.dim));
+        }
+    }
 
     // Risk indicator for high/destructive
     if view.risk == OperationRisk::Destructive {
@@ -213,24 +280,18 @@ fn render_tool_operation_lines_with_width(
 
     // Status indicator
     spans.push(Span::raw(" "));
-    if view.active {
-        spans.push(Span::styled("⋯", theme.info));
-    } else if view.has_error {
-        spans.push(Span::styled("[error]", theme.error));
-    } else {
-        spans.push(Span::styled("✔", theme.diff_add));
+    match view.status {
+        OperationStatus::InProgress => spans.push(Span::styled("⋯", theme.info)),
+        OperationStatus::Error => spans.push(Span::styled("[error]", theme.error)),
+        OperationStatus::Cancelled => spans.push(Span::styled("[cancelled]", theme.dim)),
+        OperationStatus::Resolved => spans.push(Span::styled("✔", theme.diff_add)),
     }
 
     // Result summary for single ops
     if !view.is_batch {
         if let Some(ref result) = view.result_summary {
             spans.push(Span::raw(" "));
-            let summary = if result.len() > 60 {
-                format!("{}…", &result[..57])
-            } else {
-                result.clone()
-            };
-            spans.push(Span::styled(summary, theme.dim));
+            spans.push(Span::styled(truncate_chars(result, 60), theme.dim));
         }
     }
 
@@ -257,12 +318,22 @@ pub fn render_todo_operation_lines(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     // Determine aggregate status
-    let any_error = operations.iter().any(|op| op.status == OperationStatus::Error);
-    let all_resolved = operations.iter().all(|op| op.status == OperationStatus::Resolved);
+    let any_error = operations
+        .iter()
+        .any(|op| op.status == OperationStatus::Error);
+    let all_resolved = operations
+        .iter()
+        .all(|op| op.status == OperationStatus::Resolved);
     let active = !all_resolved;
 
     // Title line
-    let title_style = if any_error { theme.error } else if active { theme.info } else { theme.tool_name };
+    let title_style = if any_error {
+        theme.error
+    } else if active {
+        theme.info
+    } else {
+        theme.tool_name
+    };
     let title = if all_resolved {
         "  ● Updated todos"
     } else if active {
@@ -294,6 +365,9 @@ pub fn render_todo_operation_lines(
                 let dedup_key = format!("{}:{}", status, content);
                 if seen.insert(dedup_key) {
                     items.push((status, content));
+                }
+            }
+        }
     }
 
     if items.is_empty() && !any_error {
@@ -321,16 +395,19 @@ pub fn render_todo_operation_lines(
             "in_progress" => theme.info,
             _ => theme.dim,
         };
-        let content_display = if content.len() > 80 {
-            format!("{}…", &content[..77])
-        } else {
-            content.clone()
-        };
+        let content_display = truncate_chars(content, 80);
         lines.push(Line::from(vec![
             Span::raw("   ⎿  "),
             Span::styled(marker, marker_style),
             Span::raw(" "),
-            Span::styled(content_display, if status == "completed" { theme.dim } else { theme.tool_name }),
+            Span::styled(
+                content_display,
+                if status == "completed" {
+                    theme.dim
+                } else {
+                    theme.tool_name
+                },
+            ),
         ]));
     }
 
@@ -349,6 +426,7 @@ pub fn render_todo_operation_lines(
         let status_span = Span::styled(" [error]", theme.error);
         if let Some(first_line) = lines.first_mut() {
             first_line.spans.push(status_span);
+        }
     }
 
     lines
@@ -356,19 +434,13 @@ pub fn render_todo_operation_lines(
 
 /// Render an expanded individual operation row (for use within a batch detail).
 #[allow(dead_code)]
-pub fn render_operation_detail_line(
-    op: &ToolOperation,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
+pub fn render_operation_detail_line(op: &ToolOperation, theme: &Theme) -> Vec<Line<'static>> {
     let view = ToolOperationView::from_operation(op);
     render_tool_operation_lines(&view, theme)
 }
 
 #[cfg(test)]
-pub fn render_tool_operation_content(
-    view: &ToolOperationView,
-    theme: &Theme,
-) -> String {
+pub fn render_tool_operation_content(view: &ToolOperationView, theme: &Theme) -> String {
     render_tool_operation_lines(view, theme)
         .iter()
         .map(|line| {
@@ -410,6 +482,7 @@ mod tests {
             raw_input: serde_json::json!({}),
             raw_output: None,
             side_channels: Vec::new(),
+        }
     }
 
     #[test]
@@ -550,13 +623,20 @@ mod tests {
         };
 
         let rendered = render_todo_operation_lines(&[op], &Theme::default());
-        let plain: Vec<String> = rendered.iter().map(|line| {
-            line.spans.iter().map(|s| s.content.as_ref()).collect::<String>()
-        }).collect();
+        let plain: Vec<String> = rendered
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
         let joined = plain.join("\n");
 
         assert!(joined.contains("Updated todos"));
         assert!(joined.contains("[x] Inspect UI"));
         assert!(joined.contains("[*] Patching rendering"));
         assert!(joined.contains("[ ] Run tests"));
+    }
 }

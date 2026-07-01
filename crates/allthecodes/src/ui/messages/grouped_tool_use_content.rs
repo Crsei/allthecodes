@@ -5,6 +5,7 @@ use crate::ui::tool_activity::user_facing_tool_name;
 use ratatui::text::{Line, Span};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct GroupedToolUseView {
     pub tool_name: String,
     pub count: usize,
@@ -12,6 +13,7 @@ pub struct GroupedToolUseView {
     pub error_count: usize,
 }
 
+#[allow(dead_code)]
 pub fn render_grouped_tool_use_lines(
     view: &GroupedToolUseView,
     theme: &Theme,

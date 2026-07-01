@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
+use allthecodes_tool_display::{OperationStatus, ToolClassifier, ToolOperation};
 use allthecodes_types::message::{ContentBlock, Message};
 
-use super::grouping::{apply_grouping, collapse_read_search_groups};
+use super::operation_grouping::group_by_operation;
 use super::preprocessing::{
     filter_brief_messages, filter_compact_boundary, find_last_thinking_block_id,
     find_latest_bash_output_uuid, is_not_empty_renderable_message, message_content_blocks,
@@ -35,35 +36,35 @@ pub(crate) struct PreparedMessages {
     pub(crate) lookups: MessageLookups,
 }
 
+/// A batch of classified tool operations in a single assistant turn.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolOperationBatchRenderRecord {
+    pub(crate) uuid: uuid::Uuid,
+    pub(crate) timestamp: i64,
+    pub(crate) source_indices: Vec<usize>,
+    /// The classified operations in this batch.
+    pub(crate) operations: Vec<ToolOperation>,
+    /// Whether this batch represents multiple operations (vs a singleton).
+    pub(crate) is_batch: bool,
+}
+
+/// A rendered todo list produced from TodoWrite tool operations.
+#[derive(Debug, Clone)]
+pub(crate) struct TodoListRenderRecord {
+    pub(crate) uuid: uuid::Uuid,
+    pub(crate) timestamp: i64,
+    pub(crate) source_indices: Vec<usize>,
+    pub(crate) operations: Vec<ToolOperation>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum RenderableMessage {
     Message {
         message: Message,
         source_index: usize,
     },
-    GroupedToolUse(GroupedToolUseRenderRecord),
-    CollapsedReadSearch(CollapsedReadSearchRenderRecord),
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct GroupedToolUseRenderRecord {
-    pub(crate) uuid: uuid::Uuid,
-    pub(crate) timestamp: i64,
-    pub(crate) source_indices: Vec<usize>,
-    pub(crate) tool_name: String,
-    pub(crate) tool_use_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CollapsedReadSearchRenderRecord {
-    pub(crate) uuid: uuid::Uuid,
-    pub(crate) timestamp: i64,
-    pub(crate) source_indices: Vec<usize>,
-    pub(crate) tool_use_ids: Vec<String>,
-    pub(crate) read_count: usize,
-    pub(crate) search_count: usize,
-    pub(crate) list_count: usize,
-    pub(crate) latest_hint: Option<String>,
+    ToolOperationBatch(ToolOperationBatchRenderRecord),
+    TodoList(TodoListRenderRecord),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -78,6 +79,8 @@ pub(crate) struct MessageLookups {
     pub(crate) latest_shell_tool_result_id: Option<String>,
     pub(crate) latest_bash_output_uuid: Option<uuid::Uuid>,
     pub(crate) last_thinking_block_id: Option<String>,
+    /// Classified ToolOperations keyed by tool_use_id.
+    pub(crate) tool_operations: HashMap<String, ToolOperation>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,12 +168,12 @@ pub(crate) fn prepare_renderable_messages(
     let reordered = reorder_messages_in_ui(visible);
     let brief_filtered = filter_brief_messages(reordered, options);
     let transcript_limited = truncate_transcript_messages(brief_filtered, options);
-    let grouped = apply_grouping(transcript_limited, options);
-    let collapsed = collapse_read_search_groups(grouped, options);
-    let lookups = build_message_lookups(&normalized, &collapsed);
+    let lookups = build_message_lookups(&normalized, &[]);
+    let tool_operations = lookups.tool_operations.clone();
+    let grouped = group_by_operation(transcript_limited, options, &tool_operations);
 
     PreparedMessages {
-        renderable: collapsed,
+        renderable: grouped,
         lookups,
     }
 }
@@ -248,6 +251,31 @@ pub(crate) fn build_message_lookups(
         if tool_use.is_shell() && lookups.resolved_tool_use_ids.contains(id) {
             lookups.latest_shell_tool_result_id = Some(id.clone());
         }
+
+        // Classify tool uses into operation summaries
+        let status = if lookups.errored_tool_use_ids.contains(id) {
+            OperationStatus::Error
+        } else if lookups.resolved_tool_use_ids.contains(id) {
+            OperationStatus::Resolved
+        } else {
+            OperationStatus::InProgress
+        };
+        let op = if let Some(result) = lookups.tool_results.get(id) {
+            let output = result
+                .tool_use_result
+                .as_deref()
+                .unwrap_or(result.content.as_str());
+            ToolClassifier::classify_with_result(
+                &tool_use.tool_name,
+                &tool_use.input,
+                status,
+                Some(output),
+                result.is_error,
+            )
+        } else {
+            ToolClassifier::classify(&tool_use.tool_name, &tool_use.input, status)
+        };
+        lookups.tool_operations.insert(id.clone(), op);
     }
 
     lookups
@@ -297,16 +325,16 @@ impl RenderableMessage {
     pub(crate) fn uuid(&self) -> uuid::Uuid {
         match self {
             RenderableMessage::Message { message, .. } => message.uuid(),
-            RenderableMessage::GroupedToolUse(group) => group.uuid,
-            RenderableMessage::CollapsedReadSearch(group) => group.uuid,
+            RenderableMessage::ToolOperationBatch(batch) => batch.uuid,
+            RenderableMessage::TodoList(todo) => todo.uuid,
         }
     }
 
     pub(crate) fn timestamp(&self) -> i64 {
         match self {
             RenderableMessage::Message { message, .. } => message.timestamp(),
-            RenderableMessage::GroupedToolUse(group) => group.timestamp,
-            RenderableMessage::CollapsedReadSearch(group) => group.timestamp,
+            RenderableMessage::ToolOperationBatch(batch) => batch.timestamp,
+            RenderableMessage::TodoList(todo) => todo.timestamp,
         }
     }
 
@@ -315,14 +343,11 @@ impl RenderableMessage {
             RenderableMessage::Message { message, .. } => {
                 format!("m:{}:{}", message_type_key(message), message.uuid())
             }
-            RenderableMessage::GroupedToolUse(group) => {
-                format!("g:{}:{}", group.tool_name, group.uuid)
+            RenderableMessage::ToolOperationBatch(batch) => {
+                format!("b:{}:{}", batch.operations.len(), batch.uuid)
             }
-            RenderableMessage::CollapsedReadSearch(group) => {
-                format!(
-                    "c:{}:{}:{}:{}",
-                    group.read_count, group.search_count, group.list_count, group.uuid
-                )
+            RenderableMessage::TodoList(todo) => {
+                format!("t:{}:{}", todo.operations.len(), todo.uuid)
             }
         }
     }
@@ -343,10 +368,10 @@ impl RenderableMessage {
         };
         match self {
             RenderableMessage::Message { source_index, .. } => *source_index == selected,
-            RenderableMessage::GroupedToolUse(group) => group.source_indices.contains(&selected),
-            RenderableMessage::CollapsedReadSearch(group) => {
-                group.source_indices.contains(&selected)
+            RenderableMessage::ToolOperationBatch(batch) => {
+                batch.source_indices.contains(&selected)
             }
+            RenderableMessage::TodoList(todo) => todo.source_indices.contains(&selected),
         }
     }
 
@@ -356,9 +381,7 @@ impl RenderableMessage {
                 message,
                 source_index,
             } => vec![(message, *source_index)],
-            RenderableMessage::GroupedToolUse(_) | RenderableMessage::CollapsedReadSearch(_) => {
-                Vec::new()
-            }
+            RenderableMessage::ToolOperationBatch(_) | RenderableMessage::TodoList(_) => Vec::new(),
         }
     }
 }

@@ -335,6 +335,54 @@ impl ToolClassifier {
                 )
             }
 
+            "UpdatePlan" | "update_plan" | "Plan" | "plan" | "EnterPlanMode"
+            | "enter_plan_mode" | "ExitPlanMode" | "exit_plan_mode" => {
+                let summary = input
+                    .get("plan")
+                    .or_else(|| input.get("summary"))
+                    .or_else(|| input.get("reason"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let label = summary
+                    .as_deref()
+                    .map_or("Update plan".to_string(), |value| {
+                        format!("Plan {}", truncate_str(value, 64))
+                    });
+                (
+                    OperationKind::Plan,
+                    None,
+                    OperationRisk::Safe,
+                    OperationConfidence::High,
+                    label,
+                    None,
+                    summary,
+                )
+            }
+
+            "Status" | "status" | "SystemStatus" | "system_status" | "QueryStatus"
+            | "query_status" => {
+                let summary = input
+                    .get("status")
+                    .or_else(|| input.get("message"))
+                    .or_else(|| input.get("summary"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let label = summary
+                    .as_deref()
+                    .map_or("Status update".to_string(), |value| {
+                        format!("Status {}", truncate_str(value, 64))
+                    });
+                (
+                    OperationKind::Status,
+                    None,
+                    OperationRisk::Safe,
+                    OperationConfidence::High,
+                    label,
+                    None,
+                    summary,
+                )
+            }
+
             // == Unknown tool ==
             _ => {
                 let label = tool_name.to_string();
@@ -444,6 +492,32 @@ mod tests {
         );
         assert_eq!(op.kind, OperationKind::Status);
         assert_eq!(op.subtype, Some(OperationSubtype::Todo));
+    }
+
+    #[test]
+    fn test_classify_update_plan() {
+        let op = ToolClassifier::classify(
+            "update_plan",
+            &json!({"summary": "inspect renderer"}),
+            OperationStatus::Resolved,
+        );
+        assert_eq!(op.kind, OperationKind::Plan);
+        assert_eq!(op.risk, OperationRisk::Safe);
+        assert_eq!(op.command_summary.as_deref(), Some("inspect renderer"));
+        assert!(op.label.contains("inspect renderer"));
+    }
+
+    #[test]
+    fn test_classify_system_status() {
+        let op = ToolClassifier::classify(
+            "system_status",
+            &json!({"status": "running checks"}),
+            OperationStatus::InProgress,
+        );
+        assert_eq!(op.kind, OperationKind::Status);
+        assert_eq!(op.subtype, None);
+        assert_eq!(op.risk, OperationRisk::Safe);
+        assert_eq!(op.command_summary.as_deref(), Some("running checks"));
     }
 
     #[test]

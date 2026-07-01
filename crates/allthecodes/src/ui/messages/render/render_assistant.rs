@@ -4,6 +4,7 @@ use allthecodes_types::message::{ContentBlock, InfoLevel, SystemSubtype, ToolRes
 
 use super::context::MessageRenderContext;
 use super::copy_text::{compact_boundary_summary, image_reference};
+use super::grouping::is_suppressed_operation_tool;
 use super::render_user::{api_error_display_text, plain_text_to_lines};
 use crate::ui::markdown::markdown_to_lines;
 use crate::ui::messages::assistant_thinking_message::{
@@ -81,6 +82,15 @@ pub(super) fn render_assistant_message<'a>(
             }
 
             ContentBlock::ToolUse { id, name, input } => {
+                // When the operation pipeline is active, suppress individual
+                // tool-use rendering — it will be displayed as an operation row.
+                if !render_context.options.verbose
+                    && msg.content.len() == 1
+                    && is_suppressed_operation_tool(name)
+                {
+                    previous_block_was_tool_use = true;
+                    continue;
+                }
                 if !first_block {
                     lines.push(Line::default());
                 }
@@ -99,6 +109,15 @@ pub(super) fn render_assistant_message<'a>(
             }
 
             ContentBlock::ServerToolUse { id, name, input } => {
+                // When the operation pipeline is active, suppress individual
+                // tool-use rendering — it will be displayed as an operation row.
+                if !render_context.options.verbose
+                    && msg.content.len() == 1
+                    && is_suppressed_operation_tool(name)
+                {
+                    previous_block_was_tool_use = true;
+                    continue;
+                }
                 if !first_block {
                     lines.push(Line::default());
                 }

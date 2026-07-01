@@ -4,7 +4,7 @@
 > 范围：`allthecodes` Rust TUI，主要位于 `crates/allthecodes/src/ui/`，并可能新增共享 Rust crate 与 IPC 类型字段。
 > 来源：`allthecodes-web-fix-bugs/development-docs/UI/Chat/08-command-operation-display-plan.zh.md`
 > 关联：`development/tui/tool-call-display-execution-plan.md`、`development/tui/prompt-adjacent-panels-plan.md`
-> 当前状态：计划文档；尚未实现。
+> 当前状态：Phase 1 已完成；Phase 2 metadata 已接入；Phase 3 TUI renderer 主路径已完成；Phase 4 的 Todo/plan/status 主聊天流展示已接入，footer/status surface 仍待实现。
 
 ---
 
@@ -476,19 +476,34 @@ cargo build --workspace --release
 |------|------|
 | 本计划文档 | 已创建 |
 | 共享 operation classifier | **已完成**（`allthecodes-tool-display` crate） |
-| 协议 typed operation metadata | **Phase 2 进行中**（`BackendMessage`/`ToolEvent`/`PermissionEvent` 已添加可选字段；`legacy_backend_to_payload()` 已更新；`sdk_mapper.rs`/`callbacks.rs` 分类逻辑已写入） |
-| TUI operation row | 部分完成（`tool_operation_content.rs` 已实现渲染，未接入 render 管线） |
-| TUI operation batch | 部分完成（`ToolOperationView::from_batch` 已实现，未接入 render 管线） |
-| `verbose` raw mode 对齐 | 未实现 |
-| TODO list/status surface 对接 `TodoWrite` | 未实现 |
+| 协议 typed operation metadata | **已接入基础字段**（Phase 2 后续仍需和 Web/IPC 消费侧继续对齐） |
+| TUI operation row | **已完成**（`tool_operation_content.rs` – `ToolOperationView`、`render_tool_operation_lines`、结果摘要、目标、风险、取消态） |
+| TUI operation batch | **已完成**（`ToolOperationView::from_batch`；同类操作批量摘要；已移除旧 `GroupedToolUse` / `CollapsedReadSearch` 运行时分支） |
+| `verbose` raw mode 对齐 | **已完成**（`verbose` 时跳过 operation batching，走原始 tool-use/tool-result 渲染路径） |
+| TODO list/status surface 对接 `TodoWrite` | **主聊天流已完成，独立 task/status surface 未完成** |
 | result summary / JSON unwrap | **已完成**（`result_summary.rs`） |
+| **Phase 3: 集成到 render 管线** | **已完成主路径** |
+| 　`context.rs` 新增 `ToolOperationBatch` / `TodoList` 变体 + `tool_operations` 查找 | **已完成** |
+| 　`operation_grouping.rs` 新模块（`group_by_operation`、batch 收集、工具结果抑制） | **已完成** |
+| 　`grouping.rs` → 转为 re-export shim（旧运行时分组逻辑删除） | **已完成** |
+| 　`messages.rs` 注册 `pub mod tool_operation_content` | **已完成** |
+| 　`render/mod.rs` dispatch for 新变体 | **已完成** |
+| 　`render_assistant.rs` 非 verbose 时跳过被 operation 管线消费的 ToolUse | **已完成** |
+| 　`render_user.rs` 非 verbose 时跳过被 operation 管线消费的 ToolResult | **已完成** |
+| 　旧 `GroupedToolUse` / `CollapsedReadSearch` enum 分支清理 | **已完成** |
+| 　编译检查 | **已通过**：`cargo check -p allthecodes --bin allthecodes`，无 warning |
+| **Phase 4: TODO、plan、status surface** | **部分完成** |
+| 　`TodoWrite` 不显示普通 tool card，渲染 checklist | **已完成**（`TodoList` render record + `render_todo_operation_lines`） |
+| 　plan/status 工具分类 | **已完成**（`update_plan` / `Plan` / `system_status` / `query_status` 等映射） |
+| 　plan/status 主聊天流展示 | **已完成**（作为 semantic operation row 展示） |
+| 　footer/status surface 联动 | 未实现 |
 | permission `Always Allow` 后端适配 | 未实现 |
 | permission `Auto Review` 后端语义 | 已确认参考 `codex-rs` guardian review，未实现 |
 | side-channel 路径展示 | 未实现 |
 | semantic/raw copy | 未实现 |
 | 权限交互测试 | 未实现 |
-| batch/折叠/复制测试 | 未实现 |
-| release build 验收 | 未执行 |
+| batch/折叠/复制测试 | 部分未实现（classifier/result summary 已覆盖；TUI bin 级聚焦测试当前被 MCP config 测试初始化缺字段阻塞） |
+| release build 验收 | **已通过**：`cargo build --workspace --release` |
 
 ---
 

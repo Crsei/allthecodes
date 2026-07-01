@@ -1,6 +1,7 @@
 mod context;
 mod copy_text;
 mod grouping;
+mod operation_grouping;
 mod preprocessing;
 mod render_assistant;
 mod render_user;
@@ -10,13 +11,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use allthecodes_tool_display::ToolOperation;
 use allthecodes_types::message::{ContentBlock, Message};
 
-use crate::ui::messages::collapsed_read_search_content::{
-    render_collapsed_read_search_lines, CollapsedReadSearchView,
-};
-use crate::ui::messages::grouped_tool_use_content::{
-    render_grouped_tool_use_lines, GroupedToolUseView,
+use crate::ui::messages::tool_operation_content::{
+    render_todo_operation_lines, render_tool_operation_lines, ToolOperationView,
 };
 use crate::ui::theme::Theme;
 use crate::ui::virtual_scroll::VirtualScroll;
@@ -125,8 +124,8 @@ fn renderable_message_uses_user_background(msg: &RenderableMessage) -> bool {
             ..
         } => user_message_uses_background(user),
         RenderableMessage::Message { .. }
-        | RenderableMessage::GroupedToolUse(_)
-        | RenderableMessage::CollapsedReadSearch(_) => false,
+        | RenderableMessage::ToolOperationBatch(_)
+        | RenderableMessage::TodoList(_) => false,
     }
 }
 
@@ -242,43 +241,19 @@ pub(in crate::ui) fn render_renderable_message_with_context<'a>(
         RenderableMessage::Message { message, .. } => {
             render_single_message_with_context(message, index, theme, width, render_context)
         }
-        RenderableMessage::GroupedToolUse(group) => {
-            let resolved_count = group
-                .tool_use_ids
-                .iter()
-                .filter(|id| render_context.lookups.resolved_tool_use_ids.contains(*id))
-                .count();
-            let error_count = group
-                .tool_use_ids
-                .iter()
-                .filter(|id| render_context.lookups.errored_tool_use_ids.contains(*id))
-                .count();
-            render_grouped_tool_use_lines(
-                &GroupedToolUseView {
-                    tool_name: group.tool_name.clone(),
-                    count: group.tool_use_ids.len(),
-                    resolved_count,
-                    error_count,
-                },
-                theme,
-            )
+        RenderableMessage::ToolOperationBatch(batch) => {
+            if batch.is_batch {
+                let op_refs: Vec<&ToolOperation> = batch.operations.iter().collect();
+                let view = ToolOperationView::from_batch(&op_refs);
+                render_tool_operation_lines(&view, theme)
+            } else if let Some(op) = batch.operations.first() {
+                let view = ToolOperationView::from_operation(op);
+                render_tool_operation_lines(&view, theme)
+            } else {
+                Vec::new()
+            }
         }
-        RenderableMessage::CollapsedReadSearch(group) => {
-            let active = group
-                .tool_use_ids
-                .iter()
-                .any(|id| render_context.lookups.in_progress_tool_use_ids.contains(id));
-            render_collapsed_read_search_lines(
-                &CollapsedReadSearchView {
-                    read_count: group.read_count,
-                    search_count: group.search_count,
-                    list_count: group.list_count,
-                    active,
-                    latest_hint: group.latest_hint.clone(),
-                },
-                theme,
-            )
-        }
+        RenderableMessage::TodoList(todo) => render_todo_operation_lines(&todo.operations, theme),
     }
 }
 
@@ -938,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn render_pipeline_collapses_read_search_and_hides_microcompact() {
+    fn render_pipeline_renders_read_search_operations_and_hides_microcompact() {
         let read_id = "toolu_read".to_string();
         let grep_id = "toolu_grep".to_string();
         let messages = vec![
@@ -1034,8 +1009,8 @@ mod tests {
             .join("\n");
 
         assert!(!rendered.contains("microcompact"));
-        assert!(rendered.contains("Read 1 file"));
-        assert!(rendered.contains("Searched for 1 pattern"));
+        assert!(rendered.contains("Read src/lib.rs"));
+        assert!(rendered.contains("Search \"fn main\""));
     }
 
     #[test]
@@ -1105,10 +1080,11 @@ mod tests {
 
         let rendered = render_pipeline_text(&messages, super::MessageRenderOptions::default());
 
-        assert!(rendered.contains("2 Bash calls · completed"));
-        assert!(rendered.contains("2 PowerShell calls"));
-        assert!(!rendered.contains("first bash output"));
-        assert!(!rendered.contains("second bash output"));
+        assert!(rendered.contains("cargo test"));
+        assert!(rendered.contains("cargo build"));
+        assert!(rendered.contains("2 commands"));
+        assert!(rendered.contains("first bash output"));
+        assert!(rendered.contains("second bash output"));
     }
 
     #[test]
@@ -1151,9 +1127,14 @@ mod tests {
 
             let rendered = render_pipeline_text(&messages, super::MessageRenderOptions::default());
 
+            let expected = if matches!(tool_name, "Write" | "FileWrite") {
+                "2 creates"
+            } else {
+                "2 edits"
+            };
             assert!(
-                rendered.contains("2 Edit calls"),
-                "{tool_name} should render as a grouped edit call, got:\n{rendered}"
+                rendered.contains(expected),
+                "{tool_name} should render as {expected}, got:\n{rendered}"
             );
         }
     }
