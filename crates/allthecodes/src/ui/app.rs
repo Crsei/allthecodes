@@ -21,7 +21,8 @@ use allthecodes_keybindings::KeybindingRegistry;
 use allthecodes_services::prompt_suggestion::PromptSuggestion;
 use allthecodes_types::agent_events::{AgentEvent, TeamEvent};
 use allthecodes_types::callbacks::AskUserRequestPayload;
-use allthecodes_types::message::Message;
+use allthecodes_types::message::{Message, ProgressMessage};
+use allthecodes_types::tool_operation::{OperationKind, ToolOperation};
 use allthecodes_voice::VoiceController;
 use ratatui::layout::Rect;
 use status::SessionUsageSnapshot;
@@ -162,6 +163,25 @@ fn notification_from_backend_message(message: &BackendMessage) -> Option<InAppNo
                 ),
             )
             .with_tone(NotificationTone::Dim)
+            .with_fold(true)
+            .with_timeout_ms(5000),
+        ),
+        BackendMessage::PermissionAutoReview { event } => Some(
+            InAppNotification::new(
+                "permission-auto-review",
+                NotificationPriority::Low,
+                format!(
+                    "auto review: {}\naction: {}\nsource: {}",
+                    event.status,
+                    event.action.as_deref().unwrap_or("permission request"),
+                    event.decision_source
+                ),
+            )
+            .with_tone(match event.status.as_str() {
+                "approved" => NotificationTone::Info,
+                "denied" | "failed" | "timed_out" | "circuit_open" => NotificationTone::Warning,
+                _ => NotificationTone::Dim,
+            })
             .with_fold(true)
             .with_timeout_ms(5000),
         ),
@@ -531,6 +551,7 @@ impl App {
     }
 
     pub fn show_permission_request(&mut self, request: PermissionDialogRequest) {
+        self.add_permission_marker(&request);
         self.permission_dialog = Some(if request.tool_use_id.is_empty() {
             let input = request.tool_input.to_string();
             PermissionDialog::new(&request.tool_name, &input, &request.message)
@@ -538,6 +559,34 @@ impl App {
             PermissionDialog::from_request(request)
         });
         self.dirty = true;
+    }
+
+    fn add_permission_marker(&mut self, request: &PermissionDialogRequest) {
+        if request.tool_use_id.is_empty() {
+            return;
+        }
+        let text = permission_marker_text(request);
+        let marker = Message::Progress(ProgressMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp(),
+            tool_use_id: request.tool_use_id.clone(),
+            data: serde_json::json!({
+                "message": text,
+                "permission": true,
+                "tool": request.tool_name,
+            }),
+        });
+        let replace_last = self.messages.last().is_some_and(|message| {
+            matches!(
+                message,
+                Message::Progress(existing) if existing.tool_use_id == request.tool_use_id
+            )
+        });
+        if replace_last {
+            self.replace_last_message(marker);
+        } else {
+            self.add_message(marker);
+        }
     }
 
     pub fn show_bypass_permissions_mode_dialog(&mut self, disabled: bool) {
@@ -1440,6 +1489,71 @@ fn current_unix_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or_default()
+}
+
+fn permission_marker_text(request: &PermissionDialogRequest) -> String {
+    let summary = request
+        .operation
+        .as_ref()
+        .and_then(|operation| permission_marker_from_operation(request, operation))
+        .unwrap_or_else(|| {
+            let summary = request.input_summary();
+            if summary == "(no details supplied)" {
+                request.tool_name.clone()
+            } else {
+                format!("{} {}", request.tool_name, compact_inline(&summary, 80))
+            }
+        });
+    format!("Permission requested: {summary}")
+}
+
+fn permission_marker_from_operation(
+    request: &PermissionDialogRequest,
+    operation: &ToolOperation,
+) -> Option<String> {
+    let normalized_tool = request.tool_name.to_ascii_lowercase();
+    let target = operation
+        .target
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    let command = operation
+        .command_summary
+        .as_deref()
+        .filter(|value| !value.is_empty());
+
+    if normalized_tool.contains("bash") || normalized_tool.contains("powershell") {
+        return command
+            .or_else(|| target)
+            .map(|value| compact_inline(value, 100));
+    }
+    if normalized_tool.contains("web") || normalized_tool.contains("fetch") {
+        return target.map(|value| format!("Fetch {}", compact_inline(value, 90)));
+    }
+    if normalized_tool.contains("write") || operation.kind == OperationKind::Create {
+        return target.map(|value| format!("Write {}", compact_inline(value, 90)));
+    }
+    if normalized_tool.contains("edit")
+        || normalized_tool.contains("patch")
+        || normalized_tool.contains("sed")
+        || operation.kind == OperationKind::Modify
+    {
+        return target.map(|value| format!("Modify {}", compact_inline(value, 90)));
+    }
+    target
+        .map(|value| format!("{} {}", operation.kind.label(), compact_inline(value, 90)))
+        .or_else(|| {
+            command
+                .map(|value| compact_inline(value, 100))
+                .or_else(|| strip_permission_prefix(&operation.label).map(ToOwned::to_owned))
+        })
+}
+
+fn strip_permission_prefix(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    trimmed
+        .strip_prefix("Permission: ")
+        .or(Some(trimmed))
+        .filter(|value| !value.is_empty())
 }
 
 fn short_agent_label(description: &str, fallback: &str) -> Option<String> {

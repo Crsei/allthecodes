@@ -1,6 +1,7 @@
 //! Routes structured tool permission requests to tool-specific renderers.
 
 use allthecodes_types::callbacks::PermissionRequestPayload;
+use allthecodes_types::tool_operation::ToolOperation;
 use serde_json::Value;
 
 use super::bash_permission_request::bash_permission_request::render_bash_permission_request;
@@ -44,6 +45,7 @@ pub struct PermissionDialogRequest {
     pub tool_input: Value,
     pub message: String,
     pub options: Vec<String>,
+    pub operation: Option<ToolOperation>,
 }
 
 impl PermissionDialogRequest {
@@ -54,6 +56,7 @@ impl PermissionDialogRequest {
             tool_input: payload.tool_input,
             message: payload.message,
             options: payload.options,
+            operation: payload.operation,
         }
     }
 
@@ -66,6 +69,7 @@ impl PermissionDialogRequest {
             tool_input,
             message: message.to_string(),
             options: Vec::new(),
+            operation: None,
         }
     }
 
@@ -1080,6 +1084,7 @@ mod tests {
             tool_input: input,
             message: "needs approval".to_string(),
             options: Vec::new(),
+            operation: None,
         }
     }
 

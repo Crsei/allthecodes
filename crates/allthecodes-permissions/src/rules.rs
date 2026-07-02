@@ -57,6 +57,20 @@ const READ_LIKE_TOOLS: &[&str] = &["Read", "FileRead", "Glob", "Grep"];
 /// directory or `additionalDirectories`.
 const ACCEPT_EDITS_BASH_COMMANDS: &[&str] = &["mkdir", "touch", "mv", "cp"];
 
+/// Encode a literal permission specifier that must match exactly.
+///
+/// The permission grammar uses `Tool(pattern)` with `*` and prefixes for
+/// matching. Storing exact strings as hex prevents shell wildcards, commas,
+/// parentheses, and JSON punctuation from broadening the saved rule.
+pub fn literal_specifier(value: &str) -> String {
+    let mut encoded = String::with_capacity("exact-hex:".len() + value.len() * 2);
+    encoded.push_str("exact-hex:");
+    for byte in value.as_bytes() {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    encoded
+}
+
 /// True when a tool counts as a file-system edit for accept-edits semantics.
 pub fn is_edit_tool(tool_name: &str) -> bool {
     EDIT_TOOLS.contains(&tool_name)
@@ -247,6 +261,8 @@ fn rule_tool_matches_invocation(rule_tool: &str, tool_name: &str) -> bool {
 
 fn tool_aliases(tool_name: &str) -> &'static [&'static str] {
     match tool_name {
+        "Bash" => &["bash"],
+        "bash" => &["Bash"],
         "ViewImage" => &["view_image"],
         "view_image" => &["ViewImage"],
         "GetGoal" => &["get_goal"],
@@ -259,6 +275,8 @@ fn tool_aliases(tool_name: &str) -> &'static [&'static str] {
         "workflow" => &["Workflow"],
         "ApplyPatch" => &["apply_patch"],
         "apply_patch" => &["ApplyPatch"],
+        "PowerShell" => &["powershell", "pwsh", "Pwsh"],
+        "powershell" | "pwsh" | "Pwsh" => &["PowerShell"],
         "PushNotification" => &["push_notification"],
         "push_notification" => &["PushNotification"],
         "ListAgents" => &["list_agents"],
@@ -280,9 +298,17 @@ fn tool_aliases(tool_name: &str) -> &'static [&'static str] {
 /// Match a `ToolName(pattern)` specifier against the tool's input.
 fn specifier_matches(rule_tool: &str, tool_name: &str, input: &Value, pattern: &str) -> bool {
     match rule_tool {
-        "Bash" if tool_name == "Bash" => {
-            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            bash_matcher::bash_pattern_matches(pattern, cmd)
+        "Bash" if matches!(tool_name, "Bash" | "bash") => {
+            let cmd = shell_command_input(input);
+            if pattern_is_exact_literal(pattern) {
+                text_specifier_matches(pattern, cmd)
+            } else {
+                bash_matcher::bash_pattern_matches(pattern, cmd)
+            }
+        }
+        "PowerShell" if matches!(tool_name, "PowerShell" | "powershell" | "pwsh" | "Pwsh") => {
+            let cmd = shell_command_input(input);
+            text_specifier_matches(pattern, cmd)
         }
         "Read" if is_read_like_tool(tool_name) => read_specifier_matches(tool_name, input, pattern),
         "Edit" if is_edit_tool(tool_name) => file_path_specifier_matches(input, pattern),
@@ -332,9 +358,20 @@ fn specifier_matches(rule_tool: &str, tool_name: &str, input: &Value, pattern: &
 fn file_path_specifier_matches(input: &Value, pattern: &str) -> bool {
     let path = input
         .get("file_path")
+        .or_else(|| input.get("notebook_path"))
+        .or_else(|| input.get("path"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
     text_specifier_matches(pattern, path)
+}
+
+fn shell_command_input(input: &Value) -> &str {
+    input
+        .get("command")
+        .or_else(|| input.get("cmd"))
+        .or_else(|| input.get("script"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
 }
 
 fn read_specifier_matches(tool_name: &str, input: &Value, pattern: &str) -> bool {
@@ -396,6 +433,9 @@ fn text_specifier_matches(pattern: &str, value: &str) -> bool {
     if pat.is_empty() || pat == "*" {
         return true;
     }
+    if let Some(exact) = decode_exact_literal(pat) {
+        return exact == value;
+    }
     if let Some(prefix) = pat.strip_prefix("prefix:") {
         return value.starts_with(prefix);
     }
@@ -403,6 +443,23 @@ fn text_specifier_matches(pattern: &str, value: &str) -> bool {
         return glob_match(value, pat);
     }
     value == pat
+}
+
+fn pattern_is_exact_literal(pattern: &str) -> bool {
+    pattern.trim().starts_with("exact-hex:")
+}
+
+fn decode_exact_literal(pattern: &str) -> Option<String> {
+    let hex = pattern.strip_prefix("exact-hex:")?;
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|idx| u8::from_str_radix(&hex[idx..idx + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// Minimal glob matching that supports `*` as a wildcard for any sequence
@@ -644,6 +701,56 @@ mod tests {
         assert!(glob_match("Bash", "*"));
         assert!(!glob_match("FileRead", "Bash*"));
         assert!(glob_match("Bash(rm -rf)", "Bash(*)"));
+    }
+
+    #[test]
+    fn test_literal_specifier_matches_bash_exactly() {
+        let rule = format!("Bash({})", literal_specifier("cargo test *"));
+        assert!(rule_matches(
+            "Bash",
+            &json!({ "command": "cargo test *" }),
+            &rule
+        ));
+        assert!(!rule_matches(
+            "Bash",
+            &json!({ "command": "cargo test foo" }),
+            &rule
+        ));
+    }
+
+    #[test]
+    fn test_literal_specifier_matches_powershell_exactly() {
+        let rule = format!("PowerShell({})", literal_specifier("Get-ChildItem *"));
+        assert!(rule_matches(
+            "PowerShell",
+            &json!({ "command": "Get-ChildItem *" }),
+            &rule
+        ));
+        assert!(rule_matches(
+            "pwsh",
+            &json!({ "script": "Get-ChildItem *" }),
+            &rule
+        ));
+        assert!(!rule_matches(
+            "PowerShell",
+            &json!({ "command": "Get-ChildItem src" }),
+            &rule
+        ));
+    }
+
+    #[test]
+    fn test_literal_specifier_matches_file_path_exactly() {
+        let rule = format!("Edit({})", literal_specifier("src/lib*.rs"));
+        assert!(rule_matches(
+            "Edit",
+            &json!({ "path": "src/lib*.rs" }),
+            &rule
+        ));
+        assert!(!rule_matches(
+            "Edit",
+            &json!({ "path": "src/lib.rs" }),
+            &rule
+        ));
     }
 
     #[test]

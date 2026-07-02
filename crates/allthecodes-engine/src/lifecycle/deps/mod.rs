@@ -16,13 +16,13 @@ use uuid::Uuid;
 
 use allthecodes_types::callbacks::PermissionEventPayload;
 use allthecodes_types::permission_events::{
-    HookPermissionDecisionEvent, PermissionDecisionDebugEvent,
+    HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
 
 use crate::compact::compaction::build_post_compact_messages_with_boundary;
 use crate::permissions::decision::{
-    AutoClassifierDecision, AutoClassifierStage, DenialTracker, PermissionDecision,
-    PermissionDecisionReason,
+    AutoClassifierDecision, AutoClassifierStage, AutoClassifierVerdict, DenialTracker,
+    PermissionDecision, PermissionDecisionReason,
 };
 use crate::tool_runtime::execution::{
     find_tool, is_plan_mode_plan_file_write, sandbox_allowed_command_applies, security_validate,
@@ -50,8 +50,8 @@ mod permission;
 pub(crate) use model_call::{model_for_autocompact, tool_execution_result_to_exec_result};
 pub(crate) use permission::{
     auto_classifier_needed, central_permission_decision_for_tool, emit_hook_permission_decision,
-    emit_permission_decision_debug, hook_error_is_critical, permission_denied_message,
-    permission_feedback_message, permission_result_from_decision,
+    emit_permission_auto_review, emit_permission_decision_debug, hook_error_is_critical,
+    permission_denied_message, permission_feedback_message, permission_result_from_decision,
 };
 
 /// Dependency injection bridge: provides the query loop with access to the
@@ -149,6 +149,33 @@ impl QueryEngineDeps {
                     AutoClassifierStage::Fast,
                 ));
             }
+            (self.cwd.clone(), state.messages.clone())
+        };
+
+        fn_ref(
+            tool_name.to_string(),
+            tool_input.clone(),
+            tool_classifier_input.clone(),
+            messages,
+            cwd,
+        )
+        .await
+    }
+
+    /// Compute an explicit user-requested auto-review decision.
+    ///
+    /// Unlike Auto mode, this is not gated by the active permission mode and
+    /// does not apply the Auto-mode allowlist. Callers must fail closed when it
+    /// returns `None` or a non-allow verdict.
+    async fn compute_permission_auto_review(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        tool_classifier_input: &serde_json::Value,
+    ) -> Option<AutoClassifierDecision> {
+        let fn_ref = self.auto_classifier_fn.as_ref()?;
+        let (cwd, messages) = {
+            let state = self.state.read();
             (self.cwd.clone(), state.messages.clone())
         };
 

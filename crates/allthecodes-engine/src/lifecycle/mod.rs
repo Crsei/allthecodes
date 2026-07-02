@@ -116,6 +116,36 @@ pub(crate) struct QueryEngineState {
     pub(crate) audit_ctx: AuditContext,
     /// Auto-mode classifier denial state for interactive fallback.
     pub(crate) auto_denial_tracker: crate::permissions::decision::DenialTracker,
+    /// Explicit user-requested auto-review state for circuit breaking.
+    pub(crate) auto_review_tracker: AutoReviewTracker,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AutoReviewTracker {
+    attempted_tool_use_ids: HashSet<String>,
+    consecutive_denials: usize,
+}
+
+impl AutoReviewTracker {
+    const MAX_CONSECUTIVE_DENIALS: usize = 2;
+
+    pub(crate) fn try_start(&mut self, tool_use_id: &str) -> Result<(), &'static str> {
+        if self.consecutive_denials >= Self::MAX_CONSECUTIVE_DENIALS {
+            return Err("circuit_open");
+        }
+        if !self.attempted_tool_use_ids.insert(tool_use_id.to_string()) {
+            return Err("duplicate_review");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_allowed(&mut self) {
+        self.consecutive_denials = 0;
+    }
+
+    pub(crate) fn record_denied(&mut self) {
+        self.consecutive_denials = self.consecutive_denials.saturating_add(1);
+    }
 }
 
 #[derive(Default)]
@@ -297,6 +327,7 @@ impl QueryEngine {
                 session_memory,
                 audit_ctx: AuditContext::noop("pending"),
                 auto_denial_tracker: crate::permissions::decision::DenialTracker::default(),
+                auto_review_tracker: AutoReviewTracker::default(),
             })),
             aborted: Arc::new(AtomicBool::new(false)),
             pending_bg_results: crate::agent_runtime::PendingBackgroundResults::new(),

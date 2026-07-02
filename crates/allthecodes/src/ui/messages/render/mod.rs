@@ -34,6 +34,12 @@ use super::wrap::wrap_line_to_width;
 
 const USER_MESSAGE_BACKGROUND: Color = Color::Rgb(31, 35, 42);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui) enum CopyTextMode {
+    Semantic,
+    Raw,
+}
+
 // Re-exports to keep the external API path unchanged.
 #[cfg(test)]
 pub(crate) use self::context::build_message_render_context;
@@ -258,6 +264,17 @@ pub(in crate::ui) fn render_renderable_message_with_context<'a>(
 }
 
 pub(in crate::ui) fn message_copy_text(msg: &Message) -> String {
+    message_copy_text_with_mode(msg, CopyTextMode::Semantic)
+}
+
+pub(in crate::ui) fn message_copy_text_with_mode(msg: &Message, mode: CopyTextMode) -> String {
+    match mode {
+        CopyTextMode::Semantic => message_semantic_copy_text(msg),
+        CopyTextMode::Raw => message_raw_copy_text(msg),
+    }
+}
+
+fn message_semantic_copy_text(msg: &Message) -> String {
     match msg {
         Message::User(user) => message_content_copy_text(&user.content),
         Message::Assistant(assistant) => assistant
@@ -274,6 +291,65 @@ pub(in crate::ui) fn message_copy_text(msg: &Message) -> String {
             .map(str::to_string)
             .unwrap_or_else(|| progress.data.to_string()),
         Message::Attachment(attachment) => attachment_copy_text(&attachment.attachment),
+    }
+}
+
+fn message_raw_copy_text(msg: &Message) -> String {
+    let value = match msg {
+        Message::User(user) => serde_json::json!({
+            "type": "user",
+            "uuid": user.uuid.to_string(),
+            "timestamp": user.timestamp,
+            "role": user.role,
+            "content": message_content_raw_json(&user.content),
+            "is_meta": user.is_meta,
+            "tool_use_result": user.tool_use_result,
+            "source_tool_assistant_uuid": user
+                .source_tool_assistant_uuid
+                .map(|uuid| uuid.to_string()),
+        }),
+        Message::Assistant(assistant) => serde_json::json!({
+            "type": "assistant",
+            "uuid": assistant.uuid.to_string(),
+            "timestamp": assistant.timestamp,
+            "role": assistant.role,
+            "content": assistant.content,
+            "usage": assistant.usage,
+            "stop_reason": assistant.stop_reason,
+            "is_api_error_message": assistant.is_api_error_message,
+            "api_error": assistant.api_error,
+            "cost_usd": assistant.cost_usd,
+        }),
+        Message::System(system) => serde_json::json!({
+            "type": "system",
+            "uuid": system.uuid.to_string(),
+            "timestamp": system.timestamp,
+            "subtype": format!("{:?}", system.subtype),
+            "content": system.content,
+        }),
+        Message::Progress(progress) => serde_json::json!({
+            "type": "progress",
+            "uuid": progress.uuid.to_string(),
+            "timestamp": progress.timestamp,
+            "tool_use_id": progress.tool_use_id,
+            "data": progress.data,
+        }),
+        Message::Attachment(attachment) => serde_json::json!({
+            "type": "attachment",
+            "uuid": attachment.uuid.to_string(),
+            "timestamp": attachment.timestamp,
+            "attachment": attachment.attachment,
+        }),
+    };
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| format!("{msg:#?}"))
+}
+
+fn message_content_raw_json(
+    content: &allthecodes_types::message::MessageContent,
+) -> serde_json::Value {
+    match content {
+        allthecodes_types::message::MessageContent::Text(text) => serde_json::json!(text),
+        allthecodes_types::message::MessageContent::Blocks(blocks) => serde_json::json!(blocks),
     }
 }
 
@@ -364,7 +440,10 @@ fn message_detail_lines(msg: &Message, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{message_copy_text, message_primary_reference, render_single_message};
+    use super::{
+        message_copy_text, message_copy_text_with_mode, message_primary_reference,
+        render_single_message, CopyTextMode,
+    };
     use crate::ui::diff::file_edit_diff::unified_hunk_lines_from_edit;
     use crate::ui::messages::user_text_message::CONVERSATION_INTERRUPTED_MESSAGE;
     use crate::ui::theme::Theme;
@@ -506,6 +585,39 @@ mod tests {
             lines_to_text(render_single_message(&interrupted, &theme)),
             CONVERSATION_INTERRUPTED_MESSAGE
         );
+    }
+
+    #[test]
+    fn message_copy_modes_separate_semantic_summary_from_raw_debug_json() {
+        let assistant = Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1_700_000_000,
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "toolu_bash".to_string(),
+                name: "Bash".to_string(),
+                input: json!({
+                    "description": "Run Rust tests",
+                    "command": "cargo test -p allthecodes-tool-display",
+                }),
+            }],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        });
+
+        let semantic = message_copy_text(&assistant);
+        assert_eq!(semantic, "command=cargo test -p allthecodes-tool-display");
+        assert!(!semantic.contains("\"command\""));
+        assert!(!semantic.contains("tool_use"));
+
+        let raw = message_copy_text_with_mode(&assistant, CopyTextMode::Raw);
+        assert!(raw.contains("\"type\": \"assistant\""));
+        assert!(raw.contains("\"type\": \"tool_use\""));
+        assert!(raw.contains("\"name\": \"Bash\""));
+        assert!(raw.contains("\"command\": \"cargo test -p allthecodes-tool-display\""));
     }
 
     #[test]
@@ -1254,8 +1366,10 @@ mod tests {
 
         let summary = super::copy_text::tool_input_summary("Write", &input, 28);
 
-        assert!(summary.starts_with("path=src/main.rs "));
-        assert!(summary.ends_with("..."));
+        assert_eq!(summary, "path=src/main.rs");
+
+        let fallback = super::copy_text::tool_input_summary("Unknown", &input, 28);
+        assert!(fallback.ends_with("..."));
     }
 
     fn render_pipeline_text(messages: &[Message], options: super::MessageRenderOptions) -> String {

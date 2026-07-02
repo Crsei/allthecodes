@@ -10,7 +10,9 @@ use crate::ui::completions::{
     CombinedCompleter, CommandCompletionProvider, CompletionContext, CompletionItem,
 };
 use crate::ui::history_search_dialog::{HistorySearchDialog, HistorySearchDialogEvent};
-use crate::ui::messages::{message_copy_text, message_primary_reference};
+use crate::ui::messages::{
+    message_copy_text, message_copy_text_with_mode, message_primary_reference, CopyTextMode,
+};
 use crate::ui::path_completion::PathCompletionProvider;
 use crate::ui::shell_history_completion::ShellHistoryCompletionProvider;
 use crate::ui::slack_channel_completion::SlackChannelCompletionProvider;
@@ -1089,6 +1091,16 @@ impl App {
                 if let Some(message) = self.selected_message.and_then(|idx| self.messages.get(idx))
                 {
                     return Some(AppAction::CopyMessage(message_copy_text(message)));
+                }
+                return Some(AppAction::None);
+            }
+            "messageActions:rawCopy" => {
+                if let Some(message) = self.selected_message.and_then(|idx| self.messages.get(idx))
+                {
+                    return Some(AppAction::CopyMessage(message_copy_text_with_mode(
+                        message,
+                        CopyTextMode::Raw,
+                    )));
                 }
                 return Some(AppAction::None);
             }

@@ -742,6 +742,20 @@ pub async fn run_tui(
                         }
                         app.add_notification(notification);
                     }
+                    EngineEvent::PermissionAutoReview(event) => {
+                        let text = format!(
+                            "auto review: {}\naction: {}\nsource: {}",
+                            event.status,
+                            event.action.as_deref().unwrap_or("permission request"),
+                            event.decision_source
+                        );
+                        let notification =
+                            permission_event_notification(text, NotificationTone::Info);
+                        if app.sound_effects_enabled() && event.status != "started" {
+                            notify_desktop(&mut desktop_notifications, &notification.text);
+                        }
+                        app.add_notification(notification);
+                    }
                     EngineEvent::Done => {
                         app.set_streaming(false);
                         clear_terminal_progress(

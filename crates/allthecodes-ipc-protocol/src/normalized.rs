@@ -9,7 +9,7 @@ use crate::protocol::{
 };
 use crate::subsystem_types::SubsystemStatusSnapshot;
 use allthecodes_types::permission_events::{
-    HookPermissionDecisionEvent, PermissionDecisionDebugEvent,
+    HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
 use allthecodes_types::tool_operation::{OperationResultSummary, ToolOperation};
 
@@ -126,6 +126,9 @@ pub enum PermissionEvent {
     PermissionDecisionDebug {
         event: PermissionDecisionDebugEvent,
     },
+    PermissionAutoReview {
+        event: PermissionAutoReviewEvent,
+    },
 }
 
 fn default_true() -> bool {
@@ -224,6 +227,7 @@ pub fn legacy_backend_type(message: &BackendMessage) -> &'static str {
         BackendMessage::QuestionRequest { .. } => "question_request",
         BackendMessage::HookPermissionDecision { .. } => "hook_permission_decision",
         BackendMessage::PermissionDecisionDebug { .. } => "permission_decision_debug",
+        BackendMessage::PermissionAutoReview { .. } => "permission_auto_review",
         BackendMessage::ToolProgress { .. } => "tool_progress",
         BackendMessage::BackgroundAgentComplete { .. } => "background_agent_complete",
         BackendMessage::SystemInfo { .. } => "system_info",
@@ -389,6 +393,11 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
         }
         BackendMessage::PermissionDecisionDebug { event } => {
             LegacyBackendPayload::Permission(PermissionEvent::PermissionDecisionDebug {
+                event: event.clone(),
+            })
+        }
+        BackendMessage::PermissionAutoReview { event } => {
+            LegacyBackendPayload::Permission(PermissionEvent::PermissionAutoReview {
                 event: event.clone(),
             })
         }

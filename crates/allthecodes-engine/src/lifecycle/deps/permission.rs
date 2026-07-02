@@ -174,6 +174,16 @@ pub(crate) fn emit_hook_permission_decision(
     });
 }
 
+pub(crate) fn emit_permission_auto_review(
+    ctx: &crate::types::tool::ToolUseContext,
+    event: PermissionAutoReviewEvent,
+) {
+    let Some(callback) = ctx.permission_event_callback.as_ref() else {
+        return;
+    };
+    callback(PermissionEventPayload::AutoReview { event });
+}
+
 pub(crate) fn hook_error_is_critical(
     tool_name: &str,
     hook_configs: &[allthecodes_types::hooks::HookEventConfig],

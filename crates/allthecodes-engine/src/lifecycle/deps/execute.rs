@@ -559,6 +559,7 @@ impl QueryEngineDeps {
                                 "Allow".to_string(),
                                 "Deny".to_string(),
                                 "Always Allow".to_string(),
+                                "Auto Review".to_string(),
                             ];
                             let response = callback(PermissionRequestPayload {
                                 tool_use_id: request.tool_use_id.clone(),
@@ -566,6 +567,7 @@ impl QueryEngineDeps {
                                 tool_input: effective_input.clone(),
                                 message,
                                 options,
+                                operation: None,
                             })
                             .await;
 
@@ -591,17 +593,328 @@ impl QueryEngineDeps {
                                 }
                                 "always_allow" => {
                                     accepted_permission_feedback = response.feedback.clone();
-                                    // Record a session-level grant so subsequent
-                                    // calls to this tool don't re-prompt.
-                                    self.state
-                                        .write()
-                                        .app_state
-                                        .tool_permission_context
-                                        .grant_session_allow(&request.tool_name);
+                                    let rule = exact_always_allow_rule(
+                                        &request.tool_name,
+                                        &effective_input,
+                                    );
+                                    if let Err(error) =
+                                        persist_local_always_allow_rule(&self.cwd, &rule)
+                                    {
+                                        let error_message = format!(
+                                            "Permission denied: failed to persist Always Allow rule: {error}"
+                                        );
+                                        use crate::observability::{
+                                            AuditLevel, EventKind, Outcome, Stage,
+                                        };
+                                        perm_audit_ctx.emit(
+                                            EventKind::PermissionResolved,
+                                            Stage::Permission,
+                                            AuditLevel::Warn,
+                                            Outcome::Denied,
+                                            None,
+                                            Some(serde_json::json!({
+                                                "tool_name": request.tool_name,
+                                                "decision": "always_allow",
+                                                "source": "user",
+                                                "error": error.to_string(),
+                                            })),
+                                        );
+                                        return Ok(permission_denied_exec_result(
+                                            &request,
+                                            error_message,
+                                        ));
+                                    }
+                                    {
+                                        let mut state = self.state.write();
+                                        add_local_always_allow_rule(&mut state, &rule);
+                                    }
                                     tracing::debug!(
                                         tool = %request.tool_name,
-                                        "session-level always_allow grant recorded"
+                                        rule = %rule,
+                                        "local exact always_allow rule recorded"
                                     );
+                                    use crate::observability::{
+                                        AuditLevel, EventKind, Outcome, Stage,
+                                    };
+                                    perm_audit_ctx.emit(
+                                        EventKind::PermissionResolved,
+                                        Stage::Permission,
+                                        AuditLevel::Info,
+                                        Outcome::Completed,
+                                        None,
+                                        Some(serde_json::json!({
+                                            "tool_name": request.tool_name,
+                                            "decision": "always_allow",
+                                            "source": "user",
+                                            "rule": rule,
+                                        })),
+                                    );
+                                }
+                                "auto_review" => {
+                                    let risk_level =
+                                        permission_risk_level(&request.tool_name, &effective_input);
+                                    let action = Some(permission_action_summary(
+                                        &request.tool_name,
+                                        &effective_input,
+                                    ));
+                                    let review_id = Uuid::new_v4().to_string();
+                                    let start_result = {
+                                        let mut state = self.state.write();
+                                        state.auto_review_tracker.try_start(&request.tool_use_id)
+                                    };
+                                    if let Err(reason) = start_result {
+                                        emit_permission_auto_review(
+                                            &ctx,
+                                            permission_auto_review_event(
+                                                &review_id,
+                                                &request.tool_use_id,
+                                                "circuit_open",
+                                                risk_level.clone(),
+                                                true,
+                                                Some(reason.to_string()),
+                                                action.clone(),
+                                            ),
+                                        );
+                                        use crate::observability::{
+                                            AuditLevel, EventKind, Outcome, Stage,
+                                        };
+                                        perm_audit_ctx.emit(
+                                            EventKind::PermissionResolved,
+                                            Stage::Permission,
+                                            AuditLevel::Warn,
+                                            Outcome::Denied,
+                                            None,
+                                            Some(serde_json::json!({
+                                                "tool_name": request.tool_name,
+                                                "decision": "auto_review",
+                                                "source": "user",
+                                                "reason": reason,
+                                            })),
+                                        );
+                                        return Ok(permission_denied_exec_result(
+                                            &request,
+                                            format!(
+                                                "Permission denied: auto review unavailable ({reason})."
+                                            ),
+                                        ));
+                                    }
+
+                                    emit_permission_auto_review(
+                                        &ctx,
+                                        permission_auto_review_event(
+                                            &review_id,
+                                            &request.tool_use_id,
+                                            "started",
+                                            risk_level.clone(),
+                                            true,
+                                            response.feedback.clone(),
+                                            action.clone(),
+                                        ),
+                                    );
+
+                                    let mut classifier_input =
+                                        tool.to_auto_classifier_input(&effective_input);
+                                    if matches!(&classifier_input, serde_json::Value::String(s) if s.is_empty())
+                                    {
+                                        classifier_input = effective_input.clone();
+                                    }
+                                    let classifier = self
+                                        .compute_permission_auto_review(
+                                            &request.tool_name,
+                                            &effective_input,
+                                            &classifier_input,
+                                        )
+                                        .await;
+                                    let Some(classifier) = classifier else {
+                                        {
+                                            let mut state = self.state.write();
+                                            state.auto_review_tracker.record_denied();
+                                        }
+                                        emit_permission_auto_review(
+                                            &ctx,
+                                            permission_auto_review_event(
+                                                &review_id,
+                                                &request.tool_use_id,
+                                                "failed",
+                                                risk_level.clone(),
+                                                true,
+                                                Some("classifier unavailable".to_string()),
+                                                action.clone(),
+                                            ),
+                                        );
+                                        use crate::observability::{
+                                            AuditLevel, EventKind, Outcome, Stage,
+                                        };
+                                        perm_audit_ctx.emit(
+                                            EventKind::PermissionResolved,
+                                            Stage::Permission,
+                                            AuditLevel::Warn,
+                                            Outcome::Denied,
+                                            None,
+                                            Some(serde_json::json!({
+                                                "tool_name": request.tool_name,
+                                                "decision": "auto_review",
+                                                "source": "user",
+                                                "reason": "classifier unavailable",
+                                            })),
+                                        );
+                                        return Ok(permission_denied_exec_result(
+                                            &request,
+                                            "Permission denied: auto review classifier is unavailable."
+                                                .to_string(),
+                                        ));
+                                    };
+
+                                    let rationale = if classifier.reason.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(classifier.reason.clone())
+                                    };
+                                    if classifier.unavailable || classifier.transcript_too_long {
+                                        {
+                                            let mut state = self.state.write();
+                                            state.auto_review_tracker.record_denied();
+                                        }
+                                        emit_permission_auto_review(
+                                            &ctx,
+                                            permission_auto_review_event(
+                                                &review_id,
+                                                &request.tool_use_id,
+                                                "failed",
+                                                risk_level.clone(),
+                                                true,
+                                                rationale.clone(),
+                                                action.clone(),
+                                            ),
+                                        );
+                                        use crate::observability::{
+                                            AuditLevel, EventKind, Outcome, Stage,
+                                        };
+                                        perm_audit_ctx.emit(
+                                            EventKind::PermissionResolved,
+                                            Stage::Permission,
+                                            AuditLevel::Warn,
+                                            Outcome::Denied,
+                                            None,
+                                            Some(serde_json::json!({
+                                                "tool_name": request.tool_name,
+                                                "decision": "auto_review",
+                                                "source": "user",
+                                                "reason": classifier.reason.clone(),
+                                            })),
+                                        );
+                                        return Ok(permission_denied_exec_result(
+                                            &request,
+                                            format!(
+                                                "Permission denied: auto review could not classify this request: {}",
+                                                classifier.reason
+                                            ),
+                                        ));
+                                    }
+
+                                    match classifier.verdict {
+                                        AutoClassifierVerdict::Allow => {
+                                            {
+                                                let mut state = self.state.write();
+                                                state.auto_review_tracker.record_allowed();
+                                            }
+                                            emit_permission_auto_review(
+                                                &ctx,
+                                                permission_auto_review_event(
+                                                    &review_id,
+                                                    &request.tool_use_id,
+                                                    "approved",
+                                                    risk_level,
+                                                    true,
+                                                    rationale,
+                                                    action,
+                                                ),
+                                            );
+                                            accepted_permission_feedback =
+                                                response.feedback.clone();
+                                            use crate::observability::{
+                                                AuditLevel, EventKind, Outcome, Stage,
+                                            };
+                                            perm_audit_ctx.emit(
+                                                EventKind::PermissionResolved,
+                                                Stage::Permission,
+                                                AuditLevel::Info,
+                                                Outcome::Completed,
+                                                None,
+                                                Some(serde_json::json!({
+                                                    "tool_name": request.tool_name,
+                                                    "decision": "auto_review",
+                                                    "source": "user",
+                                                    "classifier_model": classifier.model,
+                                                })),
+                                            );
+                                        }
+                                        AutoClassifierVerdict::Deny
+                                        | AutoClassifierVerdict::Ask => {
+                                            {
+                                                let mut state = self.state.write();
+                                                state.auto_review_tracker.record_denied();
+                                            }
+                                            let reason = if classifier.reason.trim().is_empty() {
+                                                "auto review did not approve this request"
+                                                    .to_string()
+                                            } else {
+                                                classifier.reason.clone()
+                                            };
+                                            emit_permission_auto_review(
+                                                &ctx,
+                                                permission_auto_review_event(
+                                                    &review_id,
+                                                    &request.tool_use_id,
+                                                    "denied",
+                                                    risk_level,
+                                                    true,
+                                                    Some(reason.clone()),
+                                                    action,
+                                                ),
+                                            );
+                                            use crate::observability::{
+                                                AuditLevel, EventKind, Outcome, Stage,
+                                            };
+                                            perm_audit_ctx.emit(
+                                                EventKind::PermissionResolved,
+                                                Stage::Permission,
+                                                AuditLevel::Warn,
+                                                Outcome::Denied,
+                                                None,
+                                                Some(serde_json::json!({
+                                                    "tool_name": request.tool_name,
+                                                    "decision": "auto_review",
+                                                    "source": "user",
+                                                    "reason": reason.clone(),
+                                                })),
+                                            );
+
+                                            let deny_configs = hooks
+                                                .load_hook_configs(&hooks_map, "PermissionDenied");
+                                            if !deny_configs.is_empty() {
+                                                let payload = serde_json::json!({
+                                                    "tool_name": request.tool_name,
+                                                    "tool_input": effective_input.clone(),
+                                                    "reason": "Permission denied by auto review",
+                                                });
+                                                let _ = hooks
+                                                    .run_event_hooks(
+                                                        "PermissionDenied",
+                                                        &payload,
+                                                        &deny_configs,
+                                                    )
+                                                    .await;
+                                            }
+
+                                            return Ok(permission_denied_exec_result(
+                                                &request,
+                                                format!(
+                                                    "Permission denied by auto review: {reason}"
+                                                ),
+                                            ));
+                                        }
+                                    }
                                 }
                                 _ => {
                                     let denial_message = permission_denied_message(&response);
@@ -911,6 +1224,193 @@ impl QueryEngineDeps {
                 })
             }
         }
+    }
+}
+
+
+fn permission_denied_exec_result(request: &ToolExecRequest, message: String) -> ToolExecResult {
+    ToolExecResult {
+        tool_use_id: request.tool_use_id.clone(),
+        tool_name: request.tool_name.clone(),
+        result: crate::types::tool::ToolResult {
+            data: serde_json::json!(message),
+            new_messages: vec![],
+            ..Default::default()
+        },
+        is_error: true,
+        hook_stopped_continuation: false,
+    }
+}
+
+fn exact_always_allow_rule(tool_name: &str, input: &serde_json::Value) -> String {
+    let rule_tool = canonical_permission_rule_tool(tool_name);
+    let specifier = exact_rule_subject(&rule_tool, input);
+    format!(
+        "{}({})",
+        rule_tool,
+        allthecodes_permissions::rules::literal_specifier(&specifier)
+    )
+}
+
+fn canonical_permission_rule_tool(tool_name: &str) -> String {
+    match tool_name {
+        "bash" => "Bash",
+        "PowerShell" | "powershell" | "pwsh" | "Pwsh" => "PowerShell",
+        "read" | "read_file" | "FileRead" => "Read",
+        "edit_file" | "file_edit" | "FileEdit" => "Edit",
+        "write_file" | "file_write" | "FileWrite" => "Write",
+        "FileMultiEdit" => "MultiEdit",
+        other => other,
+    }
+    .to_string()
+}
+
+fn exact_rule_subject(rule_tool: &str, input: &serde_json::Value) -> String {
+    match rule_tool {
+        "Bash" | "PowerShell" => shell_command_subject(input),
+        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => input_string_field(
+            input,
+            &[
+                "file_path",
+                "notebook_path",
+                "path",
+                "relative_path",
+                "absolute_path",
+            ],
+        )
+        .unwrap_or_else(|| stable_json_subject(input)),
+        "Glob" => {
+            input_string_field(input, &["pattern"]).unwrap_or_else(|| stable_json_subject(input))
+        }
+        "WebFetch" => {
+            input_string_field(input, &["url"]).unwrap_or_else(|| stable_json_subject(input))
+        }
+        "WebSearch" => {
+            input_string_field(input, &["query"]).unwrap_or_else(|| stable_json_subject(input))
+        }
+        "Agent" => input_string_field(input, &["subagent_type", "agent_type"])
+            .unwrap_or_else(|| stable_json_subject(input)),
+        _ => stable_json_subject(input),
+    }
+}
+
+fn shell_command_subject(input: &serde_json::Value) -> String {
+    input_string_field(input, &["command", "cmd", "script"])
+        .unwrap_or_else(|| stable_json_subject(input))
+}
+
+fn input_string_field(input: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| input.get(*key))
+        .filter_map(|value| value.as_str())
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn stable_json_subject(input: &serde_json::Value) -> String {
+    serde_json::to_string(input).unwrap_or_else(|_| input.to_string())
+}
+
+fn persist_local_always_allow_rule(cwd: &str, rule: &str) -> anyhow::Result<()> {
+    let cwd = std::path::Path::new(cwd);
+    let mut raw = allthecodes_config::settings::load_local_config(cwd)?;
+    let permissions = raw.permissions.get_or_insert_with(Default::default);
+    if !permissions.allow.iter().any(|existing| existing == rule) {
+        permissions.allow.push(rule.to_string());
+        allthecodes_config::settings::write_local_settings(cwd, &raw)?;
+    }
+    Ok(())
+}
+
+fn add_local_always_allow_rule(state: &mut QueryEngineState, rule: &str) {
+    let rules = state
+        .app_state
+        .tool_permission_context
+        .always_allow_rules
+        .entry("local".to_string())
+        .or_default();
+    if !rules.iter().any(|existing| existing == rule) {
+        rules.push(rule.to_string());
+    }
+}
+
+fn permission_auto_review_event(
+    review_id: &str,
+    target_tool_use_id: &str,
+    status: &str,
+    risk_level: Option<String>,
+    user_authorization: bool,
+    rationale: Option<String>,
+    action: Option<String>,
+) -> PermissionAutoReviewEvent {
+    PermissionAutoReviewEvent {
+        review_id: review_id.to_string(),
+        target_tool_use_id: target_tool_use_id.to_string(),
+        status: status.to_string(),
+        risk_level,
+        user_authorization,
+        rationale,
+        action,
+        decision_source: "auto_review".to_string(),
+    }
+}
+
+fn permission_action_summary(tool_name: &str, input: &serde_json::Value) -> String {
+    match tool_name {
+        "Bash" | "bash" | "PowerShell" | "powershell" | "pwsh" | "Pwsh" => {
+            format!("Run {}", shell_command_subject(input))
+        }
+        "Read" | "FileRead" | "read" | "read_file" => input_string_field(
+            input,
+            &["file_path", "path", "relative_path", "absolute_path"],
+        )
+        .map(|path| format!("Read {path}"))
+        .unwrap_or_else(|| format!("Use {tool_name}")),
+        "Edit" | "FileEdit" | "MultiEdit" | "FileMultiEdit" | "NotebookEdit" => {
+            input_string_field(input, &["file_path", "notebook_path", "path"])
+                .map(|path| format!("Edit {path}"))
+                .unwrap_or_else(|| format!("Use {tool_name}"))
+        }
+        "Write" | "FileWrite" => input_string_field(input, &["file_path", "path"])
+            .map(|path| format!("Write {path}"))
+            .unwrap_or_else(|| format!("Use {tool_name}")),
+        "WebFetch" => input_string_field(input, &["url"])
+            .map(|url| format!("Fetch {url}"))
+            .unwrap_or_else(|| "Fetch URL".to_string()),
+        "WebSearch" => input_string_field(input, &["query"])
+            .map(|query| format!("Search {query}"))
+            .unwrap_or_else(|| "Search web".to_string()),
+        _ => format!("Use {tool_name}"),
+    }
+}
+
+fn permission_risk_level(tool_name: &str, input: &serde_json::Value) -> Option<String> {
+    match tool_name {
+        "Bash" | "bash" | "PowerShell" | "powershell" | "pwsh" | "Pwsh" => {
+            let command = shell_command_subject(input).to_ascii_lowercase();
+            if command.contains("rm -rf")
+                || command.contains("remove-item")
+                || command.contains("del ")
+                || command.contains(" format ")
+                || command.contains("shutdown")
+            {
+                Some("destructive".to_string())
+            } else if command.contains("sudo")
+                || command.contains("chmod")
+                || command.contains("chown")
+                || command.contains("curl ")
+                || command.contains("wget ")
+            {
+                Some("high".to_string())
+            } else {
+                Some("medium".to_string())
+            }
+        }
+        "Edit" | "FileEdit" | "MultiEdit" | "FileMultiEdit" | "NotebookEdit" | "Write"
+        | "FileWrite" => Some("medium".to_string()),
+        "WebFetch" | "WebSearch" => Some("safe".to_string()),
+        _ => None,
     }
 }
 

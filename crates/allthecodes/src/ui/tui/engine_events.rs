@@ -15,9 +15,10 @@ use allthecodes_types::message::{
     SystemSubtype, UserMessage,
 };
 use allthecodes_types::permission_events::{
-    HookPermissionDecisionEvent, PermissionDecisionDebugEvent,
+    HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
 use allthecodes_types::sdk::SdkMessage;
+use allthecodes_types::tool_operation::OperationStatus;
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -83,6 +84,7 @@ pub(super) enum EngineEvent {
     },
     HookPermissionDecision(HookPermissionDecisionEvent),
     PermissionDecisionDebug(PermissionDecisionDebugEvent),
+    PermissionAutoReview(PermissionAutoReviewEvent),
     /// The engine query task has completed (stream exhausted).
     Done,
 }
@@ -96,9 +98,19 @@ pub(super) fn install_tui_permission_callback(
     tx: mpsc::UnboundedSender<EngineEvent>,
 ) {
     let callback: allthecodes_engine::types::tool::PermissionCallback =
-        Arc::new(move |request: PermissionRequestPayload| {
+        Arc::new(move |mut request: PermissionRequestPayload| {
             let tx = tx.clone();
             Box::pin(async move {
+                if request.operation.is_none() {
+                    request.operation = Some(
+                        allthecodes_tool_display::ToolClassifier::classify_permission(
+                            &request.tool_name,
+                            &request.tool_input,
+                            Some(&request.message),
+                            OperationStatus::InProgress,
+                        ),
+                    );
+                }
                 let (response_tx, response_rx) = oneshot::channel();
                 let event = EngineEvent::PermissionRequest {
                     request,
@@ -154,6 +166,9 @@ pub(super) fn install_tui_permission_event_callback(
             }
             PermissionEventPayload::DecisionDebug { event } => {
                 EngineEvent::PermissionDecisionDebug(event)
+            }
+            PermissionEventPayload::AutoReview { event } => {
+                EngineEvent::PermissionAutoReview(event)
             }
         };
         let _ = tx.send(engine_event);
@@ -250,7 +265,7 @@ pub(super) fn permission_choice_to_response(
         crate::ui::permissions::PermissionDecisionChoice::Allow => "allow",
         crate::ui::permissions::PermissionDecisionChoice::Deny => "deny",
         crate::ui::permissions::PermissionDecisionChoice::AlwaysAllow => "always_allow",
-        crate::ui::permissions::PermissionDecisionChoice::Escalate => "escalate",
+        crate::ui::permissions::PermissionDecisionChoice::AutoReview => "auto_review",
     };
     PermissionResponsePayload::new(decision, Some(choice.feedback.clone()))
 }

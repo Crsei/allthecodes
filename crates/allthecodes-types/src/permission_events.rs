@@ -20,3 +20,18 @@ pub struct PermissionDecisionDebugEvent {
     pub behavior: String,
     pub reason: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionAutoReviewEvent {
+    pub review_id: String,
+    pub target_tool_use_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<String>,
+    pub user_authorization: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    pub decision_source: String,
+}

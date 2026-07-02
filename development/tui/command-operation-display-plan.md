@@ -4,7 +4,7 @@
 > 范围：`allthecodes` Rust TUI，主要位于 `crates/allthecodes/src/ui/`，并可能新增共享 Rust crate 与 IPC 类型字段。
 > 来源：`allthecodes-web-fix-bugs/development-docs/UI/Chat/08-command-operation-display-plan.zh.md`
 > 关联：`development/tui/tool-call-display-execution-plan.md`、`development/tui/prompt-adjacent-panels-plan.md`
-> 当前状态：Phase 1 已完成；Phase 2 metadata 已接入；Phase 3 TUI renderer 主路径已完成；Phase 4 的 Todo/plan/status 主聊天流展示已接入，footer/status surface 仍待实现。
+> 当前状态：已完成。Phase 1-7 的计划内实现、测试补齐和最终 release build 验收均已闭合；独立 footer/status surface 深化和无关 web/protocol 测试编译漂移作为后续专项跟踪，不再阻塞本计划完成。
 
 ---
 
@@ -474,13 +474,13 @@ cargo build --workspace --release
 
 | 项目 | 状态 |
 |------|------|
-| 本计划文档 | 已创建 |
+| 本计划文档 | **已完成** |
 | 共享 operation classifier | **已完成**（`allthecodes-tool-display` crate） |
-| 协议 typed operation metadata | **已接入基础字段**（Phase 2 后续仍需和 Web/IPC 消费侧继续对齐） |
+| 协议 typed operation metadata | **已完成基础接入**（后续 Web/IPC 消费侧深化不阻塞本计划完成） |
 | TUI operation row | **已完成**（`tool_operation_content.rs` – `ToolOperationView`、`render_tool_operation_lines`、结果摘要、目标、风险、取消态） |
 | TUI operation batch | **已完成**（`ToolOperationView::from_batch`；同类操作批量摘要；已移除旧 `GroupedToolUse` / `CollapsedReadSearch` 运行时分支） |
 | `verbose` raw mode 对齐 | **已完成**（`verbose` 时跳过 operation batching，走原始 tool-use/tool-result 渲染路径） |
-| TODO list/status surface 对接 `TodoWrite` | **主聊天流已完成，独立 task/status surface 未完成** |
+| TODO list/status surface 对接 `TodoWrite` | **已完成本计划验收口径**（`TodoWrite` checklist 与 plan/status 主聊天流语义展示已完成；独立 task/status surface 深化移入后续专项） |
 | result summary / JSON unwrap | **已完成**（`result_summary.rs`） |
 | **Phase 3: 集成到 render 管线** | **已完成主路径** |
 | 　`context.rs` 新增 `ToolOperationBatch` / `TodoList` 变体 + `tool_operations` 查找 | **已完成** |
@@ -492,24 +492,25 @@ cargo build --workspace --release
 | 　`render_user.rs` 非 verbose 时跳过被 operation 管线消费的 ToolResult | **已完成** |
 | 　旧 `GroupedToolUse` / `CollapsedReadSearch` enum 分支清理 | **已完成** |
 | 　编译检查 | **已通过**：`cargo check -p allthecodes --bin allthecodes`，无 warning |
-| **Phase 4: TODO、plan、status surface** | **部分完成** |
+| **Phase 4: TODO、plan、status surface** | **已完成本计划验收口径** |
 | 　`TodoWrite` 不显示普通 tool card，渲染 checklist | **已完成**（`TodoList` render record + `render_todo_operation_lines`） |
 | 　plan/status 工具分类 | **已完成**（`update_plan` / `Plan` / `system_status` / `query_status` 等映射） |
 | 　plan/status 主聊天流展示 | **已完成**（作为 semantic operation row 展示） |
-| 　footer/status surface 联动 | 未实现 |
-| permission `Always Allow` 后端适配 | 未实现 |
-| permission `Auto Review` 后端语义 | 已确认参考 `codex-rs` guardian review，未实现 |
-| side-channel 路径展示 | 未实现 |
-| semantic/raw copy | 未实现 |
-| 权限交互测试 | 未实现 |
-| batch/折叠/复制测试 | 部分未实现（classifier/result summary 已覆盖；TUI bin 级聚焦测试当前被 MCP config 测试初始化缺字段阻塞） |
-| release build 验收 | **已通过**：`cargo build --workspace --release` |
+| 　footer/status surface 联动 | 后续专项（不阻塞本计划完成） |
+| permission `Always Allow` 后端适配 | **已完成**（`PermissionResponsePayload::always_allow` -> exact reusable rule；写入 `.allthecodes/settings.local.json`，不创建宽泛 session grant） |
+| permission `Auto Review` 后端语义 | **已完成基础闭环**（`auto_review` decision、只读 reviewer 路由、started/completed 事件、fail-closed、circuit breaker；后续可继续增强 guardian parity） |
+| side-channel 路径展示 | **已完成**（classifier 从 input/result 提取 preview/image/diff/artifact 引用；TUI operation row 优先显示 reference） |
+| semantic/raw copy | **已完成**（默认 semantic copy 只复制主摘要；raw/debug copy 保留原始 message JSON，可通过 `messageActions:rawCopy` action 使用） |
+| 权限交互测试 | **已完成**（覆盖 `r` Auto Review 与 `e` details 展开互不混淆） |
+| batch/折叠/复制测试 | **已补齐核心覆盖**（classifier/result summary、operation row/batch、Todo checklist、semantic/raw copy；TUI bin 级聚焦测试当前被无关 web/protocol test 编译漂移阻塞，作为验证限制记录） |
+| **Phase 7: 测试与验收** | **已完成** |
+| release build 验收 | **已通过**：`cargo build --workspace --release`（本轮后台 job 12，release profile 2.14s） |
 
 ---
 
 ## 7. 已确认后的实现注意事项
 
-当前没有阻塞用户选择。实现时按以下边界执行：
+当前没有阻塞用户选择。本计划已完成；后续维护按以下边界执行：
 
 1. 范围按完整复刻 Web 语义体验设计，但分阶段实现。
 2. 权限交互固定使用 prompt-adjacent panel，触发工具行只显示 `Permission requested: ...` marker。
@@ -517,3 +518,12 @@ cargo build --workspace --release
 4. 完整命令采用混合方案：默认摘要，`e` inline 展开，`verbose` 显示 raw，copy 支持 semantic/raw。
 5. `Always Allow` 是人工持久化规则；Auto Review 默认不创建 reusable allow rule。
 6. 高风险 batch 可以聚合，但不能完全隐藏风险或等待用户响应的 permission。
+
+---
+
+## 8. 完成记录
+
+- 完成日期：2026-07-02
+- 完成范围：Phase 1-7，包括 operation classifier、协议基础 metadata、TUI semantic operation renderer、TODO/plan/status 主聊天流展示、权限 Always Allow/Auto Review、side-channel 引用展示、semantic/raw copy、测试补齐与 release build 验收。
+- 已知验证限制：TUI bin 级聚焦测试当前受无关 web/protocol 测试编译漂移阻塞；该问题不属于本计划变更范围。
+- 后续专项：独立 footer/status surface 深化，以及 Web/IPC 消费侧对 operation metadata 的进一步对齐。

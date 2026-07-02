@@ -5,7 +5,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::permission_events::{HookPermissionDecisionEvent, PermissionDecisionDebugEvent};
+use crate::permission_events::{
+    HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
+};
+use crate::tool_operation::ToolOperation;
 
 /// Structured payload for an interactive permission request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -15,6 +18,8 @@ pub struct PermissionRequestPayload {
     pub tool_input: Value,
     pub message: String,
     pub options: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<ToolOperation>,
 }
 
 impl PermissionRequestPayload {
@@ -32,7 +37,7 @@ impl PermissionRequestPayload {
 /// Structured response from an interactive permission request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionResponsePayload {
-    /// One of "allow", "deny", "always_allow".
+    /// One of "allow", "deny", "always_allow", "auto_review".
     pub decision: String,
     /// Optional user instructions supplied while approving or rejecting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,6 +61,10 @@ impl PermissionResponsePayload {
 
     pub fn deny() -> Self {
         Self::decision("deny")
+    }
+
+    pub fn auto_review() -> Self {
+        Self::decision("auto_review")
     }
 
     pub fn normalized_decision(&self) -> String {
@@ -96,6 +105,7 @@ pub type AskUserCallback = Arc<
 pub enum PermissionEventPayload {
     HookDecision { event: HookPermissionDecisionEvent },
     DecisionDebug { event: PermissionDecisionDebugEvent },
+    AutoReview { event: PermissionAutoReviewEvent },
 }
 
 pub type PermissionEventCallback = Arc<dyn Fn(PermissionEventPayload) + Send + Sync>;

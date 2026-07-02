@@ -41,12 +41,14 @@ pub fn install_permission_callback<H>(
             let tool_use_id = request.tool_use_id.clone();
             let tool_name = request.tool_name.clone();
             let tool_input = request.tool_input.clone();
-            let operation = allthecodes_tool_display::ToolClassifier::classify_permission(
-                &tool_name,
-                &tool_input,
-                Some(&request.message),
-                allthecodes_types::tool_operation::OperationStatus::InProgress,
-            );
+            let operation = request.operation.clone().unwrap_or_else(|| {
+                allthecodes_tool_display::ToolClassifier::classify_permission(
+                    &tool_name,
+                    &tool_input,
+                    Some(&request.message),
+                    allthecodes_types::tool_operation::OperationStatus::InProgress,
+                )
+            });
             let _ = sink.send(&BackendMessage::PermissionRequest {
                 tool_use_id: tool_use_id.clone(),
                 tool: tool_name.clone(),
@@ -155,6 +157,9 @@ where
             PermissionEventPayload::DecisionDebug { event } => {
                 sink.send(&BackendMessage::PermissionDecisionDebug { event })
             }
+            PermissionEventPayload::AutoReview { event } => {
+                sink.send(&BackendMessage::PermissionAutoReview { event })
+            }
         };
     });
     host.set_permission_event_callback(callback);
@@ -213,6 +218,7 @@ mod tests {
             tool_input: serde_json::json!({"command":"echo hi"}),
             message: "echo hi".to_string(),
             options: vec!["allow".to_string(), "deny".to_string()],
+            operation: None,
         }));
 
         wait_until(|| pending.lock().contains_key("tool-1")).await;
@@ -271,6 +277,7 @@ mod tests {
             tool_input: serde_json::json!({"plan":"approve plan"}),
             message: "approve plan".to_string(),
             options: vec!["allow".to_string(), "deny".to_string()],
+            operation: None,
         }));
 
         wait_until(|| pending.lock().contains_key("exit-plan")).await;

@@ -13,7 +13,7 @@ pub enum PermissionDecision {
     Deny,
     AlwaysAllow,
     Ask,
-    Escalate,
+    AutoReview,
 }
 
 impl PermissionDecision {
@@ -23,7 +23,7 @@ impl PermissionDecision {
             Self::Deny => "deny",
             Self::AlwaysAllow => "always allow",
             Self::Ask => "ask",
-            Self::Escalate => "escalate",
+            Self::AutoReview => "auto review",
         }
     }
 }
@@ -169,10 +169,10 @@ pub fn default_permission_options() -> Vec<PermissionOption> {
             PermissionScope::Project,
         ),
         PermissionOption::new(
-            "Escalate",
-            "ask for a higher-level approval path",
-            PermissionDecision::Escalate,
-            PermissionScope::Session,
+            "Auto Review",
+            "ask the approval reviewer",
+            PermissionDecision::AutoReview,
+            PermissionScope::Request,
         ),
     ]
 }
@@ -351,19 +351,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn escalate_decision_has_label_and_renders_as_option() {
+    fn auto_review_decision_has_label_and_renders_as_option() {
         let rows = render_permission_options(
             &[PermissionOption::new(
-                "Escalate",
-                "ask the sandbox for elevated access",
-                PermissionDecision::Escalate,
-                PermissionScope::Session,
+                "Auto Review",
+                "ask the approval reviewer",
+                PermissionDecision::AutoReview,
+                PermissionScope::Request,
             )],
             0,
         );
 
-        assert_eq!(PermissionDecision::Escalate.label(), "escalate");
-        assert!(rows[0].contains("escalate"));
-        assert!(rows[0].contains("scope=session"));
+        assert_eq!(PermissionDecision::AutoReview.label(), "auto review");
+        assert!(rows[0].contains("auto review"));
+        assert!(rows[0].contains("scope=this request"));
     }
 }

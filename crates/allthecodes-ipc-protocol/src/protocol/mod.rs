@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use allthecodes_types::agent_events::{AgentCommand, AgentEvent, TeamCommand, TeamEvent};
 use allthecodes_types::permission_events::{
-    HookPermissionDecisionEvent, PermissionDecisionDebugEvent,
+    HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
 use allthecodes_types::plan_workflow::PlanWorkflowRecord;
 use allthecodes_types::tool_operation::{OperationResultSummary, ToolOperation};
@@ -54,7 +54,7 @@ pub enum FrontendMessage {
     /// User responds to a permission dialog.
     PermissionResponse {
         tool_use_id: String,
-        /// One of "allow", "deny", "always_allow".
+        /// One of "allow", "deny", "always_allow", "auto_review".
         decision: String,
         /// Optional feedback/instructions supplied with the decision.
         #[serde(default)]
@@ -295,6 +295,9 @@ pub enum BackendMessage {
     },
     PermissionDecisionDebug {
         event: PermissionDecisionDebugEvent,
+    },
+    PermissionAutoReview {
+        event: PermissionAutoReviewEvent,
     },
     /// Durable plan workflow state changed.
     PlanWorkflowEvent {

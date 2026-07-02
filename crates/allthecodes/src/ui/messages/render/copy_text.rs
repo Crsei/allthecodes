@@ -25,8 +25,7 @@ pub(crate) fn tool_input_summary(
     max_chars: usize,
 ) -> String {
     if let Some(primary) = tool_primary_input(name, input) {
-        let json = abbreviate_json(input, max_chars);
-        return format!("{primary} {json}").trim().to_string();
+        return primary;
     }
     abbreviate_json(input, max_chars)
 }

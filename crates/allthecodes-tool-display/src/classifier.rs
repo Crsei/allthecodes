@@ -2,8 +2,8 @@ use serde_json::Value;
 
 use crate::result_summary::summarize_result;
 use crate::{
-    OperationConfidence, OperationKind, OperationRisk, OperationStatus, OperationSubtype,
-    ToolOperation,
+    OperationConfidence, OperationKind, OperationRisk, OperationSideChannel, OperationStatus,
+    OperationSubtype, ToolOperation,
 };
 
 /// The main classifier that maps a raw tool name, input, and optional result
@@ -37,7 +37,7 @@ impl ToolClassifier {
             raw_tool_name: tool_name.to_string(),
             raw_input,
             raw_output: None,
-            side_channels: Vec::new(),
+            side_channels: extract_side_channels(input, None),
         }
     }
 
@@ -81,6 +81,7 @@ impl ToolClassifier {
             }
         });
         op.raw_output = result_content.map(|content| Value::String(content.to_string()));
+        op.side_channels = extract_side_channels(input, result_content);
         op
     }
 
@@ -411,6 +412,199 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
+fn extract_side_channels(input: &Value, result_content: Option<&str>) -> Vec<OperationSideChannel> {
+    let mut channels = Vec::new();
+    collect_side_channels_from_value(input, &mut channels, 0);
+
+    if let Some(content) = result_content {
+        if let Ok(value) = serde_json::from_str::<Value>(content) {
+            collect_side_channels_from_value(&value, &mut channels, 0);
+        }
+    }
+
+    dedupe_side_channels(channels)
+}
+
+fn collect_side_channels_from_value(
+    value: &Value,
+    channels: &mut Vec<OperationSideChannel>,
+    depth: usize,
+) {
+    if depth > 6 {
+        return;
+    }
+
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map {
+                if key.eq_ignore_ascii_case("side_channels")
+                    || key.eq_ignore_ascii_case("sideChannels")
+                {
+                    collect_explicit_side_channels(value, channels);
+                } else {
+                    collect_side_channel_field(key, value, channels);
+                }
+                collect_side_channels_from_value(value, channels, depth + 1);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_side_channels_from_value(value, channels, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_explicit_side_channels(value: &Value, channels: &mut Vec<OperationSideChannel>) {
+    let Some(items) = value.as_array() else {
+        return;
+    };
+    for item in items {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let channel_type = obj
+            .get("channel_type")
+            .or_else(|| obj.get("channelType"))
+            .and_then(Value::as_str)
+            .unwrap_or("artifact")
+            .trim();
+        let reference = obj
+            .get("reference")
+            .or_else(|| obj.get("path"))
+            .or_else(|| obj.get("url"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let description = obj
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        add_side_channel(channels, channel_type, reference, description);
+    }
+}
+
+fn collect_side_channel_field(key: &str, value: &Value, channels: &mut Vec<OperationSideChannel>) {
+    let Some(channel_type) = channel_type_for_key(key) else {
+        return;
+    };
+
+    match value {
+        Value::String(reference) => {
+            let (reference, description) = reference_and_description_for_key(key, reference);
+            add_side_channel(channels, channel_type, &reference, description);
+        }
+        Value::Array(values) => {
+            for value in values {
+                if let Some(reference) = value.as_str() {
+                    let (reference, description) =
+                        reference_and_description_for_key(key, reference);
+                    add_side_channel(channels, channel_type, &reference, description);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn channel_type_for_key(key: &str) -> Option<&'static str> {
+    let key = key.to_ascii_lowercase();
+    if matches!(
+        key.as_str(),
+        "image"
+            | "image_path"
+            | "imagepath"
+            | "screenshot"
+            | "screenshot_path"
+            | "screenshotpath"
+            | "thumbnail_path"
+            | "thumbnailpath"
+    ) {
+        return Some("image");
+    }
+    if matches!(
+        key.as_str(),
+        "preview_url" | "previewurl" | "browser_url" | "browserurl" | "url_preview"
+    ) {
+        return Some("preview");
+    }
+    if key == "inline_diff"
+        || key == "diff"
+        || key.ends_with("_diff")
+        || key.contains("diff_path")
+        || key.contains("patch_path")
+        || key == "diff_source_path"
+    {
+        return Some("diff");
+    }
+    if matches!(
+        key.as_str(),
+        "artifact"
+            | "artifact_path"
+            | "artifactpath"
+            | "output_path"
+            | "outputpath"
+            | "generated_artifact_path"
+            | "download_path"
+    ) {
+        return Some("artifact");
+    }
+    None
+}
+
+fn reference_and_description_for_key(key: &str, raw: &str) -> (String, Option<String>) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return (String::new(), None);
+    }
+
+    let key = key.to_ascii_lowercase();
+    if key.contains("inline_diff") || (key == "diff" && trimmed.contains('\n')) {
+        return (
+            "inline diff".to_string(),
+            Some(truncate_str(trimmed.lines().next().unwrap_or("diff"), 80)),
+        );
+    }
+    if (key == "image" || key == "screenshot") && trimmed.starts_with("data:") {
+        return ("inline image".to_string(), None);
+    }
+    (trimmed.to_string(), None)
+}
+
+fn add_side_channel(
+    channels: &mut Vec<OperationSideChannel>,
+    channel_type: &str,
+    reference: &str,
+    description: Option<String>,
+) {
+    let channel_type = channel_type.trim();
+    let reference = reference.trim();
+    if channel_type.is_empty() || reference.is_empty() {
+        return;
+    }
+    channels.push(OperationSideChannel {
+        channel_type: channel_type.to_string(),
+        reference: reference.to_string(),
+        description,
+    });
+}
+
+fn dedupe_side_channels(channels: Vec<OperationSideChannel>) -> Vec<OperationSideChannel> {
+    let mut seen = std::collections::HashSet::new();
+    channels
+        .into_iter()
+        .filter(|channel| {
+            seen.insert((
+                channel.channel_type.to_ascii_lowercase(),
+                channel.reference.clone(),
+            ))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,6 +763,57 @@ mod tests {
         assert!(op.result_summary.is_some());
         assert_eq!(op.result_summary.as_ref().unwrap().text, "hello");
         assert_eq!(op.raw_output, Some(serde_json::json!("hello\n")));
+    }
+
+    #[test]
+    fn test_classify_extracts_side_channels_from_input() {
+        let op = ToolClassifier::classify(
+            "mcp__browser__screenshot",
+            &json!({
+                "screenshot_path": "/tmp/page.png",
+                "preview_url": "http://127.0.0.1:3000"
+            }),
+            OperationStatus::Resolved,
+        );
+
+        assert!(op.side_channels.iter().any(|channel| {
+            channel.channel_type == "image" && channel.reference == "/tmp/page.png"
+        }));
+        assert!(op.side_channels.iter().any(|channel| {
+            channel.channel_type == "preview" && channel.reference == "http://127.0.0.1:3000"
+        }));
+    }
+
+    #[test]
+    fn test_classify_extracts_side_channels_from_result_json() {
+        let op = ToolClassifier::classify_with_result(
+            "ApplyPatch",
+            &json!({}),
+            OperationStatus::Resolved,
+            Some(
+                r#"{
+                    "inline_diff": "diff --git a/a.rs b/a.rs\n+added",
+                    "artifact_path": "target/report.html"
+                }"#,
+            ),
+            false,
+        );
+
+        assert!(op.side_channels.iter().any(|channel| {
+            channel.channel_type == "diff" && channel.reference == "inline diff"
+        }));
+        assert!(op.side_channels.iter().any(|channel| {
+            channel.channel_type == "artifact" && channel.reference == "target/report.html"
+        }));
+        assert_eq!(
+            op.raw_output,
+            Some(serde_json::json!(
+                r#"{
+                    "inline_diff": "diff --git a/a.rs b/a.rs\n+added",
+                    "artifact_path": "target/report.html"
+                }"#
+            ))
+        );
     }
 
     #[test]

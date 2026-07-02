@@ -484,6 +484,7 @@ impl IpcRuntime {
                 "command": command,
                 "input": request.tool_input,
                 "options": request.options,
+                "operation": request.operation,
             }),
             timeout_ms: Some(Self::timeout_ms(self.server_request_timeout)),
         };
@@ -895,6 +896,7 @@ mod tests {
             tool_input: serde_json::json!({ "command": "ls" }),
             message: "ls".to_string(),
             options: vec!["allow".to_string(), "deny".to_string()],
+            operation: None,
         };
         let runtime_for_response = runtime.clone();
 
@@ -954,6 +956,7 @@ mod tests {
             tool_input: serde_json::json!({ "command": "ls" }),
             message: "ls".to_string(),
             options: vec!["allow".to_string(), "deny".to_string()],
+            operation: None,
         };
         let runtime_for_task = runtime.clone();
 

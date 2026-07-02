@@ -22,8 +22,8 @@ pub enum PermissionDecisionChoice {
     Deny,
     /// Always allow this tool (add a permanent rule).
     AlwaysAllow,
-    /// Escalate this request to the next approval path.
-    Escalate,
+    /// Ask the automatic approval reviewer to decide this request.
+    AutoReview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +48,7 @@ impl PermissionChoice {
     }
 }
 
-const DEFAULT_OPTIONS: [&str; 4] = ["Allow", "Deny", "Always Allow", "Escalate"];
+const DEFAULT_OPTIONS: [&str; 4] = ["Allow", "Deny", "Always Allow", "Auto Review"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionDialogMode {
@@ -69,6 +69,7 @@ pub struct PermissionDialog {
     mode: PermissionDialogMode,
     accept_feedback: String,
     reject_feedback: String,
+    show_raw_details: bool,
 }
 
 impl PermissionDialog {
@@ -93,6 +94,7 @@ impl PermissionDialog {
             mode: PermissionDialogMode::Selecting,
             accept_feedback: String::new(),
             reject_feedback: String::new(),
+            show_raw_details: false,
         }
     }
 
@@ -151,10 +153,13 @@ impl PermissionDialog {
                     PermissionDecisionChoice::AlwaysAllow,
                 ));
             }
-            (_, KeyCode::Char('e')) | (_, KeyCode::Char('E')) => {
+            (_, KeyCode::Char('r')) | (_, KeyCode::Char('R')) => {
                 return Some(PermissionChoice::from_decision(
-                    PermissionDecisionChoice::Escalate,
+                    PermissionDecisionChoice::AutoReview,
                 ));
+            }
+            (_, KeyCode::Char('e')) | (_, KeyCode::Char('E')) => {
+                self.show_raw_details = !self.show_raw_details;
             }
             (_, KeyCode::Esc) => {
                 return Some(PermissionChoice::from_decision(
@@ -271,16 +276,16 @@ impl PermissionDialog {
 
         let (full_hint, compact_hint) = match self.feedback_target_for_selected() {
             Some(PermissionDecisionChoice::Allow) => (
-                "Arrows/hotkeys. Enter confirms. Esc denies. Tab: tell model what to do differently.",
+                "Arrows/hotkeys. Enter confirms. R auto review. E details. Esc denies. Tab: tell model what to do differently.",
                 "Tab: tell model what to do differently.",
             ),
             Some(PermissionDecisionChoice::Deny) => (
-                "Arrows/hotkeys. Enter confirms. Esc denies. Tab: tell model what to do differently.",
+                "Arrows/hotkeys. Enter confirms. R auto review. E details. Esc denies. Tab: tell model what to do differently.",
                 "Tab: tell model what to do differently.",
             ),
             _ => (
-                "Arrows/hotkeys. Enter confirms. Esc denies. Tab adds feedback.",
-                "Arrows/hotkeys. Enter confirms. Esc denies.",
+                "Arrows/hotkeys. Enter confirms. R auto review. E details. Esc denies.",
+                "R auto review. E details. Esc denies.",
             ),
         };
         let hint_text = if self.is_typing_feedback() {
@@ -315,7 +320,14 @@ impl PermissionDialog {
 
     fn body_lines(&self, max_width: usize, max_height: u16, theme: &Theme) -> Vec<Line<'static>> {
         let routed = PermissionRequestRouter::route(&self.request, self.selected);
-        let routed_lines = routed_detail_lines(&routed.rendered)
+        let mut detail_texts = routed_detail_lines(&routed.rendered);
+        if self.show_raw_details {
+            if !detail_texts.is_empty() {
+                detail_texts.push("raw details".to_string());
+            }
+            detail_texts.extend(self.raw_detail_lines());
+        }
+        let routed_lines = detail_texts
             .into_iter()
             .take(max_height.saturating_sub(1) as usize)
             .map(|line| {
@@ -345,7 +357,32 @@ impl PermissionDialog {
                 theme.dim,
             )]));
         }
+        if self.show_raw_details {
+            body_lines.extend(self.raw_detail_lines().into_iter().map(|line| {
+                Line::from(vec![Span::styled(
+                    truncate_str(&line, max_width),
+                    theme.dim,
+                )])
+            }));
+        }
         body_lines
+    }
+
+    fn raw_detail_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.request.message.trim().is_empty() {
+            lines.push(format!("message: {}", self.request.message.trim()));
+        }
+        if !matches!(self.request.tool_input, serde_json::Value::Null) {
+            lines.push("input:".to_string());
+            let input = serde_json::to_string_pretty(&self.request.tool_input)
+                .unwrap_or_else(|_| self.request.tool_input.to_string());
+            lines.extend(input.lines().map(|line| format!("  {line}")));
+        }
+        if lines.is_empty() {
+            lines.push("raw: (empty)".to_string());
+        }
+        lines
     }
 
     fn normalized_options(&self) -> Vec<String> {
@@ -411,7 +448,7 @@ impl PermissionDialog {
             PermissionDecisionChoice::Allow => &self.accept_feedback,
             PermissionDecisionChoice::Deny => &self.reject_feedback,
             PermissionDecisionChoice::AlwaysAllow => "",
-            PermissionDecisionChoice::Escalate => "",
+            PermissionDecisionChoice::AutoReview => "",
         }
     }
 
@@ -420,7 +457,7 @@ impl PermissionDialog {
             PermissionDecisionChoice::Allow => &mut self.accept_feedback,
             PermissionDecisionChoice::Deny => &mut self.reject_feedback,
             PermissionDecisionChoice::AlwaysAllow => &mut self.accept_feedback,
-            PermissionDecisionChoice::Escalate => &mut self.reject_feedback,
+            PermissionDecisionChoice::AutoReview => &mut self.reject_feedback,
         }
     }
 
@@ -443,8 +480,11 @@ fn choice_for_label(label: &str) -> Option<PermissionDecisionChoice> {
     if normalized.contains("always") {
         return Some(PermissionDecisionChoice::AlwaysAllow);
     }
-    if normalized.contains("escalate") {
-        return Some(PermissionDecisionChoice::Escalate);
+    if normalized.contains("auto")
+        || normalized.contains("review")
+        || normalized.contains("escalate")
+    {
+        return Some(PermissionDecisionChoice::AutoReview);
     }
     if normalized.contains("deny") || normalized.contains("reject") || normalized == "no" {
         return Some(PermissionDecisionChoice::Deny);
@@ -456,7 +496,7 @@ fn choice_for_label(label: &str) -> Option<PermissionDecisionChoice> {
         "always_allow" | "always path" | "always exact" => {
             Some(PermissionDecisionChoice::AlwaysAllow)
         }
-        "ask lead" => Some(PermissionDecisionChoice::Escalate),
+        "ask lead" => Some(PermissionDecisionChoice::AutoReview),
         _ => None,
     }
 }
@@ -711,6 +751,30 @@ mod tests {
     }
 
     #[test]
+    fn auto_review_shortcut_and_expand_details_are_distinct() {
+        let mut dialog =
+            PermissionDialog::new("Bash", r#"{"command":"cargo test"}"#, "Allow command?");
+
+        let collapsed = render_dialog_text(&dialog);
+        assert!(!collapsed.contains("raw details"));
+
+        assert_eq!(
+            dialog.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
+            None
+        );
+        let expanded = render_dialog_text(&dialog);
+        assert!(expanded.contains("raw details"));
+        assert!(expanded.contains("\"command\": \"cargo test\""));
+
+        assert_eq!(
+            dialog.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+            Some(PermissionChoice::from_decision(
+                PermissionDecisionChoice::AutoReview,
+            ))
+        );
+    }
+
+    #[test]
     fn exit_plan_mode_denial_shows_feedback_path() {
         let mut dialog = PermissionDialog::new(
             "ExitPlanMode",
@@ -831,7 +895,7 @@ fn shortcut_for_label(label: &str) -> Option<&'static str> {
         Some(PermissionDecisionChoice::Allow) => Some("y"),
         Some(PermissionDecisionChoice::Deny) => Some("n"),
         Some(PermissionDecisionChoice::AlwaysAllow) => Some("a"),
-        Some(PermissionDecisionChoice::Escalate) => Some("e"),
+        Some(PermissionDecisionChoice::AutoReview) => Some("r"),
         None => None,
     }
 }
@@ -938,8 +1002,8 @@ fn button_bar_label(label: &str) -> String {
         "Always exact".to_string()
     } else if lower == "always allow" {
         "Always".to_string()
-    } else if lower.contains("escalate") {
-        "Escalate".to_string()
+    } else if lower.contains("auto") || lower.contains("review") || lower.contains("escalate") {
+        "Auto Review".to_string()
     } else if lower.contains("allow") {
         "Allow".to_string()
     } else if lower.contains("deny") || lower.contains("reject") || lower == "no" {

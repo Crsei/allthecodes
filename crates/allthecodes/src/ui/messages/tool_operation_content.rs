@@ -298,7 +298,10 @@ fn render_tool_operation_lines_with_width(
     // Side-channel references
     for ch in &view.side_channels {
         spans.push(Span::raw(" "));
-        let ref_text = if let Some(ref desc) = ch.description {
+        let reference = ch.reference.trim();
+        let ref_text = if !reference.is_empty() {
+            format!("[{}: {}]", ch.channel_type, truncate_chars(reference, 48))
+        } else if let Some(ref desc) = ch.description {
             format!("[{}: {}]", ch.channel_type, desc)
         } else {
             format!("[{}]", ch.channel_type)
@@ -457,7 +460,8 @@ pub fn render_tool_operation_content(view: &ToolOperationView, theme: &Theme) ->
 mod tests {
     use super::*;
     use allthecodes_tool_display::{
-        OperationConfidence, OperationKind, OperationRisk, OperationStatus, ToolOperation,
+        OperationConfidence, OperationKind, OperationRisk, OperationSideChannel, OperationStatus,
+        ToolOperation,
     };
 
     fn make_op(
@@ -522,6 +526,28 @@ mod tests {
         let rendered = render_tool_operation_content(&view, &Theme::default());
         assert!(rendered.contains("May Delete"));
         assert!(rendered.contains("[destructive]"));
+    }
+
+    #[test]
+    fn test_side_channel_renders_reference_before_description() {
+        let mut op = make_op(
+            OperationKind::Read,
+            None,
+            OperationStatus::Resolved,
+            OperationRisk::Safe,
+            "Open preview",
+            None,
+        );
+        op.side_channels.push(OperationSideChannel {
+            channel_type: "preview".to_string(),
+            reference: "http://127.0.0.1:3000/page".to_string(),
+            description: Some("browser preview".to_string()),
+        });
+
+        let view = ToolOperationView::from_operation(&op);
+        let rendered = render_tool_operation_content(&view, &Theme::default());
+        assert!(rendered.contains("[preview: http://127.0.0.1:3000/page]"));
+        assert!(!rendered.contains("browser preview"));
     }
 
     #[test]
