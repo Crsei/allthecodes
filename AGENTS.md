@@ -35,8 +35,13 @@ parent directory:
 ```bash
 export CARGO_HOME=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.rust/cargo
 export RUSTUP_HOME=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.rust/rustup
+export CARGO_TARGET_DIR=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/allthecodes-target
 export PATH="$CARGO_HOME/bin:$PATH"
 ```
+
+Local build artifacts for this repository should go under
+`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/` via
+`CARGO_TARGET_DIR`, instead of the repository-local `target/` directory.
 
 Use the commands below from the repository root:
 
@@ -48,7 +53,11 @@ cargo --version
 rustc --version
 rustup show active-toolchain
 
-# Build the whole workspace in release mode.
+# Daily development: avoid full workspace release builds unless needed.
+cargo check --workspace
+cargo build -p allthecodes --release
+
+# Full release/submit verification.
 cargo build --workspace --release
 ```
 
@@ -147,8 +156,10 @@ cd /data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes
 
 export CARGO_HOME=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.rust/cargo
 export RUSTUP_HOME=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.rust/rustup
+export CARGO_TARGET_DIR=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/allthecodes-target
 export PATH="$CARGO_HOME/bin:$PATH"
 
+# Final verification before commit/push.
 cargo build --workspace --release
 
 git config user.name "Crsei"
