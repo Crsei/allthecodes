@@ -60,7 +60,12 @@ pub struct McpOAuthConfig {
     /// * `"keyring"`: use system keyring only.
     ///
     /// When `None` or absent, behaves as `"auto"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "credentialsStore",
+        alias = "credentials_store",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub credentials_store: Option<String>,
 }
 

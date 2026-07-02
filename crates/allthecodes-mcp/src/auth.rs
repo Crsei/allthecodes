@@ -710,7 +710,7 @@ fn requested_scopes(oauth: &McpOAuthConfig, metadata: &AuthorizationServerMetada
         .unwrap_or_else(|| metadata.scopes_supported.clone())
 }
 
-fn redirect_uri(oauth: &McpOAuthConfig) -> String {
+pub(crate) fn redirect_uri(oauth: &McpOAuthConfig) -> String {
     let port = oauth.callback_port.unwrap_or(DEFAULT_CALLBACK_PORT);
     format!("http://127.0.0.1:{port}/mcp/oauth/callback")
 }
@@ -738,7 +738,8 @@ pub(crate) fn read_oauth_store() -> Result<OAuthStore> {
 }
 
 pub(crate) fn write_oauth_store(store: &OAuthStore) -> Result<()> {
-    write_json_atomic(token_store_path(), store)
+    write_json_atomic(token_store_path(), store)?;
+    set_private_permissions(&token_store_path())
 }
 
 pub(crate) fn read_pending_store() -> Result<OAuthPendingStore> {
@@ -912,6 +913,40 @@ pub(crate) fn resource_for_tokens(config: &McpServerConfig) -> Option<String> {
         .as_ref()
         .and_then(|o| o.oauth_resource.clone())
         .or_else(|| config.url.clone())
+}
+
+/// Set Unix 0600 permissions on a file (no-op on non-Unix platforms).
+pub(crate) fn set_private_permissions(path: &std::path::Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to set 0600 on {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+/// Start an automatic OAuth authorization flow with a loopback callback server.
+///
+/// This bundles metadata discovery, PKCE generation, and callback listener
+/// binding into one call. Returns a handle the caller can `wait` on for
+/// completion, plus the authorization URL for display.
+///
+/// The existing manual [`start_authorization`] / [`complete_authorization`]
+/// functions remain unchanged for fallback use.
+pub async fn start_auto_authorization(
+    config: &McpServerConfig,
+) -> Result<(crate::oauth_login::McpOAuthLoginHandle, McpOAuthStart)> {
+    let oauth = require_oauth_config(config)?;
+    validate_oauth_config(oauth)?;
+    let metadata = discover_authorization_server_metadata(config).await?;
+    validate_metadata(&metadata)?;
+
+    crate::oauth_login::start_auto_login(config, &metadata, oauth).await
 }
 
 #[cfg(test)]
