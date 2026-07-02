@@ -121,7 +121,7 @@ impl App {
 
         if self.verbose != state.verbose {
             self.verbose = state.verbose;
-            self.vscroll.invalidate_all();
+            self.conversation.invalidate_vscroll_all();
             self.dirty = true;
         }
 
@@ -156,10 +156,12 @@ impl App {
     /// Build the current status-line payload from app state.
     pub(super) fn build_status_payload(&self) -> StatusLinePayload {
         let mut payload = build_payload_from_snapshot(StatusLineSnapshot {
-            session_id: (!self.session_id.is_empty()).then(|| self.session_id.clone()),
-            model_id: &self.model_name,
-            backend: (!self.backend_name.is_empty()).then_some(self.backend_name.as_str()),
-            cwd: std::path::Path::new(&self.cwd),
+            session_id: (!self.session_ui.session_id.is_empty())
+                .then(|| self.session_ui.session_id.clone()),
+            model_id: &self.session_ui.model_name,
+            backend: (!self.session_ui.backend_name.is_empty())
+                .then_some(self.session_ui.backend_name.as_str()),
+            cwd: std::path::Path::new(&self.session_ui.cwd),
             input_tokens: self.session_usage.input_tokens,
             output_tokens: self.session_usage.output_tokens,
             cache_read_tokens: self.session_usage.cache_read_tokens,
@@ -170,15 +172,16 @@ impl App {
             backfilled_count: self.session_usage.backfilled_count,
             session_duration_secs: None,
             resolved_output_style_name: crate::ui::status_line_resolver::resolve_output_style_name(
-                self.output_style.as_deref(),
-                std::path::Path::new(&self.cwd),
+                self.session_ui.output_style.as_deref(),
+                std::path::Path::new(&self.session_ui.cwd),
             ),
             editor_mode: self.vim.enabled.then_some("vim"),
             worktree: crate::ui::status_line_resolver::current_worktree_status_for_session(
-                (!self.session_id.is_empty()).then_some(self.session_id.as_str()),
+                (!self.session_ui.session_id.is_empty())
+                    .then_some(self.session_ui.session_id.as_str()),
             ),
             streaming: self.is_streaming,
-            message_count: self.messages.len(),
+            message_count: self.conversation.messages().len(),
         });
         if self.vim.enabled {
             payload.vim = Some(payload::VimStatus {

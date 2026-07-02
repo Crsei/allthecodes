@@ -29,7 +29,6 @@ const MESSAGE_BOTTOM_GAP_HEIGHT: u16 = 1;
 
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {
-        self.sync_compat_to_stores();
         let size = frame.area();
         if size.width < 10 || size.height < 4 {
             return;
@@ -45,7 +44,6 @@ impl App {
                 &self.session_ui.cwd,
                 self.workspace_trust_selection,
             );
-            self.sync_compat_from_stores();
             self.capture_render_snapshot(frame);
             return;
         }
@@ -54,7 +52,6 @@ impl App {
         // before we compute the prompt-mode layout.
         if self.view_mode.is_transcript_like() {
             self.render_transcript(frame, size);
-            self.sync_compat_from_stores();
             self.capture_render_snapshot(frame);
             return;
         }
@@ -140,12 +137,6 @@ impl App {
                 &self.theme,
                 &message_render_context,
             );
-            self.vscroll.ensure_up_to_date(
-                self.conversation.messages(),
-                size.width,
-                &self.theme,
-                &message_render_context,
-            );
             self.conversation
                 .vscroll()
                 .total_visual_lines()
@@ -190,23 +181,11 @@ impl App {
                 &self.theme,
                 &message_render_context,
             );
-            self.vscroll.ensure_up_to_date(
-                self.conversation.messages(),
-                message_area.width,
-                &self.theme,
-                &message_render_context,
-            );
             let mut total = self.conversation.vscroll().total_visual_lines();
             let (message_body_area, scrollbar_area) =
                 split_session_scrollbar_area(message_area, total);
             if message_body_area.width != message_area.width {
                 self.conversation.ensure_vscroll_up_to_date(
-                    message_body_area.width,
-                    &self.theme,
-                    &message_render_context,
-                );
-                self.vscroll.ensure_up_to_date(
-                    self.conversation.messages(),
                     message_body_area.width,
                     &self.theme,
                     &message_render_context,
@@ -358,7 +337,6 @@ impl App {
             );
         }
 
-        self.sync_compat_from_stores();
         self.capture_render_snapshot(frame);
     }
 
@@ -567,22 +545,10 @@ impl App {
             &self.theme,
             &message_render_context,
         );
-        self.vscroll.ensure_up_to_date(
-            self.conversation.messages(),
-            body_area.width,
-            &self.theme,
-            &message_render_context,
-        );
         let mut total = self.conversation.vscroll().total_visual_lines();
         let (message_body_area, scrollbar_area) = split_session_scrollbar_area(body_area, total);
         if message_body_area.width != body_area.width {
             self.conversation.ensure_vscroll_up_to_date(
-                message_body_area.width,
-                &self.theme,
-                &message_render_context,
-            );
-            self.vscroll.ensure_up_to_date(
-                self.conversation.messages(),
                 message_body_area.width,
                 &self.theme,
                 &message_render_context,

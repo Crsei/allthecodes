@@ -209,10 +209,13 @@ fn mouse_click_session_scrollbar_controls_prompt_messages() {
             source_tool_assistant_uuid: None,
         }));
     }
-    app.scroll_offset = 0;
+    app.conversation.set_scroll_offset(0);
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
     terminal.draw(|frame| app.render(frame)).expect("draw");
-    let scrollbar = app.session_scrollbar.expect("session scrollbar");
+    let scrollbar = app
+        .render_layout
+        .session_scrollbar
+        .expect("session scrollbar");
 
     assert_eq!(
         app.handle_mouse_event(MouseEvent {
@@ -226,7 +229,7 @@ fn mouse_click_session_scrollbar_controls_prompt_messages() {
         }),
         AppAction::ScrollDown
     );
-    assert!(app.scroll_offset > 0);
+    assert!(app.conversation.scroll_offset() > 0);
 }
 
 #[test]
@@ -307,6 +310,38 @@ fn app_owns_queued_prompt_fifo() {
     assert_eq!(app.pop_next_queued().as_deref(), Some("one"));
     assert_eq!(app.pop_next_queued().as_deref(), Some("two"));
     assert_eq!(app.pop_next_queued(), None);
+}
+
+#[test]
+fn status_payload_reads_domain_stores_directly() {
+    let cwd = tempfile::tempdir().expect("cwd");
+    let cwd_text = cwd.path().display().to_string();
+    let mut app = App::new();
+    app.session_ui.session_id = "store-session".to_string();
+    app.session_ui.model_name = "deepseek-v4-pro".to_string();
+    app.session_ui.backend_name = "native".to_string();
+    app.session_ui.cwd = cwd_text.clone();
+    app.conversation.add_message(Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 0,
+        role: "user".to_string(),
+        content: MessageContent::Text("store message".to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    }));
+
+    let payload = app.build_status_payload();
+
+    assert_eq!(payload.session_id.as_deref(), Some("store-session"));
+    let model = payload.model.expect("model");
+    assert_eq!(model.id, "deepseek-v4-pro");
+    assert_eq!(model.backend.as_deref(), Some("native"));
+    assert_eq!(
+        payload.workspace.expect("workspace").cwd,
+        cwd.path().display().to_string()
+    );
+    assert_eq!(payload.message_count, 1);
 }
 
 #[test]
@@ -536,7 +571,7 @@ fn agent_tree_dialog_renders_above_prompt_input() {
     assert_title_above_prompt_area(
         &content,
         "Agent Threads",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 
@@ -646,7 +681,7 @@ fn slash_opens_command_palette_and_selection_keeps_argument_entry() {
     assert_eq!(app.prompt.input, "/mcp ");
     assert!(!app.command_palette.active());
     assert!(
-        CommandPalette::argument_hint(&app.prompt.input, std::path::Path::new(&app.cwd)).is_some()
+        CommandPalette::argument_hint(&app.prompt.input, std::path::Path::new(app.cwd())).is_some()
     );
 }
 
@@ -813,14 +848,14 @@ fn workspace_trust_prompt_accepts_persists_and_exits() {
 #[test]
 fn mouse_wheel_scrolls_prompt_messages() {
     let mut app = App::new();
-    app.scroll_offset = 10;
+    app.conversation.set_scroll_offset(10);
     app.dirty = false;
 
     assert_eq!(
         send_mouse(&mut app, MouseEventKind::ScrollUp),
         AppAction::ScrollUp
     );
-    assert_eq!(app.scroll_offset, 9);
+    assert_eq!(app.conversation.scroll_offset(), 9);
     assert!(app.dirty);
 
     app.dirty = false;
@@ -828,7 +863,7 @@ fn mouse_wheel_scrolls_prompt_messages() {
         send_mouse(&mut app, MouseEventKind::ScrollDown),
         AppAction::ScrollDown
     );
-    assert_eq!(app.scroll_offset, 10);
+    assert_eq!(app.conversation.scroll_offset(), 10);
     assert!(app.dirty);
 }
 
@@ -873,7 +908,7 @@ fn mouse_wheel_scrolls_transcript_view() {
 #[test]
 fn mouse_wheel_over_prompt_scrolls_messages_not_input_history() {
     let mut app = App::new();
-    app.scroll_offset = 10;
+    app.conversation.set_scroll_offset(10);
     app.push_history("first".to_string());
     app.push_history("second".to_string());
 
@@ -888,28 +923,28 @@ fn mouse_wheel_over_prompt_scrolls_messages_not_input_history() {
         send_mouse_at(&mut app, MouseEventKind::ScrollUp, 1, 9),
         AppAction::ScrollUp
     );
-    assert_eq!(app.scroll_offset, 9);
+    assert_eq!(app.conversation.scroll_offset(), 9);
     assert!(app.prompt.input.is_empty());
 
     assert_eq!(
         send_mouse_at(&mut app, MouseEventKind::ScrollUp, 1, 9),
         AppAction::ScrollUp
     );
-    assert_eq!(app.scroll_offset, 8);
+    assert_eq!(app.conversation.scroll_offset(), 8);
     assert!(app.prompt.input.is_empty());
 
     assert_eq!(
         send_mouse_at(&mut app, MouseEventKind::ScrollDown, 1, 9),
         AppAction::ScrollDown
     );
-    assert_eq!(app.scroll_offset, 9);
+    assert_eq!(app.conversation.scroll_offset(), 9);
     assert!(app.prompt.input.is_empty());
 }
 
 #[test]
 fn mouse_wheel_over_messages_scrolls_history_after_prompt_focus() {
     let mut app = App::new();
-    app.scroll_offset = 10;
+    app.conversation.set_scroll_offset(10);
 
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
     terminal.draw(|frame| app.render(frame)).expect("draw");
@@ -926,7 +961,7 @@ fn mouse_wheel_over_messages_scrolls_history_after_prompt_focus() {
         send_mouse_at(&mut app, MouseEventKind::ScrollUp, 1, 1),
         AppAction::ScrollUp
     );
-    assert_eq!(app.scroll_offset, 9);
+    assert_eq!(app.conversation.scroll_offset(), 9);
 }
 
 #[test]
@@ -978,7 +1013,7 @@ fn ctrl_r_opens_history_search_and_escape_closes() {
     assert_title_above_prompt_area(
         &content,
         "History Search",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 
     assert_eq!(send_key(&mut app, KeyCode::Esc), AppAction::None);
@@ -1074,7 +1109,7 @@ fn command_surface_renders_as_overlay() {
     assert_title_above_prompt_area(
         &content,
         "LSP Plugin Recommendation",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 
@@ -1109,7 +1144,7 @@ fn permission_dialog_renders_above_prompt_input() {
     assert_title_above_prompt_area(
         &content,
         "Permission Required",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 
@@ -1133,7 +1168,7 @@ fn question_dialog_renders_above_prompt_input() {
     assert_title_above_prompt_area(
         &content,
         "Need Input",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 
@@ -1150,7 +1185,7 @@ fn bypass_permissions_dialog_renders_above_prompt_input() {
     assert_title_above_prompt_area(
         &content,
         "Bypass Permissions mode",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 

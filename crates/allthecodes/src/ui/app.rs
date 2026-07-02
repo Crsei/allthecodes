@@ -47,7 +47,6 @@ use super::terminal_env::TerminalEnvConfig;
 use super::theme::{Theme, ThemeProvider};
 use super::transcript::{TranscriptState, ViewMode};
 use super::vim::VimState;
-use super::virtual_scroll::VirtualScroll;
 use app_event::AppEvent;
 use domain::{ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiStore};
 
@@ -193,9 +192,7 @@ fn notification_from_backend_message(message: &BackendMessage) -> Option<InAppNo
 /// Main TUI application state.
 pub struct App {
     conversation: ConversationStore,
-    messages: Vec<Message>,
     prompt: PromptInput,
-    scroll_offset: usize,
     is_streaming: bool,
     prompt_queue: PromptQueueStore,
     spinner_state: SpinnerState,
@@ -207,11 +204,6 @@ pub struct App {
     design_theme_provider: ThemeProvider,
     theme: Theme,
     session_ui: SessionUiStore,
-    model_name: String,
-    backend_name: String,
-    session_id: String,
-    cwd: String,
-    output_style: Option<String>,
     verbose: bool,
     permission_mode_label: String,
     sandbox_label: String,
@@ -242,9 +234,6 @@ pub struct App {
 
     // Optimizations
     render_layout: RenderLayoutStore,
-    vscroll: VirtualScroll,
-    session_scrollbar: Option<SessionScrollbarState>,
-    prompt_area: Option<Rect>,
     /// Area the user last clicked or scrolled over.
     mouse_focus: MouseFocus,
     /// Dirty flag; when false, the TUI skips `terminal.draw()`.
@@ -310,9 +299,7 @@ impl App {
         let theme = design_theme_provider.legacy_theme();
         Self {
             conversation: ConversationStore::default(),
-            messages: Vec::new(),
             prompt: PromptInput::new(),
-            scroll_offset: 0,
             is_streaming: false,
             prompt_queue: PromptQueueStore::default(),
             spinner_state: SpinnerState::new(),
@@ -324,11 +311,6 @@ impl App {
             design_theme_provider,
             theme,
             session_ui: SessionUiStore::default(),
-            model_name: String::new(),
-            backend_name: String::new(),
-            session_id: String::new(),
-            cwd: String::new(),
-            output_style: None,
             verbose: false,
             permission_mode_label: String::new(),
             sandbox_label: String::new(),
@@ -352,9 +334,6 @@ impl App {
             show_agent_footer: true,
             current_agent_thread_id: None,
             render_layout: RenderLayoutStore::default(),
-            vscroll: VirtualScroll::new(),
-            session_scrollbar: None,
-            prompt_area: None,
             mouse_focus: MouseFocus::Messages,
             dirty: true,
             last_render_snapshot: None,
@@ -390,29 +369,6 @@ impl App {
 
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
-    }
-
-    fn sync_compat_from_stores(&mut self) {
-        self.messages = self.conversation.messages().to_vec();
-        self.scroll_offset = self.conversation.scroll_offset();
-        self.model_name = self.session_ui.model_name.clone();
-        self.backend_name = self.session_ui.backend_name.clone();
-        self.session_id = self.session_ui.session_id.clone();
-        self.cwd = self.session_ui.cwd.clone();
-        self.output_style = self.session_ui.output_style.clone();
-        self.session_scrollbar = self.render_layout.session_scrollbar;
-        self.prompt_area = self.render_layout.prompt_area;
-    }
-
-    fn sync_compat_to_stores(&mut self) {
-        self.conversation.set_scroll_offset(self.scroll_offset);
-        self.session_ui.model_name.clone_from(&self.model_name);
-        self.session_ui.backend_name.clone_from(&self.backend_name);
-        self.session_ui.session_id.clone_from(&self.session_id);
-        self.session_ui.cwd.clone_from(&self.cwd);
-        self.session_ui.output_style.clone_from(&self.output_style);
-        self.render_layout.session_scrollbar = self.session_scrollbar;
-        self.render_layout.prompt_area = self.prompt_area;
     }
 
     pub fn export_debug_snapshot(&self) -> std::io::Result<std::path::PathBuf> {
@@ -478,31 +434,22 @@ impl App {
             self.show_welcome = false;
         }
         self.conversation.add_message(msg);
-        self.vscroll
-            .invalidate_from(self.conversation.messages().len().saturating_sub(1));
         self.sync_primary_agent_thread();
         self.scroll_to_bottom_deferred();
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub fn replace_last_message(&mut self, msg: Message) {
         self.conversation.replace_last_message(msg);
-        self.vscroll
-            .invalidate_from(self.conversation.messages().len().saturating_sub(1));
         self.sync_primary_agent_thread();
         self.scroll_to_bottom_deferred();
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub fn remove_last_message(&mut self) {
         if self.conversation.remove_last_message() {
-            self.vscroll
-                .invalidate_from(self.conversation.messages().len());
             self.sync_primary_agent_thread();
             self.scroll_to_bottom_deferred();
-            self.sync_compat_from_stores();
             self.dirty = true;
         }
     }
@@ -518,11 +465,9 @@ impl App {
 
     pub fn clear_messages(&mut self) {
         self.conversation.clear();
-        self.vscroll.invalidate_all();
         self.agent_nav.clear();
         self.current_agent_thread_id = None;
         self.sync_primary_agent_thread();
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
@@ -654,13 +599,11 @@ impl App {
 
     pub fn set_model_name(&mut self, name: String) {
         self.session_ui.model_name = name;
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub fn set_backend_name(&mut self, name: String) {
         self.session_ui.backend_name = name;
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
@@ -672,7 +615,6 @@ impl App {
             self.active_goal = None;
         }
         self.sync_primary_agent_thread();
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
@@ -681,7 +623,6 @@ impl App {
         self.workspace_trust_pending =
             !self.session_ui.cwd.is_empty() && !is_workspace_trusted(&self.session_ui.cwd);
         self.workspace_trust_selection = 0;
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
@@ -691,7 +632,6 @@ impl App {
 
     pub fn set_output_style(&mut self, output_style: Option<String>) {
         self.session_ui.output_style = output_style;
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 

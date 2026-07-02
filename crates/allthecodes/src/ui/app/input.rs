@@ -123,7 +123,6 @@ mod completion_state_tests {
 
 impl App {
     pub fn handle_key_event(&mut self, key: KeyEvent) -> AppAction {
-        self.sync_compat_to_stores();
         if key.kind != KeyEventKind::Press {
             return AppAction::None;
         }
@@ -617,7 +616,6 @@ impl App {
     }
 
     pub fn handle_mouse_event(&mut self, mouse: MouseEvent) -> AppAction {
-        self.sync_compat_to_stores();
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.update_mouse_focus(mouse);
@@ -739,7 +737,6 @@ impl App {
         } else {
             let previous = self.conversation.scroll_offset();
             self.conversation.set_scroll_offset(scroll);
-            self.sync_compat_from_stores();
             previous
         };
         self.dirty = true;
@@ -783,20 +780,17 @@ impl App {
     pub(super) fn scroll_up(&mut self, lines: usize) {
         self.conversation
             .set_scroll_offset(self.conversation.scroll_offset().saturating_sub(lines));
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub(super) fn scroll_down(&mut self, lines: usize) {
         self.conversation
             .set_scroll_offset(self.conversation.scroll_offset().saturating_add(lines));
-        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub(super) fn scroll_to_bottom_deferred(&mut self) {
         self.conversation.set_scroll_offset(usize::MAX);
-        self.sync_compat_from_stores();
     }
 
     pub(super) fn history_up(&mut self) {
@@ -1200,7 +1194,6 @@ impl App {
                     self.transcript_state.scroll_offset = 0;
                 } else {
                     self.conversation.set_scroll_offset(0);
-                    self.sync_compat_from_stores();
                 }
                 self.dirty = true;
                 return Some(AppAction::None);
@@ -1210,7 +1203,6 @@ impl App {
                     self.transcript_state.scroll_offset = usize::MAX;
                 } else {
                     self.conversation.set_scroll_offset(usize::MAX);
-                    self.sync_compat_from_stores();
                 }
                 self.dirty = true;
                 return Some(AppAction::None);
@@ -1345,7 +1337,6 @@ impl App {
                 self.transcript_state.scroll_offset = line.saturating_sub(1);
             } else {
                 self.conversation.set_scroll_offset(line.saturating_sub(1));
-                self.sync_compat_from_stores();
             }
         }
     }

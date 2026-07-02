@@ -108,6 +108,10 @@ impl ConversationStore {
         &self.vscroll
     }
 
+    pub(super) fn invalidate_vscroll_all(&mut self) {
+        self.vscroll.invalidate_all();
+    }
+
     pub(super) fn ensure_vscroll_up_to_date(
         &mut self,
         width: u16,
