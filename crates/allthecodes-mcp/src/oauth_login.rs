@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -20,13 +20,13 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use crate::auth::{
-    AuthorizationServerMetadata, McpOAuthStart, PendingMcpOAuthAuthorization, StoredMcpOAuthToken,
     discover_authorization_server_metadata, exchange_code_for_token, generate_random_urlsafe,
     now_timestamp, pkce_challenge, remove_pending_authorization, require_oauth_config,
     save_pending_authorization, server_auth_key, token_from_response, token_store_path,
-    validate_metadata, validate_oauth_config,
+    validate_metadata, validate_oauth_config, AuthorizationServerMetadata, McpOAuthStart,
+    PendingMcpOAuthAuthorization, StoredMcpOAuthToken,
 };
-use crate::oauth_store::{McpCredentialsStoreMode, store_ops as oauth_store_ops};
+use crate::oauth_store::{store_ops as oauth_store_ops, McpCredentialsStoreMode};
 use crate::{McpOAuthConfig, McpServerConfig};
 
 /// Default OAuth callback timeout: 300 seconds.
@@ -790,11 +790,9 @@ mod tests {
         assert!(handle.authorization_url().contains("/authorize?"));
         assert!(handle.authorization_url().contains("code_challenge="));
         assert!(!start_info.state.is_empty());
-        assert!(
-            start_info
-                .redirect_uri
-                .contains(format!("{CALLBACK_PATH}").as_str())
-        );
+        assert!(start_info
+            .redirect_uri
+            .contains(format!("{CALLBACK_PATH}").as_str()));
 
         drop(handle);
     }
@@ -813,22 +811,18 @@ mod tests {
             start_auto_login_with_timeout(&config, &metadata, oauth, Duration::from_millis(25))
                 .await
                 .unwrap();
-        assert!(
-            crate::auth::read_pending_store()
-                .unwrap()
-                .pending
-                .contains_key(&auth_key)
-        );
+        assert!(crate::auth::read_pending_store()
+            .unwrap()
+            .pending
+            .contains_key(&auth_key));
 
         let error = handle.wait().await.unwrap_err();
 
         assert!(error.to_string().contains("timed out"));
-        assert!(
-            !crate::auth::read_pending_store()
-                .unwrap()
-                .pending
-                .contains_key(&auth_key)
-        );
+        assert!(!crate::auth::read_pending_store()
+            .unwrap()
+            .pending
+            .contains_key(&auth_key));
     }
 
     #[tokio::test]
@@ -845,12 +839,10 @@ mod tests {
             start_auto_login_with_timeout(&config, &metadata, oauth, Duration::from_secs(5))
                 .await
                 .unwrap();
-        assert!(
-            crate::auth::read_pending_store()
-                .unwrap()
-                .pending
-                .contains_key(&auth_key)
-        );
+        assert!(crate::auth::read_pending_store()
+            .unwrap()
+            .pending
+            .contains_key(&auth_key));
 
         let redirect = Url::parse(&start.redirect_uri).unwrap();
         let mut callback_stream =
@@ -871,17 +863,13 @@ mod tests {
 
         let error = handle.wait().await.unwrap_err();
 
-        assert!(
-            error
-                .to_string()
-                .contains("OAuth provider returned error: access_denied")
-        );
-        assert!(
-            !crate::auth::read_pending_store()
-                .unwrap()
-                .pending
-                .contains_key(&auth_key)
-        );
+        assert!(error
+            .to_string()
+            .contains("OAuth provider returned error: access_denied"));
+        assert!(!crate::auth::read_pending_store()
+            .unwrap()
+            .pending
+            .contains_key(&auth_key));
     }
 
     #[tokio::test]

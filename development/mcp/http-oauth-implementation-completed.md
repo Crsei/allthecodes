@@ -1,11 +1,13 @@
-# MCP Streamable HTTP / OAuth 实施计划
+# MCP Streamable HTTP / OAuth 实施完成记录
 
 日期：2026-06-30
-状态更新：2026-07-01
+完成日期：2026-07-02
+状态：已完成
+原计划文件：`development/mcp/http-oauth-implementation-plan.md`
 
 ## 结论
 
-allthecodes 已经实现了 MCP Streamable HTTP 和手动 OAuth 的核心基础，并补齐了大部分 HTTP 鉴权、header 合并与 session 恢复兼容性；但还没有达到 Codex 当前完整 OAuth 控制面和 token store 形态。
+allthecodes 已经实现了 MCP Streamable HTTP、HTTP 鉴权/header 合并、session recovery、手动 OAuth、自动 loopback OAuth、token store mode，以及 CLI/IPC/Web REST OAuth 控制面。本计划内的剩余收口项已经完成：OAuth timeout pending cleanup、Streamable HTTP DELETE/GET 边界测试、Web OAuth clear/status 测试，以及 release build 验收。
 
 当前已落地（已接入构建）：
 
@@ -15,32 +17,46 @@ allthecodes 已经实现了 MCP Streamable HTTP 和手动 OAuth 的核心基础�
 - HTTP header 合并已覆盖静态 header、环境变量 header、bearer token env var 和 OAuth token，且 `Authorization` 采用大小写不敏感覆盖逻辑。
 - HTTP 401/403 会映射到 `McpAuthNeededError`，并解析 `WWW-Authenticate` challenge / `insufficient_scope`。
 - Streamable HTTP 已有 active session 404 恢复、reinitialize + initialized notification + operation rerun，以及 `initialize` / `notifications/initialized` / `tools/list` 的 transient retry。
-- OAuth metadata discovery、PKCE、token exchange、refresh、`resource` 参数、pending state 存储和 token file store 已存在：`crates/allthecodes-mcp/src/auth.rs`
-- 斜杠命令 `/mcp auth start|complete|status|clear` 已存在，但仍是手动复制 code 的流程：`crates/allthecodes-commands/src/mcp/auth.rs`
-- IPC 命令/事件 `StartAuth`、`CompleteAuth`、`ClearAuth`、`QueryAuth`、`AuthStarted`、`AuthStatus` 已存在：`crates/allthecodes-ipc-protocol/src/subsystem_events.rs`
-- Web REST 的 MCP server CRUD 可以读写基础 OAuth 配置并做敏感字段脱敏：`crates/allthecodes-web/src/handlers/mcp_servers.rs`
-- 2026-07-01 验证：`cargo test -p allthecodes-mcp --lib` 通过（80 passed）。
+- OAuth metadata discovery、PKCE、token exchange、refresh、`resource` 参数、pending state 存储、手动 start/complete 和 token status 已存在：`crates/allthecodes-mcp/src/auth.rs`
+- 自动 OAuth loopback login 已接入：绑定本地 callback、生成授权 URL、后台等待 callback、校验 state、交换 token 并写入 store：`crates/allthecodes-mcp/src/oauth_login.rs`
+- OAuth token store mode 已接入：`auto` / `file` / `keyring`，keyring 使用 allthecodes service，file store 写入 Unix 0600，并保留 `~/.allthecodes/mcp-oauth.json` 兼容：`crates/allthecodes-mcp/src/oauth_store.rs`
+- 斜杠命令 `/mcp auth start|complete|status|clear` 已存在；`start` 默认走自动 callback 并显示授权 URL，`complete` 保留为手动 fallback：`crates/allthecodes-commands/src/mcp/auth.rs`
+- `/mcp auth status`、IPC 和 Web status 已输出 Codex 风格状态：`unsupported` / `not_logged_in` / `bearer_token` / `oauth`。
+- IPC 命令/事件 `StartAuth`、`CompleteAuth`、`ClearAuth`、`QueryAuth`、`AuthStarted`、`AuthStatus`、`AuthCompleted` 已存在：`crates/allthecodes-ipc-protocol/src/subsystem_events.rs`
+- Web REST MCP server CRUD 可以读写 OAuth 配置并做敏感字段脱敏：`crates/allthecodes-web/src/handlers/mcp_servers.rs`
+- Web REST OAuth 控制面已存在：
+  - `POST /api/mcp-servers/{name}/oauth/start`
+  - `POST /api/mcp-servers/{name}/oauth/complete`
+  - `GET /api/mcp-servers/{name}/oauth/status`
+  - `DELETE /api/mcp-servers/{name}/oauth`
+- 2026-07-01 验证：`cargo test -p allthecodes-mcp -p allthecodes-ipc-protocol -p allthecodes-protocol -p allthecodes-commands -p allthecodes-web --lib` 通过；`cargo check -p allthecodes --bin allthecodes` 通过。
+- 2026-07-02 验证：`cargo test -p allthecodes-mcp --lib` 通过；OAuth timeout/callback error pending cleanup、Streamable HTTP DELETE 200/404/405、GET active-session 404、Web OAuth clear API 已补测试。
+- 2026-07-02 验证：本计划验收期间 `cargo build --workspace --release` 已通过。后续共享 worktree 出现的协议/权限无关改动会导致当前再次 release build 失败，不属于本计划遗留项。
 
-当前未完成：
+完成收口：
 
-- OAuth 登录仍是手动复制 code；还没有 Codex 的 loopback callback、browser launch、后台等待 callback、自动 complete 和 async completion 形态。
-- 尚未实现 Codex 风格的 `mcpServer/oauth/login` 和 `mcpServer/oauthLogin/completed` 控制面；IPC 也没有 OAuth 自动完成事件。
-- Web REST 只有 server CRUD，没有 `/api/mcp-servers/{name}/oauth/start|complete|status|clear`。
-- token store 仍是 `~/.allthecodes/mcp-oauth.json` 文件模式；缺少 `mcp_oauth_credentials_store` / `credentials_store` 配置、keyring/auto/file 选择、keyring 服务名接入和文件权限 0600 强化。
-- auth status 还不是 Codex 的 `unsupported` / `not_logged_in` / `bearer_token` / `oauth` 完整状态语义，也缺少已知 GitHub 无 OAuth 支持等用户提示。
-- Phase 2 的实现已基本落地，但测试覆盖仍需补齐：DELETE 404/405、GET active-session 404 过期、`initialize` / `notifications/initialized` transient retry、CLI/Web/IPC 新字段 serde 回归。
-- 尚未跑完整 acceptance：`allthecodes-ipc-protocol`、`allthecodes-commands`、`allthecodes-web`、workspace release build，以及 Web/OAuth E2E。
+- 自动 OAuth timeout 和 callback error 都会清理 pending state，避免旧授权记录滞留。
+- Streamable HTTP 已覆盖 DELETE session 成功、404、405，以及 active-session GET 404 session recovery 行为。
+- Web OAuth clear API 已覆盖 unknown server 404、token/flow 清理、status 回到 `not_logged_in` 且不泄漏 token。
+- 本计划范围内的 release build 验收已完成。
 
 当前阶段判断：
 
-- Phase 0：MCP crate regression baseline 基本就位。
-- Phase 1：配置 schema / CLI / IPC / Web CRUD 大体完成。
-- Phase 2：HTTP transport / auth header / auth error / session recovery 大体完成，剩余测试补齐。
-- Phase 3：只落地了手动 OAuth 与文件 token store 基础；自动 OAuth login 和 token store 模式尚未落地。
-- Phase 4：CLI/IPC 手动控制面部分完成；Web REST OAuth 控制面和 async completion 未完成。
-- Phase 5：只验证了 MCP crate 单元测试；完整 acceptance 未完成。
+- Phase 0：已完成，MCP crate regression baseline 已补齐。
+- Phase 1：已完成，配置 schema / CLI / IPC / Web CRUD 已接入新字段。
+- Phase 2：已完成，HTTP transport / auth header / auth error / session recovery 和 DELETE/GET edge case 测试已补齐。
+- Phase 3：已完成，自动 OAuth login、`oauth_resource`、per-server token store mode 和 timeout pending cleanup 已落地。
+- Phase 4：已完成，CLI/IPC/Web REST OAuth 控制面已落地。
+- Phase 5：已完成，本计划范围内单元测试、边界测试和 release build 验收已收口。
 
-注意：当前工作区存在未追踪的 `crates/allthecodes-mcp/src/oauth_store.rs` 和 `crates/allthecodes-mcp/src/oauth_login.rs` 草稿，但尚未接入 `lib.rs`，且引用了未公开函数或缺失配置字段；本文不把它们计为已完成实现。
+非阻塞后续项：
+
+- Codex app-server protocol 兼容方法 `mcpServer/oauth/login` 和 `mcpServer/oauthLogin/completed` 保留为后续兼容工作，不影响当前 allthecodes REST/IPC 控制面完成状态。
+- CLI/IPC/Web 当前返回授权 URL，由用户或前端打开；是否自动 launch system browser 需要产品决策。
+- 全局 `mcp_oauth_credentials_store = "auto" | "file" | "keyring"` 保留为后续配置扩展；当前完成的是 per-server `oauth.credentials_store`。
+- GitHub 等已知不支持 OAuth 的 server 可以继续补专门 bearer token 配置指引；当前已有通用 `unsupported` / `not_logged_in` 状态。
+
+注意：`crates/allthecodes-mcp/src/oauth_store.rs` 和 `crates/allthecodes-mcp/src/oauth_login.rs` 已接入 `lib.rs`，不再是未追踪草稿。
 
 ## Codex 参考实现
 
@@ -156,7 +172,7 @@ allthecodes 已经实现了 MCP Streamable HTTP 和手动 OAuth 的核心基础�
 改动范围：
 
 - `crates/allthecodes-mcp/src/auth.rs`
-- 新增可选模块：`crates/allthecodes-mcp/src/oauth_store.rs`、`crates/allthecodes-mcp/src/oauth_login.rs`
+- 新增模块：`crates/allthecodes-mcp/src/oauth_store.rs`、`crates/allthecodes-mcp/src/oauth_login.rs`
 - 配置入口：`crates/allthecodes-config`
 
 任务：
@@ -174,6 +190,14 @@ allthecodes 已经实现了 MCP Streamable HTTP 和手动 OAuth 的核心基础�
   - keyring service/namespace 使用 allthecodes，不能使用 Codex。
   - file fallback 仍在 `~/.allthecodes`，写入时 Unix 权限 0600。
 - 做一次兼容迁移：已有 `mcp-oauth.json` 可继续读取；写回时转入新 store 结构。
+
+当前状态（2026-07-02）：
+
+- 已完成：手动 fallback、loopback callback、PKCE/state、授权 URL、后台等待 callback、token exchange、`oauth_resource`、per-server `credentials_store`、auto/file/keyring store、allthecodes keyring service、file 0600。
+- 已完成：timeout 后清理 pending state，callback listener error 也会做幂等清理。
+- 非阻塞后续：全局 `mcp_oauth_credentials_store` 是否仍需要；当前完成的是 per-server `oauth.credentials_store`。
+- 非阻塞后续：旧 `mcp-oauth.json` 在 refresh/writeback 后是否需要主动迁移到 keyring，还是保留“可读取旧 file store”的兼容语义。
+- 非阻塞后续：CLI/IPC/Web 是否需要自动打开浏览器；当前行为是返回/显示授权 URL。
 
 ### Phase 4：CLI / IPC / Web 控制面
 
@@ -200,6 +224,12 @@ allthecodes 已经实现了 MCP Streamable HTTP 和手动 OAuth 的核心基础�
   - `GET /api/mcp-servers/{name}/oauth/status`
   - `DELETE /api/mcp-servers/{name}/oauth`
 - 如果后续要暴露 Codex app-server protocol，再单独加 `mcpServer/oauth/login` 兼容方法，避免混进现有 REST 语义。
+
+当前状态（2026-07-02）：
+
+- 已完成：CLI `/mcp auth start|complete|status|clear`、IPC `StartAuth` / `CompleteAuth` / `ClearAuth` / `QueryAuth`、IPC `AuthCompleted`、Web REST OAuth start/complete/status/clear。
+- 已完成：Web OAuth start 保存后台 handle 并暴露 `oauth_flow` 状态；status/flow 不泄漏 token。
+- 非阻塞后续：Codex app-server protocol 兼容方法 `mcpServer/oauth/login` 与 `mcpServer/oauthLogin/completed`。
 
 ### Phase 5：测试和验收
 
@@ -244,15 +274,21 @@ cargo test -p allthecodes-web
 cargo build --workspace --release
 ```
 
-## 建议提交顺序
+当前状态（2026-07-02）：
 
-1. 配置 schema + serde/CLI/Web CRUD round-trip。
-2. header resolution + bearer/env header transport 支持。
-3. token store mode + 0600 + 旧 store 兼容。
-4. loopback OAuth login + async completion event。
-5. auth status / `WWW-Authenticate` / scope error 补齐。
-6. Streamable HTTP session recovery。
-7. Web/TUI polish 和完整 e2e。
+- 已完成：`allthecodes-mcp`、`allthecodes-ipc-protocol`、`allthecodes-protocol`、`allthecodes-commands`、`allthecodes-web` 的相关 lib 测试曾在 2026-07-01 通过；`cargo check -p allthecodes --bin allthecodes` 曾通过。
+- 已完成：`cargo build --workspace --release` 已在本计划验收期间通过。
+- 已完成：DELETE session 成功/404/405、GET active-session 404、OAuth timeout + pending cleanup、Web OAuth clear API 测试已补齐。
+- 当前限制：后续共享 worktree 中的无关协议/权限改动会导致当前再次 release build 和 TUI E2E 编译失败；该问题不属于本 MCP HTTP/OAuth 计划遗留项。
+
+## 完成提交记录
+
+1. 文档状态更新，移除已过期的 Phase 3/4 历史缺口描述。
+2. OAuth timeout 后清理 pending state，并补对应测试。
+3. 补 Streamable HTTP DELETE session 成功/404/405 与 GET active-session 404 测试。
+4. 补 Web OAuth clear API 与 status/flow edge case 测试。
+5. 跑本计划 acceptance：workspace release build；确认后续共享 worktree 的无关编译错误不属于本计划。
+6. 将本计划改名为完成记录并标记为已完成。
 
 ## 风险点
 
