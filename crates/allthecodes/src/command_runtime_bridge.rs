@@ -286,6 +286,7 @@ fn fork_runner_for_commands(
     Box::pin(async move {
         let outcome = allthecodes_engine::agent::fork::run_fork(
             allthecodes_engine::agent::fork::ForkParams {
+                agent_id: None,
                 prompt: params.prompt,
                 cwd: params.cwd,
                 model: params.model,
