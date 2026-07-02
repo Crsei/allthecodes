@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use allthecodes_tools::runtime_capability::{RuntimeCapability, RuntimeCapabilityRegistry};
 use allthecodes_types::mcp::{McpBinding, McpBindingContext, McpPermission, McpToolScope};
 use anyhow::Result;
 use tokio::time::{sleep, Duration};
@@ -278,6 +279,25 @@ impl McpManager {
             .values()
             .flat_map(|c| c.tools.iter().cloned())
             .collect()
+    }
+
+    pub fn runtime_capabilities(&self) -> RuntimeCapabilityRegistry {
+        let mut registry = RuntimeCapabilityRegistry::new();
+        for (server_id, client) in &self.clients {
+            for tool in &client.tools {
+                let server_name = if tool.server_name.is_empty() {
+                    server_id.as_str()
+                } else {
+                    tool.server_name.as_str()
+                };
+                let mut capability = RuntimeCapability::mcp_tool(server_name, &tool.name);
+                if !tool.description.is_empty() {
+                    capability.description = Some(tool.description.clone());
+                }
+                registry.register(capability);
+            }
+        }
+        registry
     }
 
     pub fn tools_for_context(&self, ctx: &McpBindingContext) -> Vec<McpToolDef> {
@@ -672,5 +692,34 @@ mod tests {
         assert!(manager
             .permission_denied_message(&ctx, "alpha", McpPermission::CallTools)
             .contains("call_tools"));
+    }
+
+    #[test]
+    fn runtime_capabilities_project_mcp_tools_with_permission_subject() {
+        let mut manager = McpManager::new();
+        manager.clients.insert(
+            "alpha".to_string(),
+            tool_client("alpha", "search_repository"),
+        );
+
+        let registry = manager.runtime_capabilities();
+        let capability = registry
+            .get("alpha/search_repository")
+            .expect("mcp tool capability");
+
+        assert_eq!(
+            capability.kind,
+            allthecodes_tools::runtime_capability::RuntimeCapabilityKind::McpServerTool
+        );
+        assert_eq!(
+            capability.permission_subject.as_deref(),
+            Some("McpTool(alpha/search_repository)")
+        );
+        assert_eq!(
+            capability.source_scope,
+            allthecodes_tools::runtime_capability::RuntimeCapabilitySourceScope::McpServer(
+                "alpha".to_string()
+            )
+        );
     }
 }

@@ -76,6 +76,8 @@ pub enum RuntimeCapabilitySourceScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeCapability {
     pub name: String,
+    pub aliases: Vec<String>,
+    pub description: Option<String>,
     pub kind: RuntimeCapabilityKind,
     pub visibility: RuntimeCapabilityVisibility,
     pub permission_subject: Option<String>,
@@ -88,6 +90,8 @@ impl RuntimeCapability {
     pub fn builtin_tool(name: &str) -> Self {
         Self {
             name: name.to_string(),
+            aliases: Vec::new(),
+            description: None,
             kind: RuntimeCapabilityKind::Tool,
             visibility: RuntimeCapabilityVisibility::Visible,
             permission_subject: Some(name.to_string()),
@@ -102,11 +106,37 @@ impl RuntimeCapability {
         Self {
             permission_subject: Some(format!("McpTool({name})")),
             name,
+            aliases: Vec::new(),
+            description: None,
             kind: RuntimeCapabilityKind::McpServerTool,
             visibility: RuntimeCapabilityVisibility::Deferred,
             provider: RuntimeCapabilityProvider::Mcp,
             source_scope: RuntimeCapabilitySourceScope::McpServer(server.to_string()),
             discoverable: true,
+        }
+    }
+
+    pub fn builtin_command(
+        name: String,
+        aliases: Vec<String>,
+        description: String,
+        hidden: bool,
+    ) -> Self {
+        let visibility = if hidden {
+            RuntimeCapabilityVisibility::Hidden
+        } else {
+            RuntimeCapabilityVisibility::Visible
+        };
+        Self {
+            permission_subject: Some(format!("Command({name})")),
+            name,
+            aliases,
+            description: Some(description),
+            kind: RuntimeCapabilityKind::Command,
+            visibility,
+            provider: RuntimeCapabilityProvider::Builtin,
+            source_scope: RuntimeCapabilitySourceScope::Builtin,
+            discoverable: !hidden,
         }
     }
 }

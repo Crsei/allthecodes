@@ -13,7 +13,7 @@ use tracing::Instrument;
 use allthecodes_protocol::v1;
 use allthecodes_protocol::{
     ApiError, ApiMethod, ClientRequest, ClientResponse, MessageProcessor, NoParams,
-    ServerNotification, API_METADATA,
+    ServerNotification,
 };
 
 use crate::handlers;
@@ -29,6 +29,7 @@ pub enum ApiTransportKind {
     JsonRpcWebSocket,
     Direct,
     IpcBridge,
+    DedicatedWebSocket,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,82 +268,8 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::BackendServicesAgentBridgeRetry - legacy REST handler, BackendServicesProcessor target.
 // ClientRequest::BackendServicesMigrationsRun - legacy REST handler, BackendServicesProcessor target.
 // ClientRequest::BackendServicesBackups - legacy REST handler, BackendServicesProcessor target.
-pub(crate) const DISPATCHED_OPERATIONS: &[ApiMethod] = &[
-    ApiMethod::Health,
-    ApiMethod::Capabilities,
-    ApiMethod::SessionList,
-    ApiMethod::SessionCreate,
-    ApiMethod::SessionDetail,
-    ApiMethod::SessionResume,
-    ApiMethod::SessionArchive,
-    ApiMethod::SessionModePatch,
-    ApiMethod::SessionMessageBranch,
-    ApiMethod::SessionMessageFeedback,
-    ApiMethod::SessionMessageDelete,
-    ApiMethod::SessionMessageRegeneratePrepare,
-    ApiMethod::SessionMessageEditPrepare,
-    ApiMethod::SessionMessageRollbackPreview,
-    ApiMethod::SessionMessageRollback,
-    ApiMethod::FilesTree,
-    ApiMethod::FilesStat,
-    ApiMethod::FilesRead,
-    ApiMethod::FilesPreview,
-    ApiMethod::FilesWrite,
-    ApiMethod::FilesUpload,
-    ApiMethod::FilesMkdir,
-    ApiMethod::FilesRename,
-    ApiMethod::FilesCopy,
-    ApiMethod::FilesMove,
-    ApiMethod::FilesDelete,
-    ApiMethod::SkillsList,
-    ApiMethod::ChatModesList,
-    ApiMethod::ChatModesResources,
-    ApiMethod::PeopleList,
-    ApiMethod::PeopleCreate,
-    ApiMethod::PromptsList,
-    ApiMethod::PromptsCreate,
-    ApiMethod::KanbanBoards,
-    ApiMethod::KanbanTaskCreate,
-    ApiMethod::PluginsList,
-    ApiMethod::PluginsInstalled,
-    ApiMethod::PluginsMarketplace,
-    ApiMethod::PluginsInstall,
-    ApiMethod::PluginsUpdate,
-    ApiMethod::PluginsUninstallById,
-    ApiMethod::PluginsEnable,
-    ApiMethod::PluginsDisable,
-    ApiMethod::PluginsRestart,
-    ApiMethod::GatewayStatus,
-    ApiMethod::GatewaysList,
-    ApiMethod::ModelsList,
-    ApiMethod::WorktreeSessionsList,
-    ApiMethod::WorktreeSessionsCurrent,
-    ApiMethod::WorktreeSessionsBySession,
-];
-
-const DEDICATED_TRANSPORT_OPERATIONS: &[ApiMethod] = &[
-    ApiMethod::TerminalProfiles,
-    ApiMethod::TerminalSessionsList,
-    ApiMethod::TerminalSessionsCreate,
-    ApiMethod::TerminalSessionDetail,
-    ApiMethod::TerminalSessionOutput,
-    ApiMethod::TerminalSessionDelete,
-    ApiMethod::TerminalSessionWs,
-    ApiMethod::TuiWs,
-    ApiMethod::FilesDownload,
-    ApiMethod::FilesMedia,
-];
-
 pub(crate) fn dispatcher_migration_state(operation: ApiMethod) -> ApiDispatcherMigrationState {
-    if DISPATCHED_OPERATIONS.contains(&operation) {
-        ApiDispatcherMigrationState::Dispatched
-    } else if DEDICATED_TRANSPORT_OPERATIONS.contains(&operation) {
-        ApiDispatcherMigrationState::DedicatedTransport
-    } else if operation == ApiMethod::IpcWs {
-        ApiDispatcherMigrationState::LegacyIpcBridge
-    } else {
-        ApiDispatcherMigrationState::LegacyRestHandler
-    }
+    crate::api_operation_registry::api_operation_registry().migration_state(operation)
 }
 
 #[derive(Clone)]
@@ -984,10 +911,7 @@ where
 }
 
 fn experimental_reason(operation: ApiMethod) -> Option<&'static str> {
-    API_METADATA
-        .iter()
-        .find(|metadata| metadata.endpoint.operation == operation)
-        .and_then(|metadata| metadata.experimental)
+    crate::api_operation_registry::api_operation_registry().experimental_reason(operation)
 }
 
 fn experimental_apis_enabled() -> bool {
@@ -1046,9 +970,10 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
+    use crate::api_operation_registry::DISPATCHED_OPERATIONS;
     use allthecodes_engine::lifecycle::QueryEngine;
     use allthecodes_engine::types::config::QueryEngineConfig;
-    use allthecodes_protocol::{DirectTransport, Transport};
+    use allthecodes_protocol::{DirectTransport, Transport, API_METADATA};
     use axum::http::StatusCode;
     use tempfile::TempDir;
 
@@ -1224,6 +1149,47 @@ mod tests {
                 "{operation:?} should enter ApiDispatcher"
             );
         }
+    }
+
+    #[test]
+    fn api_operation_registry_covers_protocol_metadata_and_dispatcher_state() {
+        let registry = crate::api_operation_registry::api_operation_registry();
+
+        assert_eq!(registry.len(), API_METADATA.len());
+        for metadata in API_METADATA {
+            assert!(
+                registry.get(metadata.endpoint.operation).is_some(),
+                "missing registry entry for {:?}",
+                metadata.endpoint.operation
+            );
+        }
+
+        let capabilities = registry.get(ApiMethod::Capabilities).unwrap();
+        assert_eq!(
+            capabilities.migration_state,
+            ApiDispatcherMigrationState::Dispatched
+        );
+        assert_eq!(
+            capabilities.transport_kind,
+            ApiTransportKind::JsonRpcWebSocket
+        );
+
+        let terminal_ws = registry.get(ApiMethod::TerminalSessionWs).unwrap();
+        assert_eq!(
+            terminal_ws.migration_state,
+            ApiDispatcherMigrationState::DedicatedTransport
+        );
+        assert_eq!(
+            terminal_ws.transport_kind,
+            ApiTransportKind::DedicatedWebSocket
+        );
+
+        let ipc_ws = registry.get(ApiMethod::IpcWs).unwrap();
+        assert_eq!(
+            ipc_ws.migration_state,
+            ApiDispatcherMigrationState::LegacyIpcBridge
+        );
+        assert_eq!(ipc_ws.transport_kind, ApiTransportKind::IpcBridge);
     }
 
     #[test]
