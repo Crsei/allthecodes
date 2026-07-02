@@ -542,6 +542,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn map_stage_empty_items_returns_error() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ctx = test_context(calls, None);
+        let workflow = WorkflowContext::new("test".into(), "general-purpose".into(), 8, &ctx);
+        let mut map_stage = stage("m1", "map", "review {item}");
+        // Empty items — the executor should fail this stage
+        map_stage.items = Some(vec![]);
+        let report = workflow
+            .execute_plan(WorkflowPlan {
+                name: "test".into(),
+                max_concurrency: 8,
+                stages: vec![map_stage],
+            })
+            .await;
+
+        assert!(!report.is_success());
+        assert!(!report.errors.is_empty());
+        assert_eq!(report.errors[0].stage_id, "m1");
+    }
+
+    #[tokio::test]
     async fn failed_stage_stops_dependents_and_reports_error() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let ctx = test_context(calls.clone(), Some("a"));
@@ -584,5 +605,94 @@ mod tests {
             report.final_result.as_deref(),
             report.stage_results.get("a_reduce").map(String::as_str)
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // reduce with no prior results
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn reduce_with_no_prior_results_produces_empty_context() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ctx = test_context(calls.clone(), None);
+        let workflow = WorkflowContext::new("test".into(), "general-purpose".into(), 8, &ctx);
+        let reduce = stage("r1", "reduce", "synthesize");
+        let report = workflow
+            .execute_plan(WorkflowPlan {
+                name: "test".into(),
+                max_concurrency: 8,
+                stages: vec![reduce],
+            })
+            .await;
+
+        assert!(report.is_success());
+        // The reduce stage should have run with empty context
+        let calls_guard = calls.lock().unwrap();
+        let prompt = calls_guard.first().unwrap()["prompt"].as_str().unwrap();
+        assert!(prompt.starts_with("synthesize"));
+        // Since there are no prior results, context should be empty after the prompt
+        assert!(prompt.contains("Context:\n") || !prompt.contains("Context:"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Run a single agent through WorkflowContext via execute_plan
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn context_run_single_agent_returns_result() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ctx = test_context(calls.clone(), None);
+        let workflow = WorkflowContext::new("test".into(), "general-purpose".into(), 8, &ctx);
+        let report = workflow
+            .execute_plan(WorkflowPlan {
+                name: "test".into(),
+                max_concurrency: 8,
+                stages: vec![stage("a1", "agent", "do something")],
+            })
+            .await;
+
+        assert!(report.is_success());
+        assert_eq!(report.completed_stages(), 1);
+        assert!(report.stage_results.contains_key("a1"));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let input = calls.lock().unwrap().first().unwrap().clone();
+        assert_eq!(input["prompt"], "do something");
+        assert_eq!(input["description"], "wf:a1");
+        assert_eq!(input["subagent_type"], "general-purpose");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Result truncation when context exceeds MAX_REDUCE_INPUT_CHARS
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn result_truncated_if_too_large() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ctx = test_context(calls, None);
+        let workflow = WorkflowContext::new("test".into(), "general-purpose".into(), 8, &ctx);
+
+        // Build a string that exceeds MAX_REDUCE_INPUT_CHARS
+        let oversized = "x".repeat(MAX_REDUCE_INPUT_CHARS + 100);
+        let truncated = workflow.truncate_context(&oversized);
+
+        assert!(truncated.len() < oversized.len());
+        assert!(truncated.ends_with(TRUNCATION_MARKER));
+        // The text portion should be at most MAX_REDUCE_INPUT_CHARS
+        let text_part = &truncated[..truncated.len() - TRUNCATION_MARKER.len()];
+        assert!(text_part.len() <= MAX_REDUCE_INPUT_CHARS);
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_multibyte() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ctx = test_context(calls, None);
+        let workflow = WorkflowContext::new("test".into(), "general-purpose".into(), 8, &ctx);
+
+        // Multi-byte characters (3 bytes each) at the boundary
+        let long: String = (0..MAX_REDUCE_INPUT_CHARS / 2).map(|_| "\u{1F600}").collect();
+        let truncated = workflow.truncate_context(&long);
+        assert!(truncated.ends_with(TRUNCATION_MARKER));
+        let prefix_len = truncated.len() - TRUNCATION_MARKER.len();
+        assert!(truncated.is_char_boundary(prefix_len));
     }
 }

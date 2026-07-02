@@ -43,7 +43,9 @@ fn diagnostic_enabled(item: &RecordItem, config: &RecordReplayConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record_replay::types::{ToolProgressRecord, TurnStartedRecord};
+    use crate::record_replay::types::{
+        QueryEventRecord, ToolProgressRecord, TurnStartedRecord,
+    };
 
     #[test]
     fn canonical_items_persist_by_default() {
@@ -85,6 +87,24 @@ mod tests {
         };
         let item = RecordItem::TurnStarted(TurnStartedRecord::default());
 
+        assert!(!should_persist(&item, &config));
+    }
+
+    #[test]
+    fn diagnostic_returns_false_for_raw_stream_when_flag_off() {
+        let config = RecordReplayConfig {
+            enabled: true,
+            include_raw_stream: false,
+            ..RecordReplayConfig::default()
+        };
+        let item = RecordItem::QueryEvent(QueryEventRecord::RawStream {
+            event: serde_json::json!({ "delta": "x" }),
+        });
+
+        assert_eq!(
+            classify_record_item(&item, &config),
+            RecordClass::Diagnostic
+        );
         assert!(!should_persist(&item, &config));
     }
 }

@@ -540,3 +540,274 @@ fn valid_max_concurrency(value: &Value) -> bool {
         .as_u64()
         .is_some_and(|number| (1..=64).contains(&number))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::{
+        ToolResult, ToolUseContext, ToolUseOptions, ValidationResult,
+    };
+    use std::sync::Arc;
+
+    // ---------------------------------------------------------------------------
+    // DynamicWorkflowAction serde roundtrip
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn action_serde_roundtrip_minimal() {
+        let action = DynamicWorkflowAction {
+            name: "test".into(),
+            plan: json!({
+                "stages": [{
+                    "id": "a1",
+                    "kind": "agent",
+                    "prompt": "review module A",
+                    "subagent_type": "general-purpose",
+                    "depends_on": []
+                }]
+            }),
+            subagent_type: None,
+            max_concurrency: 8,
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        let deserialized: DynamicWorkflowAction = serde_json::from_str(&json).unwrap();
+        assert_eq!(action.name, deserialized.name);
+        assert_eq!(action.max_concurrency, deserialized.max_concurrency);
+        assert_eq!(action.subagent_type, deserialized.subagent_type);
+        assert_eq!(
+            serde_json::to_string(&action.plan).unwrap(),
+            serde_json::to_string(&deserialized.plan).unwrap()
+        );
+    }
+
+    #[test]
+    fn action_serde_roundtrip_with_subagent_type() {
+        let action = DynamicWorkflowAction {
+            name: "audit".into(),
+            plan: json!({
+                "name": "audit-plan",
+                "max_concurrency": 4,
+                "stages": [
+                    {"id": "a", "kind": "agent", "prompt": "do A"},
+                    {"id": "b", "kind": "agent", "prompt": "do B", "depends_on": ["a"]}
+                ]
+            }),
+            subagent_type: Some("Explore".into()),
+            max_concurrency: 4,
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        let deserialized: DynamicWorkflowAction = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.subagent_type.as_deref(), Some("Explore"));
+        assert_eq!(deserialized.max_concurrency, 4);
+    }
+
+    #[test]
+    fn action_serde_default_max_concurrency() {
+        let json = r#"{"name":"test","plan":{"stages":[{"id":"s1","kind":"agent","prompt":"do it"}]}}"#;
+        let deserialized: DynamicWorkflowAction = serde_json::from_str(json).unwrap();
+        assert_eq!(deserialized.max_concurrency, 8);
+        assert!(deserialized.subagent_type.is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // DynamicWorkflowObservation serde
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn observation_serde_success() {
+        let mut stage_results = HashMap::new();
+        stage_results.insert("a".into(), "result A".into());
+        stage_results.insert("b".into(), "result B".into());
+        let obs = DynamicWorkflowObservation {
+            name: "test".into(),
+            status: "completed",
+            stage_results: Some(stage_results),
+            final_result: Some("synthesized".into()),
+            final_stage_id: Some("c".into()),
+            total_stages: 3,
+            completed_stages: 3,
+            error: None,
+        };
+        let json = serde_json::to_string(&obs).unwrap();
+        let deserialized: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized["name"], "test");
+        assert_eq!(deserialized["status"], "completed");
+        assert_eq!(deserialized["total_stages"], 3);
+        assert_eq!(deserialized["completed_stages"], 3);
+        assert_eq!(deserialized["final_result"], "synthesized");
+        assert_eq!(deserialized["final_stage_id"], "c");
+        assert!(deserialized.get("stage_results").is_some());
+        assert!(deserialized.get("error").is_none());
+    }
+
+    #[test]
+    fn observation_serde_error_omits_stage_results() {
+        let obs = DynamicWorkflowObservation {
+            name: "fail".into(),
+            status: "error",
+            stage_results: None,
+            final_result: None,
+            final_stage_id: None,
+            total_stages: 2,
+            completed_stages: 1,
+            error: Some("stage a failed".into()),
+        };
+        let json = serde_json::to_string(&obs).unwrap();
+        let deserialized: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized["status"], "error");
+        assert_eq!(deserialized["error"], "stage a failed");
+        assert!(deserialized.get("stage_results").is_none());
+        assert!(deserialized.get("final_result").is_none());
+        assert!(deserialized.get("final_stage_id").is_none());
+    }
+
+    #[test]
+    fn observation_error_formats_tool_result() {
+        let obs = DynamicWorkflowObservation::error(
+            "test".into(),
+            "something broke".into(),
+            1,
+            3,
+        );
+        let result: ToolResult = obs.into();
+        assert!(result.display_preview.unwrap().contains("failed"));
+    }
+
+    #[test]
+    fn observation_success_formats_tool_result() {
+        let report = WorkflowExecutionReport {
+            stage_results: HashMap::new(),
+            final_stage_id: None,
+            final_result: None,
+            total_stages: 2,
+            errors: vec![],
+        };
+        let obs = DynamicWorkflowObservation::success("test".into(), report);
+        let result: ToolResult = obs.into();
+        assert!(result.display_preview.unwrap().contains("completed"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Plan JSON with valid stages roundtrips through DynamicWorkflowAction
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn action_roundtrip_plan_with_all_stage_kinds() {
+        let action = DynamicWorkflowAction {
+            name: "full".into(),
+            plan: json!({
+                "name": "full-plan",
+                "stages": [
+                    {"id": "a", "kind": "agent", "prompt": "agent A", "depends_on": []},
+                    {"id": "m1", "kind": "map", "prompt": "map {item}", "items": ["x","y"], "depends_on": []},
+                    {"id": "r1", "kind": "reduce", "prompt": "reduce", "depends_on": ["a","m1"], "reduce_input": "a,m1"}
+                ]
+            }),
+            subagent_type: None,
+            max_concurrency: 8,
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        let deserialized: DynamicWorkflowAction = serde_json::from_str(&json).unwrap();
+        let stages = deserialized.plan["stages"]
+            .as_array()
+            .expect("plan should have stages array");
+        assert_eq!(stages.len(), 3);
+        assert_eq!(stages[0]["kind"], "agent");
+        assert_eq!(stages[1]["kind"], "map");
+        assert_eq!(stages[2]["kind"], "reduce");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Validation: plan JSON with invalid stage kind returns error during validation
+    // (not during serde — serde accepts any Value, validation rejects bad kinds)
+    // ---------------------------------------------------------------------------
+
+    fn make_ctx() -> ToolUseContext {
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        ToolUseContext {
+            options: ToolUseOptions {
+                debug: false,
+                main_loop_model: "test".into(),
+                verbose: false,
+                is_non_interactive_session: false,
+                custom_system_prompt: None,
+                append_system_prompt: None,
+                max_budget_usd: None,
+            },
+            abort_signal: rx,
+            read_file_state: crate::tool::FileStateCache::default(),
+            get_app_state: Arc::new(crate::tool::ToolAppState::default),
+            set_app_state: Arc::new(|_| {}),
+            session_id: "test".into(),
+            langfuse_session_id: "test".into(),
+            messages: vec![],
+            agent_id: None,
+            agent_type: None,
+            query_tracking: None,
+            permission_callback: None,
+            ask_user_callback: None,
+            permission_event_callback: None,
+            bg_agent_tx: None,
+            hook_runner: Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
+            command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
+            available_tools: vec![],
+            execute_deferred_tool: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_invalid_stage_kind() {
+        let tool = DynamicWorkflowTool;
+        let input = json!({
+            "name": "test",
+            "plan": {
+                "stages": [
+                    {"id": "x", "kind": "INVALID", "prompt": "test"}
+                ]
+            }
+        });
+        let ctx = make_ctx();
+        match tool.validate_input(&input, &ctx).await {
+            ValidationResult::Error { message, .. } => {
+                assert!(message.contains("invalid kind"), "got: {message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_map_stage_without_items() {
+        let tool = DynamicWorkflowTool;
+        let input = json!({
+            "name": "test",
+            "plan": {
+                "stages": [
+                    {"id": "m1", "kind": "map", "prompt": "review {item}", "depends_on": []}
+                ]
+            }
+        });
+        let ctx = make_ctx();
+        match tool.validate_input(&input, &ctx).await {
+            ValidationResult::Error { message, .. } => {
+                assert!(message.contains("requires non-empty items"), "got: {message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_accepts_valid_plan() {
+        let tool = DynamicWorkflowTool;
+        let input = json!({
+            "name": "test",
+            "plan": {
+                "stages": [
+                    {"id": "a", "kind": "agent", "prompt": "do A"},
+                    {"id": "b", "kind": "agent", "prompt": "do B", "depends_on": ["a"]}
+                ]
+            }
+        });
+        let ctx = make_ctx();
+        assert!(matches!(tool.validate_input(&input, &ctx).await, ValidationResult::Ok));
+    }
+}

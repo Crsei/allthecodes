@@ -1135,4 +1135,194 @@ mod tests {
             Some(PricingSource::Builtin)
         );
     }
+
+    // -----------------------------------------------------------------------
+    // GAP FILL TESTS
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cost_event_cache_multipliers_present_in_pricing_struct() {
+        // Phase 0 gap: verify that cache_read_multiplier = 0.1 and
+        // cache_creation_multiplier = 1.25 are carried through the event.
+        let event = make_event(Some("gpt-4o"), 100, 50, 20, 10, 5, 0.0015, false, None);
+
+        let pricing = event.pricing.expect("pricing should be present");
+        assert!(
+            (pricing.cache_read_multiplier - 0.1).abs() < f64::EPSILON,
+            "cache_read_multiplier should be 0.1, got {}",
+            pricing.cache_read_multiplier
+        );
+        assert!(
+            (pricing.cache_creation_multiplier - 1.25).abs() < f64::EPSILON,
+            "cache_creation_multiplier should be 1.25, got {}",
+            pricing.cache_creation_multiplier
+        );
+    }
+
+    #[test]
+    fn pricing_source_env_override_aggregation() {
+        // Create a CostEvent with pricing.source = EnvOverride and verify
+        // it is aggregated correctly (not counted as unknown pricing).
+        let mut event = make_event(
+            Some("gpt-4o"),
+            100,
+            50,
+            0,
+            0,
+            0,
+            0.001,
+            false,
+            Some(PricingSource::Builtin),
+        );
+        // Override to EnvOverride
+        if let Some(ref mut pricing) = event.pricing {
+            pricing.source = PricingSource::EnvOverride;
+            pricing.matched_key = "__env_override__".into();
+        }
+
+        let summary = aggregate_cost_events(&[event]);
+
+        assert_eq!(
+            summary.unknown_pricing_count, 0,
+            "EnvOverride events should NOT count as unknown pricing"
+        );
+        assert_eq!(summary.api_calls, 1);
+        assert_eq!(summary.total_input_tokens, 100);
+        assert!((summary.total_cost_usd - 0.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reasoning_output_tokens_counted_in_total_not_priced_separately() {
+        // reasoning_output_tokens should be reflected in total_tokens()
+        // (which feeds per-model total_tokens) but have no dedicated
+        // aggregation counter of their own -- the existing
+        // total_reasoning_output_tokens exists, but the cost_usd
+        // for reasoning tokens is rolled into output_tokens costing.
+        let event = make_event(
+            Some("gpt-4o"),
+            100,   // input
+            50,    // output
+            20,    // cache_read
+            10,    // cache_create
+            30,    // reasoning
+            0.002, // cost (includes reasoning in output cost)
+            false,
+            None,
+        );
+
+        // total_tokens excludes reasoning_output_tokens
+        assert_eq!(
+            event.usage.total_tokens(),
+            100 + 50 + 20 + 10,
+            "total_tokens() sums input + output + cache_read + cache_create"
+        );
+
+        let summary = aggregate_cost_events(&[event.clone()]);
+
+        // Reasoning is tracked separately in the summary
+        assert_eq!(summary.total_reasoning_output_tokens, 30);
+        // total_tokens for the model bucket is usage.total_tokens() which
+        // excludes reasoning
+        assert_eq!(summary.by_model[0].total_tokens, 180);
+        // The cost_usd is passed through from the event -- aggregation
+        // does NOT recompute it from pricing+usage.  The point is that
+        // reasoning_output_tokens are not separately priced: they are
+        // included in the output_tokens count that the provider charges,
+        // so the single cost_usd covers both output and reasoning tokens.
+        assert!(
+            (summary.total_cost_usd - event.cost_usd).abs() < f64::EPSILON,
+            "total_cost_usd should match the event's cost_usd"
+        );
+        // And there is no separate reasoning_cost field on CostSummary
+        // -- only total_cost_usd.
+        assert_eq!(
+            summary.total_output_tokens, 50,
+            "output tokens do NOT include reasoning"
+        );
+    }
+
+    #[test]
+    fn aggregate_mixed_known_unknown_backfilled_tracks_counts() {
+        // Mix of known, unknown, and backfilled events -- verify counts
+        // are tracked correctly for all three categories.
+        let events = vec![
+            // Known event (gpt-4o is in the pricing table)
+            make_event(Some("gpt-4o"), 100, 50, 0, 0, 0, 0.001, false, None),
+            // Unknown model -> unknown pricing
+            make_event(
+                Some("absolutely-unknown-model-v99"),
+                50,
+                25,
+                0,
+                0,
+                0,
+                0.0,
+                false,
+                Some(PricingSource::Unknown),
+            ),
+            // Backfilled event
+            make_backfilled_event(Some("claude-sonnet-4"), 200, 100, 50, 25, 10, 0.005),
+            // Another known event
+            make_event(Some("gpt-4o-mini"), 200, 100, 0, 0, 0, 0.002, false, None),
+        ];
+
+        let summary = aggregate_cost_events(&events);
+
+        assert_eq!(summary.api_calls, 4);
+        assert_eq!(
+            summary.unknown_pricing_count, 1,
+            "only the absolutely-unknown-model should be unknown"
+        );
+        assert_eq!(
+            summary.backfilled_count, 1,
+            "only the backfilled event"
+        );
+        assert_eq!(summary.by_model.len(), 4, "four distinct model keys");
+        // Totals should include everything
+        assert_eq!(summary.total_input_tokens, 100 + 50 + 200 + 200);
+        assert_eq!(summary.total_output_tokens, 50 + 25 + 100 + 100);
+    }
+
+    #[test]
+    fn cost_summary_serde_roundtrip_includes_unknown_and_backfilled() {
+        // Verify that unknown_pricing_count and backfilled_count survive
+        // a serde round-trip (they must not be #[serde(default)]-dropped
+        // or skipped).
+        let summary = CostSummary {
+            total_input_tokens: 500,
+            total_output_tokens: 250,
+            total_cache_read_tokens: 100,
+            total_cache_creation_tokens: 50,
+            total_reasoning_output_tokens: 20,
+            total_cost_usd: 0.012,
+            api_calls: 4,
+            unknown_pricing_count: 2,
+            backfilled_count: 3,
+            by_model: vec![
+                ModelCostSummary {
+                    model: "gpt-4o".into(),
+                    api_calls: 2,
+                    total_tokens: 600,
+                    total_cost_usd: 0.008,
+                },
+                ModelCostSummary {
+                    model: "unknown".into(),
+                    api_calls: 2,
+                    total_tokens: 100,
+                    total_cost_usd: 0.0,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&summary).expect("serialize CostSummary");
+        let deserialized: CostSummary =
+            serde_json::from_str(&json).expect("deserialize CostSummary");
+
+        assert_eq!(deserialized.unknown_pricing_count, 2);
+        assert_eq!(deserialized.backfilled_count, 3);
+        assert_eq!(deserialized.api_calls, 4);
+        assert_eq!(deserialized.total_input_tokens, 500);
+        assert!((deserialized.total_cost_usd - 0.012).abs() < 1e-12);
+        assert_eq!(deserialized.by_model.len(), 2);
+    }
 }

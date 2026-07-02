@@ -507,4 +507,43 @@ mod tests {
             allthecodes_types::message::Message::Assistant(_)
         ));
     }
+
+    #[test]
+    #[serial]
+    fn migrate_legacy_session_keeps_original_file() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        // Write a legacy session JSON
+        let file = storage::SessionFile {
+            session_id: "legacy-keep-1".into(),
+            created_at: 1_700_000_000,
+            last_modified: 1_700_000_000,
+            cwd: "/repo".into(),
+            custom_title: None,
+            chat_mode_override: None,
+            messages: vec![
+                SerializableMessage {
+                    msg_type: "user".into(),
+                    uuid: "10000000-0000-0000-0000-000000000001".into(),
+                    timestamp: 1,
+                    data: serde_json::json!({
+                        "content": "hello",
+                        "is_meta": false,
+                    }),
+                },
+            ],
+        };
+        std::fs::create_dir_all(storage::get_session_dir()).unwrap();
+        let json = serde_json::to_string_pretty(&file).unwrap();
+        let legacy_path = storage::get_session_file("legacy-keep-1");
+        std::fs::write(&legacy_path, &json).unwrap();
+
+        assert!(legacy_path.exists(), "original JSON should exist before migration");
+
+        let rollout_path = migrate_legacy_session("legacy-keep-1").unwrap();
+        assert!(rollout_path.exists());
+        // The original JSON file must NOT have been deleted
+        assert!(legacy_path.exists(), "original JSON file must still exist after migration");
+    }
 }

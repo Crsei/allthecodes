@@ -484,6 +484,26 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn shutdown_idempotent_does_not_error_on_second_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(temp.path());
+        let recorder = SessionRecorderHandle::open(
+            create_mode("shutdown-idempotent"),
+            RecordReplayConfig::default(),
+        )
+        .await
+        .unwrap();
+
+        let first = recorder.shutdown().await.unwrap();
+        assert!(first.shutdown);
+
+        let second = recorder.shutdown().await.unwrap();
+        assert!(second.shutdown);
+        assert_eq!(second.written_events, first.written_events);
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn diagnostic_items_are_not_written_when_disabled() {
         let temp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set(temp.path());

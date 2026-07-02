@@ -115,6 +115,7 @@ pub fn read_rollout_file(path: &Path) -> Result<ReplayReadResult> {
 mod tests {
     use super::*;
     use crate::record_replay::fixtures::sample_record_lines;
+    use crate::record_replay::types::SessionMetaRecord;
 
     #[test]
     fn reader_loads_valid_jsonl() {
@@ -172,5 +173,52 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("unsupported rollout schema"));
+    }
+
+    #[test]
+    fn session_id_inconsistency_generates_warning() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("rollout.jsonl");
+        let meta = RecordLine {
+            schema_version: RECORD_SCHEMA_VERSION,
+            seq: 0,
+            timestamp: chrono::Utc::now(),
+            session_id: "session-A".into(),
+            turn_id: None,
+            item: RecordItem::SessionMeta(SessionMetaRecord {
+                created_at: chrono::Utc::now(),
+                cwd: "/repo".into(),
+                workspace_key: None,
+                workspace_root: None,
+                workspace_name: None,
+                model: None,
+                config_summary: None,
+                parent_session_id: None,
+                branch_from_seq: None,
+                migrated_from: None,
+            }),
+        };
+        let mismatched = RecordLine {
+            schema_version: RECORD_SCHEMA_VERSION,
+            seq: 1,
+            timestamp: chrono::Utc::now(),
+            session_id: "session-B".into(),
+            turn_id: None,
+            item: RecordItem::TurnStarted(crate::record_replay::types::TurnStartedRecord::default()),
+        };
+
+        let lines = vec![
+            serde_json::to_string(&meta).unwrap(),
+            serde_json::to_string(&mismatched).unwrap(),
+        ];
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+
+        let result = read_rollout_file(&path).unwrap();
+
+        assert_eq!(result.lines.len(), 2);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].message.contains("session id"));
+        assert!(result.warnings[0].message.contains("session-B"));
+        assert!(result.warnings[0].message.contains("session-A"));
     }
 }

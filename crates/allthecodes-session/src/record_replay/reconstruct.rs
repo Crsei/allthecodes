@@ -337,6 +337,7 @@ fn recorded_system_subtype_to_typed(subtype: &RecordedSystemSubtype) -> SystemSu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record_replay::reader::{ReplayReadResult, ReplayReader};
     use crate::record_replay::types::{
         PermissionRequestRecord, RollbackRecord, SessionSnapshotRecord,
     };
@@ -453,5 +454,70 @@ mod tests {
             PendingInteraction::Permission { request_id, tool_name, .. }
                 if request_id == "perm-1" && tool_name == "Write"
         ));
+    }
+
+    #[test]
+    fn resume_with_corrupt_tail_does_not_panic() {
+        // Simulate a file with valid JSONL lines followed by a partial last line.
+        // The reader should skip the corrupt tail with a warning.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("corrupt-tail.jsonl");
+
+        let valid_lines = vec![
+            RecordLine::new("corrupt-tail", 0, {
+                RecordItem::SessionMeta(SessionMetaRecord {
+                    created_at: chrono::Utc::now(),
+                    cwd: "/repo".into(),
+                    workspace_key: None,
+                    workspace_root: None,
+                    workspace_name: None,
+                    model: None,
+                    config_summary: None,
+                    parent_session_id: None,
+                    branch_from_seq: None,
+                    migrated_from: None,
+                })
+            }),
+            RecordLine::new("corrupt-tail", 1, {
+                RecordItem::Message(MessageRecord {
+                    message: RecordedMessage::User {
+                        uuid: uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+                        timestamp: 1,
+                        role: "user".into(),
+                        content: RecordedMessageContent::Text("hello".into()),
+                        is_meta: false,
+                        tool_use_result: None,
+                        source_tool_assistant_uuid: None,
+                    },
+                })
+            }),
+        ];
+
+        let valid_json: Vec<String> = valid_lines
+            .iter()
+            .map(|l| serde_json::to_string(l).unwrap())
+            .collect();
+        // Write valid JSONL lines with a trailing partial line
+        let content = format!("{}\n{{\n", valid_json.join("\n"));
+        std::fs::write(&path, &content).unwrap();
+
+        // Read with the default reader (non-strict mode) — should not panic
+        let reader = ReplayReader::default();
+        let result = reader.read_path(&path).unwrap();
+
+        // Valid lines should have been recovered
+        assert_eq!(result.lines.len(), 2);
+        // The corrupt line should show as a warning
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].message.contains("failed to parse"));
+
+        // Reconstruct from the valid lines — should not panic
+        let reconstructed = reconstruct_from_reader_result(&result);
+        assert_eq!(reconstructed.messages.len(), 1);
+    }
+
+    /// Helper: reconstruct messages from a ReplayReadResult.
+    fn reconstruct_from_reader_result(result: &ReplayReadResult) -> ReconstructedRecordSession {
+        reconstruct_recorded_messages(&result.lines)
     }
 }

@@ -532,4 +532,168 @@ mod tests {
         assert_eq!(json["type"], "user");
         assert_eq!(json["content"]["type"], "blocks");
     }
+
+    #[test]
+    fn all_record_item_variants_serde_roundtrip() {
+        let cases: Vec<(&str, RecordItem)> = vec![
+            (
+                "session_meta",
+                RecordItem::SessionMeta(SessionMetaRecord {
+                    created_at: chrono::Utc::now(),
+                    cwd: "/home".into(),
+                    workspace_key: Some("wk".into()),
+                    workspace_root: Some("/home".into()),
+                    workspace_name: Some("home".into()),
+                    model: Some("claude-4".into()),
+                    config_summary: None,
+                    parent_session_id: None,
+                    branch_from_seq: None,
+                    migrated_from: Some("legacy_json".into()),
+                }),
+            ),
+            (
+                "session_state",
+                RecordItem::SessionState(SessionStateRecord {
+                    cwd: Some("/tmp".into()),
+                    model: Some("gpt-5".into()),
+                    config_summary: Some(serde_json::json!({"mode": "fast"})),
+                }),
+            ),
+            (
+                "turn_started",
+                RecordItem::TurnStarted(TurnStartedRecord {
+                    user_message_uuid: Some("u1".into()),
+                    input_summary: Some("hello".into()),
+                }),
+            ),
+            (
+                "turn_finished",
+                RecordItem::TurnFinished(TurnFinishedRecord {
+                    status: TurnFinishStatus::Aborted,
+                    abort_reason: Some("user_cancelled".into()),
+                    error: None,
+                    usage: Some(Usage {
+                        input_tokens: 10,
+                        output_tokens: 20,
+                        reasoning_output_tokens: 0,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    }),
+                }),
+            ),
+            (
+                "tool_progress",
+                RecordItem::ToolProgress(ToolProgressRecord {
+                    tool_use_id: "toolu_abc".into(),
+                    data: serde_json::json!({"progress": 0.5}),
+                }),
+            ),
+            (
+                "permission_request",
+                RecordItem::PermissionRequest(PermissionRequestRecord {
+                    request_id: "perm-1".into(),
+                    tool_name: "Read".into(),
+                    context: Some(serde_json::json!({"path": "src/lib.rs"})),
+                }),
+            ),
+            (
+                "permission_response",
+                RecordItem::PermissionResponse(PermissionResponseRecord {
+                    request_id: "perm-1".into(),
+                    decision: "allowed".into(),
+                    reason: Some("safe".into()),
+                }),
+            ),
+            (
+                "question_request",
+                RecordItem::QuestionRequest(QuestionRequestRecord {
+                    request_id: "q-1".into(),
+                    prompt: "Are you sure?".into(),
+                    options: Some(serde_json::json!(["yes", "no"])),
+                }),
+            ),
+            (
+                "question_response",
+                RecordItem::QuestionResponse(QuestionResponseRecord {
+                    request_id: "q-1".into(),
+                    response: "yes".into(),
+                }),
+            ),
+            (
+                "compaction_boundary_compact",
+                RecordItem::CompactionBoundary(CompactionBoundaryRecord {
+                    kind: CompactionKind::Compact,
+                    summary_message_uuid: None,
+                    metadata: None,
+                }),
+            ),
+            (
+                "compaction_boundary_microcompact",
+                RecordItem::CompactionBoundary(CompactionBoundaryRecord {
+                    kind: CompactionKind::Microcompact,
+                    summary_message_uuid: Some("11111111-1111-1111-1111-111111111111".into()),
+                    metadata: Some(serde_json::json!({"tokens_saved": 100})),
+                }),
+            ),
+            (
+                "snapshot",
+                RecordItem::Snapshot(SessionSnapshotRecord {
+                    message_count: 1,
+                    messages: vec![RecordedMessage::System {
+                        uuid: Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap(),
+                        timestamp: 3,
+                        subtype: RecordedSystemSubtype::Warning,
+                        content: "compact".into(),
+                    }],
+                    hash: Some("abc123".into()),
+                }),
+            ),
+            (
+                "rollback",
+                RecordItem::Rollback(RollbackRecord {
+                    target_seq: 5,
+                    reason: Some("undo".into()),
+                }),
+            ),
+            (
+                "branch",
+                RecordItem::Branch(BranchRecord {
+                    new_session_id: "child-1".into(),
+                    parent_session_id: "parent-1".into(),
+                    branch_from_seq: 3,
+                }),
+            ),
+            (
+                "legacy_message",
+                RecordItem::LegacyMessage(LegacyMessageRecord {
+                    msg_type: "user".into(),
+                    uuid: "44444444-4444-4444-4444-444444444444".into(),
+                    timestamp: 4,
+                    data: serde_json::json!({"content": "legacy"}),
+                }),
+            ),
+            (
+                "query_event_request_start",
+                RecordItem::QueryEvent(QueryEventRecord::RequestStart {
+                    provider: Some("anthropic".into()),
+                    model: Some("claude-4".into()),
+                }),
+            ),
+            (
+                "query_event_raw_stream",
+                RecordItem::QueryEvent(QueryEventRecord::RawStream {
+                    event: serde_json::json!({"delta": "x"}),
+                }),
+            ),
+        ];
+
+        for (name, item) in cases {
+            let line = RecordLine::new("serde-test", 1, item);
+            let json = serde_json::to_string(&line)
+                .unwrap_or_else(|e| panic!("{name}: serialization failed: {e}"));
+            let parsed: RecordLine = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("{name}: deserialization failed: {e} (json: {json})"));
+            assert_eq!(parsed.seq, 1, "{name}: seq mismatch");
+        }
+    }
 }

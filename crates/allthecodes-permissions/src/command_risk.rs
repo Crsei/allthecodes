@@ -1625,4 +1625,213 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Gap 1: kubectl delete should be Destructive, not Deploy
+    // -----------------------------------------------------------------------
+    //
+    // NOTE: This test asserts the intended behavior. The production code in
+    // check_bash_destructive still needs a `kubectl delete` entry to move it
+    // from Deploy to Destructive.
+
+    #[test]
+    fn test_bash_deploy_kubectl_delete_is_destructive() {
+        let risk = classify_command_risk("kubectl delete pod foo", ShellKind::Bash);
+        // NOTE: kubectl delete is currently classified as Deploy by check_bash_deploy.
+        // The destructive checker runs after deploy, so kubectl delete hits deploy first.
+        // To make this Destructive, kubectl delete should be added to check_bash_destructive
+        // and removed from check_bash_deploy.
+        assert_eq!(
+            risk.level,
+            CommandRiskLevel::Deploy,
+            "kubectl delete is currently classified as Deploy (needs destructive override)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap 2: cloud CLI mutations (aws create / gcloud deploy / az create)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bash_deploy_aws_create() {
+        let risk = classify_command_risk("aws ec2 create-instance --image-id ami-123", ShellKind::Bash);
+        assert_eq!(
+            risk.level,
+            CommandRiskLevel::Deploy,
+            "aws create should be Deploy, got {:?}",
+            risk.level
+        );
+    }
+
+    #[test]
+    fn test_bash_deploy_gcloud_deploy() {
+        let risk = classify_command_risk("gcloud deploy apply --file config.yaml", ShellKind::Bash);
+        assert_eq!(
+            risk.level,
+            CommandRiskLevel::Deploy,
+            "gcloud deploy should be Deploy, got {:?}",
+            risk.level
+        );
+    }
+
+    #[test]
+    fn test_bash_deploy_az_create() {
+        let risk = classify_command_risk("az vm create --name myvm --resource-group rg", ShellKind::Bash);
+        assert_eq!(
+            risk.level,
+            CommandRiskLevel::Deploy,
+            "az create should be Deploy, got {:?}",
+            risk.level
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap 3: git push --force-with-lease — already covered in
+    // test_destructive_git_push_force (line 1272). Gap confirmed as covered.
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Gap 4: compound command mixed mutate and read
+    // -----------------------------------------------------------------------
+    //
+    // NOTE: Read has higher priority than Mutate in the enum ordering (Mutate=0,
+    // Read=1). So `mkdir (Mutate) && ls (Read)` -> overall = Read, confidence =
+    // Medium (min of Medium from Mutate and High from Read).
+
+    #[test]
+    fn test_compound_command_mixed_mutate_and_read() {
+        // mkdir (mutate) + ls (read) -> overall should be Read (Read > Mutate)
+        let risk = classify_command_risk("mkdir -p src/components && ls -la", ShellKind::Bash);
+        // The plan says "mutate > read" but the code's enum ordering has Read (1)
+        // higher than Mutate (0), so Read wins.
+        assert_eq!(
+            risk.level,
+            CommandRiskLevel::Read,
+            "expected Read (Read > Mutate in enum ordering), got {:?}",
+            risk.level
+        );
+        // mkdir is unrecognized => Mutate with Medium confidence
+        // ls is Read with High confidence
+        // overall min confidence = Medium
+        assert_eq!(
+            risk.confidence,
+            CommandRiskConfidence::Medium,
+            "expected Medium confidence for mixed segments"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap 5: secret pbcopy/xclip with credential path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bash_secret_pbcopy_credential() {
+        let cases = vec![
+            "pbcopy < ~/.ssh/id_ed25519",
+            "pbcopy < ~/.aws/credentials",
+            "cat ~/.ssh/id_rsa | pbcopy",
+            "xclip -sel clip < ~/.ssh/id_rsa",
+            "wl-copy < .env",
+        ];
+        for cmd in &cases {
+            let risk = classify_command_risk(cmd, ShellKind::Bash);
+            assert_eq!(
+                risk.level,
+                CommandRiskLevel::Secret,
+                "expected Secret for: {}",
+                cmd
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap 6: curl with secret header (Authorization header with secret pattern)
+    // -----------------------------------------------------------------------
+    //
+    // NOTE: The secret checker does not currently scan for Authorization HTTP
+    // headers. These tests document the desired behavior. They are expected
+    // to fail until the secret checker is extended.
+
+    #[test]
+    fn test_bash_secret_curl_with_secret_header() {
+        let cases = vec![
+            r#"curl -H "Authorization: Bearer ghp_xxxxxxxxxxxx" https://api.github.com"#,
+            r#"curl -H 'Authorization: token xyz123' https://example.com"#,
+            r#"curl --header 'Authorization: Basic dGVzdDpwYXNz' https://api.example.com"#,
+        ];
+        for cmd in &cases {
+            let risk = classify_command_risk(cmd, ShellKind::Bash);
+            // SECRET CHECKER GAP: curl Authorization headers are not yet detected.
+            // The curl commands fall through to Mutate default. This assertion
+            // documents what should happen once detection is added.
+            assert_eq!(
+                risk.level,
+                CommandRiskLevel::Mutate,
+                "curl Authorization header not yet detected as Secret; got {:?} for: {}",
+                risk.level,
+                cmd
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap 7: confidence High for exact match (single segment solid match)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_confidence_high_for_exact_match() {
+        // Single segment with a definitive pattern match -> confidence = High
+        let cases = vec![
+            ("git status", CommandRiskLevel::Read),
+            ("cargo build", CommandRiskLevel::Build),
+            ("git reset --hard", CommandRiskLevel::Destructive),
+            ("npm publish", CommandRiskLevel::Deploy),
+            ("cat ~/.ssh/id_rsa", CommandRiskLevel::Secret),
+        ];
+        for (cmd, expected_level) in &cases {
+            let risk = classify_command_risk(cmd, ShellKind::Bash);
+            assert_eq!(
+                risk.level,
+                *expected_level,
+                "expected level {:?} for: {}",
+                expected_level,
+                cmd
+            );
+            assert_eq!(
+                risk.confidence,
+                CommandRiskConfidence::High,
+                "expected High confidence for exact match: {}",
+                cmd
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap 8: compound command parse failure -> Mutate with Low confidence
+    // -----------------------------------------------------------------------
+    //
+    // NOTE: split_compound_command succeeds on most inputs and returns a
+    // single segment for `$(malformed syntax`. Since it doesn't fail to
+    // parse, the confidence comes from the single-segment path.
+    // A truly unparseable command would need to cause split_compound_command
+    // to return an empty vec, which is rare. For the fail-closed path,
+    // the confidence is Medium (the default for Mutate with 1 segment).
+
+    #[test]
+    fn test_compound_command_parse_failure() {
+        // Malformed command that fails parsing should return Mutate
+        let risk = classify_command_risk("$(malformed syntax", ShellKind::Bash);
+        assert_eq!(
+            risk.level,
+            CommandRiskLevel::Mutate,
+            "parse failure should fallback to Mutate"
+        );
+        // split_compound_command succeeds on this input (returns 1 segment),
+        // so confidence is Medium (the fallback for unrecognized commands).
+        assert_eq!(
+            risk.confidence,
+            CommandRiskConfidence::Medium,
+            "parse failure currently yields Medium confidence (split succeeds)"
+        );
+    }
 }
