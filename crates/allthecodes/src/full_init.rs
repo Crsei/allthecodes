@@ -112,6 +112,18 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
         info!(count = all_plugins.len(), "plugins loaded");
     }
     web::state::install_plugin_runtime_hooks();
+    match allthecodes_session::worktree_sessions::reconcile_all_worktree_sessions() {
+        Ok(orphaned) if orphaned > 0 => {
+            info!(
+                orphaned,
+                "worktree session startup reconciliation completed"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(%error, "worktree session startup reconciliation failed");
+        }
+    }
 
     // B.3a-i: Wire plugin LSP declarations into the LSP config provider
     // (Phase 2 integration: Serial Integration Lane)

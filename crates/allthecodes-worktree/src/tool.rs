@@ -30,6 +30,12 @@ use allthecodes_engine::worktree_hooks::{
     default_user_worktree_path, ensure_worktree_parent, run_worktree_create_hook,
     run_worktree_remove_hook, validate_allowed_worktree_path, WorktreeRemoveHookOutcome,
 };
+use allthecodes_session::storage::workspace_key;
+use allthecodes_session::worktree_sessions::{
+    mark_worktree_session_cleanup_failed, mark_worktree_session_kept,
+    mark_worktree_session_removed, upsert_worktree_session, WorktreeSessionCreator,
+    WorktreeSessionRecord, WorktreeSessionSource,
+};
 use allthecodes_types::message::AssistantMessage;
 
 // ---------------------------------------------------------------------------
@@ -62,6 +68,81 @@ pub fn get_current_worktree_session() -> Option<WorktreeSession> {
 /// Set the current worktree session.
 fn set_worktree_session(session: Option<WorktreeSession>) {
     *CURRENT_SESSION.lock() = session;
+}
+
+fn persist_worktree_session_record(
+    ctx: &ToolUseContext,
+    session: &WorktreeSession,
+    source: WorktreeSessionSource,
+) {
+    let repo_id = workspace_key(&session.git_root);
+    let record = WorktreeSessionRecord::new_active(
+        ctx.session_id.clone(),
+        repo_id,
+        session.worktree_path.clone(),
+        session.branch_name.clone(),
+        session.original_head_commit.clone(),
+        active_goal_id_for_session_best_effort(&ctx.session_id),
+        WorktreeSessionCreator::Human,
+        session.git_root.clone(),
+        Some(session.original_cwd.clone()),
+        source,
+    );
+    if let Err(err) = upsert_worktree_session(&record) {
+        warn!(
+            session_id = %ctx.session_id,
+            worktree_path = %session.worktree_path.display(),
+            error = %err,
+            "failed to persist worktree session record"
+        );
+    }
+}
+
+fn active_goal_id_for_session_best_effort(session_id: &str) -> Option<String> {
+    match allthecodes_tools::goals::active_goal_id_for_session(session_id) {
+        Ok(goal_id) => goal_id,
+        Err(err) => {
+            warn!(
+                session_id,
+                error = %err,
+                "failed to load active goal for worktree session"
+            );
+            None
+        }
+    }
+}
+
+fn mark_worktree_session_kept_best_effort(ctx: &ToolUseContext, worktree_path: &Path) {
+    if let Err(err) = mark_worktree_session_kept(&ctx.session_id, worktree_path) {
+        warn!(
+            session_id = %ctx.session_id,
+            worktree_path = %worktree_path.display(),
+            error = %err,
+            "failed to mark worktree session kept"
+        );
+    }
+}
+
+fn mark_worktree_session_removed_best_effort(ctx: &ToolUseContext, worktree_path: &Path) {
+    if let Err(err) = mark_worktree_session_removed(&ctx.session_id, worktree_path) {
+        warn!(
+            session_id = %ctx.session_id,
+            worktree_path = %worktree_path.display(),
+            error = %err,
+            "failed to mark worktree session removed"
+        );
+    }
+}
+
+fn mark_worktree_session_cleanup_failed_best_effort(ctx: &ToolUseContext, worktree_path: &Path) {
+    if let Err(err) = mark_worktree_session_cleanup_failed(&ctx.session_id, worktree_path) {
+        warn!(
+            session_id = %ctx.session_id,
+            worktree_path = %worktree_path.display(),
+            error = %err,
+            "failed to mark worktree session cleanup failed"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,43 +355,52 @@ impl Tool for EnterWorktreeTool {
             }
         };
 
-        let (worktree_path, branch_name, created_by) = if let Some(created) = hook_created {
-            (
-                created.worktree_path,
-                created.branch_name,
-                "WorktreeCreate hook",
-            )
-        } else {
-            ensure_worktree_parent(&worktree_path)?;
+        let (worktree_path, branch_name, created_by, record_source) =
+            if let Some(created) = hook_created {
+                (
+                    created.worktree_path,
+                    created.branch_name,
+                    "WorktreeCreate hook",
+                    WorktreeSessionSource::WorktreeCreateHook,
+                )
+            } else {
+                ensure_worktree_parent(&worktree_path)?;
 
-            let output = tokio::process::Command::new("git")
-                .args([
-                    "-C",
-                    &git_root.to_string_lossy(),
-                    "worktree",
-                    "add",
-                    "-B",
-                    &branch_name,
-                    &worktree_path.to_string_lossy(),
-                ])
-                .output()
-                .await?;
+                let output = tokio::process::Command::new("git")
+                    .args([
+                        "-C",
+                        &git_root.to_string_lossy(),
+                        "worktree",
+                        "add",
+                        "-B",
+                        &branch_name,
+                        &worktree_path.to_string_lossy(),
+                    ])
+                    .output()
+                    .await?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("Failed to create worktree: {}", stderr);
-            }
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    bail!("Failed to create worktree: {}", stderr);
+                }
 
-            (worktree_path, branch_name, "git worktree")
-        };
+                (
+                    worktree_path,
+                    branch_name,
+                    "git worktree",
+                    WorktreeSessionSource::EnterWorktree,
+                )
+            };
 
-        set_worktree_session(Some(WorktreeSession {
+        let session = WorktreeSession {
             worktree_path: worktree_path.clone(),
             branch_name: branch_name.clone(),
             original_cwd: cwd,
             git_root,
             original_head_commit: original_head,
-        }));
+        };
+        persist_worktree_session_record(ctx, &session, record_source);
+        set_worktree_session(Some(session));
 
         info!(
             worktree_path = %worktree_path.display(),
@@ -490,6 +580,7 @@ impl Tool for ExitWorktreeTool {
                     "keeping worktree"
                 );
 
+                mark_worktree_session_kept_best_effort(ctx, &worktree_path);
                 set_worktree_session(None);
 
                 Ok(ToolResult {
@@ -522,6 +613,7 @@ impl Tool for ExitWorktreeTool {
                         "worktree removal refused: {}. Worktree session remains active.",
                         err
                     ));
+                    mark_worktree_session_cleanup_failed_best_effort(ctx, &worktree_path);
                     return Ok(ToolResult {
                         data: json!({
                             "action": "remove",
@@ -641,6 +733,7 @@ impl Tool for ExitWorktreeTool {
                         "Worktree removal could not be verified; session remains active."
                             .to_string(),
                     );
+                    mark_worktree_session_cleanup_failed_best_effort(ctx, &worktree_path);
                     return Ok(ToolResult {
                         data: json!({
                             "action": "remove",
@@ -665,6 +758,7 @@ impl Tool for ExitWorktreeTool {
                     result["warnings"] = json!(warnings);
                 }
 
+                mark_worktree_session_removed_best_effort(ctx, &worktree_path);
                 set_worktree_session(None);
 
                 Ok(ToolResult {
@@ -696,6 +790,11 @@ mod tests {
     use super::*;
     use allthecodes_engine::types::tool::ToolAppState;
     use allthecodes_engine::worktree_hooks::{WORKTREE_CREATE_EVENT, WORKTREE_REMOVE_EVENT};
+    use allthecodes_session::storage::workspace_key;
+    use allthecodes_session::worktree_sessions::{
+        get_active_worktree_session, list_worktree_sessions_for_repo, WorktreeSessionSource,
+        WorktreeSessionStatus,
+    };
     use allthecodes_types::hooks::{
         HookEventConfig, HookOutput, HookRunner, HooksMap, NoopHookRunner,
     };
@@ -1054,13 +1153,17 @@ mod tests {
     #[serial_test::serial]
     async fn test_exit_worktree_remove_refuses_out_of_bounds_path() {
         let tmp = tempfile::tempdir().unwrap();
-        set_worktree_session(Some(WorktreeSession {
+        let _home = EnvGuard::set("ALLTHECODES_HOME", tmp.path().to_str().unwrap());
+        let ctx = make_ctx();
+        let session = WorktreeSession {
             worktree_path: tmp.path().join("outside-worktree"),
             branch_name: "test-branch".to_string(),
             original_cwd: tmp.path().to_path_buf(),
             git_root: tmp.path().to_path_buf(),
             original_head_commit: None,
-        }));
+        };
+        persist_worktree_session_record(&ctx, &session, WorktreeSessionSource::EnterWorktree);
+        set_worktree_session(Some(session));
 
         let parent = AssistantMessage {
             uuid: uuid::Uuid::new_v4(),
@@ -1074,7 +1177,6 @@ mod tests {
             cost_usd: 0.0,
         };
         let tool = ExitWorktreeTool;
-        let ctx = make_ctx();
         let result = tool
             .call(
                 json!({"action": "remove", "discard_changes": true}),
@@ -1091,8 +1193,43 @@ mod tests {
             .unwrap()
             .contains("outside the cc-rust worktree root"));
         assert!(get_current_worktree_session().is_some());
+        let active = get_active_worktree_session("test-session")
+            .unwrap()
+            .expect("cleanup_failed remains active");
+        assert_eq!(active.status, WorktreeSessionStatus::CleanupFailed);
 
         set_worktree_session(None);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_exit_worktree_keep_marks_session_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", tmp.path().to_str().unwrap());
+        let ctx = make_ctx();
+        let session = WorktreeSession {
+            worktree_path: tmp.path().join("kept-worktree"),
+            branch_name: "test-branch".to_string(),
+            original_cwd: tmp.path().to_path_buf(),
+            git_root: tmp.path().to_path_buf(),
+            original_head_commit: None,
+        };
+        persist_worktree_session_record(&ctx, &session, WorktreeSessionSource::EnterWorktree);
+        set_worktree_session(Some(session));
+
+        let tool = ExitWorktreeTool;
+        let result = tool
+            .call(json!({"action": "keep"}), &ctx, &parent_message(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.data["action"], "keep");
+        assert!(get_current_worktree_session().is_none());
+        assert!(get_active_worktree_session("test-session")
+            .unwrap()
+            .is_none());
+        let records = list_worktree_sessions_for_repo(&workspace_key(tmp.path())).unwrap();
+        assert_eq!(records[0].status, WorktreeSessionStatus::Kept);
     }
 
     #[test]
@@ -1148,6 +1285,7 @@ mod tests {
 
         let home = TempDir::new().unwrap();
         let cwd = TempDir::new().unwrap();
+        let _allthecodes_home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
         let _home = EnvGuard::set("CC_RUST_HOME", home.path().to_str().unwrap());
         let _cwd = CurrentDirGuard::set(cwd.path());
 
@@ -1174,6 +1312,10 @@ mod tests {
         assert_eq!(enter.data["branch"], "hook-branch");
         assert!(worktree_path.exists(), "hook should create worktree path");
         assert!(get_current_worktree_session().is_some());
+        let active = get_active_worktree_session("test-session")
+            .unwrap()
+            .expect("active hook worktree session");
+        assert_eq!(active.source, WorktreeSessionSource::WorktreeCreateHook);
 
         let exit = ExitWorktreeTool
             .call(
@@ -1193,6 +1335,11 @@ mod tests {
             "hook remove should delete the worktree path"
         );
         assert!(get_current_worktree_session().is_none());
+        assert!(get_active_worktree_session("test-session")
+            .unwrap()
+            .is_none());
+        let records = list_worktree_sessions_for_repo(&workspace_key(cwd.path())).unwrap();
+        assert_eq!(records[0].status, WorktreeSessionStatus::Removed);
     }
 
     #[tokio::test]
@@ -1203,6 +1350,7 @@ mod tests {
 
         let home = TempDir::new().unwrap();
         let repo = TempDir::new().unwrap();
+        let _allthecodes_home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
         let _home = EnvGuard::set("CC_RUST_HOME", home.path().to_str().unwrap());
         init_git_repo(repo.path());
         let _cwd = CurrentDirGuard::set(repo.path());
@@ -1222,6 +1370,10 @@ mod tests {
             "git fallback should create worktree"
         );
         assert!(get_current_worktree_session().is_some());
+        let active = get_active_worktree_session("test-session")
+            .unwrap()
+            .expect("active git worktree session");
+        assert_eq!(active.source, WorktreeSessionSource::EnterWorktree);
 
         let exit = ExitWorktreeTool
             .call(json!({"action": "remove"}), &ctx, &parent, None)
@@ -1236,6 +1388,11 @@ mod tests {
             "git fallback removal should delete the worktree"
         );
         assert!(get_current_worktree_session().is_none());
+        assert!(get_active_worktree_session("test-session")
+            .unwrap()
+            .is_none());
+        let records = list_worktree_sessions_for_repo(&workspace_key(repo.path())).unwrap();
+        assert_eq!(records[0].status, WorktreeSessionStatus::Removed);
     }
 
     #[tokio::test]
@@ -1246,6 +1403,7 @@ mod tests {
 
         let home = TempDir::new().unwrap();
         let repo = TempDir::new().unwrap();
+        let _allthecodes_home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
         let _home = EnvGuard::set("CC_RUST_HOME", home.path().to_str().unwrap());
         init_git_repo(repo.path());
         let subdir = repo.path().join("nested").join("child");

@@ -1243,6 +1243,8 @@ impl App {
                     );
                 }
             }
+            #[allow(unreachable_patterns)]
+            _ => {}
         }
         self.dirty = true;
     }

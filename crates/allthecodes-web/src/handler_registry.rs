@@ -143,6 +143,7 @@ pub fn all_api_handlers() -> HandlerRegistry {
         .extend(handlers::messaging::handlers())
         .extend(handlers::image_generate::handlers())
         .extend(handlers::voice::handlers())
+        .extend(handlers::worktree_sessions::handlers())
 }
 
 pub fn chat_handlers() -> HandlerRegistry {

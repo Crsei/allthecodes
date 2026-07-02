@@ -178,6 +178,105 @@ async fn count_worktree_changes(
     Some((changed_files, commits))
 }
 
+fn persist_agent_worktree_session_record(
+    session_id: &str,
+    agent_id: &str,
+    original_cwd: &Path,
+    git_root: &Path,
+    worktree_path: &Path,
+    branch_name: &str,
+    original_head: Option<String>,
+    source: allthecodes_session::worktree_sessions::WorktreeSessionSource,
+) {
+    let repo_id = allthecodes_session::storage::workspace_key(git_root);
+    let record = allthecodes_session::worktree_sessions::WorktreeSessionRecord::new_active(
+        session_id.to_string(),
+        repo_id,
+        worktree_path.to_path_buf(),
+        branch_name.to_string(),
+        original_head,
+        active_goal_id_for_session_best_effort(session_id, agent_id),
+        allthecodes_session::worktree_sessions::WorktreeSessionCreator::Agent,
+        git_root.to_path_buf(),
+        Some(original_cwd.to_path_buf()),
+        source,
+    );
+
+    if let Err(err) = allthecodes_session::worktree_sessions::upsert_worktree_session(&record) {
+        tracing::warn!(
+            session_id,
+            agent_id,
+            worktree_path = %worktree_path.display(),
+            error = %err,
+            "failed to persist agent worktree session record"
+        );
+    }
+}
+
+fn active_goal_id_for_session_best_effort(session_id: &str, agent_id: &str) -> Option<String> {
+    match allthecodes_tools::goals::active_goal_id_for_session(session_id) {
+        Ok(goal_id) => goal_id,
+        Err(err) => {
+            tracing::warn!(
+                session_id,
+                agent_id,
+                error = %err,
+                "failed to load active goal for agent worktree session"
+            );
+            None
+        }
+    }
+}
+
+fn mark_agent_worktree_session_kept(session_id: &str, agent_id: &str, worktree_path: &Path) {
+    if let Err(err) = allthecodes_session::worktree_sessions::mark_worktree_session_kept(
+        session_id,
+        worktree_path,
+    ) {
+        tracing::warn!(
+            session_id,
+            agent_id,
+            worktree_path = %worktree_path.display(),
+            error = %err,
+            "failed to mark agent worktree session kept"
+        );
+    }
+}
+
+fn mark_agent_worktree_session_removed(session_id: &str, agent_id: &str, worktree_path: &Path) {
+    if let Err(err) = allthecodes_session::worktree_sessions::mark_worktree_session_removed(
+        session_id,
+        worktree_path,
+    ) {
+        tracing::warn!(
+            session_id,
+            agent_id,
+            worktree_path = %worktree_path.display(),
+            error = %err,
+            "failed to mark agent worktree session removed"
+        );
+    }
+}
+
+fn mark_agent_worktree_session_cleanup_failed(
+    session_id: &str,
+    agent_id: &str,
+    worktree_path: &Path,
+) {
+    if let Err(err) = allthecodes_session::worktree_sessions::mark_worktree_session_cleanup_failed(
+        session_id,
+        worktree_path,
+    ) {
+        tracing::warn!(
+            session_id,
+            agent_id,
+            worktree_path = %worktree_path.display(),
+            error = %err,
+            "failed to mark agent worktree session cleanup failed"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helper: convert SdkMessage ->AgentEvent for IPC forwarding
 // ---------------------------------------------------------------------------

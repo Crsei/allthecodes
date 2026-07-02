@@ -6,3 +6,4 @@
 pub mod tool;
 
 pub use tool::get_current_worktree_session;
+pub use tool::WorktreeSession;

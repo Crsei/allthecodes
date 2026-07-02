@@ -693,6 +693,17 @@ crate::api_definitions! {
         params: v1::git::GitWorktreesParams,
         response: v1::git::GitWorktreesResponse,
     },
+    WorktreeSessionsList => "GET /api/worktree-sessions" {
+        params: v1::worktree_sessions::WorktreeSessionsQuery,
+        response: v1::worktree_sessions::WorktreeSessionsResponse,
+    },
+    WorktreeSessionsCurrent => "GET /api/worktree-sessions/current" {
+        response: v1::worktree_sessions::CurrentWorktreeSessionResponse,
+    },
+    WorktreeSessionsBySession => "GET /api/worktree-sessions/{session_id}" {
+        params: v1::worktree_sessions::WorktreeSessionBySessionParams,
+        response: v1::worktree_sessions::WorktreeSessionsResponse,
+    },
     Proxy => "GET /api/proxy" {
         response: Value,
     },

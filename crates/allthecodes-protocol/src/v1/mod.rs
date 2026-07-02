@@ -28,5 +28,6 @@ pub mod tasks;
 pub mod terminal;
 pub mod voice;
 pub mod workspaces;
+pub mod worktree_sessions;
 
 pub use sessions::*;

@@ -52,6 +52,7 @@ pub mod tasks;
 pub mod usage;
 pub mod voice;
 pub mod workspaces;
+pub mod worktree_sessions;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -100,6 +101,7 @@ pub use settings_phase1::*;
 pub use skills::*;
 pub use usage::*;
 pub use workspaces::*;
+pub use worktree_sessions::*;
 
 // ---------------------------------------------------------------------------
 // Shared types

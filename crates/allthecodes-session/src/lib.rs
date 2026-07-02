@@ -18,3 +18,4 @@ pub mod resume;
 pub mod session_export;
 pub mod storage;
 pub mod transcript;
+pub mod worktree_sessions;

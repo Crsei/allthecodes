@@ -29,7 +29,9 @@ use crate::worktree_hooks::{
 };
 
 use super::{
-    build_child_config, count_worktree_changes, find_git_root, get_head_sha, sdk_to_agent_event,
+    build_child_config, count_worktree_changes, find_git_root, get_head_sha,
+    mark_agent_worktree_session_cleanup_failed, mark_agent_worktree_session_kept,
+    mark_agent_worktree_session_removed, persist_agent_worktree_session_record, sdk_to_agent_event,
     AgentInput, AgentTool,
 };
 
@@ -42,6 +44,7 @@ pub(super) struct BackgroundLaunch {
 
 #[derive(Clone)]
 struct WorktreeRuntime {
+    session_id: String,
     git_root: PathBuf,
     worktree_path: PathBuf,
     branch_name: String,
@@ -115,6 +118,7 @@ pub(super) async fn spawn_background_agent(
         &agent_model,
         current_depth,
         ctx.agent_id.as_deref(),
+        &ctx.session_id,
         ctx.hook_runner.clone(),
         (ctx.get_app_state)().hooks,
     )
@@ -618,6 +622,7 @@ async fn prepare_runtime(
     agent_model: &str,
     current_depth: usize,
     parent_agent_id: Option<&str>,
+    session_id: &str,
     hook_runner: Arc<dyn allthecodes_types::hooks::HookRunner>,
     hooks: allthecodes_types::hooks::HooksMap,
 ) -> Result<PreparedRuntime> {
@@ -635,6 +640,7 @@ async fn prepare_runtime(
         agent_model,
         current_depth,
         parent_agent_id,
+        session_id,
         hook_runner,
         hooks,
     )
@@ -707,6 +713,7 @@ async fn prepare_worktree_runtime(
     agent_model: &str,
     current_depth: usize,
     parent_agent_id: Option<&str>,
+    session_id: &str,
     hook_runner: Arc<dyn allthecodes_types::hooks::HookRunner>,
     hooks: allthecodes_types::hooks::HooksMap,
 ) -> Result<PreparedRuntime> {
@@ -756,8 +763,8 @@ async fn prepare_worktree_runtime(
         }
     };
 
-    let (worktree_path, branch_name) = if let Some(created) = hook_created {
-        (created.worktree_path, created.branch_name)
+    let (worktree_path, branch_name, created_by_hook) = if let Some(created) = hook_created {
+        (created.worktree_path, created.branch_name, true)
     } else {
         ensure_worktree_parent(&worktree_path)?;
 
@@ -781,8 +788,23 @@ async fn prepare_worktree_runtime(
             );
         }
 
-        (worktree_path, branch_name)
+        (worktree_path, branch_name, false)
     };
+
+    persist_agent_worktree_session_record(
+        session_id,
+        agent_id,
+        &cwd,
+        &git_root,
+        &worktree_path,
+        &branch_name,
+        original_head.clone(),
+        if created_by_hook {
+            allthecodes_session::worktree_sessions::WorktreeSessionSource::WorktreeCreateHook
+        } else {
+            allthecodes_session::worktree_sessions::WorktreeSessionSource::AgentIsolation
+        },
+    );
 
     let _ = crate::agent_runtime::emit_subagent_event(
         "worktree_created",
@@ -801,6 +823,7 @@ async fn prepare_worktree_runtime(
     Ok(PreparedRuntime {
         child_cwd: worktree_path.to_string_lossy().to_string(),
         worktree: Some(WorktreeRuntime {
+            session_id: session_id.to_string(),
             git_root,
             worktree_path,
             branch_name,
@@ -832,6 +855,7 @@ async fn append_worktree_outcome(
 
     if has_changes {
         let (files, commits) = changes.unwrap_or((0, 0));
+        mark_agent_worktree_session_kept(&worktree.session_id, agent_id, &worktree.worktree_path);
         let _ = crate::agent_runtime::emit_subagent_event(
             "worktree_kept",
             agent_id,
@@ -880,9 +904,19 @@ async fn append_worktree_outcome(
         )
         .await;
         if cleaned {
+            mark_agent_worktree_session_removed(
+                &worktree.session_id,
+                agent_id,
+                &worktree.worktree_path,
+            );
             result_text
                 .push_str("\n\n[Worktree isolation: no changes detected; worktree cleaned up]");
         } else {
+            mark_agent_worktree_session_cleanup_failed(
+                &worktree.session_id,
+                agent_id,
+                &worktree.worktree_path,
+            );
             result_text.push_str(&format!(
                 "\n\n[Worktree isolation: no changes detected, but cleanup could not be verified. Worktree kept at: {} on branch: {}]",
                 worktree.worktree_path.display(),
@@ -905,6 +939,7 @@ async fn finalize_or_keep_worktree_after_forced_shutdown(
     };
 
     if has_changes {
+        mark_agent_worktree_session_kept(&worktree.session_id, agent_id, &worktree.worktree_path);
         let suffix = format!(
             "[Supervisor: shutdown kept worktree at {} on branch {} because changes may exist]",
             worktree.worktree_path.display(),
@@ -922,8 +957,18 @@ async fn finalize_or_keep_worktree_after_forced_shutdown(
         )
         .await;
         let suffix = if cleaned {
+            mark_agent_worktree_session_removed(
+                &worktree.session_id,
+                agent_id,
+                &worktree.worktree_path,
+            );
             "[Supervisor: shutdown cleaned an unchanged worktree]".to_string()
         } else {
+            mark_agent_worktree_session_cleanup_failed(
+                &worktree.session_id,
+                agent_id,
+                &worktree.worktree_path,
+            );
             format!(
                 "[Supervisor: shutdown kept unchanged worktree at {} on branch {} because cleanup could not be verified]",
                 worktree.worktree_path.display(),
@@ -1062,6 +1107,7 @@ mod tests {
             "test-model",
             0,
             None,
+            "test-session",
             Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
             allthecodes_types::hooks::HooksMap::default(),
         )
@@ -1090,6 +1136,7 @@ mod tests {
             "test-model",
             0,
             None,
+            "test-session",
             Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
             allthecodes_types::hooks::HooksMap::default(),
         )

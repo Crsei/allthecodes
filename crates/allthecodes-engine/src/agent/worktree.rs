@@ -12,7 +12,9 @@ use crate::types::tool::*;
 
 use super::{
     build_child_config, collect_stream_result, count_worktree_changes, find_git_root, get_head_sha,
-    AgentInput, AgentTool,
+    mark_agent_worktree_session_cleanup_failed, mark_agent_worktree_session_kept,
+    mark_agent_worktree_session_removed, persist_agent_worktree_session_record, AgentInput,
+    AgentTool,
 };
 use crate::lifecycle::QueryEngine;
 use crate::worktree_hooks::{
@@ -292,6 +294,21 @@ impl AgentTool {
             }
         }
 
+        persist_agent_worktree_session_record(
+            &ctx.session_id,
+            agent_id,
+            &cwd,
+            &git_root,
+            &worktree_path,
+            &branch_name,
+            original_head.clone(),
+            if created_by_hook {
+                allthecodes_session::worktree_sessions::WorktreeSessionSource::WorktreeCreateHook
+            } else {
+                allthecodes_session::worktree_sessions::WorktreeSessionSource::AgentIsolation
+            },
+        );
+
         // -- 3. Run the agent with cwd = worktree
         let child_config = build_child_config(
             worktree_path.to_string_lossy().to_string(),
@@ -372,6 +389,7 @@ impl AgentTool {
         if has_changes {
             // Keep the worktree — include location info in result
             let (files, commits) = changes.unwrap_or((0, 0));
+            mark_agent_worktree_session_kept(&ctx.session_id, agent_id, &worktree_path);
             info!(
                 agent_id = %agent_id,
                 worktree_path = %worktree_path.display(),
@@ -437,10 +455,16 @@ impl AgentTool {
             .await;
 
             if cleaned {
+                mark_agent_worktree_session_removed(&ctx.session_id, agent_id, &worktree_path);
                 result_text.push_str(
                     "\n\n[Worktree isolation: no changes detected — worktree cleaned up]",
                 );
             } else {
+                mark_agent_worktree_session_cleanup_failed(
+                    &ctx.session_id,
+                    agent_id,
+                    &worktree_path,
+                );
                 result_text.push_str(&format!(
                     "\n\n[Worktree isolation: no changes detected, but cleanup could not be verified. Worktree kept at: {} on branch: {}]",
                     worktree_path.display(),
