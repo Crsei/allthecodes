@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::App;
+use super::{domain, App};
 use crate::ui::agents::agents_menu::AgentsMenuState;
 use crate::ui::bottom_pane::BottomPaneHeights;
 use crate::ui::command_palette::CommandPalette;
@@ -29,21 +29,23 @@ const MESSAGE_BOTTOM_GAP_HEIGHT: u16 = 1;
 
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {
+        self.sync_compat_to_stores();
         let size = frame.area();
         if size.width < 10 || size.height < 4 {
             return;
         }
-        self.session_scrollbar = None;
-        self.message_area = None;
-        self.prompt_area = None;
+        self.render_layout.session_scrollbar = None;
+        self.render_layout.message_area = None;
+        self.render_layout.prompt_area = None;
 
         if self.workspace_trust_pending {
             render_workspace_trust_prompt(
                 size,
                 frame.buffer_mut(),
-                &self.cwd,
+                &self.session_ui.cwd,
                 self.workspace_trust_selection,
             );
+            self.sync_compat_from_stores();
             self.capture_render_snapshot(frame);
             return;
         }
@@ -52,6 +54,7 @@ impl App {
         // before we compute the prompt-mode layout.
         if self.view_mode.is_transcript_like() {
             self.render_transcript(frame, size);
+            self.sync_compat_from_stores();
             self.capture_render_snapshot(frame);
             return;
         }
@@ -87,7 +90,7 @@ impl App {
             .preferred_height()
             .min(size.height.saturating_sub(4));
         let completion_popup_height = self.completion_popup_height();
-        let cwd_path = std::path::Path::new(&self.cwd);
+        let cwd_path = std::path::Path::new(&self.session_ui.cwd);
         let command_arg_help_height = 0;
         let paste_notice_height =
             u16::from(self.prompt.large_paste_notice().is_some() && !immediate_notification);
@@ -123,25 +126,28 @@ impl App {
         let content_height = if self.show_welcome {
             welcome::welcome_height_for(size.width).min(max_content_height)
         } else {
-            let message_render_context =
-                super::super::messages::build_message_render_context_with_options(
-                    &self.messages,
-                    self.selected_message,
-                    self.selected_message_expanded,
-                    super::super::messages::MessageRenderOptions {
-                        verbose: self.verbose,
-                        is_transcript_mode: false,
-                        show_all_in_transcript: false,
-                        thinking_animation_frame: self.thinking_animation_frame(),
-                    },
-                );
-            self.vscroll.ensure_up_to_date(
-                &self.messages,
+            let message_render_context = domain::build_message_render_context(
+                &self.conversation,
+                super::super::messages::MessageRenderOptions {
+                    verbose: self.verbose,
+                    is_transcript_mode: false,
+                    show_all_in_transcript: false,
+                    thinking_animation_frame: self.thinking_animation_frame(),
+                },
+            );
+            self.conversation.ensure_vscroll_up_to_date(
                 size.width,
                 &self.theme,
                 &message_render_context,
             );
-            self.vscroll
+            self.vscroll.ensure_up_to_date(
+                self.conversation.messages(),
+                size.width,
+                &self.theme,
+                &message_render_context,
+            );
+            self.conversation
+                .vscroll()
                 .total_visual_lines()
                 .min(max_content_height as usize) as u16
         };
@@ -156,7 +162,7 @@ impl App {
 
         let message_area = chunks[0];
         let bottom_area = chunks[2];
-        self.message_area = Some(message_area);
+        self.render_layout.message_area = Some(message_area);
 
         if self.show_welcome {
             // Welcome screen
@@ -164,59 +170,66 @@ impl App {
                 message_area,
                 frame.buffer_mut(),
                 env!("CARGO_PKG_VERSION"),
-                &self.model_name,
-                &self.session_id,
-                &self.cwd,
+                &self.session_ui.model_name,
+                &self.session_ui.session_id,
+                &self.session_ui.cwd,
             );
         } else {
             // Messages (virtual scroll)
-            let message_render_context =
-                super::super::messages::build_message_render_context_with_options(
-                    &self.messages,
-                    self.selected_message,
-                    self.selected_message_expanded,
-                    super::super::messages::MessageRenderOptions {
-                        verbose: self.verbose,
-                        is_transcript_mode: false,
-                        show_all_in_transcript: false,
-                        thinking_animation_frame: self.thinking_animation_frame(),
-                    },
-                );
-            self.vscroll.ensure_up_to_date(
-                &self.messages,
+            let message_render_context = domain::build_message_render_context(
+                &self.conversation,
+                super::super::messages::MessageRenderOptions {
+                    verbose: self.verbose,
+                    is_transcript_mode: false,
+                    show_all_in_transcript: false,
+                    thinking_animation_frame: self.thinking_animation_frame(),
+                },
+            );
+            self.conversation.ensure_vscroll_up_to_date(
                 message_area.width,
                 &self.theme,
                 &message_render_context,
             );
-            let mut total = self.vscroll.total_visual_lines();
+            self.vscroll.ensure_up_to_date(
+                self.conversation.messages(),
+                message_area.width,
+                &self.theme,
+                &message_render_context,
+            );
+            let mut total = self.conversation.vscroll().total_visual_lines();
             let (message_body_area, scrollbar_area) =
                 split_session_scrollbar_area(message_area, total);
             if message_body_area.width != message_area.width {
-                self.vscroll.ensure_up_to_date(
-                    &self.messages,
+                self.conversation.ensure_vscroll_up_to_date(
                     message_body_area.width,
                     &self.theme,
                     &message_render_context,
                 );
-                total = self.vscroll.total_visual_lines();
+                self.vscroll.ensure_up_to_date(
+                    self.conversation.messages(),
+                    message_body_area.width,
+                    &self.theme,
+                    &message_render_context,
+                );
+                total = self.conversation.vscroll().total_visual_lines();
             }
             let max_scroll = total.saturating_sub(message_area.height as usize);
-            if self.scroll_offset > max_scroll {
-                self.scroll_offset = max_scroll;
+            if self.conversation.scroll_offset() > max_scroll {
+                self.conversation.set_scroll_offset(max_scroll);
             }
 
             render_messages(
-                &self.messages,
+                self.conversation.messages(),
                 message_body_area,
                 frame.buffer_mut(),
                 &self.theme,
                 self.is_streaming,
-                self.scroll_offset,
-                &self.vscroll,
+                self.conversation.scroll_offset(),
+                self.conversation.vscroll(),
                 &message_render_context,
             );
             if let Some(scrollbar_area) = scrollbar_area {
-                self.session_scrollbar = Some(super::SessionScrollbarState {
+                self.render_layout.session_scrollbar = Some(super::SessionScrollbarState {
                     area: scrollbar_area,
                     total_lines: total,
                 });
@@ -224,7 +237,7 @@ impl App {
                     scrollbar_area,
                     frame.buffer_mut(),
                     total,
-                    self.scroll_offset,
+                    self.conversation.scroll_offset(),
                     &self.theme,
                 );
             }
@@ -233,7 +246,7 @@ impl App {
         // Bottom area: spinner + suggestions + paste_notice + completion_popup + palette + arg_help + input + notification + agent_footer + status
         let has_suggestions = suggestion_height > 0;
         let bottom_chunks = bottom_pane.split(bottom_area);
-        self.prompt_area = Some(bottom_chunks.input);
+        self.render_layout.prompt_area = Some(bottom_chunks.input);
 
         if self.is_streaming && bottom_chunks.spinner.height > 0 {
             self.spinner_state
@@ -345,6 +358,7 @@ impl App {
             );
         }
 
+        self.sync_compat_from_stores();
         self.capture_render_snapshot(frame);
     }
 
@@ -498,11 +512,11 @@ impl App {
                 goal.tokens_used
             ));
         }
-        if !self.model_name.is_empty() {
-            parts.push(self.model_name.clone());
+        if !self.session_ui.model_name.is_empty() {
+            parts.push(self.session_ui.model_name.clone());
         }
-        if !self.cwd.is_empty() {
-            parts.push(self.cwd.clone());
+        if !self.session_ui.cwd.is_empty() {
+            parts.push(self.session_ui.cwd.clone());
         }
 
         let status_text = format!(" {}", parts.join(" | "));
@@ -533,40 +547,47 @@ impl App {
         .split(size);
 
         let body_area = rows[1];
-        self.message_area = Some(body_area);
-        self.prompt_area = None;
+        self.render_layout.message_area = Some(body_area);
+        self.render_layout.prompt_area = None;
 
         // Ensure the virtual-scroll cache matches the body width. Sharing
         // `vscroll` with prompt mode is fine because both invalidate on
         // width change.
-        let message_render_context =
-            super::super::messages::build_message_render_context_with_options(
-                &self.messages,
-                self.selected_message,
-                self.selected_message_expanded,
-                super::super::messages::MessageRenderOptions {
-                    verbose: self.verbose,
-                    is_transcript_mode: true,
-                    show_all_in_transcript: true,
-                    thinking_animation_frame: None,
-                },
-            );
-        self.vscroll.ensure_up_to_date(
-            &self.messages,
+        let message_render_context = domain::build_message_render_context(
+            &self.conversation,
+            super::super::messages::MessageRenderOptions {
+                verbose: self.verbose,
+                is_transcript_mode: true,
+                show_all_in_transcript: true,
+                thinking_animation_frame: None,
+            },
+        );
+        self.conversation.ensure_vscroll_up_to_date(
             body_area.width,
             &self.theme,
             &message_render_context,
         );
-        let mut total = self.vscroll.total_visual_lines();
+        self.vscroll.ensure_up_to_date(
+            self.conversation.messages(),
+            body_area.width,
+            &self.theme,
+            &message_render_context,
+        );
+        let mut total = self.conversation.vscroll().total_visual_lines();
         let (message_body_area, scrollbar_area) = split_session_scrollbar_area(body_area, total);
         if message_body_area.width != body_area.width {
-            self.vscroll.ensure_up_to_date(
-                &self.messages,
+            self.conversation.ensure_vscroll_up_to_date(
                 message_body_area.width,
                 &self.theme,
                 &message_render_context,
             );
-            total = self.vscroll.total_visual_lines();
+            self.vscroll.ensure_up_to_date(
+                self.conversation.messages(),
+                message_body_area.width,
+                &self.theme,
+                &message_render_context,
+            );
+            total = self.conversation.vscroll().total_visual_lines();
         }
         let max_scroll = total.saturating_sub(body_area.height as usize);
         if self.transcript_state.scroll_offset > max_scroll {
@@ -574,17 +595,17 @@ impl App {
         }
 
         render_messages(
-            &self.messages,
+            self.conversation.messages(),
             message_body_area,
             frame.buffer_mut(),
             &self.theme,
             self.is_streaming,
             self.transcript_state.scroll_offset,
-            &self.vscroll,
+            self.conversation.vscroll(),
             &message_render_context,
         );
         if let Some(scrollbar_area) = scrollbar_area {
-            self.session_scrollbar = Some(super::SessionScrollbarState {
+            self.render_layout.session_scrollbar = Some(super::SessionScrollbarState {
                 area: scrollbar_area,
                 total_lines: total,
             });
@@ -606,7 +627,7 @@ impl App {
     }
 
     fn render_focus_view(&mut self, frame: &mut Frame, size: Rect) {
-        let focus = transcript::build_focus_view(&self.messages);
+        let focus = transcript::build_focus_view(self.conversation.messages());
         let mut lines = Vec::new();
 
         if let Some(prompt) = focus.prompt {
@@ -660,7 +681,7 @@ impl App {
     }
 
     fn render_transcript_header(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
-        let total = self.messages.len();
+        let total = self.conversation.messages().len();
         let mut parts = vec![format!(
             "\u{2500}\u{2500} {} \u{00b7} {} messages",
             self.view_mode.label(),

@@ -2,6 +2,7 @@ pub mod agent_navigation;
 mod agent_tree_dialog;
 pub mod app_event;
 pub mod app_event_sender;
+mod domain;
 mod input;
 mod render;
 pub mod status;
@@ -11,7 +12,6 @@ mod tests;
 mod transcript_mode;
 mod voice;
 mod workspace_trust;
-use std::collections::VecDeque;
 
 use agent_navigation::{AgentNavigationState, AgentThreadEntry, AgentThreadStatus};
 use agent_tree_dialog::AgentTreeDialog;
@@ -49,6 +49,7 @@ use super::transcript::{TranscriptState, ViewMode};
 use super::vim::VimState;
 use super::virtual_scroll::VirtualScroll;
 use app_event::AppEvent;
+use domain::{ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalStatusSnapshot {
@@ -191,13 +192,12 @@ fn notification_from_backend_message(message: &BackendMessage) -> Option<InAppNo
 
 /// Main TUI application state.
 pub struct App {
+    conversation: ConversationStore,
     messages: Vec<Message>,
-    selected_message: Option<usize>,
-    selected_message_expanded: bool,
     prompt: PromptInput,
     scroll_offset: usize,
     is_streaming: bool,
-    queued_prompts: VecDeque<String>,
+    prompt_queue: PromptQueueStore,
     spinner_state: SpinnerState,
     bypass_permissions_mode_dialog: Option<BypassPermissionsModeDialog>,
     permission_dialog: Option<PermissionDialog>,
@@ -206,6 +206,7 @@ pub struct App {
     should_quit: bool,
     design_theme_provider: ThemeProvider,
     theme: Theme,
+    session_ui: SessionUiStore,
     model_name: String,
     backend_name: String,
     session_id: String,
@@ -223,7 +224,6 @@ pub struct App {
     /// Startup trust gate shown before the normal welcome panel.
     workspace_trust_pending: bool,
     workspace_trust_selection: usize,
-    history: Vec<HistorySearchEntry>,
     history_index: Option<usize>,
     saved_input: String,
     command_palette: CommandPalette,
@@ -241,14 +241,9 @@ pub struct App {
     notifications: NotificationState,
 
     // Optimizations
-    /// Virtual scroll: per-message height cache + prefix-sum offsets.
+    render_layout: RenderLayoutStore,
     vscroll: VirtualScroll,
-    /// Last rendered session scrollbar, used for mouse click/drag control.
     session_scrollbar: Option<SessionScrollbarState>,
-    session_scrollbar_dragging: bool,
-    /// Last rendered chat history area, used to track mouse focus.
-    message_area: Option<Rect>,
-    /// Last rendered prompt input area, used to track mouse focus.
     prompt_area: Option<Rect>,
     /// Area the user last clicked or scrolled over.
     mouse_focus: MouseFocus,
@@ -314,13 +309,12 @@ impl App {
         let design_theme_provider = ThemeProvider::from_user_settings();
         let theme = design_theme_provider.legacy_theme();
         Self {
+            conversation: ConversationStore::default(),
             messages: Vec::new(),
-            selected_message: None,
-            selected_message_expanded: false,
             prompt: PromptInput::new(),
             scroll_offset: 0,
             is_streaming: false,
-            queued_prompts: VecDeque::new(),
+            prompt_queue: PromptQueueStore::default(),
             spinner_state: SpinnerState::new(),
             bypass_permissions_mode_dialog: None,
             permission_dialog: None,
@@ -329,6 +323,7 @@ impl App {
             should_quit: false,
             design_theme_provider,
             theme,
+            session_ui: SessionUiStore::default(),
             model_name: String::new(),
             backend_name: String::new(),
             session_id: String::new(),
@@ -346,7 +341,6 @@ impl App {
             workspace_trust_selection: 0,
             suggestions: None,
             notifications: NotificationState::default(),
-            history: Vec::new(),
             history_index: None,
             saved_input: String::new(),
             command_palette: CommandPalette::new(),
@@ -357,10 +351,9 @@ impl App {
             agent_tree_dialog: None,
             show_agent_footer: true,
             current_agent_thread_id: None,
+            render_layout: RenderLayoutStore::default(),
             vscroll: VirtualScroll::new(),
             session_scrollbar: None,
-            session_scrollbar_dragging: false,
-            message_area: None,
             prompt_area: None,
             mouse_focus: MouseFocus::Messages,
             dirty: true,
@@ -399,11 +392,34 @@ impl App {
         self.dirty = true;
     }
 
+    fn sync_compat_from_stores(&mut self) {
+        self.messages = self.conversation.messages().to_vec();
+        self.scroll_offset = self.conversation.scroll_offset();
+        self.model_name = self.session_ui.model_name.clone();
+        self.backend_name = self.session_ui.backend_name.clone();
+        self.session_id = self.session_ui.session_id.clone();
+        self.cwd = self.session_ui.cwd.clone();
+        self.output_style = self.session_ui.output_style.clone();
+        self.session_scrollbar = self.render_layout.session_scrollbar;
+        self.prompt_area = self.render_layout.prompt_area;
+    }
+
+    fn sync_compat_to_stores(&mut self) {
+        self.conversation.set_scroll_offset(self.scroll_offset);
+        self.session_ui.model_name.clone_from(&self.model_name);
+        self.session_ui.backend_name.clone_from(&self.backend_name);
+        self.session_ui.session_id.clone_from(&self.session_id);
+        self.session_ui.cwd.clone_from(&self.cwd);
+        self.session_ui.output_style.clone_from(&self.output_style);
+        self.render_layout.session_scrollbar = self.session_scrollbar;
+        self.render_layout.prompt_area = self.prompt_area;
+    }
+
     pub fn export_debug_snapshot(&self) -> std::io::Result<std::path::PathBuf> {
-        let cwd = if self.cwd.is_empty() {
+        let cwd = if self.session_ui.cwd.is_empty() {
             std::env::current_dir()?
         } else {
-            std::path::PathBuf::from(&self.cwd)
+            std::path::PathBuf::from(&self.session_ui.cwd)
         };
         let dir = cwd.join("target").join("tui-snapshots");
         std::fs::create_dir_all(&dir)?;
@@ -430,10 +446,10 @@ impl App {
             "exported_at: {}\n",
             chrono::Local::now().to_rfc3339()
         ));
-        body.push_str(&format!("cwd: {}\n", self.cwd));
-        body.push_str(&format!("session_id: {}\n", self.session_id));
-        body.push_str(&format!("model: {}\n", self.model_name));
-        body.push_str(&format!("backend: {}\n", self.backend_name));
+        body.push_str(&format!("cwd: {}\n", self.session_ui.cwd));
+        body.push_str(&format!("session_id: {}\n", self.session_ui.session_id));
+        body.push_str(&format!("model: {}\n", self.session_ui.model_name));
+        body.push_str(&format!("backend: {}\n", self.session_ui.backend_name));
         body.push_str(&format!(
             "command_surface: {}\n",
             self.command_surface
@@ -461,66 +477,52 @@ impl App {
         if self.show_welcome && matches!(msg, Message::User(_) | Message::Assistant(_)) {
             self.show_welcome = false;
         }
-        self.messages.push(msg);
-        self.sync_primary_agent_thread();
-        self.clamp_selected_message();
+        self.conversation.add_message(msg);
         self.vscroll
-            .invalidate_from(self.messages.len().saturating_sub(1));
+            .invalidate_from(self.conversation.messages().len().saturating_sub(1));
+        self.sync_primary_agent_thread();
         self.scroll_to_bottom_deferred();
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub fn replace_last_message(&mut self, msg: Message) {
-        if let Some(last) = self.messages.last_mut() {
-            *last = msg;
-        } else {
-            self.messages.push(msg);
-        }
-        self.sync_primary_agent_thread();
-        self.clamp_selected_message();
+        self.conversation.replace_last_message(msg);
         self.vscroll
-            .invalidate_from(self.messages.len().saturating_sub(1));
+            .invalidate_from(self.conversation.messages().len().saturating_sub(1));
+        self.sync_primary_agent_thread();
         self.scroll_to_bottom_deferred();
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub fn remove_last_message(&mut self) {
-        if self.messages.pop().is_some() {
+        if self.conversation.remove_last_message() {
+            self.vscroll
+                .invalidate_from(self.conversation.messages().len());
             self.sync_primary_agent_thread();
-            self.clamp_selected_message();
-            self.vscroll.invalidate_from(self.messages.len());
             self.scroll_to_bottom_deferred();
+            self.sync_compat_from_stores();
             self.dirty = true;
         }
     }
 
     pub fn messages(&self) -> &[Message] {
-        &self.messages
+        self.conversation.messages()
     }
 
     #[cfg(test)]
     pub fn selected_message(&self) -> Option<usize> {
-        self.selected_message
-    }
-
-    fn clamp_selected_message(&mut self) {
-        if self.messages.is_empty() {
-            self.selected_message = None;
-            self.selected_message_expanded = false;
-        } else if let Some(idx) = self.selected_message {
-            self.selected_message = Some(idx.min(self.messages.len() - 1));
-        }
+        self.conversation.selection()
     }
 
     pub fn clear_messages(&mut self) {
-        self.messages.clear();
-        self.selected_message = None;
-        self.selected_message_expanded = false;
-        self.scroll_offset = 0;
+        self.conversation.clear();
+        self.vscroll.invalidate_all();
         self.agent_nav.clear();
         self.current_agent_thread_id = None;
         self.sync_primary_agent_thread();
-        self.vscroll.invalidate_all();
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
@@ -576,7 +578,7 @@ impl App {
                 "tool": request.tool_name,
             }),
         });
-        let replace_last = self.messages.last().is_some_and(|message| {
+        let replace_last = self.messages().last().is_some_and(|message| {
             matches!(
                 message,
                 Message::Progress(existing) if existing.tool_use_id == request.tool_use_id
@@ -614,13 +616,13 @@ impl App {
     }
 
     pub fn queue_prompt(&mut self, text: String) -> usize {
-        self.queued_prompts.push_back(text);
+        let count = self.prompt_queue.queue(text);
         self.dirty = true;
-        self.queued_prompts.len()
+        count
     }
 
     pub fn pop_next_queued(&mut self) -> Option<String> {
-        let next = self.queued_prompts.pop_front();
+        let next = self.prompt_queue.pop_next();
         if next.is_some() {
             self.dirty = true;
         }
@@ -628,7 +630,7 @@ impl App {
     }
 
     pub fn queued_count(&self) -> usize {
-        self.queued_prompts.len()
+        self.prompt_queue.len()
     }
 
     /// Tick the spinner. Called at 16ms interval; spinner frame advances
@@ -651,39 +653,45 @@ impl App {
     }
 
     pub fn set_model_name(&mut self, name: String) {
-        self.model_name = name;
+        self.session_ui.model_name = name;
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub fn set_backend_name(&mut self, name: String) {
-        self.backend_name = name;
+        self.session_ui.backend_name = name;
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub fn set_session_id(&mut self, id: String) {
-        let previous_session_id = self.session_id.clone();
-        self.session_id = id;
-        if !previous_session_id.is_empty() && previous_session_id != self.session_id {
+        let previous_session_id = self.session_ui.session_id.clone();
+        self.session_ui.session_id = id;
+        if !previous_session_id.is_empty() && previous_session_id != self.session_ui.session_id {
             self.agent_nav.remove(&previous_session_id);
             self.active_goal = None;
         }
         self.sync_primary_agent_thread();
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub fn set_cwd(&mut self, cwd: String) {
-        self.cwd = cwd;
-        self.workspace_trust_pending = !self.cwd.is_empty() && !is_workspace_trusted(&self.cwd);
+        self.session_ui.cwd = cwd;
+        self.workspace_trust_pending =
+            !self.session_ui.cwd.is_empty() && !is_workspace_trusted(&self.session_ui.cwd);
         self.workspace_trust_selection = 0;
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub fn cwd(&self) -> &str {
-        &self.cwd
+        &self.session_ui.cwd
     }
 
     pub fn set_output_style(&mut self, output_style: Option<String>) {
-        self.output_style = output_style;
+        self.session_ui.output_style = output_style;
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
@@ -987,7 +995,10 @@ impl App {
         self.current_agent_thread_id
             .as_deref()
             .filter(|id| self.agent_nav.contains_thread(id))
-            .or_else(|| (!self.session_id.is_empty()).then_some(self.session_id.as_str()))
+            .or_else(|| {
+                (!self.session_ui.session_id.is_empty())
+                    .then_some(self.session_ui.session_id.as_str())
+            })
             .or_else(|| {
                 self.agent_nav
                     .ordered_threads()
@@ -1010,11 +1021,11 @@ impl App {
     }
 
     fn sync_primary_agent_thread(&mut self) {
-        if self.session_id.is_empty() {
+        if self.session_ui.session_id.is_empty() {
             return;
         }
         self.agent_nav.upsert(AgentThreadEntry {
-            thread_id: self.session_id.clone(),
+            thread_id: self.session_ui.session_id.clone(),
             agent_nickname: Some("Primary".to_string()),
             agent_role: Some("main".to_string()),
             is_primary: true,
@@ -1026,7 +1037,7 @@ impl App {
             .as_deref()
             .is_none_or(|id| !self.agent_nav.contains_thread(id))
         {
-            self.current_agent_thread_id = Some(self.session_id.clone());
+            self.current_agent_thread_id = Some(self.session_ui.session_id.clone());
         }
     }
 
@@ -1321,8 +1332,10 @@ impl App {
         if current_is_active {
             return;
         }
-        if !self.session_id.is_empty() && self.agent_nav.contains_thread(&self.session_id) {
-            self.current_agent_thread_id = Some(self.session_id.clone());
+        if !self.session_ui.session_id.is_empty()
+            && self.agent_nav.contains_thread(&self.session_ui.session_id)
+        {
+            self.current_agent_thread_id = Some(self.session_ui.session_id.clone());
             return;
         }
         self.current_agent_thread_id = self
@@ -1405,8 +1418,10 @@ impl App {
     }
 
     fn current_primary_thread_id(&self) -> Option<&str> {
-        if !self.session_id.is_empty() && self.agent_nav.contains_thread(&self.session_id) {
-            return Some(self.session_id.as_str());
+        if !self.session_ui.session_id.is_empty()
+            && self.agent_nav.contains_thread(&self.session_ui.session_id)
+        {
+            return Some(self.session_ui.session_id.as_str());
         }
         self.agent_nav
             .ordered_threads()
@@ -1444,8 +1459,15 @@ impl App {
     }
 
     pub fn push_history(&mut self, text: String) {
-        if self.history.last().map(|entry| entry.display.as_str()) != Some(text.as_str()) {
-            self.history
+        if self
+            .session_ui
+            .history
+            .last()
+            .map(|entry| entry.display.as_str())
+            != Some(text.as_str())
+        {
+            self.session_ui
+                .history
                 .push(HistorySearchEntry::new(text, current_unix_secs()));
         }
         self.history_index = None;
@@ -1460,13 +1482,14 @@ impl App {
     pub fn seed_persistent_history(&mut self, entries: Vec<HistorySearchEntry>) {
         for entry in entries.into_iter().rev() {
             if self
+                .session_ui
                 .history
                 .iter()
                 .any(|existing| existing.display == entry.display)
             {
                 continue;
             }
-            self.history.push(entry);
+            self.session_ui.history.push(entry);
         }
         self.history_index = None;
         self.dirty = true;
@@ -1474,7 +1497,7 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn history_len(&self) -> usize {
-        self.history.len()
+        self.session_ui.history.len()
     }
 
     // Event handling

@@ -123,6 +123,7 @@ mod completion_state_tests {
 
 impl App {
     pub fn handle_key_event(&mut self, key: KeyEvent) -> AppAction {
+        self.sync_compat_to_stores();
         if key.kind != KeyEventKind::Press {
             return AppAction::None;
         }
@@ -174,7 +175,7 @@ impl App {
             return self.handle_command_surface_key(key);
         }
 
-        if self.selected_message.is_some() {
+        if self.conversation.selection().is_some() {
             if let Some(action) = self.resolve_bound_action(&key) {
                 if let Some(result) = self.dispatch_bound_action(&action) {
                     return result;
@@ -616,6 +617,7 @@ impl App {
     }
 
     pub fn handle_mouse_event(&mut self, mouse: MouseEvent) -> AppAction {
+        self.sync_compat_to_stores();
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.update_mouse_focus(mouse);
@@ -639,7 +641,7 @@ impl App {
             }
             MouseEventKind::Down(_) => {
                 if self.mouse_on_session_scrollbar(mouse) {
-                    self.session_scrollbar_dragging = true;
+                    self.render_layout.session_scrollbar_dragging = true;
                     self.seek_session_scrollbar(mouse.row)
                 } else {
                     self.update_mouse_focus(mouse);
@@ -647,14 +649,14 @@ impl App {
                 }
             }
             MouseEventKind::Drag(_) => {
-                if self.session_scrollbar_dragging {
+                if self.render_layout.session_scrollbar_dragging {
                     self.seek_session_scrollbar(mouse.row)
                 } else {
                     AppAction::None
                 }
             }
             MouseEventKind::Up(_) => {
-                self.session_scrollbar_dragging = false;
+                self.render_layout.session_scrollbar_dragging = false;
                 AppAction::None
             }
             _ => AppAction::None,
@@ -663,6 +665,7 @@ impl App {
 
     fn update_mouse_focus(&mut self, mouse: MouseEvent) -> MouseFocus {
         if self
+            .render_layout
             .prompt_area
             .is_some_and(|area| rect_contains(area, mouse.column, mouse.row))
         {
@@ -670,6 +673,7 @@ impl App {
             return self.mouse_focus;
         }
         if self
+            .render_layout
             .message_area
             .is_some_and(|area| rect_contains(area, mouse.column, mouse.row))
         {
@@ -679,7 +683,7 @@ impl App {
     }
 
     fn mouse_on_session_scrollbar(&self, mouse: MouseEvent) -> bool {
-        let Some(scrollbar) = self.session_scrollbar else {
+        let Some(scrollbar) = self.render_layout.session_scrollbar else {
             return false;
         };
         mouse.column == scrollbar.area.x
@@ -688,7 +692,7 @@ impl App {
     }
 
     fn seek_session_scrollbar(&mut self, row: u16) -> AppAction {
-        let Some(scrollbar) = self.session_scrollbar else {
+        let Some(scrollbar) = self.render_layout.session_scrollbar else {
             return AppAction::None;
         };
         let area = scrollbar.area;
@@ -733,8 +737,9 @@ impl App {
             self.transcript_state.scroll_offset = scroll;
             previous
         } else {
-            let previous = self.scroll_offset;
-            self.scroll_offset = scroll;
+            let previous = self.conversation.scroll_offset();
+            self.conversation.set_scroll_offset(scroll);
+            self.sync_compat_from_stores();
             previous
         };
         self.dirty = true;
@@ -776,26 +781,31 @@ impl App {
     }
 
     pub(super) fn scroll_up(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        self.conversation
+            .set_scroll_offset(self.conversation.scroll_offset().saturating_sub(lines));
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub(super) fn scroll_down(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_add(lines);
+        self.conversation
+            .set_scroll_offset(self.conversation.scroll_offset().saturating_add(lines));
+        self.sync_compat_from_stores();
         self.dirty = true;
     }
 
     pub(super) fn scroll_to_bottom_deferred(&mut self) {
-        self.scroll_offset = usize::MAX;
+        self.conversation.set_scroll_offset(usize::MAX);
+        self.sync_compat_from_stores();
     }
 
     pub(super) fn history_up(&mut self) {
-        if self.history.is_empty() {
+        if self.session_ui.history.is_empty() {
             return;
         }
         if self.history_index.is_none() {
             self.saved_input = self.prompt.input.clone();
-            self.history_index = Some(self.history.len() - 1);
+            self.history_index = Some(self.session_ui.history.len() - 1);
         } else if let Some(idx) = self.history_index {
             if idx > 0 {
                 self.history_index = Some(idx - 1);
@@ -804,16 +814,16 @@ impl App {
             }
         }
         if let Some(idx) = self.history_index {
-            self.prompt.input = self.history[idx].display.clone();
+            self.prompt.input = self.session_ui.history[idx].display.clone();
             self.prompt.cursor_position = self.prompt.input.len();
         }
     }
 
     pub(super) fn history_down(&mut self) {
         if let Some(idx) = self.history_index {
-            if idx < self.history.len() - 1 {
+            if idx < self.session_ui.history.len() - 1 {
                 self.history_index = Some(idx + 1);
-                self.prompt.input = self.history[idx + 1].display.clone();
+                self.prompt.input = self.session_ui.history[idx + 1].display.clone();
                 self.prompt.cursor_position = self.prompt.input.len();
             } else {
                 self.history_index = None;
@@ -843,8 +853,10 @@ impl App {
 
     pub(super) fn sync_command_palette(&mut self) {
         if self.prompt.is_active && !self.is_streaming {
-            self.command_palette
-                .sync_from_input(&self.prompt.input, std::path::Path::new(&self.cwd));
+            self.command_palette.sync_from_input(
+                &self.prompt.input,
+                std::path::Path::new(&self.session_ui.cwd),
+            );
         } else {
             self.command_palette.close();
         }
@@ -853,7 +865,7 @@ impl App {
     pub(super) fn active_keybinding_contexts(
         &self,
     ) -> Vec<allthecodes_keybindings::context::Context> {
-        if self.selected_message.is_some() {
+        if self.conversation.selection().is_some() {
             return vec![
                 allthecodes_keybindings::context::Context::MessageActions,
                 allthecodes_keybindings::context::Context::Global,
@@ -1046,41 +1058,45 @@ impl App {
                 return Some(AppAction::None);
             }
             "messageActions:top" => {
-                self.selected_message = self.first_selectable_message();
-                self.selected_message_expanded = false;
+                self.conversation
+                    .set_selection(self.first_selectable_message());
+                self.conversation.set_selected_expanded(false);
                 self.scroll_selected_message_into_view();
                 return Some(AppAction::None);
             }
             "messageActions:bottom" => {
-                self.selected_message = self.last_selectable_message();
-                self.selected_message_expanded = false;
+                self.conversation
+                    .set_selection(self.last_selectable_message());
+                self.conversation.set_selected_expanded(false);
                 self.scroll_selected_message_into_view();
                 return Some(AppAction::None);
             }
             "messageActions:escape" => {
-                if self.selected_message_expanded {
-                    self.selected_message_expanded = false;
+                if self.conversation.selected_expanded() {
+                    self.conversation.set_selected_expanded(false);
                 } else {
-                    self.selected_message = None;
+                    self.conversation.set_selection(None);
                 }
                 self.dirty = true;
                 return Some(AppAction::None);
             }
             "messageActions:ctrlc" => {
-                self.selected_message = None;
-                self.selected_message_expanded = false;
+                self.conversation.set_selection(None);
+                self.conversation.set_selected_expanded(false);
                 self.dirty = true;
                 return Some(AppAction::None);
             }
             "messageActions:enter" => {
-                self.selected_message_expanded = !self.selected_message_expanded;
+                self.conversation
+                    .set_selected_expanded(!self.conversation.selected_expanded());
                 self.dirty = true;
                 return Some(AppAction::None);
             }
             "messageActions:o" => {
                 if let Some(text) = self
-                    .selected_message
-                    .and_then(|idx| self.messages.get(idx))
+                    .conversation
+                    .selection()
+                    .and_then(|idx| self.conversation.messages().get(idx))
                     .and_then(message_primary_reference)
                 {
                     return Some(AppAction::OpenPath(text));
@@ -1088,14 +1104,20 @@ impl App {
                 return Some(AppAction::None);
             }
             "messageActions:c" => {
-                if let Some(message) = self.selected_message.and_then(|idx| self.messages.get(idx))
+                if let Some(message) = self
+                    .conversation
+                    .selection()
+                    .and_then(|idx| self.conversation.messages().get(idx))
                 {
                     return Some(AppAction::CopyMessage(message_copy_text(message)));
                 }
                 return Some(AppAction::None);
             }
             "messageActions:rawCopy" => {
-                if let Some(message) = self.selected_message.and_then(|idx| self.messages.get(idx))
+                if let Some(message) = self
+                    .conversation
+                    .selection()
+                    .and_then(|idx| self.conversation.messages().get(idx))
                 {
                     return Some(AppAction::CopyMessage(message_copy_text_with_mode(
                         message,
@@ -1106,8 +1128,9 @@ impl App {
             }
             "messageActions:p" => {
                 if let Some(text) = self
-                    .selected_message
-                    .and_then(|idx| self.messages.get(idx))
+                    .conversation
+                    .selection()
+                    .and_then(|idx| self.conversation.messages().get(idx))
                     .and_then(message_primary_reference)
                 {
                     return Some(AppAction::CopyMessage(text));
@@ -1176,7 +1199,8 @@ impl App {
                 if self.view_mode.is_transcript_like() {
                     self.transcript_state.scroll_offset = 0;
                 } else {
-                    self.scroll_offset = 0;
+                    self.conversation.set_scroll_offset(0);
+                    self.sync_compat_from_stores();
                 }
                 self.dirty = true;
                 return Some(AppAction::None);
@@ -1185,7 +1209,8 @@ impl App {
                 if self.view_mode.is_transcript_like() {
                     self.transcript_state.scroll_offset = usize::MAX;
                 } else {
-                    self.scroll_offset = usize::MAX;
+                    self.conversation.set_scroll_offset(usize::MAX);
+                    self.sync_compat_from_stores();
                 }
                 self.dirty = true;
                 return Some(AppAction::None);
@@ -1197,7 +1222,13 @@ impl App {
     }
 
     pub(super) fn open_history_search(&mut self) {
-        let entries = self.history.iter().rev().cloned().collect::<Vec<_>>();
+        let entries = self
+            .session_ui
+            .history
+            .iter()
+            .rev()
+            .cloned()
+            .collect::<Vec<_>>();
         self.history_search_dialog = Some(HistorySearchDialog::from_entries(
             entries,
             self.prompt.input.clone(),
@@ -1250,21 +1281,24 @@ impl App {
     }
 
     fn enter_message_actions(&mut self) {
-        self.selected_message = self.last_selectable_message();
-        self.selected_message_expanded = false;
+        self.conversation
+            .set_selection(self.last_selectable_message());
+        self.conversation.set_selected_expanded(false);
         self.scroll_selected_message_into_view();
         self.dirty = true;
     }
 
     fn first_selectable_message(&self) -> Option<usize> {
-        self.messages
+        self.conversation
+            .messages()
             .iter()
             .enumerate()
             .find_map(|(idx, message)| is_selectable_message(message).then_some(idx))
     }
 
     fn last_selectable_message(&self) -> Option<usize> {
-        self.messages
+        self.conversation
+            .messages()
             .iter()
             .enumerate()
             .rev()
@@ -1272,37 +1306,46 @@ impl App {
     }
 
     fn select_previous_message(&mut self, user_only: bool) {
+        let messages = self.conversation.messages();
         let start = self
-            .selected_message
-            .unwrap_or_else(|| self.messages.len().saturating_sub(1));
-        self.selected_message = (0..start)
+            .conversation
+            .selection()
+            .unwrap_or_else(|| messages.len().saturating_sub(1));
+        let selected = (0..start)
             .rev()
-            .find(|idx| selectable_by_mode(&self.messages[*idx], user_only))
-            .or(self.selected_message)
+            .find(|idx| selectable_by_mode(&messages[*idx], user_only))
+            .or(self.conversation.selection())
             .or_else(|| self.last_selectable_message());
-        self.selected_message_expanded = false;
+        self.conversation.set_selection(selected);
+        self.conversation.set_selected_expanded(false);
         self.scroll_selected_message_into_view();
         self.dirty = true;
     }
 
     fn select_next_message(&mut self, user_only: bool) {
-        let start = self.selected_message.map_or(0, |idx| idx.saturating_add(1));
-        self.selected_message = (start..self.messages.len())
-            .find(|idx| selectable_by_mode(&self.messages[*idx], user_only))
-            .or(self.selected_message)
+        let messages = self.conversation.messages();
+        let start = self
+            .conversation
+            .selection()
+            .map_or(0, |idx| idx.saturating_add(1));
+        let selected = (start..messages.len())
+            .find(|idx| selectable_by_mode(&messages[*idx], user_only))
+            .or(self.conversation.selection())
             .or_else(|| self.first_selectable_message());
-        self.selected_message_expanded = false;
+        self.conversation.set_selection(selected);
+        self.conversation.set_selected_expanded(false);
         self.scroll_selected_message_into_view();
         self.dirty = true;
     }
 
     fn scroll_selected_message_into_view(&mut self) {
-        if let Some(idx) = self.selected_message {
-            let line = self.vscroll.visual_offset_of(idx);
+        if let Some(idx) = self.conversation.selection() {
+            let line = self.conversation.vscroll().visual_offset_of(idx);
             if self.view_mode.is_transcript_like() {
                 self.transcript_state.scroll_offset = line.saturating_sub(1);
             } else {
-                self.scroll_offset = line.saturating_sub(1);
+                self.conversation.set_scroll_offset(line.saturating_sub(1));
+                self.sync_compat_from_stores();
             }
         }
     }
