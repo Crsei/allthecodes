@@ -38,6 +38,8 @@ pub mod result;
 #[cfg(feature = "full")]
 pub mod runtime;
 #[cfg(feature = "full")]
+pub mod runtime_capability;
+#[cfg(feature = "full")]
 pub mod skills;
 #[cfg(feature = "full")]
 pub mod tasks;

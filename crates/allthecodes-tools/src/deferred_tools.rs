@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde_json::{json, Value};
 
+use crate::runtime_capability::{core_runtime_capabilities, CORE_TOOL_NAMES};
 use crate::tool::{
     DeferredToolExecutionRequest, Tool, ToolProgress, ToolResult, ToolUseContext, Tools,
     ValidationResult,
@@ -19,47 +20,6 @@ use allthecodes_types::message::{
 
 const DEFAULT_MAX_RESULTS: usize = 5;
 const MAX_RESULTS: usize = 25;
-
-static CORE_TOOLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "Agent",
-        "AskUserQuestion",
-        "Bash",
-        "Brief",
-        "Config",
-        "Edit",
-        "EnterPlanMode",
-        "ExitPlanMode",
-        "Glob",
-        "Grep",
-        "LSP",
-        "ListMcpResources",
-        "NotebookEdit",
-        "Read",
-        "ReadMcpResource",
-        "SearchExtraTools",
-        "SendUserMessage",
-        "Skill",
-        "Sleep",
-        "StructuredOutput",
-        "SystemStatus",
-        "Task",
-        "TaskCreate",
-        "TaskGet",
-        "TaskList",
-        "TaskOutput",
-        "TaskStop",
-        "TaskUpdate",
-        "TodoWrite",
-        "ToolSearch",
-        "WebFetch",
-        "WebSearch",
-        "Write",
-        "ExecuteExtraTool",
-    ]
-    .into_iter()
-    .collect()
-});
 
 static DISCOVERED_TOOLS: LazyLock<RwLock<HashMap<String, HashSet<String>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -86,12 +46,12 @@ pub fn tools() -> Tools {
     ]
 }
 
-pub fn core_tool_names() -> &'static HashSet<&'static str> {
-    &CORE_TOOLS
+pub fn core_tool_names() -> &'static [&'static str] {
+    CORE_TOOL_NAMES
 }
 
 pub fn is_deferred_tool(name: &str) -> bool {
-    !CORE_TOOLS.contains(name)
+    core_runtime_capabilities().is_deferred(name)
 }
 
 pub fn discovered_tools_for_session(session_id: &str) -> HashSet<String> {
@@ -189,7 +149,7 @@ pub fn filter_tools_for_deferred_request(
 
     tools
         .into_iter()
-        .filter(|tool| CORE_TOOLS.contains(tool.name()))
+        .filter(|tool| !is_deferred_tool(tool.name()))
         .collect()
 }
 

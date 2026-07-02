@@ -399,10 +399,10 @@ impl PermissionDialog {
             .get(self.selected.min(labels.len().saturating_sub(1)))
             .map(|label| {
                 PermissionChoice::from_decision(
-                    choice_for_label(label).unwrap_or(PermissionDecisionChoice::Allow),
+                    choice_for_label(label).unwrap_or(PermissionDecisionChoice::Deny),
                 )
             })
-            .unwrap_or_else(|| PermissionChoice::from_decision(PermissionDecisionChoice::Allow))
+            .unwrap_or_else(|| PermissionChoice::from_decision(PermissionDecisionChoice::Deny))
     }
 
     fn handle_feedback_key(
@@ -574,6 +574,7 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
+    use crate::ui::permissions::permission_request_router::PermissionDialogRequest;
     use crate::ui::permissions::web_fetch_permission_request::web_fetch_permission_request::render_web_fetch_permission_request;
     use crate::ui::theme::Theme;
 
@@ -698,6 +699,25 @@ mod tests {
             dialog.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some(PermissionChoice::from_decision(
                 PermissionDecisionChoice::AlwaysAllow,
+            ))
+        );
+    }
+
+    #[test]
+    fn unknown_permission_option_fails_closed() {
+        let mut dialog = PermissionDialog::from_request(PermissionDialogRequest {
+            tool_use_id: "toolu_1".to_string(),
+            tool_name: "Bash".to_string(),
+            tool_input: serde_json::json!({ "command": "cargo test" }),
+            message: "Allow command?".to_string(),
+            options: vec!["Proceed".to_string()],
+            operation: None,
+        });
+
+        assert_eq!(
+            dialog.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(PermissionChoice::from_decision(
+                PermissionDecisionChoice::Deny,
             ))
         );
     }

@@ -13,9 +13,10 @@ use allthecodes_engine::types::tool::{
     ValidationResult,
 };
 use allthecodes_permissions::dangerous::is_dangerous_command;
-use allthecodes_permissions::read_only_shell::is_read_only_bash_command;
+use allthecodes_permissions::shell_policy::{
+    decide_shell_policy, ShellPolicyKind, ShellPolicyShell,
+};
 use allthecodes_sandbox::{make_runner, policy_from_app_state, preflight_shell_command};
-use allthecodes_shell_command::ReadOnlyResult;
 use allthecodes_tools::exec::bash as bash_spec;
 pub(crate) use allthecodes_tools::exec::truncate_output;
 use allthecodes_types::{message::AssistantMessage, ShellExecutionOutput};
@@ -153,7 +154,10 @@ impl Tool for BashTool {
 
     fn is_read_only(&self, input: &Value) -> bool {
         let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-        matches!(is_read_only_bash_command(command), ReadOnlyResult::ReadOnly)
+        matches!(
+            decide_shell_policy(command, ShellPolicyShell::Bash).kind,
+            ShellPolicyKind::ReadOnly
+        )
     }
 
     fn interrupt_behavior(&self) -> InterruptBehavior {
