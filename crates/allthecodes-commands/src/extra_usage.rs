@@ -18,6 +18,7 @@ struct MsgStats {
     index: usize,
     input_tokens: u64,
     output_tokens: u64,
+    reasoning_output_tokens: u64,
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
     cost_usd: f64,
@@ -58,22 +59,24 @@ fn collect_stats(messages: &[Message]) -> Vec<MsgStats> {
     for msg in messages {
         if let Message::Assistant(a) = msg {
             idx += 1;
-            let (inp, out, cr, cc) = a
+            let (inp, out, reas, cr, cc) = a
                 .usage
                 .as_ref()
                 .map(|u| {
                     (
                         u.input_tokens,
                         u.output_tokens,
+                        u.reasoning_output_tokens,
                         u.cache_read_input_tokens,
                         u.cache_creation_input_tokens,
                     )
                 })
-                .unwrap_or((0, 0, 0, 0));
+                .unwrap_or((0, 0, 0, 0, 0));
             stats.push(MsgStats {
                 index: idx,
                 input_tokens: inp,
                 output_tokens: out,
+                reasoning_output_tokens: reas,
                 cache_read_tokens: cr,
                 cache_creation_tokens: cc,
                 cost_usd: a.cost_usd,
@@ -103,18 +106,19 @@ impl CommandHandler for ExtraUsageHandler {
         lines.push(String::new());
         lines.push("Per-message token breakdown:".into());
         lines.push(format!(
-            "  {:<5} {:>10} {:>10} {:>10} {:>10}",
-            "Call", "Input", "Output", "Cache-R", "Cost"
+            "  {:<5} {:>10} {:>10} {:>10} {:>10} {:>10}",
+            "Call", "Input", "Output", "Cache-R", "Reas.", "Cost"
         ));
-        lines.push(format!("  {}", "-".repeat(49)));
+        lines.push(format!("  {}", "-".repeat(60)));
 
         for s in &stats {
             lines.push(format!(
-                "  {:<5} {:>10} {:>10} {:>10} {:>10}",
+                "  {:<5} {:>10} {:>10} {:>10} {:>10} {:>10}",
                 format!("#{}", s.index),
                 fmt_tok(s.input_tokens),
                 fmt_tok(s.output_tokens),
                 fmt_tok(s.cache_read_tokens),
+                fmt_tok(s.reasoning_output_tokens),
                 fmt_cost(s.cost_usd),
             ));
         }
@@ -146,6 +150,7 @@ impl CommandHandler for ExtraUsageHandler {
         // --- Section 3: Token efficiency metrics ---
         let total_input: u64 = stats.iter().map(|s| s.input_tokens).sum();
         let total_output: u64 = stats.iter().map(|s| s.output_tokens).sum();
+        let _total_reasoning: u64 = stats.iter().map(|s| s.reasoning_output_tokens).sum();
         let total_cache_read: u64 = stats.iter().map(|s| s.cache_read_tokens).sum();
         let total_cache_create: u64 = stats.iter().map(|s| s.cache_creation_tokens).sum();
         let total_cost: f64 = stats.iter().map(|s| s.cost_usd).sum();
@@ -246,6 +251,33 @@ mod tests {
         })
     }
 
+    fn make_assistant_msg_full(
+        input_tokens: u64,
+        output_tokens: u64,
+        reasoning_output_tokens: u64,
+        cache_read: u64,
+        cache_create: u64,
+        cost: f64,
+    ) -> Message {
+        Message::Assistant(AssistantMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: 0,
+            role: "assistant".into(),
+            content: Vec::new(),
+            usage: Some(Usage {
+                input_tokens,
+                output_tokens,
+                reasoning_output_tokens,
+                cache_read_input_tokens: cache_read,
+                cache_creation_input_tokens: cache_create,
+            }),
+            stop_reason: Some("end_turn".into()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: cost,
+        })
+    }
+
     fn make_assistant_msg_no_usage() -> Message {
         Message::Assistant(AssistantMessage {
             uuid: Uuid::new_v4(),
@@ -327,6 +359,101 @@ mod tests {
                 assert!(text.contains("Extended Usage Analysis"));
                 // Should still render even with zero tokens
                 assert!(text.contains("#1"));
+            }
+            _ => panic!("Expected Output result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_extra_usage_cache_scenarios() {
+        // Messages with varying cache_read and cache_creation values,
+        // verify that cache cost breakdown sections appear only when > 0.
+        let handler = ExtraUsageHandler;
+        let mut ctx = CommandContext {
+            messages: vec![
+                // Message 1: high cache read, no cache write
+                make_assistant_msg(1000, 200, 5000, 0, 0.008),
+                // Message 2: high cache write (creation), no cache read
+                make_assistant_msg(500, 100, 0, 3000, 0.006),
+                // Message 3: both cache read and write
+                make_assistant_msg(2000, 400, 1000, 500, 0.015),
+                // Message 4: no cache at all
+                make_assistant_msg(800, 300, 0, 0, 0.004),
+            ],
+            cwd: PathBuf::from("."),
+            app_state: Default::default(),
+            session_id: SessionId::from_string("test-session"),
+        };
+
+        let result = handler.execute("", &mut ctx).await.unwrap();
+        match result {
+            CommandResult::Output(text) => {
+                // Core sections present
+                assert!(text.contains("Extended Usage Analysis"));
+                assert!(text.contains("Per-message token breakdown"));
+                assert!(text.contains("Cache hit rate"));
+                // Cache cost breakdown lines should appear because we have
+                // both cache_read (6000 total) and cache_create (3500 total)
+                assert!(
+                    text.contains("Cache read tokens"),
+                    "expected Cache read tokens line"
+                );
+                assert!(
+                    text.contains("Cache write tokens"),
+                    "expected Cache write tokens line"
+                );
+                // Verify specific cache token counts appear in per-message breakdown.
+                // Message 1: 5,000 cache-read
+                assert!(text.contains("5,000"), "expected 5,000 in output");
+                // Message 3: 1,000 cache-read, 500 cache-write
+                assert!(text.contains("1,000"), "expected 1,000 in output");
+                // Verify top-5 ranking: message #3 (cost 0.015) should be first
+                assert!(text.contains("1. Call #3"), "expected Call #3 as most expensive");
+                // Verify cache hit rate is present and non-zero
+                assert!(text.contains("Cache hit rate"));
+                // Should NOT be 0.0% because we have cache reads
+                assert!(!text.contains("Cache hit rate:      0.0%"));
+            }
+            _ => panic!("Expected Output result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_extra_usage_reasoning_tokens() {
+        // Message with reasoning_output_tokens, verify they appear
+        // in the per-message breakdown.
+        let handler = ExtraUsageHandler;
+        let mut ctx = CommandContext {
+            messages: vec![
+                // Message with no reasoning
+                make_assistant_msg(500, 100, 0, 0, 0.002),
+                // Message with substantial reasoning tokens
+                make_assistant_msg_full(1000, 300, 500, 200, 50, 0.01),
+                // Message with reasoning but zero everything else (unusual)
+                make_assistant_msg_full(0, 0, 100, 0, 0, 0.0),
+            ],
+            cwd: PathBuf::from("."),
+            app_state: Default::default(),
+            session_id: SessionId::from_string("test-session"),
+        };
+
+        let result = handler.execute("", &mut ctx).await.unwrap();
+        match result {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Per-message token breakdown"));
+                // The Reas. column header should now be present
+                assert!(text.contains("Reas."));
+                // Message #2 has 500 reasoning tokens
+                assert!(text.contains("500"), "expected 500 reasoning tokens");
+                // Message #3 has 100 reasoning tokens
+                assert!(text.contains("100"), "expected 100 reasoning tokens");
+                // Header row has "Reas." label
+                assert!(text.contains("Reas."));
+                // Verify token efficiency still works with reasoning present
+                assert!(text.contains("Token efficiency metrics"));
+                assert!(text.contains("Output/Input ratio"));
+                // Since message #2 has input=1000, output=300, ratio should be < 1
+                assert!(text.contains("Cache hit rate"));
             }
             _ => panic!("Expected Output result"),
         }
