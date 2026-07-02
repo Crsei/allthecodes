@@ -86,6 +86,10 @@ pub enum EventKind {
     TelemetryFlush,
     TelemetryExport,
 
+    // Cost
+    #[serde(rename = "cost_recorded")]
+    CostRecorded,
+
     // Forward compat
     #[serde(other)]
     Unknown,
@@ -121,6 +125,8 @@ pub enum Stage {
     BackgroundAgent,
     Stream,
     Plugin,
+    #[serde(rename = "cost")]
+    Cost,
 }
 
 // ---------------------------------------------------------------------------
@@ -327,5 +333,57 @@ mod tests {
         let b = AuditEvent::new_event_id();
         assert_ne!(a, b);
         assert!(a.starts_with("evt_"));
+    }
+
+    #[test]
+    fn cost_recorded_event_roundtrips() {
+        let event = AuditEvent {
+            event_id: "evt_cost_01".into(),
+            parent_event_id: None,
+            ts: Utc::now(),
+            session_id: "sess_01".into(),
+            submit_id: Some("sub_01".into()),
+            turn_id: None,
+            request_id: Some("req_01".into()),
+            message_id: None,
+            tool_use_id: None,
+            source: "tui".into(),
+            kind: EventKind::CostRecorded,
+            stage: Stage::Cost,
+            level: AuditLevel::Info,
+            outcome: Outcome::Completed,
+            duration_ms: None,
+            data: Some(serde_json::json!({
+                "token_cost_usd": 0.0032,
+                "input_tokens": 450,
+                "output_tokens": 120,
+            })),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"cost_recorded\""));
+        assert!(json.contains("\"cost\""));
+        assert!(json.contains("\"completed\""));
+
+        let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.kind, EventKind::CostRecorded);
+        assert_eq!(parsed.stage, Stage::Cost);
+        assert_eq!(parsed.outcome, Outcome::Completed);
+        assert_eq!(parsed.event_id, "evt_cost_01");
+
+        // Verify data payload round-trips
+        let data = parsed.data.unwrap();
+        assert_eq!(data["token_cost_usd"], 0.0032);
+    }
+
+    #[test]
+    fn cost_recorded_serde_rename() {
+        // Verify that the serialized form matches expected naming
+        let kind = EventKind::CostRecorded;
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, "\"cost_recorded\"");
+
+        let stage: Stage = serde_json::from_str("\"cost\"").unwrap();
+        assert_eq!(stage, Stage::Cost);
     }
 }

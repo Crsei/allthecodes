@@ -122,6 +122,10 @@ pub struct ContextWindowStatus {
 pub struct CostStatus {
     pub total_usd: f64,
     pub api_calls: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unknown_pricing_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backfilled_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_duration_secs: Option<u64>,
 }
@@ -193,6 +197,8 @@ mod tests {
             cost: Some(CostStatus {
                 total_usd: 0.0123,
                 api_calls: 3,
+                unknown_pricing_count: Some(1),
+                backfilled_count: Some(2),
                 session_duration_secs: Some(42),
             }),
             output_style: Some("default".into()),
@@ -217,6 +223,8 @@ mod tests {
         assert_eq!(value["model"]["displayName"], "sonnet-4");
         assert!(value["workspace"].get("gitWorktree").is_none());
         assert_eq!(value["context"]["cacheReadTokens"], 50);
+        assert_eq!(value["cost"]["unknownPricingCount"], 1);
+        assert_eq!(value["cost"]["backfilledCount"], 2);
         assert_eq!(value["cost"]["sessionDurationSecs"], 42);
 
         let parsed: StatusLinePayload = serde_json::from_value(value).unwrap();

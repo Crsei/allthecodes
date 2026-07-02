@@ -324,6 +324,7 @@ impl Tool for WebBrowserTool {
             model_content: Some(model_content),
             display_preview: Some(preview),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 

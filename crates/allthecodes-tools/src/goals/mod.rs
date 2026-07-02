@@ -339,6 +339,12 @@ pub fn load_goal_for_session(session_id: &str) -> Result<Option<GoalRecord>> {
     Ok(Some(serde_json::from_str(&raw)?))
 }
 
+pub fn active_goal_id_for_session(session_id: &str) -> Result<Option<String>> {
+    Ok(load_goal_for_session(session_id)?
+        .filter(goal_is_active)
+        .map(|goal| goal.goal_id))
+}
+
 fn load_goal(ctx: &ToolUseContext) -> Result<Option<GoalRecord>> {
     load_goal_for_session(&ctx.session_id)
 }
@@ -862,6 +868,28 @@ mod tests {
 
     fn goal() -> GoalRecord {
         create_goal_record("ship", Some(100), now()).unwrap()
+    }
+
+    #[test]
+    #[serial]
+    fn active_goal_id_for_session_only_returns_active_goals() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tempdir.path());
+        let session_id = "goal-active-id";
+        let goal = goal();
+        let id = goal.goal_id.clone();
+        save_goal_for_session(session_id, &goal).unwrap();
+
+        assert_eq!(
+            active_goal_id_for_session(session_id).unwrap().as_deref(),
+            Some(id.as_str())
+        );
+
+        let completed =
+            update_goal_status(goal, GoalStatus::Complete, None, now(), Some(&id)).unwrap();
+        save_goal_for_session(session_id, &completed).unwrap();
+
+        assert!(active_goal_id_for_session(session_id).unwrap().is_none());
     }
 
     #[test]

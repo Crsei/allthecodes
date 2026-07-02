@@ -310,6 +310,8 @@ mod serialization;
 #[cfg(feature = "sqlite-storage")]
 mod sqlite_store;
 
+pub(crate) use serialization::serializable_to_messages;
+
 pub use file_store::{
     archive_session, list_sessions, list_sessions_page, list_workspace_sessions,
     list_workspace_sessions_page, load_session, load_session_info, save_session,

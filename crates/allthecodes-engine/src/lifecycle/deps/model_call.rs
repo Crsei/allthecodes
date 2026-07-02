@@ -9,9 +9,12 @@ pub(crate) fn tool_execution_result_to_exec_result(result: ToolExecutionResult) 
     ToolExecResult {
         tool_use_id: result.tool_use_id,
         tool_name: result.tool_name,
+        effective_input: serde_json::Value::Null,
         result: tool_result,
         is_error: result.is_error,
         hook_stopped_continuation: result.hook_stopped_continuation,
+        duration_ms: None,
+        permission_decision: None,
     }
 }
 

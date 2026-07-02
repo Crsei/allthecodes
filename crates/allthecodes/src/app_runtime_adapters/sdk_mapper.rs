@@ -17,7 +17,7 @@ use tracing::debug;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_ipc::adapters::{extract_tool_result_output, stream_event_to_backend_message};
 use allthecodes_ipc::transport::FrontendSink;
-use allthecodes_services::prompt_suggestion::PromptSuggestionService;
+use allthecodes_services::{cost_ledger, prompt_suggestion::PromptSuggestionService};
 use allthecodes_tool_display::ToolClassifier;
 use allthecodes_types::message::{ContentBlock, Message, StreamEvent, ToolResultContent};
 use allthecodes_types::sdk::SdkMessage;
@@ -229,6 +229,11 @@ pub fn handle_sdk_message(
                 input_tokens: r.usage.total_input_tokens,
                 output_tokens: r.usage.total_output_tokens,
                 cost_usd: r.usage.total_cost_usd,
+                cache_read_input_tokens: r.usage.total_cache_read_tokens,
+                cache_creation_input_tokens: r.usage.total_cache_creation_tokens,
+                reasoning_output_tokens: r.usage.total_reasoning_output_tokens,
+                api_call_count: r.usage.api_call_count,
+                kind: Some("cumulative".to_string()),
             });
 
             // Scriptable status-line snapshot (issue #11). We always emit
@@ -336,6 +341,16 @@ fn build_status_line_payload(
 ) -> serde_json::Result<serde_json::Value> {
     let app_state = engine.app_state();
     let cwd = std::path::Path::new(engine.cwd());
+    let messages = engine.messages();
+    let cost_summary = cost_ledger::get_session_cost_summary(&result.session_id, &messages);
+    let (unknown_pricing_count, backfilled_count) = if cost_summary.api_calls > 0 {
+        (
+            Some(cost_summary.unknown_pricing_count),
+            Some(cost_summary.backfilled_count),
+        )
+    } else {
+        (None, None)
+    };
     let payload = build_payload_from_snapshot(StatusLineSnapshot {
         session_id: Some(result.session_id.clone()),
         model_id: &app_state.main_loop_model,
@@ -347,15 +362,17 @@ fn build_status_line_payload(
         cache_creation_tokens: result.usage.total_cache_creation_tokens,
         total_cost_usd: result.total_cost_usd,
         api_calls: result.usage.api_call_count,
+        unknown_pricing_count,
+        backfilled_count,
         session_duration_secs: Some(result.duration_ms / 1000),
         resolved_output_style_name: crate::ui::status_line_resolver::resolve_output_style_name(
             app_state.settings.output_style.as_deref(),
             cwd,
         ),
         editor_mode: app_state.settings.editor_mode.as_deref(),
-        worktree: crate::ui::status_line_resolver::current_worktree_status(),
+        worktree: crate::ui::status_line_resolver::current_worktree_status_for_session(None),
         streaming: false,
-        message_count: engine.messages().len(),
+        message_count: messages.len(),
     });
 
     serde_json::to_value(&payload)
@@ -580,6 +597,7 @@ mod tests {
                     total_output_tokens: 300,
                     total_cache_read_tokens: 20,
                     total_cache_creation_tokens: 10,
+                    total_reasoning_output_tokens: 0,
                     total_cost_usd: 0.1234,
                     api_call_count: 2,
                 },
@@ -622,6 +640,58 @@ mod tests {
                 .and_then(|value| value.as_u64()),
             Some(2)
         );
+    }
+
+    #[tokio::test]
+    async fn result_usage_update_preserves_reasoning_tokens() {
+        let engine = make_engine(env!("CARGO_MANIFEST_DIR"));
+        let suggestion_svc = Arc::new(Mutex::new(PromptSuggestionService::new(false)));
+        let sink = FrontendSink::memory();
+
+        handle_sdk_message(
+            &SdkMessage::Result(SdkResult {
+                subtype: ResultSubtype::Success,
+                is_error: false,
+                duration_ms: 4200,
+                duration_api_ms: 1500,
+                num_turns: 1,
+                result: "ok".into(),
+                stop_reason: Some("end_turn".into()),
+                session_id: engine.session_id.to_string(),
+                total_cost_usd: 0.1234,
+                usage: allthecodes_types::sdk::UsageTracking {
+                    total_input_tokens: 1200,
+                    total_output_tokens: 300,
+                    total_cache_read_tokens: 20,
+                    total_cache_creation_tokens: 10,
+                    total_reasoning_output_tokens: 42,
+                    total_cost_usd: 0.1234,
+                    api_call_count: 2,
+                },
+                permission_denials: vec![],
+                structured_output: None,
+                uuid: Uuid::new_v4(),
+                errors: vec![],
+            }),
+            "message-1",
+            &engine,
+            &suggestion_svc,
+            &sink,
+        )
+        .expect("handle result message");
+
+        let reasoning_tokens = sink
+            .captured()
+            .into_iter()
+            .find_map(|message| match message {
+                BackendMessage::UsageUpdate {
+                    reasoning_output_tokens,
+                    ..
+                } => Some(reasoning_output_tokens),
+                _ => None,
+            });
+
+        assert_eq!(reasoning_tokens, Some(42));
     }
 
     #[test]

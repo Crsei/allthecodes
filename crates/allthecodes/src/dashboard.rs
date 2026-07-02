@@ -5,6 +5,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 
+use allthecodes_types::agent_runtime_record::AgentRuntimeExecutionRecord;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::Value;
@@ -67,6 +68,13 @@ pub struct SubagentEvent {
     pub payload: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ExecutionRecordEvent {
+    pub ts: String,
+    pub kind: String,
+    pub record: AgentRuntimeExecutionRecord,
+}
+
 impl DashboardCompanion {
     pub async fn spawn(config: DashboardConfig) -> Result<Self> {
         let script_path = resolve_dashboard_script_path()?;
@@ -123,6 +131,15 @@ pub fn event_log_path() -> Option<PathBuf> {
         .map(|id| allthecodes_config::paths::runs_dir(id).join("subagent-events.ndjson"))
 }
 
+/// Return the execution-record event log path. Resolves to
+/// `{data_root}/runs/{session_id}/execution-records.ndjson` once the
+/// session_id has been initialized via [`init_session_id`].
+pub fn execution_record_log_path() -> Option<PathBuf> {
+    SESSION_ID
+        .get()
+        .map(|id| allthecodes_config::paths::runs_dir(id).join("execution-records.ndjson"))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn emit_subagent_event(
     kind: &str,
@@ -152,6 +169,19 @@ pub fn emit_subagent_event(
     append_event(&event)
 }
 
+pub fn emit_execution_record(record: &AgentRuntimeExecutionRecord) -> Result<()> {
+    if !dashboard_enabled() {
+        return Ok(());
+    }
+
+    let event = ExecutionRecordEvent {
+        ts: chrono::Utc::now().to_rfc3339(),
+        kind: "execution_record".to_string(),
+        record: record.clone(),
+    };
+    append_execution_record(&event)
+}
+
 fn append_event(event: &SubagentEvent) -> Result<()> {
     match event_log_path() {
         Some(path) => append_event_to_path(&path, event),
@@ -166,7 +196,38 @@ fn append_event(event: &SubagentEvent) -> Result<()> {
     }
 }
 
+fn append_execution_record(event: &ExecutionRecordEvent) -> Result<()> {
+    match execution_record_log_path() {
+        Some(path) => append_execution_record_to_path(&path, event),
+        None => {
+            debug!(
+                kind = %event.kind,
+                agent_id = %event.record.agent_id,
+                "execution record dropped: session_id not initialized yet"
+            );
+            Ok(())
+        }
+    }
+}
+
 fn append_event_to_path(path: &Path, event: &SubagentEvent) -> Result<()> {
+    append_json_line_to_path(path, event)?;
+    debug!(path = %path.display(), kind = %event.kind, agent_id = %event.agent_id, "subagent event appended");
+    Ok(())
+}
+
+fn append_execution_record_to_path(path: &Path, event: &ExecutionRecordEvent) -> Result<()> {
+    append_json_line_to_path(path, event)?;
+    debug!(
+        path = %path.display(),
+        kind = %event.kind,
+        agent_id = %event.record.agent_id,
+        "execution record appended"
+    );
+    Ok(())
+}
+
+fn append_json_line_to_path<T: Serialize>(path: &Path, event: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create event log dir: {}", parent.display()))?;
@@ -187,7 +248,6 @@ fn append_event_to_path(path: &Path, event: &SubagentEvent) -> Result<()> {
     writeln!(file)?;
     file.flush()?;
 
-    debug!(path = %path.display(), kind = %event.kind, agent_id = %event.agent_id, "subagent event appended");
     Ok(())
 }
 
@@ -256,6 +316,7 @@ fn open_browser(url: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
     use tempfile::TempDir;
 
     struct EnvGuard {
@@ -298,6 +359,20 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
+    fn execution_record_log_path_points_into_runs_dir() {
+        let _ = SESSION_ID.set("test-session".to_string());
+        let path = execution_record_log_path().expect("session_id should be set by now");
+        let s = path.to_string_lossy().replace('\\', "/");
+        assert!(s.contains("/runs/"), "expected path under runs/, got {}", s);
+        assert!(
+            s.ends_with("/execution-records.ndjson"),
+            "expected execution-records.ndjson filename, got {}",
+            s
+        );
+    }
+
+    #[test]
     fn append_event_to_path_writes_valid_ndjson() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("nested").join("subagent-events.ndjson");
@@ -323,6 +398,41 @@ mod tests {
         assert_eq!(value["agent_id"], "agent-123");
         assert_eq!(value["background"], true);
         assert_eq!(value["payload"]["had_error"], false);
+    }
+
+    #[test]
+    fn append_execution_record_to_path_writes_valid_ndjson() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("nested").join("execution-records.ndjson");
+        let record = AgentRuntimeExecutionRecord {
+            session_id: "session-123".to_string(),
+            agent_id: "agent-123".to_string(),
+            tool: "shell".to_string(),
+            tool_use_id: Some("toolu-123".to_string()),
+            permission_decision: Some(AgentRuntimePermissionDecision::DeniedByPolicy),
+            exit_code: Some(2),
+            had_error: true,
+            ..Default::default()
+        };
+        let event = ExecutionRecordEvent {
+            ts: "2026-04-14T12:00:00Z".to_string(),
+            kind: "execution_record".to_string(),
+            record,
+        };
+
+        append_execution_record_to_path(&path, &event).expect("append execution record");
+
+        let text = std::fs::read_to_string(&path).expect("read execution record log");
+        let line = text.lines().next().expect("first line");
+        let value: Value = serde_json::from_str(line).expect("parse json line");
+
+        assert_eq!(value["kind"], "execution_record");
+        assert_eq!(value["record"]["session_id"], "session-123");
+        assert_eq!(value["record"]["agent_id"], "agent-123");
+        assert_eq!(value["record"]["tool"], "shell");
+        assert_eq!(value["record"]["permission_decision"], "denied_by_policy");
+        assert_eq!(value["record"]["exit_code"], 2);
+        assert_eq!(value["record"]["had_error"], true);
     }
 
     #[test]
@@ -354,6 +464,30 @@ mod tests {
         .expect("emit event");
 
         // No file should have been created anywhere under the tempdir.
+        let runs = tmp.path().join("runs");
+        assert!(
+            !runs.exists(),
+            "runs/ should not be created when the feature is disabled, but found: {}",
+            runs.display()
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn emit_execution_record_noops_when_feature_disabled() {
+        let _feature = EnvGuard::set("FEATURE_SUBAGENT_DASHBOARD", "0");
+        let tmp = TempDir::new().expect("tempdir");
+        let _home = EnvGuard::set("ALLTHECODES_HOME", tmp.path().to_str().unwrap());
+        let _ = SESSION_ID.set("noop-execution-record-session".to_string());
+
+        emit_execution_record(&AgentRuntimeExecutionRecord {
+            session_id: "session-disabled".to_string(),
+            agent_id: "agent-disabled".to_string(),
+            tool: "shell".to_string(),
+            ..Default::default()
+        })
+        .expect("emit execution record");
+
         let runs = tmp.path().join("runs");
         assert!(
             !runs.exists(),

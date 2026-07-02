@@ -52,6 +52,7 @@ pub(crate) use permission::{
     auto_classifier_needed, central_permission_decision_for_tool, emit_hook_permission_decision,
     emit_permission_auto_review, emit_permission_decision_debug, hook_error_is_critical,
     permission_denied_message, permission_feedback_message, permission_result_from_decision,
+    runtime_permission_decision_label,
 };
 
 /// Dependency injection bridge: provides the query loop with access to the
@@ -71,6 +72,9 @@ pub(crate) struct QueryEngineDeps {
     /// `call_model_streaming`. When `None`, those methods bail with a
     /// descriptive error.
     pub(crate) api_client: Option<Arc<allthecodes_api::api::client::ApiClient>>,
+    /// Durable append-only recorder for replayable interactive events.
+    pub(crate) session_recorder:
+        Arc<Mutex<Option<crate::session::record_replay::SessionRecorderHandle>>>,
     /// Sub-agent context -- propagated into `ToolUseContext` so that
     /// nested Agent tool calls can enforce recursion depth limits.
     pub(crate) agent_context: Option<crate::types::config::AgentContext>,
@@ -298,5 +302,32 @@ impl QueryDeps for QueryEngineDeps {
         self.api_client
             .as_ref()
             .map(|client| client.langfuse_provider_name().to_string())
+    }
+
+    fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    fn agent_id(&self) -> Option<&str> {
+        self.agent_context.as_ref().map(|ac| ac.agent_id.as_str())
+    }
+
+    fn agent_type(&self) -> Option<&str> {
+        self.agent_context
+            .as_ref()
+            .and_then(|ac| ac.agent_type.as_deref())
+    }
+
+    fn parent_agent_id(&self) -> Option<&str> {
+        self.agent_context
+            .as_ref()
+            .and_then(|ac| ac.parent_agent_id.as_deref())
+    }
+
+    fn send_agent_event(&self, event: allthecodes_types::agent_events::AgentEvent) {
+        use allthecodes_types::agent_channel::AgentIpcEvent;
+        if let Some(ref tx) = self.bg_agent_tx {
+            let _ = tx.send(AgentIpcEvent::Agent(event));
+        }
     }
 }

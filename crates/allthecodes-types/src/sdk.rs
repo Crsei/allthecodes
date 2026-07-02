@@ -20,6 +20,8 @@ pub struct UsageTracking {
     pub total_cache_read_tokens: u64,
     /// Total cache-creation tokens.
     pub total_cache_creation_tokens: u64,
+    /// Total reasoning output tokens.
+    pub total_reasoning_output_tokens: u64,
     /// Total cost in USD.
     pub total_cost_usd: f64,
     /// Number of API calls made.
@@ -33,6 +35,7 @@ impl UsageTracking {
         self.total_output_tokens += usage.output_tokens;
         self.total_cache_read_tokens += usage.cache_read_input_tokens;
         self.total_cache_creation_tokens += usage.cache_creation_input_tokens;
+        self.total_reasoning_output_tokens += usage.reasoning_output_tokens;
         self.total_cost_usd += cost_usd;
         self.api_call_count += 1;
         self

@@ -4,14 +4,14 @@ use crate::transport::dispatch_response;
 use crate::{JsonRpcError, JsonRpcResponse, McpConnectionState, McpServerConfig};
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 
 use super::http_utils::{handle_sse_event_stream_status, redact_url_for_log};
 use super::sse::{SseConnectTarget, SsePostTarget};
@@ -672,11 +672,9 @@ async fn test_streamable_http_loopback_initializes_and_lists_tools() {
         )
         .await;
         assert!(init_head.starts_with("POST /mcp HTTP/1.1"));
-        assert!(
-            header_value(&init_head, "accept")
-                .unwrap()
-                .contains("application/json")
-        );
+        assert!(header_value(&init_head, "accept")
+            .unwrap()
+            .contains("application/json"));
         assert_eq!(
             header_value(&init_head, HEADER_MCP_PROTOCOL_VERSION).unwrap(),
             "2025-11-25"

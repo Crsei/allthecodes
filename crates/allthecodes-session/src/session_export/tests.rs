@@ -354,6 +354,77 @@ fn test_build_session_export_schema_v2_includes_api_view_defaults() {
 
 #[test]
 #[serial_test::serial]
+fn test_export_saved_session_reads_rollout_without_legacy_file() {
+    use crate::record_replay::types::{
+        MessageRecord, RecordItem, RecordLine, RecordedMessage, RecordedMessageContent,
+        SessionMetaRecord,
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = EnvGuard::set_path("ALLTHECODES_HOME", temp.path());
+    let session_id = "export-rollout-only";
+    let created_at = Utc.with_ymd_and_hms(2026, 7, 2, 11, 0, 0).unwrap();
+    let rollout_path = crate::record_replay::paths::new_rollout_file(session_id, created_at);
+    std::fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    let lines = vec![
+        RecordLine::new(
+            session_id,
+            0,
+            RecordItem::SessionMeta(SessionMetaRecord {
+                created_at,
+                cwd: "/repo/export-rollout".into(),
+                workspace_key: None,
+                workspace_root: None,
+                workspace_name: None,
+                model: None,
+                config_summary: None,
+                parent_session_id: None,
+                branch_from_seq: None,
+                migrated_from: None,
+            }),
+        ),
+        RecordLine::new(
+            session_id,
+            1,
+            RecordItem::Message(MessageRecord {
+                message: RecordedMessage::User {
+                    uuid: Uuid::parse_str("10000000-0000-0000-0000-000000000030").unwrap(),
+                    timestamp: 88,
+                    role: "user".into(),
+                    content: RecordedMessageContent::Text("from rollout export".into()),
+                    is_meta: false,
+                    tool_use_result: None,
+                    source_tool_assistant_uuid: None,
+                },
+            }),
+        ),
+    ];
+    let content = format!(
+        "{}\n",
+        lines
+            .iter()
+            .map(|line| serde_json::to_string(line).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    std::fs::write(&rollout_path, content).unwrap();
+
+    let (_path, export) = export_saved_session(session_id, None).unwrap();
+
+    assert_eq!(export.transcript.message_count, 1);
+    assert!(export
+        .api_view
+        .rollout_path
+        .as_deref()
+        .is_some_and(|path| path.contains(session_id)));
+    assert_eq!(
+        export.raw_transcript.messages[0]["content"],
+        serde_json::json!("from rollout export")
+    );
+}
+
+#[test]
+#[serial_test::serial]
 fn test_build_session_export_reports_bad_api_snapshot_log() {
     let temp = tempfile::tempdir().unwrap();
     let _guard = EnvGuard::set_path("ALLTHECODES_HOME", temp.path());

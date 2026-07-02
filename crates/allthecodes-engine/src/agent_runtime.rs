@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::types::tool::Tool;
 use allthecodes_tasks::{TaskCreateOptions, TaskEntry, TaskRuntimeHandle, TaskStatus};
+use allthecodes_types::agent_runtime_record::AgentRuntimeExecutionRecord;
 use allthecodes_types::agent_types::AgentNode;
 use allthecodes_types::mcp::McpBindingContext;
 use allthecodes_types::output::{EventSeq, OutputReadBatch};
@@ -113,6 +114,8 @@ pub trait DashboardEmitter: Send + Sync {
         background: bool,
         payload: Option<Value>,
     ) -> Result<()>;
+
+    fn emit_execution_record(&self, record: &AgentRuntimeExecutionRecord) -> Result<()>;
 }
 
 struct NoopDashboardEmitter;
@@ -129,6 +132,10 @@ impl DashboardEmitter for NoopDashboardEmitter {
         _background: bool,
         _payload: Option<Value>,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    fn emit_execution_record(&self, _record: &AgentRuntimeExecutionRecord) -> Result<()> {
         Ok(())
     }
 }
@@ -418,6 +425,10 @@ pub fn emit_subagent_event(
         background,
         payload,
     )
+}
+
+pub fn emit_execution_record(record: &AgentRuntimeExecutionRecord) -> Result<()> {
+    adapters().read().dashboard.emit_execution_record(record)
 }
 
 pub fn register_agent_node(node: AgentNode) {

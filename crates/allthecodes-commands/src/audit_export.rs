@@ -11,6 +11,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::{CommandContext, CommandHandler, CommandResult};
+use allthecodes_services::cost_ledger;
 use allthecodes_session::audit_export;
 
 pub struct AuditExportHandler;
@@ -51,29 +52,35 @@ impl CommandHandler for AuditExportHandler {
 }
 
 fn export_current(ctx: &CommandContext) -> Result<CommandResult> {
-    let path = audit_export::export_audit_messages(
+    let cost_events = cost_events_for_messages(ctx.session_id.as_str(), &ctx.messages);
+    let (path, metadata) = audit_export::export_audit_messages_with_cost_quality_events(
         ctx.session_id.as_str(),
         &ctx.messages,
         &ctx.cwd.to_string_lossy(),
         None,
+        &cost_events,
     )?;
     Ok(CommandResult::Output(format!(
-        "Audit record exported to: {}\nUse `/audit-export verify {}` to verify integrity.",
+        "Audit record exported to: {}\n{}\nUse `/audit-export verify {}` to verify integrity.",
         path.display(),
+        format_cost_quality(&metadata),
         path.display()
     )))
 }
 
 fn export_current_to_path(ctx: &CommandContext, path: &std::path::Path) -> Result<CommandResult> {
-    let path = audit_export::export_audit_messages(
+    let cost_events = cost_events_for_messages(ctx.session_id.as_str(), &ctx.messages);
+    let (path, metadata) = audit_export::export_audit_messages_with_cost_quality_events(
         ctx.session_id.as_str(),
         &ctx.messages,
         &ctx.cwd.to_string_lossy(),
         Some(path),
+        &cost_events,
     )?;
     Ok(CommandResult::Output(format!(
-        "Audit record exported to: {}",
-        path.display()
+        "Audit record exported to: {}\n{}",
+        path.display(),
+        format_cost_quality(&metadata)
     )))
 }
 
@@ -117,11 +124,17 @@ fn export_by_id(session_id: &str) -> Result<CommandResult> {
 
     match matched {
         Some(info) => {
-            let path = audit_export::export_audit_record(&info.session_id, None)?;
+            let cost_events = cost_events_for_session_json(&info.session_id);
+            let (path, metadata) = audit_export::export_audit_with_cost_quality_events(
+                &info.session_id,
+                None,
+                &cost_events,
+            )?;
             Ok(CommandResult::Output(format!(
-                "Session {} audit record exported to: {}",
+                "Session {} audit record exported to: {}\n{}",
                 &info.session_id[..8],
-                path.display()
+                path.display(),
+                format_cost_quality(&metadata)
             )))
         }
         None => Ok(CommandResult::Output(format!(
@@ -129,6 +142,33 @@ fn export_by_id(session_id: &str) -> Result<CommandResult> {
             session_id
         ))),
     }
+}
+
+fn cost_events_for_messages(
+    session_id: &str,
+    messages: &[allthecodes_types::message::Message],
+) -> Vec<serde_json::Value> {
+    cost_ledger::get_session_cost_events(session_id, messages)
+        .into_iter()
+        .map(|event| serde_json::to_value(event).unwrap_or_default())
+        .collect()
+}
+
+fn cost_events_for_session_json(session_id: &str) -> Vec<serde_json::Value> {
+    cost_ledger::get_session_cost_events_with_backfill_from_json(session_id)
+        .into_iter()
+        .map(|event| serde_json::to_value(event).unwrap_or_default())
+        .collect()
+}
+
+fn format_cost_quality(metadata: &audit_export::AuditExportMetadata) -> String {
+    format!(
+        "Cost quality: {:?} (events={} backfilled={} unknown_pricing={})",
+        metadata.quality,
+        metadata.total_cost_events,
+        metadata.backfilled_count,
+        metadata.unknown_pricing_count
+    )
 }
 
 // ---------------------------------------------------------------------------

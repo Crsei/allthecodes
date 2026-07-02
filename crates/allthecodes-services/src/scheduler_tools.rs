@@ -204,6 +204,7 @@ impl Tool for CronCreateTool {
             )),
             display_preview: Some(format!("Cron job {} created", task.id)),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 
@@ -278,6 +279,7 @@ impl Tool for CronDeleteTool {
             )),
             display_preview: Some(format!("Cron job {} deleted", removed.id)),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 
@@ -351,6 +353,7 @@ impl Tool for CronListTool {
             )),
             display_preview: Some(text),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 

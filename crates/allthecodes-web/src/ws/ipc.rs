@@ -52,7 +52,7 @@ use allthecodes_types::message::{ContentBlock, StreamEvent, ToolResultContent};
 use allthecodes_types::sdk::{SdkMessage, SdkStreamEvent, SdkUserReplay};
 use allthecodes_types::tool_operation::{OperationStatus, ToolOperation};
 
-use crate::ipc_streams::{ipc_seq_marker, IpcSessionHub};
+use crate::ipc_streams::{forward_agent_ipc_event, ipc_seq_marker, IpcSessionHub};
 use crate::state::WebState;
 
 /// Query parameters for the IPC WebSocket endpoint.
@@ -136,6 +136,17 @@ async fn handle_ipc_socket(
         tokio::spawn(async move {
             while let Some(message) = bridge_rx.recv().await {
                 bridge_hub.publish(message);
+            }
+        });
+    }
+    engine.set_bg_agent_tx(hub.agent_sender());
+    if let Some(mut agent_rx) = hub.take_agent_receiver() {
+        let runtime = hub.runtime().clone();
+        tokio::spawn(async move {
+            while let Some(event) = agent_rx.recv().await {
+                if !forward_agent_ipc_event(&runtime, event).await {
+                    break;
+                }
             }
         });
     }
@@ -632,6 +643,11 @@ fn sdk_to_backend_messages(
                 input_tokens: result.usage.total_input_tokens,
                 output_tokens: result.usage.total_output_tokens,
                 cost_usd: result.total_cost_usd,
+                cache_read_input_tokens: result.usage.total_cache_read_tokens,
+                cache_creation_input_tokens: result.usage.total_cache_creation_tokens,
+                reasoning_output_tokens: 0,
+                api_call_count: result.usage.api_call_count,
+                kind: Some("cumulative".to_string()),
             });
             tool_use_cache.clear();
             msgs

@@ -11,6 +11,8 @@ runtime-types = ["dep:anyhow", "dep:async-trait", "dep:tokio"]
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true, optional = true }

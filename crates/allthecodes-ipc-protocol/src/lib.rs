@@ -14,9 +14,9 @@ pub use envelope::{
 };
 pub use lsp::{CompletionItemInfo, DocumentChange, SourceRange};
 pub use normalized::{
-    legacy_backend_to_payload, legacy_backend_type, ControlCommand, ConversationEvent,
-    FlowControlEvent, LegacyBackendMessage, LegacyBackendPayload, LegacyFrontendMessage,
-    LifecycleEvent, PermissionEvent, ProtocolError, ToolEvent,
+    legacy_backend_to_payload, legacy_backend_type, AgentRuntimeEvent, ControlCommand,
+    ConversationEvent, FlowControlEvent, LegacyBackendMessage, LegacyBackendPayload,
+    LegacyFrontendMessage, LifecycleEvent, PermissionEvent, ProtocolError, ToolEvent,
 };
 pub use payload::{
     legacy_backend_to_payload as legacy_backend_to_ipc_payload, legacy_frontend_to_payload,

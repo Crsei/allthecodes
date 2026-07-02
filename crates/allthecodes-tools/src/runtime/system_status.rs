@@ -157,6 +157,7 @@ impl Tool for SystemStatusTool {
             model_content: None,
             display_preview: Some(output.clone()),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 

@@ -36,6 +36,7 @@ fn preview_tool_result(
         model_content: None,
         display_preview: Some(preview),
         new_messages,
+        ..Default::default()
     }
 }
 

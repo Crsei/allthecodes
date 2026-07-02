@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::agent_runtime_record::AgentRuntimeExecutionRecord;
 use super::agent_types::*;
 use super::output::{EventSeq, OutputReadBatch};
 
@@ -90,6 +91,10 @@ pub enum AgentEvent {
         agent_id: String,
         task_id: String,
         output: OutputReadBatch,
+    },
+    ExecutionRecord {
+        agent_id: String,
+        record: Box<AgentRuntimeExecutionRecord>,
     },
 }
 

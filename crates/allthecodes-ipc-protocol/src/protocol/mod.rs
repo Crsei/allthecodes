@@ -321,10 +321,29 @@ pub enum BackendMessage {
         messages: Vec<ConversationMessage>,
     },
     /// Token usage update.
+    ///
+    /// New fields added in evolution of the protocol:
+    /// - `cache_read_input_tokens`, `cache_creation_input_tokens`,
+    ///   `reasoning_output_tokens`, `api_call_count` (default to 0 for
+    ///   backward compatibility with older senders).
+    /// - `kind`: `"cumulative"` (snapshot since session start) or
+    ///   `"delta"` (since the last UsageUpdate). Absent means the
+    ///   sender has not opted in to the distinction; receivers should
+    ///   treat it as cumulative.
     UsageUpdate {
         input_tokens: u64,
         output_tokens: u64,
         cost_usd: f64,
+        #[serde(default)]
+        cache_read_input_tokens: u64,
+        #[serde(default)]
+        cache_creation_input_tokens: u64,
+        #[serde(default)]
+        reasoning_output_tokens: u64,
+        #[serde(default)]
+        api_call_count: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// Scriptable status-line snapshot (issue #11).
     ///

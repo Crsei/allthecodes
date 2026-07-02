@@ -816,6 +816,7 @@ impl Tool for NotebookEditTool {
             new_messages: vec![super::edited_text_file_message(
                 path.to_string_lossy().to_string(),
             )],
+            ..Default::default()
         })
     }
 

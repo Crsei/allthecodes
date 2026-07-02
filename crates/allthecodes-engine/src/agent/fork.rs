@@ -129,6 +129,7 @@ pub async fn run_fork(params: ForkParams) -> Result<ForkOutcome> {
         auto_save_session: false,
         agent_context: Some(crate::types::config::AgentContext {
             agent_id: agent_id.clone(),
+            parent_agent_id: None,
             query_tracking: QueryChainTracking { chain_id, depth: 1 },
             langfuse_session_id: String::new(),
             agent_type: Some("fork".to_string()),

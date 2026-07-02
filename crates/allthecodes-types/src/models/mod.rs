@@ -13,5 +13,8 @@ pub use aliases::{
     MODEL_ALIASES, MOTA_MODEL_ID, REMOVED_LEGACY_MODEL_ALIASES, SOTA_MODEL_ID,
 };
 pub use mapping::{to_bedrock_model_id, to_vertex_model_id, ModelConfig, CLAUDE_MODELS};
-pub use pricing::{cost_from_counts, get_pricing, ModelPricing};
+pub use pricing::{
+    calculate_cost_breakdown, cost_from_counts, get_pricing, get_pricing_match, CostBreakdown,
+    ModelPricing, PricingMatch, PricingSource,
+};
 pub use setting::{ModelSetting, ModelStrings, ModelTier};

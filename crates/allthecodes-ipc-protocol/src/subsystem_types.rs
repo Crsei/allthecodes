@@ -729,6 +729,7 @@ mod tests {
                 ),
                 scopes: Some(vec!["tools.read".into()]),
                 oauth_resource: None,
+                credentials_store: None,
             }),
             env: None,
             browser_mcp: None,

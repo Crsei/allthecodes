@@ -469,12 +469,26 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
             // `result.usage` is engine `UsageTracking` (accumulated across
             // turns) — the payload wants per-session totals, so we pass
             // the totals straight through.
+            let cost_summary = allthecodes_services::cost_ledger::get_session_cost_summary(
+                &result.session_id,
+                app.messages(),
+            );
+            let (unknown_pricing_count, backfilled_count) = if cost_summary.api_calls > 0 {
+                (
+                    Some(cost_summary.unknown_pricing_count),
+                    Some(cost_summary.backfilled_count),
+                )
+            } else {
+                (None, None)
+            };
             app.update_session_usage(
                 result.usage.total_input_tokens,
                 result.usage.total_output_tokens,
                 result.usage.total_cache_read_tokens,
                 result.usage.total_cache_creation_tokens,
                 result.usage.api_call_count,
+                unknown_pricing_count,
+                backfilled_count,
             );
             if result.is_error {
                 app.add_message(Message::System(SystemMessage {

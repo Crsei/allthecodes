@@ -38,6 +38,7 @@ async-trait = { workspace = true }
 allthecodes-config = { workspace = true }
 allthecodes-types = { workspace = true }
 base64 = { workspace = true, optional = true }
+futures = { workspace = true }
 allthecodes-browser = { workspace = true, optional = true }
 allthecodes-ipc-protocol = { workspace = true, optional = true }
 allthecodes-permissions = { workspace = true, optional = true }

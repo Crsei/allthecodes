@@ -21,7 +21,7 @@ use tracing::{info, warn};
 use allthecodes_bootstrap::SessionId;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::QueryEngineConfig;
-use allthecodes_session::{fork, resume as session_resume, storage};
+use allthecodes_session::{fork, record_replay, resume as session_resume, storage, transcript};
 use allthecodes_types::message::{ContentBlock, Message, MessageContent};
 
 use crate::api_dispatcher::rest_processor_response;
@@ -164,6 +164,11 @@ pub struct SessionDetailResponse {
     pub chat_mode_override: Option<String>,
     pub effective_chat_mode: String,
     pub messages: Vec<StoredMessage>,
+    pub replay_warnings: Vec<String>,
+    pub pending_interactions: Vec<PendingInteractionSummary>,
+    pub last_seq: Option<u64>,
+    pub record_schema_version: Option<u32>,
+    pub rollout_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -229,6 +234,18 @@ pub struct RollbackPreviewResponse {
     pub available: bool,
     pub message: Option<String>,
     pub files: Vec<String>,
+    pub target_seq: Option<u64>,
+    pub last_seq: Option<u64>,
+    pub removed_message_count: usize,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PendingInteractionSummary {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub request_id: String,
+    pub label: String,
+    pub seq: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -383,8 +400,9 @@ impl Processor for SessionResumeProcessor {
 
         info!(session_id = %params.id, "POST /api/sessions/:id/resume");
 
-        let messages = load_session_messages(&params.id)?;
-        let response = session_detail_from_messages(params.id.clone(), &messages);
+        let loaded = load_session_for_detail(&params.id)?;
+        let messages = loaded.messages.clone();
+        let response = session_detail_from_loaded(params.id.clone(), &loaded);
         let engine = self
             .state
             .engine_for_session(&params.id)
@@ -530,28 +548,56 @@ impl Processor for SessionMessageBranchProcessor {
             return Err(error);
         }
 
-        let messages = load_session_messages(&params.id)?;
-        if message_index(&messages, &params.message_id).is_none() {
+        let action = load_replay_action_state(&params.id)?;
+        let Some(index) = message_index(&action.messages, &params.message_id) else {
             return Err(message_not_found_error(params.message_id));
-        }
+        };
+        let branch_from_seq = seq_at_index(&action, index, &params.message_id)?;
         let cwd = storage::load_session_info(&params.id)
             .map(|info| info.cwd)
             .unwrap_or_else(|_| self.state.engine().cwd().to_string());
         let new_id = SessionId::new().to_string();
+        let child_messages: Vec<Message> =
+            action.messages.iter().take(index + 1).cloned().collect();
 
-        fork::fork_session(
+        let outcome = fork::fork_session(
             &params.id,
             &new_id,
-            &messages,
+            &action.messages,
             &cwd,
             Some(&params.message_id),
         )
-        .map(|outcome| SessionBranchResponse {
-            session_id: outcome.new_session_id,
-            title: Some(outcome.title),
-        })
         .map_err(|error| ProtocolApiError::Internal {
             message: format!("Failed to branch session: {error}"),
+        })?;
+
+        record_replay::create_rollout_from_messages(
+            &outcome.new_session_id,
+            &child_messages,
+            &cwd,
+            Some(params.id.clone()),
+            Some(branch_from_seq),
+        )
+        .map_err(|error| ProtocolApiError::Internal {
+            message: format!("Failed to create branch rollout: {error}"),
+        })?;
+
+        append_record_items_for_mutation(
+            &self.state,
+            &params.id,
+            vec![record_replay::RecordItem::Branch(
+                record_replay::types::BranchRecord {
+                    new_session_id: outcome.new_session_id.clone(),
+                    parent_session_id: params.id.clone(),
+                    branch_from_seq,
+                },
+            )],
+        )
+        .await?;
+
+        Ok(SessionBranchResponse {
+            session_id: outcome.new_session_id,
+            title: Some(outcome.title),
         })
     }
 }
@@ -636,15 +682,18 @@ impl Processor for SessionMessageDeleteProcessor {
         if let Some(error) = mutation_guard_error(&self.state, &params.id, "deleting a message") {
             return Err(error);
         }
-        let messages = load_session_messages(&params.id)?;
-        let Some(index) = message_index(&messages, &params.message_id) else {
+        let action = load_replay_action_state(&params.id)?;
+        let Some(index) = message_index(&action.messages, &params.message_id) else {
             return Err(message_not_found_error(params.message_id));
         };
-        storage::truncate_session(&params.id, index).map_err(|error| {
-            ProtocolApiError::Internal {
-                message: format!("Failed to delete message: {error}"),
-            }
-        })?;
+        let target_seq = seq_before_index(&action, index);
+        apply_rollback_event(
+            &self.state,
+            &params.id,
+            target_seq,
+            Some(format!("delete message {}", params.message_id)),
+        )
+        .await?;
         Ok(SessionMutationResponse {
             ok: true,
             message: "Message deleted".into(),
@@ -687,21 +736,25 @@ impl Processor for SessionMessageRegeneratePrepareProcessor {
         {
             return Err(error);
         }
-        let messages = load_session_messages(&params.id)?;
-        let Some(assistant_index) = message_index(&messages, &params.message_id) else {
+        let action = load_replay_action_state(&params.id)?;
+        let Some(assistant_index) = message_index(&action.messages, &params.message_id) else {
             return Err(message_not_found_error(params.message_id));
         };
-        let Some((user_index, prompt)) = preceding_user_prompt(&messages, assistant_index) else {
+        let Some((user_index, prompt)) = preceding_user_prompt(&action.messages, assistant_index)
+        else {
             return Err(ProtocolApiError::BadRequest {
                 code: "message_regenerate_unavailable",
                 message: "No preceding user message found for regeneration".to_string(),
             });
         };
-        storage::truncate_session(&params.id, user_index).map_err(|error| {
-            ProtocolApiError::Internal {
-                message: format!("Failed to prepare regeneration: {error}"),
-            }
-        })?;
+        let target_seq = seq_before_index(&action, user_index);
+        apply_rollback_event(
+            &self.state,
+            &params.id,
+            target_seq,
+            Some(format!("regenerate from message {}", params.message_id)),
+        )
+        .await?;
         Ok(MessageRegeneratePrepareResponse {
             session_id: params.id,
             prompt,
@@ -749,21 +802,24 @@ impl Processor for SessionMessageEditPrepareProcessor {
                 message: "Edited message text is required".to_string(),
             });
         }
-        let messages = load_session_messages(&params.id)?;
-        let Some(index) = message_index(&messages, &params.message_id) else {
+        let action = load_replay_action_state(&params.id)?;
+        let Some(index) = message_index(&action.messages, &params.message_id) else {
             return Err(message_not_found_error(params.message_id));
         };
-        if !matches!(messages.get(index), Some(Message::User(_))) {
+        if !matches!(action.messages.get(index), Some(Message::User(_))) {
             return Err(ProtocolApiError::BadRequest {
                 code: "message_edit_role_invalid",
                 message: "Only user messages can be edited".to_string(),
             });
         }
-        storage::truncate_session(&params.id, index).map_err(|error| {
-            ProtocolApiError::Internal {
-                message: format!("Failed to prepare edit: {error}"),
-            }
-        })?;
+        let target_seq = seq_before_index(&action, index);
+        apply_rollback_event(
+            &self.state,
+            &params.id,
+            target_seq,
+            Some(format!("edit message {}", params.message_id)),
+        )
+        .await?;
         Ok(MessageRegeneratePrepareResponse {
             session_id: params.id,
             prompt: edited_text,
@@ -802,14 +858,21 @@ impl Processor for SessionMessageRollbackPreviewProcessor {
 
     async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
         let _ = params.profile_id.as_deref();
-        let messages = load_session_messages(&params.id)?;
-        if message_index(&messages, &params.message_id).is_none() {
+        let action = load_replay_action_state(&params.id)?;
+        let Some(index) = message_index(&action.messages, &params.message_id) else {
             return Err(message_not_found_error(params.message_id));
-        }
+        };
+        let target_seq = seq_at_index(&action, index, &params.message_id)?;
+        let removed_message_count = action.messages.len().saturating_sub(index + 1);
         Ok(RollbackPreviewResponse {
-            available: false,
-            message: Some("Rollback checkpoint is not available for this session yet".into()),
+            available: true,
+            message: Some(format!(
+                "Rollback will keep messages through seq {target_seq} and preserve later history in the record log."
+            )),
             files: Vec::new(),
+            target_seq: Some(target_seq),
+            last_seq: action.last_seq,
+            removed_message_count,
         })
     }
 }
@@ -845,9 +908,30 @@ impl Processor for SessionMessageRollbackProcessor {
 
     async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
         let _files = params.files;
-        Err(ProtocolApiError::NotImplemented {
-            capability: "rollback_checkpoint_unavailable".to_string(),
-        })
+        if let Some(error) = mutation_guard_error(&self.state, &params.id, "rolling back a message")
+        {
+            return Err(error);
+        }
+        let action = load_replay_action_state(&params.id)?;
+        let Some(index) = message_index(&action.messages, &params.message_id) else {
+            return Err(message_not_found_error(params.message_id));
+        };
+        let target_seq = seq_at_index(&action, index, &params.message_id)?;
+        let messages = apply_rollback_event(
+            &self.state,
+            &params.id,
+            target_seq,
+            Some(format!("rollback to message {}", params.message_id)),
+        )
+        .await?;
+        let detail = load_session_for_detail(&params.id)?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "message": "Session rolled back",
+            "target_seq": target_seq,
+            "last_seq": detail.last_seq,
+            "visible_message_count": messages.len(),
+        }))
     }
 }
 
@@ -1161,18 +1245,51 @@ fn build_session_list_response(state: &WebState) -> SessionListResponse {
 
 fn load_session_detail(id: String) -> Result<SessionDetailResponse, ProtocolApiError> {
     info!(session_id = %id, "GET /api/sessions/:id");
-    let messages = load_session_messages(&id)?;
-    Ok(session_detail_from_messages(id, &messages))
+    let loaded = load_session_for_detail(&id)?;
+    Ok(session_detail_from_loaded(id, &loaded))
 }
 
 fn load_session_messages(session_id: &str) -> Result<Vec<Message>, ProtocolApiError> {
-    session_resume::resume_session(session_id).map_err(|_| ProtocolApiError::NotFound {
-        entity: "session",
-        id: session_id.to_string(),
+    Ok(load_session_for_detail(session_id)?.messages)
+}
+
+struct LoadedSessionDetail {
+    messages: Vec<Message>,
+    replay_warnings: Vec<String>,
+    pending_interactions: Vec<PendingInteractionSummary>,
+    last_seq: Option<u64>,
+    record_schema_version: Option<u32>,
+    rollout_path: Option<String>,
+}
+
+fn load_session_for_detail(session_id: &str) -> Result<LoadedSessionDetail, ProtocolApiError> {
+    let resumed = session_resume::resume_session_detail(session_id).map_err(|_| {
+        ProtocolApiError::NotFound {
+            entity: "session",
+            id: session_id.to_string(),
+        }
+    })?;
+    Ok(LoadedSessionDetail {
+        messages: resumed.messages,
+        replay_warnings: resumed
+            .replay_warnings
+            .iter()
+            .map(replay_warning_text)
+            .collect(),
+        pending_interactions: resumed
+            .pending_interactions
+            .iter()
+            .map(pending_interaction_summary)
+            .collect(),
+        last_seq: resumed.last_seq,
+        record_schema_version: resumed.record_schema_version,
+        rollout_path: resumed
+            .rollout_path
+            .map(|path| path.to_string_lossy().to_string()),
     })
 }
 
-fn session_detail_from_messages(id: String, messages: &[Message]) -> SessionDetailResponse {
+fn session_detail_from_loaded(id: String, loaded: &LoadedSessionDetail) -> SessionDetailResponse {
     let info = storage::load_session_info(&id).ok();
 
     let (title, cwd, created_at, last_modified, workspace_name, workspace_key, preference) =
@@ -1203,7 +1320,7 @@ fn session_detail_from_messages(id: String, messages: &[Message]) -> SessionDeta
             }
         };
 
-    let rendered: Vec<StoredMessage> = messages.iter().map(stored_message_from).collect();
+    let rendered: Vec<StoredMessage> = loaded.messages.iter().map(stored_message_from).collect();
 
     SessionDetailResponse {
         session_id: id,
@@ -1217,6 +1334,162 @@ fn session_detail_from_messages(id: String, messages: &[Message]) -> SessionDeta
         chat_mode_override: preference.chat_mode_override,
         effective_chat_mode: preference.effective_chat_mode,
         messages: rendered,
+        replay_warnings: loaded.replay_warnings.clone(),
+        pending_interactions: loaded.pending_interactions.clone(),
+        last_seq: loaded.last_seq,
+        record_schema_version: loaded.record_schema_version,
+        rollout_path: loaded.rollout_path.clone(),
+    }
+}
+
+struct ReplayActionState {
+    messages: Vec<Message>,
+    message_records: Vec<record_replay::ReconstructedRecordMessage>,
+    last_seq: Option<u64>,
+}
+
+fn load_replay_action_state(session_id: &str) -> Result<ReplayActionState, ProtocolApiError> {
+    let rollout_path = record_replay::ensure_rollout_for_session(session_id)
+        .map_err(|error| replay_mutation_error(session_id, "Failed to prepare rollout", error))?;
+    let read = record_replay::read_rollout_file(&rollout_path)
+        .map_err(|error| replay_mutation_error(session_id, "Failed to read rollout", error))?;
+    let reconstructed = record_replay::reconstruct_recorded_messages(&read.lines);
+    let messages = record_replay::recorded_messages_to_typed(&reconstructed.messages);
+    Ok(ReplayActionState {
+        messages,
+        message_records: reconstructed.message_records,
+        last_seq: read.lines.iter().map(|line| line.seq).max(),
+    })
+}
+
+fn seq_before_index(action: &ReplayActionState, index: usize) -> u64 {
+    if index == 0 {
+        0
+    } else {
+        action
+            .message_records
+            .get(index - 1)
+            .map(|entry| entry.seq)
+            .unwrap_or(0)
+    }
+}
+
+fn seq_at_index(
+    action: &ReplayActionState,
+    index: usize,
+    message_id: &str,
+) -> Result<u64, ProtocolApiError> {
+    action
+        .message_records
+        .get(index)
+        .map(|entry| entry.seq)
+        .ok_or_else(|| message_not_found_error(message_id.to_string()))
+}
+
+async fn append_record_items_for_mutation(
+    state: &WebState,
+    session_id: &str,
+    items: Vec<record_replay::RecordItem>,
+) -> Result<(), ProtocolApiError> {
+    shutdown_active_session_record_for_mutation(state, session_id).await?;
+    record_replay::append_record_items(session_id, items).map_err(|error| {
+        ProtocolApiError::Internal {
+            message: format!("Failed to append record event: {error}"),
+        }
+    })?;
+    Ok(())
+}
+
+async fn apply_rollback_event(
+    state: &WebState,
+    session_id: &str,
+    target_seq: u64,
+    reason: Option<String>,
+) -> Result<Vec<Message>, ProtocolApiError> {
+    append_record_items_for_mutation(
+        state,
+        session_id,
+        vec![record_replay::RecordItem::Rollback(
+            record_replay::types::RollbackRecord { target_seq, reason },
+        )],
+    )
+    .await?;
+
+    let messages = load_session_messages(session_id)?;
+    if let Err(error) = transcript::rebuild_transcript_from_messages(session_id, &messages) {
+        warn!(
+            session_id,
+            error = %error,
+            "failed to rebuild transcript after replay mutation"
+        );
+    }
+    if state.engine().current_session_id().as_str() == session_id {
+        state.engine().replace_messages(messages.clone());
+    }
+    Ok(messages)
+}
+
+async fn shutdown_active_session_record_for_mutation(
+    state: &WebState,
+    session_id: &str,
+) -> Result<(), ProtocolApiError> {
+    if state.engine().current_session_id().as_str() != session_id {
+        return Ok(());
+    }
+    state
+        .engine()
+        .shutdown_session_record()
+        .await
+        .map(|_| ())
+        .map_err(|error| ProtocolApiError::Internal {
+            message: format!("Failed to flush active session recorder: {error}"),
+        })
+}
+
+fn replay_mutation_error(
+    session_id: &str,
+    context: &str,
+    error: anyhow::Error,
+) -> ProtocolApiError {
+    if storage::load_session_info(session_id).is_err() {
+        session_not_found_error(session_id.to_string())
+    } else {
+        ProtocolApiError::Internal {
+            message: format!("{context}: {error}"),
+        }
+    }
+}
+
+fn replay_warning_text(warning: &record_replay::ReplayReadWarning) -> String {
+    format!("line {}: {}", warning.line_number, warning.message)
+}
+
+fn pending_interaction_summary(
+    pending: &record_replay::PendingInteraction,
+) -> PendingInteractionSummary {
+    match pending {
+        record_replay::PendingInteraction::Permission {
+            seq,
+            request_id,
+            tool_name,
+            ..
+        } => PendingInteractionSummary {
+            kind: "permission".to_string(),
+            request_id: request_id.clone(),
+            label: tool_name.clone(),
+            seq: *seq,
+        },
+        record_replay::PendingInteraction::Question {
+            seq,
+            request_id,
+            prompt,
+            ..
+        } => PendingInteractionSummary {
+            kind: "question".to_string(),
+            request_id: request_id.clone(),
+            label: prompt.clone(),
+            seq: *seq,
+        },
     }
 }
 

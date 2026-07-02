@@ -66,6 +66,34 @@ const MIGRATIONS: &[Migration] = &[
                 ON session_messages(session_id, position)
             "#,
     ),
+    Migration::new(
+        5,
+        r#"
+            CREATE TABLE IF NOT EXISTS session_rollouts (
+              session_id TEXT NOT NULL,
+              rollout_path TEXT NOT NULL,
+              schema_version INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              first_seq INTEGER NOT NULL DEFAULT 0,
+              last_seq INTEGER NOT NULL DEFAULT 0,
+              event_count INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL DEFAULT 'active',
+              parent_session_id TEXT,
+              branch_from_seq INTEGER,
+              workspace_key TEXT,
+              workspace_root TEXT,
+              workspace_name TEXT,
+              PRIMARY KEY (session_id, rollout_path)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_session_rollouts_session_id
+              ON session_rollouts(session_id, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_session_rollouts_workspace
+              ON session_rollouts(workspace_key, updated_at DESC);
+            "#,
+    ),
 ];
 
 pub(super) struct SessionIndex {

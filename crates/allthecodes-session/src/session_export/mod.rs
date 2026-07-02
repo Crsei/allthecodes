@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::storage::{self, SessionFile};
 use allthecodes_types::message::Message;
@@ -96,6 +97,15 @@ pub struct ApiViewData {
     pub last_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<String>,
+    /// Rollout path if available (record-replay).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout_path: Option<String>,
+    /// Last sequence number from the rollout log.
+    #[serde(default)]
+    pub last_seq: u64,
+    /// Record log schema version.
+    #[serde(default)]
+    pub record_schema_version: u32,
 }
 
 /// A single tool call with its matched result.
@@ -204,12 +214,66 @@ pub fn export_saved_session(
     session_id: &str,
     output_path: Option<&Path>,
 ) -> Result<(PathBuf, SessionExport)> {
-    let session_file = load_session_file_raw(session_id)?;
-    let messages = storage::load_session(session_id)?;
-    let mut export = build_session_export(session_id, &messages, &session_file.cwd);
-    export.session.custom_title = session_file.custom_title.clone();
+    let (messages, cwd, custom_title) = load_saved_session_for_export(session_id)?;
+    let mut export = build_session_export(session_id, &messages, &cwd);
+    export.session.custom_title = custom_title;
     let path = write_session_export(&export, session_id, output_path)?;
     Ok((path, export))
+}
+
+fn load_saved_session_for_export(
+    session_id: &str,
+) -> Result<(Vec<Message>, String, Option<String>)> {
+    match crate::record_replay::index::lookup_rollout(session_id) {
+        Ok(Some(path)) => match crate::record_replay::reader::read_rollout_file(&path) {
+            Ok(read) => {
+                let reconstructed =
+                    crate::record_replay::reconstruct::reconstruct_recorded_messages(&read.lines);
+                let messages = crate::record_replay::reconstruct::recorded_messages_to_typed(
+                    &reconstructed.messages,
+                );
+                let cwd = reconstructed
+                    .metadata
+                    .as_ref()
+                    .map(|metadata| metadata.cwd.clone())
+                    .filter(|cwd| !cwd.is_empty())
+                    .or_else(|| {
+                        storage::load_session_info(session_id)
+                            .ok()
+                            .map(|info| info.cwd)
+                    })
+                    .unwrap_or_else(|| ".".to_string());
+                let custom_title = storage::load_session_info(session_id)
+                    .ok()
+                    .and_then(|info| info.custom_title);
+                return Ok((messages, cwd, custom_title));
+            }
+            Err(error) => {
+                warn!(
+                    session_id,
+                    path = %path.display(),
+                    error = %error,
+                    "failed to read rollout log for export, falling back to legacy session file"
+                );
+            }
+        },
+        Ok(None) => {}
+        Err(error) => {
+            warn!(
+                session_id,
+                error = %error,
+                "rollout lookup failed for export, falling back to legacy session file"
+            );
+        }
+    }
+
+    let session_file = load_session_file_raw(session_id)?;
+    let messages = storage::load_session(session_id)?;
+    Ok((
+        messages,
+        session_file.cwd,
+        session_file.custom_title.clone(),
+    ))
 }
 
 /// List all session export files.
@@ -247,6 +311,24 @@ pub fn build_session_export(session_id: &str, messages: &[Message], cwd: &str) -
     let tool_calls = compression::reconstruct_tool_timeline(messages);
     let compression = compression::extract_compression_events(messages);
     let context = builders::build_context_snapshot(messages);
+
+    // Try to include rollout metadata
+    let (rollout_path, record_schema_version, last_seq) =
+        match crate::record_replay::index::lookup_rollout(session_id) {
+            Ok(Some(path)) => {
+                let version = crate::record_replay::RECORD_SCHEMA_VERSION;
+                // Try to get last_seq from the rollout file
+                let seq = crate::record_replay::reader::read_rollout_file(&path)
+                    .ok()
+                    .and_then(|r| r.lines.last().map(|l| l.seq))
+                    .unwrap_or(0);
+                (Some(path.to_string_lossy().to_string()), version, seq)
+            }
+            _ => (None, 0, 0),
+        };
+    api_view.rollout_path = rollout_path;
+    api_view.record_schema_version = record_schema_version;
+    api_view.last_seq = last_seq;
 
     SessionExport {
         schema_version: SESSION_EXPORT_SCHEMA_VERSION,

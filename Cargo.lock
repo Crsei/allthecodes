@@ -879,6 +879,7 @@ dependencies = [
  "base64",
  "chrono",
  "dirs",
+ "futures",
  "glob",
  "hex",
  "ignore",
@@ -906,8 +907,10 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
 ]
@@ -1013,6 +1016,8 @@ name = "allthecodes-worktree"
 version = "0.1.0"
 dependencies = [
  "allthecodes-engine",
+ "allthecodes-session",
+ "allthecodes-tools",
  "allthecodes-types",
  "anyhow",
  "async-trait",

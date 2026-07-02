@@ -6,9 +6,12 @@ use crate::types::config::{AgentContext, QueryEngineConfig, QuerySource};
 use crate::types::message::{
     AssistantMessage, ContentBlock, Message, MessageContent, Usage, UserMessage,
 };
-use crate::types::tool::{PermissionResult, ToolResult};
+use crate::types::tool::{PermissionMode, PermissionResult, ToolResult};
+use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
+use allthecodes_types::callbacks::{PermissionCallback, PermissionResponsePayload};
 use allthecodes_types::hooks::{
-    HookEventConfig, HookOutput, HookRunner, HooksMap, PostToolHookResult, PreToolHookResult,
+    HookEventConfig, HookOutput, HookRunner, HooksMap, PermissionOverride, PostToolHookResult,
+    PreToolHookResult,
 };
 use allthecodes_types::sdk::*;
 use serde_json::{json, Value};
@@ -141,6 +144,131 @@ impl crate::types::tool::Tool for TestTool {
 struct DeferredTargetTool {
     name: &'static str,
     deny: bool,
+}
+
+#[derive(Clone, Copy)]
+enum MatrixToolPermission {
+    Allow,
+    Ask,
+}
+
+struct PermissionMatrixTool {
+    permission: MatrixToolPermission,
+}
+
+#[async_trait::async_trait]
+impl crate::types::tool::Tool for PermissionMatrixTool {
+    fn name(&self) -> &str {
+        "PermissionMatrix"
+    }
+
+    async fn description(&self, _input: &Value) -> String {
+        "permission matrix tool".to_string()
+    }
+
+    fn input_json_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    async fn check_permissions(
+        &self,
+        input: &Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+    ) -> PermissionResult {
+        match self.permission {
+            MatrixToolPermission::Allow => PermissionResult::Allow {
+                updated_input: input.clone(),
+            },
+            MatrixToolPermission::Ask => PermissionResult::Ask {
+                message: "Allow PermissionMatrix?".to_string(),
+            },
+        }
+    }
+
+    async fn call(
+        &self,
+        input: Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+        _parent_message: &AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
+    ) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult {
+            data: json!({ "ok": true, "input": input }),
+            ..Default::default()
+        })
+    }
+
+    async fn prompt(&self) -> String {
+        String::new()
+    }
+}
+
+#[derive(Default)]
+struct PermissionMatrixHookRunner {
+    pre_override: Option<PermissionOverride>,
+}
+
+#[async_trait::async_trait]
+impl HookRunner for PermissionMatrixHookRunner {
+    fn load_hook_configs(&self, _hooks_value: &HooksMap, event_name: &str) -> Vec<HookEventConfig> {
+        if event_name == "PreToolUse" && self.pre_override.is_some() {
+            vec![HookEventConfig {
+                matcher: Some("*".to_string()),
+                critical: false,
+                hooks: vec![],
+            }]
+        } else {
+            vec![]
+        }
+    }
+
+    async fn run_pre_tool_hooks(
+        &self,
+        _tool_name: &str,
+        _input: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PreToolHookResult> {
+        Ok(PreToolHookResult::Continue {
+            updated_input: None,
+            permission_override: self.pre_override.clone(),
+        })
+    }
+
+    async fn run_post_tool_hooks(
+        &self,
+        _tool_name: &str,
+        _input: &Value,
+        _tool_result_data: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PostToolHookResult> {
+        Ok(PostToolHookResult::Continue)
+    }
+
+    async fn run_post_tool_failure_hooks(
+        &self,
+        _tool_name: &str,
+        _input: &Value,
+        _error: &str,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn run_event_hooks(
+        &self,
+        _event_name: &str,
+        _payload: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<HookOutput> {
+        Ok(HookOutput::default())
+    }
+
+    async fn run_stop_hooks(
+        &self,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PostToolHookResult> {
+        Ok(PostToolHookResult::Continue)
+    }
 }
 
 #[async_trait::async_trait]
@@ -301,6 +429,77 @@ fn make_config() -> QueryEngineConfig {
     }
 }
 
+fn permission_callback(decision: &'static str) -> PermissionCallback {
+    Arc::new(move |_| Box::pin(async move { PermissionResponsePayload::decision(decision) }))
+}
+
+fn make_lifecycle_deps(
+    engine: &QueryEngine,
+    hook_runner: Arc<dyn HookRunner>,
+    permission_callback: Option<PermissionCallback>,
+) -> super::deps::QueryEngineDeps {
+    super::deps::QueryEngineDeps {
+        aborted: engine.aborted.clone(),
+        state: engine.state.clone(),
+        cwd: "/tmp".to_string(),
+        session_id: "permission-matrix".to_string(),
+        query_source: crate::types::config::QuerySource::ReplMainThread,
+        audit_ctx: crate::observability::AuditContext::noop("permission-matrix"),
+        langfuse_trace: None,
+        api_client: None,
+        session_recorder: engine.session_recorder.clone(),
+        agent_context: None,
+        permission_callback,
+        bg_agent_tx: None,
+        permission_event_callback: None,
+        tool_progress_callback: None,
+        pending_bg_results: engine.pending_bg_results.clone(),
+        active_steer_state: engine.active_steer_state.clone(),
+        hook_runner,
+        command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
+        auto_classifier_fn: None,
+        submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
+        submit_tools: None,
+    }
+}
+
+async fn execute_permission_matrix_case<F>(
+    permission: MatrixToolPermission,
+    configure_permissions: F,
+    hook_runner: Arc<dyn HookRunner>,
+    permission_callback: Option<PermissionCallback>,
+) -> crate::query::deps::ToolExecResult
+where
+    F: FnOnce(&mut allthecodes_types::permissions::ToolPermissionContext),
+{
+    let tools: crate::types::tool::Tools = vec![Arc::new(PermissionMatrixTool { permission })];
+    let mut config = make_config();
+    config.tools = tools.clone();
+    let engine = QueryEngine::new(config);
+    {
+        let mut state = engine.state.write();
+        configure_permissions(&mut state.app_state.tool_permission_context);
+    }
+    let deps = make_lifecycle_deps(&engine, hook_runner, permission_callback);
+    let Message::Assistant(parent) = assistant_message("permission parent") else {
+        unreachable!("assistant_message returns an assistant message");
+    };
+
+    deps.execute_tool_impl(
+        crate::query::deps::ToolExecRequest {
+            tool_use_id: "matrix-call".to_string(),
+            tool_name: "PermissionMatrix".to_string(),
+            input: json!({"value": 1}),
+            langfuse_batch_span: None,
+        },
+        &tools,
+        &parent,
+        None,
+    )
+    .await
+    .expect("execute permission matrix case")
+}
+
 #[test]
 fn test_query_engine_creation() {
     let engine = QueryEngine::new(make_config());
@@ -309,6 +508,116 @@ fn test_query_engine_creation() {
     assert!(engine.usage().total_cost_usd == 0.0);
     assert!(!engine.session_id.as_str().is_empty());
     assert_eq!(engine.current_session_id(), engine.session_id);
+}
+
+#[tokio::test]
+async fn execution_record_permission_decision_matrix() {
+    let default_hooks: Arc<dyn HookRunner> = Arc::new(PermissionMatrixHookRunner::default());
+
+    let policy_allow = execute_permission_matrix_case(
+        MatrixToolPermission::Allow,
+        |ctx| {
+            ctx.always_allow_rules
+                .insert("policy".to_string(), vec!["PermissionMatrix".to_string()]);
+        },
+        default_hooks.clone(),
+        None,
+    )
+    .await;
+    assert!(!policy_allow.is_error);
+    assert_eq!(
+        policy_allow.permission_decision,
+        Some(AgentRuntimePermissionDecision::AllowedByPolicy)
+    );
+
+    let user_allow = execute_permission_matrix_case(
+        MatrixToolPermission::Ask,
+        |_| {},
+        default_hooks.clone(),
+        Some(permission_callback("allow")),
+    )
+    .await;
+    assert!(!user_allow.is_error);
+    assert_eq!(
+        user_allow.permission_decision,
+        Some(AgentRuntimePermissionDecision::AllowedByUser)
+    );
+
+    let user_deny = execute_permission_matrix_case(
+        MatrixToolPermission::Ask,
+        |_| {},
+        default_hooks.clone(),
+        Some(permission_callback("deny")),
+    )
+    .await;
+    assert!(user_deny.is_error);
+    assert_eq!(
+        user_deny.permission_decision,
+        Some(AgentRuntimePermissionDecision::DeniedByUser)
+    );
+
+    let policy_deny = execute_permission_matrix_case(
+        MatrixToolPermission::Allow,
+        |ctx| {
+            ctx.always_deny_rules
+                .insert("policy".to_string(), vec!["PermissionMatrix".to_string()]);
+        },
+        default_hooks.clone(),
+        None,
+    )
+    .await;
+    assert!(policy_deny.is_error);
+    assert_eq!(
+        policy_deny.permission_decision,
+        Some(AgentRuntimePermissionDecision::DeniedByPolicy)
+    );
+
+    let hook_allow = execute_permission_matrix_case(
+        MatrixToolPermission::Allow,
+        |_| {},
+        Arc::new(PermissionMatrixHookRunner {
+            pre_override: Some(PermissionOverride::Allow),
+        }),
+        None,
+    )
+    .await;
+    assert!(!hook_allow.is_error);
+    assert_eq!(
+        hook_allow.permission_decision,
+        Some(AgentRuntimePermissionDecision::AllowedByHook)
+    );
+
+    let hook_deny = execute_permission_matrix_case(
+        MatrixToolPermission::Allow,
+        |_| {},
+        Arc::new(PermissionMatrixHookRunner {
+            pre_override: Some(PermissionOverride::Deny {
+                reason: "blocked by hook".to_string(),
+            }),
+        }),
+        None,
+    )
+    .await;
+    assert!(hook_deny.is_error);
+    assert_eq!(
+        hook_deny.permission_decision,
+        Some(AgentRuntimePermissionDecision::DeniedByHook)
+    );
+
+    let not_required = execute_permission_matrix_case(
+        MatrixToolPermission::Allow,
+        |ctx| {
+            ctx.mode = PermissionMode::Bypass;
+        },
+        default_hooks,
+        None,
+    )
+    .await;
+    assert!(!not_required.is_error);
+    assert_eq!(
+        not_required.permission_decision,
+        Some(AgentRuntimePermissionDecision::NotRequired)
+    );
 }
 
 #[tokio::test]
@@ -359,6 +668,7 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
         audit_ctx: crate::observability::AuditContext::noop("canonical-deferred"),
         langfuse_trace: None,
         api_client: None,
+        session_recorder: engine.session_recorder.clone(),
         agent_context: None,
         permission_callback: None,
         bg_agent_tx: None,
@@ -441,6 +751,7 @@ fn test_query_engine_inherits_agent_team_context() {
     let mut config = make_config();
     config.agent_context = Some(AgentContext {
         agent_id: "researcher@alpha".to_string(),
+        parent_agent_id: None,
         query_tracking: crate::types::tool::QueryChainTracking {
             chain_id: "chain-1".to_string(),
             depth: 1,
@@ -475,6 +786,7 @@ fn test_query_engine_inherits_agent_permission_context() {
     let mut config = make_config();
     config.agent_context = Some(AgentContext {
         agent_id: "planner@alpha".to_string(),
+        parent_agent_id: None,
         query_tracking: crate::types::tool::QueryChainTracking {
             chain_id: "chain-2".to_string(),
             depth: 1,

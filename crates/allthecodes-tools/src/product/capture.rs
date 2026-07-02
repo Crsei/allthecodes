@@ -98,6 +98,7 @@ impl Tool for MonitorTool {
             model_content: Some(ToolResultContent::Text(output)),
             display_preview: Some(preview),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 
@@ -202,6 +203,7 @@ impl Tool for TerminalCaptureTool {
                 model_content: Some(ToolResultContent::Text(content.clone())),
                 display_preview: Some(format!("Captured {} PTY line(s)", content.lines().count())),
                 new_messages: vec![],
+                ..Default::default()
             });
         }
 

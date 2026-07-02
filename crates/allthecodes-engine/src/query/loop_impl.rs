@@ -27,6 +27,9 @@ use futures::Stream;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use allthecodes_types::agent_events::AgentEvent;
+use allthecodes_types::agent_runtime_record::{compute_digest, AgentRuntimeExecutionRecord};
+
 use crate::types::config::QueryParams;
 use crate::types::message::QueryYield;
 use crate::types::message::{
@@ -38,7 +41,7 @@ use crate::types::transitions::Continue;
 
 use crate::services::tool_use_summary::{self, ToolInfo};
 
-use super::deps::QueryDeps;
+use super::deps::{QueryDeps, ToolExecResult};
 use super::goal_runtime::{
     mark_active_goal_paused, mark_active_goal_usage_limited, GoalContinuationScheduler,
 };
@@ -53,6 +56,13 @@ use super::loop_helpers::{
 use super::stop_hooks::{self, StopHookResult};
 use super::token_budget::check_token_budget;
 use super::turn_context::{prepare_model_request, QueryRunContext};
+
+#[derive(Clone, Debug, Default)]
+struct RuntimeRecordTurnContext {
+    model: Option<String>,
+    fallback_used: bool,
+    retry_count: u32,
+}
 
 /// query() -- core query loop.
 ///
@@ -168,18 +178,28 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                 &call_params.system_prompt,
                 &call_params.tools,
             );
-            let req_audit_ctx = turn_audit_ctx.with_request();
             let mut attempt_params = call_params.clone();
             let mut fallback_used = false;
+            let mut retry_count = 0_u32;
 
             use futures::StreamExt;
-            let (assistant_message, streaming_tool_executor) = loop {
-                yield QueryYield::RequestStart(RequestStartEvent);
-
+            let (assistant_message, streaming_tool_executor, runtime_record_turn_context) = loop {
                 let attempt_model = attempt_params
                     .model
                     .clone()
                     .unwrap_or_else(|| deps.get_app_state().main_loop_model.clone());
+                let req_audit_ctx = turn_audit_ctx.with_request();
+                yield QueryYield::RequestStart(RequestStartEvent {
+                    submit_id: req_audit_ctx.submit_id.clone(),
+                    turn_id: req_audit_ctx.turn_id.clone(),
+                    request_id: req_audit_ctx.request_id.clone(),
+                    provider: Some(provider_for_langfuse.clone()),
+                    backend: None,
+                    model: Some(attempt_model.clone()),
+                    attempt: retry_count.saturating_add(1),
+                    is_retry: fallback_used || retry_count > 0,
+                });
+
                 let mut generation_span = deps.langfuse_trace().as_ref().and_then(|trace| {
                     crate::services::langfuse::create_generation_span(
                         trace,
@@ -279,6 +299,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                                 );
 
                                 fallback_used = true;
+                                retry_count += 1;
                                 attempt_params.messages =
                                     strip_fallback_signature_blocks(&attempt_params.messages);
                                 attempt_params.model = Some(fallback);
@@ -455,6 +476,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             );
 
                             fallback_used = true;
+                            retry_count += 1;
                             attempt_params.messages =
                                 strip_fallback_signature_blocks(&attempt_params.messages);
                             attempt_params.model = Some(fallback);
@@ -499,7 +521,15 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     );
                 }
 
-                break (assistant_message, streaming_tool_executor);
+                break (
+                    assistant_message,
+                    streaming_tool_executor,
+                    RuntimeRecordTurnContext {
+                        model: Some(attempt_model),
+                        fallback_used,
+                        retry_count,
+                    },
+                );
             };
 
             // Accumulate usage
@@ -783,6 +813,17 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             debug!(removed, "applied Snip projection to future context");
                         }
                     }
+
+                    // Emit structured execution record for this tool invocation
+                    let record =
+                        build_execution_record(&deps, exec_result, &runtime_record_turn_context);
+                    if let Err(err) = crate::agent_runtime::emit_execution_record(&record) {
+                        debug!(error = %err, "failed to emit dashboard execution record");
+                    }
+                    deps.send_agent_event(AgentEvent::ExecutionRecord {
+                        agent_id: deps.agent_id().unwrap_or("main").to_string(),
+                        record: Box::new(record),
+                    });
                 }
 
                 let steer_messages = drain_steer_messages(&deps);
@@ -945,6 +986,90 @@ fn apply_snip_projection(messages: &mut Vec<Message>, data: &serde_json::Value) 
     let before = messages.len();
     messages.retain(|message| !ids.contains(&message.uuid().to_string()));
     before.saturating_sub(messages.len())
+}
+
+/// Build an `AgentRuntimeExecutionRecord` from a completed tool execution.
+fn build_execution_record(
+    deps: &Arc<dyn QueryDeps>,
+    exec_result: &ToolExecResult,
+    turn_context: &RuntimeRecordTurnContext,
+) -> AgentRuntimeExecutionRecord {
+    let shell = exec_result.result.shell.as_ref();
+    let shell_like = shell.is_some() || is_shell_tool_name(&exec_result.tool_name);
+
+    let command = shell.and_then(|output| output.command.clone()).or_else(|| {
+        shell_like
+            .then(|| {
+                input_string_field(&exec_result.effective_input, &["command", "cmd", "script"])
+            })
+            .flatten()
+    });
+    let cwd = shell.and_then(|output| output.cwd.clone());
+    let exit_code = shell.and_then(|output| output.exit_code);
+    let stdout_digest = shell.map(|output| compute_digest(output.stdout.as_bytes()));
+    let stderr_digest = shell.map(|output| compute_digest(output.stderr.as_bytes()));
+    let shell_had_error = shell
+        .map(|output| {
+            output.exit_code.is_some_and(|code| code != 0)
+                || output.interrupted
+                || output.error.is_some()
+        })
+        .unwrap_or(false);
+
+    AgentRuntimeExecutionRecord {
+        session_id: deps.session_id().to_string(),
+        agent_id: deps.agent_id().unwrap_or("main").to_string(),
+        parent_agent_id: deps.parent_agent_id().map(str::to_string),
+        agent_role: deps.agent_type().map(|s| s.to_string()),
+        tool: normalize_runtime_tool_name(&exec_result.tool_name, shell_like),
+        tool_use_id: Some(exec_result.tool_use_id.clone()),
+        command,
+        cwd,
+        exit_code,
+        stdout_digest,
+        stderr_digest,
+        retry_count: turn_context.retry_count,
+        model: turn_context.model.clone(),
+        fallback_used: turn_context.fallback_used,
+        permission_decision: exec_result.permission_decision.clone(),
+        duration_ms: exec_result.duration_ms,
+        had_error: exec_result.is_error || shell_had_error,
+        schema_version: 1,
+    }
+}
+
+fn normalize_runtime_tool_name(tool_name: &str, shell_like: bool) -> String {
+    if shell_like || is_shell_tool_name(tool_name) {
+        return "shell".to_string();
+    }
+
+    match tool_name {
+        "Read" | "FileRead" | "read" | "read_file" => "read".to_string(),
+        "Write" | "FileWrite" | "write" | "write_file" => "write".to_string(),
+        "Edit" | "FileEdit" | "edit" | "edit_file" => "edit".to_string(),
+        "MultiEdit" | "FileMultiEdit" => "multi_edit".to_string(),
+        "NotebookEdit" => "notebook_edit".to_string(),
+        "WebFetch" => "web_fetch".to_string(),
+        "WebSearch" => "web_search".to_string(),
+        "Agent" | "agent" => "agent".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn is_shell_tool_name(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "Bash" | "bash" | "PowerShell" | "powershell" | "pwsh" | "Pwsh"
+    )
+}
+
+fn input_string_field(input: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| input.get(*key))
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(test)]

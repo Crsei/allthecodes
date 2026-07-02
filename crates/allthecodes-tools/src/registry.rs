@@ -159,7 +159,7 @@ const GOAL_TOOL_NAMES: &[&str] = &[
     "update_goal",
 ];
 
-const WORKFLOW_TOOL_NAMES: &[&str] = &["Workflow", "workflow"];
+const WORKFLOW_TOOL_NAMES: &[&str] = &["Workflow", "workflow", "DynamicWorkflow"];
 
 const MULTI_AGENT_V2_TOOL_NAMES: &[&str] = &[
     "ListAgents",
@@ -271,6 +271,7 @@ pub fn allthecodes_tools_base_tools() -> Tools {
     tools.extend(crate::media::tools());
     tools.extend(crate::goals::tools());
     tools.extend(crate::workflow::tools());
+    tools.extend(crate::workflow_dynamic::tools());
     tools.extend(crate::memory::tools());
     tools.extend(crate::network::tools());
     tools.extend(crate::notifications::tools());

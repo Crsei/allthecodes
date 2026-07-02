@@ -5,6 +5,9 @@ use anyhow::Result;
 use futures::Stream;
 use serde_json::Value;
 
+use allthecodes_types::agent_events::AgentEvent;
+use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
+
 use crate::types::app_state::AppState;
 use crate::types::message::{AssistantMessage, Message, StreamEvent, Usage};
 use crate::types::state::AutoCompactTracking;
@@ -35,9 +38,26 @@ pub struct ToolExecRequest {
 pub struct ToolExecResult {
     pub tool_use_id: String,
     pub tool_name: String,
+    pub effective_input: Value,
     pub result: ToolResult,
     pub is_error: bool,
     pub hook_stopped_continuation: bool,
+    pub duration_ms: Option<u64>,
+    pub permission_decision: Option<AgentRuntimePermissionDecision>,
+}
+
+impl ToolExecResult {
+    pub fn with_runtime_metadata(
+        mut self,
+        effective_input: Value,
+        duration_ms: Option<u64>,
+        permission_decision: Option<AgentRuntimePermissionDecision>,
+    ) -> Self {
+        self.effective_input = effective_input;
+        self.duration_ms = duration_ms;
+        self.permission_decision = permission_decision;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -145,4 +165,30 @@ pub trait QueryDeps: Send + Sync {
     fn langfuse_provider_name(&self) -> Option<String> {
         None
     }
+
+    /// Session identifier shared across all events in a session.
+    fn session_id(&self) -> &str {
+        ""
+    }
+
+    /// Agent identifier for the current tool execution context, if any.
+    fn agent_id(&self) -> Option<&str> {
+        None
+    }
+
+    /// Agent type/role label, if any.
+    fn agent_type(&self) -> Option<&str> {
+        None
+    }
+
+    /// Parent agent identifier for the current agent context, if any.
+    fn parent_agent_id(&self) -> Option<&str> {
+        None
+    }
+
+    /// Send an agent event to the frontend (headless/TUI).
+    ///
+    /// The default implementation is a no-op so test mocks don't need to
+    /// override this method.
+    fn send_agent_event(&self, _event: AgentEvent) {}
 }

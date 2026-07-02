@@ -637,6 +637,7 @@ impl Tool for SearchExtraToolsTool {
             model_content: Some(ToolResultContent::Text(model_text)),
             display_preview: Some(preview),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 
@@ -753,6 +754,7 @@ impl Tool for ExecuteExtraToolTool {
                 .display_preview
                 .or_else(|| Some(format!("Executed deferred tool {tool_name}"))),
             new_messages: result.result.new_messages,
+            shell: result.result.shell,
         })
     }
 
@@ -815,6 +817,7 @@ mod tests {
                 model_content: None,
                 display_preview: None,
                 new_messages: vec![],
+                ..Default::default()
             })
         }
 
@@ -861,6 +864,7 @@ mod tests {
                 model_content: None,
                 display_preview: None,
                 new_messages: vec![],
+                ..Default::default()
             })
         }
 

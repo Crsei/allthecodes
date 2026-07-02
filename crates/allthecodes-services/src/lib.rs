@@ -2,6 +2,7 @@
 
 pub mod agent_definitions;
 pub mod chat_modes;
+pub mod cost_ledger;
 pub mod file_search;
 pub mod langfuse;
 pub mod lsp_lifecycle;

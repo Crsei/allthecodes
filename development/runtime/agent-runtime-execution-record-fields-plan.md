@@ -1,8 +1,8 @@
 # Agent Runtime 执行记录字段补齐计划
 
-Status: 部分实现，未完成
+Status: 已完成；执行记录字段、输出消费者和回归覆盖已落地
 Date: 2026-07-02
-Review Date: 2026-07-02
+Review Date: 2026-07-03
 Scope: agent runtime 事件、工具执行结果、权限决策、dashboard/headless 输出
 
 ## 目标
@@ -30,51 +30,53 @@ Scope: agent runtime 事件、工具执行结果、权限决策、dashboard/head
 
 ## 当前状态
 
-当前 agent runtime 已稳定产生 agent 生命周期、流式输出、工具调用、权限队列和树快照事件。代码中已经开始加入“单条工具执行记录”的类型和事件骨架，但还不能按本计划的验收标准视为完成。
+当前 agent runtime 已稳定产生 agent 生命周期、流式输出、工具调用、权限队列、树快照事件和结构化 `execution_record`。本次实现已把前 3 个阶段的核心数据路径补齐，并按任务要求把 `permission_decision` 提前并入工具执行记录。
 
-截至 2026-07-02 源码审阅，已落地的部分：
+截至 2026-07-03 实施完成的部分：
 
-- `crates/allthecodes-types/src/agent_runtime_record.rs` 已新增 `AgentRuntimeExecutionRecord`，包含计划中的目标字段以及 `agent_id`、`tool_use_id`、`duration_ms`、`had_error`、`schema_version` 等扩展字段。
-- `crates/allthecodes-types/src/agent_events.rs` 已新增 `AgentEvent::ExecutionRecord`。
-- `crates/allthecodes-engine/src/query/loop_impl.rs` 已在工具执行结果返回后构造并发送 `ExecutionRecord`。
-- `crates/allthecodes-engine/src/query/deps.rs` 和 `crates/allthecodes-engine/src/lifecycle/deps/mod.rs` 已开始把 `session_id`、`agent_id`、`agent_type` 和 agent event 发送能力接入 query/lifecycle。
-- `stdout_digest` / `stderr_digest` 已有 SHA-256 hex digest helper 和类型层单元测试。
-- headless legacy `BackendMessage::AgentEvent` 路径可以携带新的 `AgentEvent`；Rust TUI 目前显式忽略 `ExecutionRecord`，不会破坏现有任务视图。
+- `crates/allthecodes-types/src/agent_runtime_record.rs` 中的 `AgentRuntimeExecutionRecord` 已稳定输出目标字段；nullable 字段现在序列化为 `null`，不再省略键。
+- `crates/allthecodes-types/src/bash_result.rs` 新增 `ShellExecutionOutput`，并通过 `ToolResult.shell` 在通用工具结果层携带 shell 原始执行元数据；`BashResult` 保留为兼容别名。
+- Bash 和 PowerShell 执行路径已回填 `command`、`cwd`、`stdout`、`stderr`、`exit_code`、`interrupted`、`termination`、`error`，包括成功、失败、超时、取消、spawn/preflight 错误等路径。
+- `ToolExecResult` 已携带 `effective_input`、`duration_ms`、`permission_decision`；`QueryDeps` / `AgentContext` 已贯通 `parent_agent_id`。
+- `crates/allthecodes-engine/src/query/loop_impl.rs` 已使用真实 turn 上下文构造记录：`model`、`fallback_used`、`retry_count`、`duration_ms`、`parent_agent_id`、`permission_decision` 都从 runtime 路径传入。
+- shell 类工具已规范化为 `tool = "shell"`；常见非 shell 工具也会输出稳定小写 id。
+- `stdout_digest` / `stderr_digest` 使用 shell 原始 stdout/stderr 计算 SHA-256 hex digest，不从展示文本或截断 JSON 反解析。
+- 权限路径已提前接入核心记录：policy、hook、user prompt、无需权限等结果会映射为 `allowed_by_policy`、`allowed_by_hook`、`allowed_by_user`、`denied_by_policy`、`denied_by_hook`、`denied_by_user`、`not_required`。
+- headless legacy `BackendMessage::AgentEvent` 路径可以携带新的 `AgentEvent::ExecutionRecord`；Rust TUI 继续忽略该事件，不影响现有工具展示。
+- dashboard NDJSON 已新增 `execution_record` 事件和落盘测试，normalized IPC 已把 legacy `AgentEvent::ExecutionRecord` 映射为 `agent_runtime/execution_record` payload。
+- web/API IPC session hub 已接入 agent runtime event channel，root engine 产生的 `ExecutionRecord` 会进入 runtime queue、event log、WebSocket replay 和 normalized consumer 路径。
+- 已新增/更新类型 serde、shell runtime record、exec 工具、dashboard、normalized IPC、web IPC bridge 相关测试。
 
-仍未完成或不符合验收标准的部分：
+本计划验收项当前已完成：
 
-- 对外 JSON 还没有稳定包含 12 个目标键。当前多个 `Option` 字段使用 `skip_serializing_if = "Option::is_none"`，类型测试也断言缺值字段会被省略；这与“不可取得的字段用 `null` 或默认值表达”的要求冲突。
-- `model`、`fallback_used`、`retry_count`、`permission_decision`、`duration_ms`、`parent_agent_id` 还没有从真实 runtime 上下文传入记录。当前实现中 `retry_count` 固定为 `0`，`fallback_used` 固定为 `false`，`model` / `permission_decision` / `duration_ms` 为 `None`。
-- `tool` 还没有规范化。当前记录直接使用 `exec_result.tool_name`，尚未把 Bash/PowerShell 等 shell 类工具统一成 `shell`，也没有保证非 shell 工具使用稳定小写 id。
-- shell 结构化结果尚未贯通。新增的 `BashResult` 类型未接入实际 Bash/PowerShell 执行路径；`command`、`cwd`、`exit_code`、`stdout`、`stderr` 目前从 `ToolResult.data` 临时读取，而该数据可能已经经过展示/大小裁剪，不满足“从原始结构化结果生成 digest”的要求。
-- 权限决策尚未回填到记录。permission allow/deny、hook stop、无需权限等路径没有把最终有效 decision 传给 `ToolExecResult` 或记录构造器。
-- dashboard NDJSON、normalized IPC、web/API 专用消费路径没有完成针对 `execution_record` 的明确支持。当前只是部分路径能透传 `AgentEvent`。
-- 缺少验收级测试。已有测试主要覆盖类型 serde/digest；还缺 shell 成功/失败、空 stdout/stderr、超长输出、权限拒绝、无需权限、headless/dashboard 输出、runtime 集成测试。
-- 本次审阅未执行 workspace build 或测试；以上结论来自源码对照。
+- 对外 JSON 稳定包含目标字段；不可取得的 shell 专属字段按 nullable 策略输出 `null`。
+- 权限矩阵测试覆盖 policy allow、user allow/deny、policy deny、hook allow/deny、无需权限。
+- shell digest 回归测试覆盖原始 stdout/stderr、空输出和超长输出裁剪边界。
+- headless/protocol、dashboard、normalized IPC、web IPC replay/bridge 均有 `execution_record` fixture 或回归测试。
 
 按实施阶段的当前完成度：
 
 | Phase | 状态 | 说明 |
 | --- | --- | --- |
-| Phase 1: 类型和序列化 | 部分完成 | 类型和事件 variant 已有；serde 目标键稳定性不符合计划。 |
-| Phase 2: 上下文打通 | 部分完成 | session/agent 上下文部分接入；model/retry/fallback/parent 仍缺真实来源。 |
-| Phase 3: shell 结果提取和 digest | 未完成 | digest helper 已有；shell 结构化结果、raw stdout/stderr digest 和相关测试未贯通。 |
-| Phase 4: 权限决策整合 | 未完成 | 最终 permission decision 未进入执行记录。 |
-| Phase 5: 事件输出和消费者兼容 | 部分完成 | legacy AgentEvent 可透传；dashboard、normalized IPC、web/API 明确支持不足。 |
-| Phase 6: 验证和回归 | 未完成 | 缺少计划中的 runtime/IPC/permission/shell 集成覆盖，未确认 workspace build。 |
+| Phase 1: 类型和序列化 | 已完成 | `AgentRuntimeExecutionRecord`、`AgentEvent::ExecutionRecord`、nullable/default serde 策略和 digest 类型测试已落地。 |
+| Phase 2: 上下文打通 | 已完成 | `session_id`、`agent_role`、`model`、`fallback_used`、`retry_count`、`parent_agent_id`、`duration_ms` 已从 runtime/tool 上下文进入记录。 |
+| Phase 3: shell 结果提取和 digest | 已完成 | Bash/PowerShell 已暴露结构化 shell 元数据；digest 来自原始 stdout/stderr；核心 runtime 测试已覆盖。 |
+| Phase 4: 权限决策整合 | 已完成 | 核心执行路径已回填最终 decision；权限矩阵测试覆盖 policy、hook、user 和 not_required 路径。 |
+| Phase 5: 事件输出和消费者兼容 | 已完成 | headless/protocol、dashboard NDJSON、normalized IPC、web/API IPC bridge 均显式支持 `execution_record`；Rust TUI 继续兼容忽略。 |
+| Phase 6: 验证和回归 | 已完成 | 类型、runtime record、exec 工具、权限矩阵、长输出 digest、dashboard、normalized IPC、web bridge 回归测试已落地。 |
 
-已存在或可间接取得的字段：
+当前字段来源：
 
-- `model`: `AgentEvent::Spawned`、`AgentNode`、dashboard `SubagentEvent` 已有。
-- `agent_role`: 当前更接近 `agent_type`，UI 层也有 agent role 概念，但不是 runtime 记录字段。
-- `tool`: `AgentEvent::ToolUse.tool_name` 有工具名；`BackendMessage::ToolProgress.tool` 也有展示字段。
-- `permission_decision`: 权限事件里有 `decision`，hooks/permission 子系统有更接近的 `permission_decision`，但没有并入工具执行完成记录。
-- `exit_code`: shell 工具结果里有进程退出码，但目前嵌在工具输出 JSON 或展示摘要中。
-- `retry_count`: 模型调用和服务遥测里有重试计数，不属于 agent runtime 工具记录。
-- `fallback_used`: 查询循环和模型 fallback 路径中有局部状态，不属于 agent runtime 工具记录。
-- `session_id`、`cwd`: 系统其他层存在，但 agent runtime 事件没有统一携带。
+- `model`: query loop 记录本轮实际请求模型；fallback 后记录最终模型。
+- `agent_role`: `AgentContext.agent_type` 映射到执行记录的 `agent_role`。
+- `tool`: `ToolExecResult.tool_name` 经 runtime 规范化；Bash/PowerShell 统一为 `shell`。
+- `permission_decision`: lifecycle tool execution 边界把最终权限结果写入 `ToolExecResult.permission_decision`。
+- `exit_code`: Bash/PowerShell 的 `ToolResult.shell.exit_code`。
+- `retry_count`: query loop 的本轮 fallback/retry 计数。
+- `fallback_used`: query loop 的本轮 fallback 状态。
+- `session_id`、`cwd`: 分别来自 `QueryDeps.session_id()` 和 `ToolResult.shell.cwd`。
 
-当前缺失为固定字段的项：
+当前目标固定字段已进入记录构造路径：
 
 - `session_id`
 - `agent_role`
@@ -85,10 +87,11 @@ Scope: agent runtime 事件、工具执行结果、权限决策、dashboard/head
 - `stdout_digest`
 - `stderr_digest`
 - `retry_count`
+- `model`
 - `fallback_used`
 - `permission_decision`
 
-其中 `model` 已有，但还需要进入新的执行记录。
+其中 shell 专属字段在非 shell 工具上按 nullable 策略输出 `null`；`retry_count` 和 `fallback_used` 按模型 turn 上下文输出。
 
 ## 目标记录
 
@@ -306,7 +309,11 @@ pub struct AgentRuntimeExecutionRecord {
 
 ## 待确认问题
 
-- `permission_decision` 对“无需权限”的最终取值使用 `null` 还是 `not_required`。
-- digest 算法使用现有项目组件还是新增统一依赖。
 - 这条记录是否需要进入持久 session transcript，还是只进入 runtime/dashboard 审计流。
 - `agent_role` 是否应完全替代对外的 `agent_type`，还是仅作为执行记录别名。
+
+已确认并落地的决策：
+
+- `permission_decision` 对“无需权限”使用 `not_required`。
+- digest 算法固定为 SHA-256 hex。
+- shell 原始 stdout/stderr 放在通用 `ToolResult.shell`，不放在 `ToolExecResult`。

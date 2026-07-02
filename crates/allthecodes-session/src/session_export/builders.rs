@@ -178,6 +178,9 @@ pub(super) fn build_api_view_data(requests: &[ApiRequestSnapshot]) -> ApiViewDat
         models,
         last_request_id: requests.last().map(|snapshot| snapshot.request_id.clone()),
         diagnostics: Vec::new(),
+        rollout_path: None,
+        last_seq: 0,
+        record_schema_version: 0,
     }
 }
 

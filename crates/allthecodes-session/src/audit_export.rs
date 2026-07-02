@@ -58,6 +58,8 @@ pub struct AuditMetadata {
     pub total_cost_usd: f64,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_quality: Option<AuditExportMetadata>,
 }
 
 /// A single message in the audit trail.
@@ -103,6 +105,36 @@ pub struct VerifyResult {
 }
 
 // ---------------------------------------------------------------------------
+// Cost quality types for export metadata
+// ---------------------------------------------------------------------------
+
+/// Quality marker for cost data in an audit export.
+///
+/// Attached to [`AuditExportMetadata`] to describe how cost figures were
+/// obtained.  Consumers can use this to distinguish "true" costs recorded at
+/// runtime from estimates computed during backfill.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CostQuality {
+    /// All cost events came from runtime `events.ndjson` audit records.
+    Runtime,
+    /// Some or all cost events were backfilled from assistant messages in the
+    /// session JSON file.
+    Backfilled,
+    /// No cost data could be obtained (zero-cost session or no usage records).
+    NoData,
+}
+
+/// Extended metadata for export functions that integrate with the cost ledger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditExportMetadata {
+    pub quality: CostQuality,
+    pub total_cost_events: usize,
+    pub backfilled_count: usize,
+    pub unknown_pricing_count: usize,
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -133,6 +165,21 @@ pub fn export_audit_messages(
 ) -> Result<PathBuf> {
     let record = build_audit_from_messages(session_id, messages, cwd);
     write_audit_record(&record, session_id, output_path)
+}
+
+/// Export the current in-memory conversation and attach cost-quality metadata
+/// derived from pre-loaded cost events.
+pub fn export_audit_messages_with_cost_quality_events(
+    session_id: &str,
+    messages: &[Message],
+    cwd: &str,
+    output_path: Option<&Path>,
+    cost_events: &[serde_json::Value],
+) -> Result<(PathBuf, AuditExportMetadata)> {
+    let mut record = build_audit_from_messages(session_id, messages, cwd);
+    let meta = apply_cost_events_to_record(&mut record, cost_events);
+    let path = write_audit_record(&record, session_id, output_path)?;
+    Ok((path, meta))
 }
 
 /// List all audit export files.
@@ -329,6 +376,7 @@ fn build_audit_from_session_file(session: &SessionFile) -> AuditRecord {
             total_cost_usd: total_cost,
             total_input_tokens: total_input,
             total_output_tokens: total_output,
+            cost_quality: None,
         },
         integrity: IntegrityInfo {
             algorithm: "sha256".to_string(),
@@ -410,6 +458,7 @@ fn build_audit_from_messages(session_id: &str, messages: &[Message], cwd: &str) 
             total_cost_usd: total_cost,
             total_input_tokens: total_input,
             total_output_tokens: total_output,
+            cost_quality: None,
         },
         integrity: IntegrityInfo {
             algorithm: "sha256".to_string(),
@@ -561,6 +610,127 @@ fn load_session_file_raw(session_id: &str) -> Result<SessionFile> {
     Ok(file)
 }
 
+#[derive(Default)]
+struct CostEventTotals {
+    cost_usd: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+fn apply_cost_events_to_record(
+    record: &mut AuditRecord,
+    cost_events: &[serde_json::Value],
+) -> AuditExportMetadata {
+    let (metadata, totals) = summarize_cost_events(cost_events);
+    if metadata.total_cost_events > 0 {
+        record.metadata.total_cost_usd = totals.cost_usd;
+        record.metadata.total_input_tokens = totals.input_tokens;
+        record.metadata.total_output_tokens = totals.output_tokens;
+    }
+    record.metadata.cost_quality = Some(metadata.clone());
+    metadata
+}
+
+fn summarize_cost_events(
+    cost_events: &[serde_json::Value],
+) -> (AuditExportMetadata, CostEventTotals) {
+    let total_events = cost_events.len();
+    let mut backfilled_count: usize = 0;
+    let mut unknown_pricing_count: usize = 0;
+    let mut totals = CostEventTotals::default();
+
+    for raw in cost_events {
+        if raw.get("backfilled").and_then(|v| v.as_bool()) == Some(true) {
+            backfilled_count += 1;
+        }
+        if cost_event_pricing_is_unknown(raw) {
+            unknown_pricing_count += 1;
+        }
+        totals.cost_usd += raw
+            .get("cost_usd")
+            .and_then(|value| value.as_f64())
+            .unwrap_or_default();
+        if let Some(usage) = raw.get("usage") {
+            totals.input_tokens = totals.input_tokens.saturating_add(
+                usage
+                    .get("input_tokens")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or_default(),
+            );
+            totals.output_tokens = totals.output_tokens.saturating_add(
+                usage
+                    .get("output_tokens")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or_default(),
+            );
+        }
+    }
+
+    let quality = if total_events == 0 {
+        CostQuality::NoData
+    } else if backfilled_count > 0 {
+        CostQuality::Backfilled
+    } else {
+        CostQuality::Runtime
+    };
+
+    (
+        AuditExportMetadata {
+            quality,
+            total_cost_events: total_events,
+            backfilled_count,
+            unknown_pricing_count,
+        },
+        totals,
+    )
+}
+
+fn cost_event_pricing_is_unknown(raw: &serde_json::Value) -> bool {
+    let Some(pricing) = raw.get("pricing") else {
+        return true;
+    };
+    let source = pricing
+        .get("source")
+        .and_then(|source| source.as_str())
+        .unwrap_or_default();
+    let matched_key = pricing
+        .get("matched_key")
+        .and_then(|key| key.as_str())
+        .unwrap_or_default();
+    source.is_empty()
+        || source.eq_ignore_ascii_case("unknown")
+        || (matched_key.is_empty() && !source.eq_ignore_ascii_case("backfilled"))
+}
+
+// ---------------------------------------------------------------------------
+// Export with cost-quality metadata
+// ---------------------------------------------------------------------------
+
+/// Export a session audit record and attach cost-quality metadata.
+///
+/// This function accepts pre-loaded cost events (avoiding a circular dependency
+/// on `allthecodes-services`).  The caller should pass events from
+/// `allthecodes_services::cost_ledger::get_session_cost_events_with_backfill_from_json()`
+/// serialised to `serde_json::Value`, or an empty vec if no cost data is
+/// available.
+///
+/// The session file is never rewritten.
+///
+/// Returns the output path and an [`AuditExportMetadata`] describing the
+/// quality of the cost data.
+pub fn export_audit_with_cost_quality_events(
+    session_id: &str,
+    output_path: Option<&Path>,
+    cost_events: &[serde_json::Value],
+) -> Result<(PathBuf, AuditExportMetadata)> {
+    let session_file = load_session_file_raw(session_id)?;
+    let mut record = build_audit_from_session_file(&session_file);
+    let meta = apply_cost_events_to_record(&mut record, cost_events);
+    let path = write_audit_record(&record, session_id, output_path)?;
+
+    Ok((path, meta))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -604,6 +774,7 @@ mod tests {
                 total_cost_usd: 0.0,
                 total_input_tokens: 0,
                 total_output_tokens: 0,
+                cost_quality: None,
             },
             entries: vec![],
             integrity: IntegrityInfo {
@@ -636,6 +807,7 @@ mod tests {
                 total_cost_usd: 0.0,
                 total_input_tokens: 0,
                 total_output_tokens: 0,
+                cost_quality: None,
             },
             entries: vec![AuditEntry {
                 sequence: 0,
@@ -678,6 +850,7 @@ mod tests {
                 total_cost_usd: 0.0,
                 total_input_tokens: 0,
                 total_output_tokens: 0,
+                cost_quality: None,
             },
             entries: vec![AuditEntry {
                 sequence: 0,
@@ -697,6 +870,104 @@ mod tests {
         let result = verify_audit_record(&record);
         assert!(!result.valid);
         assert_eq!(result.first_broken_at, Some(0));
+    }
+
+    #[test]
+    fn cost_quality_metadata_overrides_audit_totals() {
+        let mut record = AuditRecord {
+            format_version: FORMAT_VERSION.to_string(),
+            metadata: AuditMetadata {
+                session_id: "test".into(),
+                exported_at: "2026-01-01T00:00:00Z".into(),
+                exporter_version: EXPORTER_VERSION.to_string(),
+                working_directory: "/tmp".into(),
+                model: None,
+                session_started: None,
+                session_ended: None,
+                total_messages: 0,
+                total_cost_usd: 0.001,
+                total_input_tokens: 10,
+                total_output_tokens: 5,
+                cost_quality: None,
+            },
+            entries: vec![],
+            integrity: IntegrityInfo {
+                algorithm: "sha256".into(),
+                final_chain_hash: ZERO_HASH.into(),
+                entry_count: 0,
+            },
+        };
+        let events = vec![serde_json::json!({
+            "schema_version": 1,
+            "session_id": "test",
+            "pricing": {
+                "source": "unknown",
+                "matched_key": "",
+                "currency": "USD",
+                "input_per_1m": 0.0,
+                "output_per_1m": 0.0,
+                "cache_read_multiplier": 0.1,
+                "cache_creation_multiplier": 1.25
+            },
+            "usage": {
+                "input_tokens": 100u64,
+                "output_tokens": 20u64,
+                "reasoning_output_tokens": 0u64,
+                "cache_read_input_tokens": 0u64,
+                "cache_creation_input_tokens": 0u64
+            },
+            "cost_usd": 0.5,
+            "backfilled": false
+        })];
+
+        let metadata = apply_cost_events_to_record(&mut record, &events);
+
+        assert_eq!(metadata.quality, CostQuality::Runtime);
+        assert_eq!(metadata.unknown_pricing_count, 1);
+        assert_eq!(record.metadata.total_input_tokens, 100);
+        assert_eq!(record.metadata.total_output_tokens, 20);
+        assert!((record.metadata.total_cost_usd - 0.5).abs() < f64::EPSILON);
+        assert_eq!(
+            record
+                .metadata
+                .cost_quality
+                .as_ref()
+                .unwrap()
+                .total_cost_events,
+            1
+        );
+    }
+
+    #[test]
+    fn backfilled_pricing_is_not_unknown() {
+        let events = vec![serde_json::json!({
+            "schema_version": 1,
+            "session_id": "test",
+            "pricing": {
+                "source": "backfilled",
+                "matched_key": "",
+                "currency": "USD",
+                "input_per_1m": 0.0,
+                "output_per_1m": 0.0,
+                "cache_read_multiplier": 0.1,
+                "cache_creation_multiplier": 1.25
+            },
+            "usage": {
+                "input_tokens": 100u64,
+                "output_tokens": 20u64,
+                "reasoning_output_tokens": 0u64,
+                "cache_read_input_tokens": 0u64,
+                "cache_creation_input_tokens": 0u64
+            },
+            "cost_usd": 0.5,
+            "backfilled": true
+        })];
+
+        let (metadata, _) = summarize_cost_events(&events);
+
+        assert_eq!(metadata.quality, CostQuality::Backfilled);
+        assert_eq!(metadata.backfilled_count, 1);
+        assert_eq!(metadata.unknown_pricing_count, 0);
     }
 
     #[test]
@@ -728,6 +999,7 @@ mod tests {
                 total_cost_usd: 0.0,
                 total_input_tokens: 0,
                 total_output_tokens: 0,
+                cost_quality: None,
             },
             entries: vec![
                 AuditEntry {

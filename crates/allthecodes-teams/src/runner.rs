@@ -121,6 +121,7 @@ async fn run_teammate(config: InProcessRunnerConfig) -> Result<()> {
             auto_save_session: false,
             agent_context: Some(AgentContext {
                 agent_id: identity.agent_id.clone(),
+                parent_agent_id: None,
                 query_tracking: QueryChainTracking {
                     chain_id: task_id.clone(),
                     depth: 1,

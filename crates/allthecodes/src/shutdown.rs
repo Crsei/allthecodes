@@ -91,15 +91,22 @@ pub async fn graceful_shutdown(engine: &QueryEngine) {
         debug!(cancelled, "graceful_shutdown: background agents cancelled");
     }
 
-    // Step 3: Flush transcript
+    // Step 3: Flush durable record log before derived views.
     let session_id = engine.current_session_id();
+    if let Err(e) = engine.shutdown_session_record().await {
+        warn!(error = %e, "failed to flush session record during shutdown");
+    } else {
+        debug!("graceful_shutdown: session record flushed");
+    }
+
+    // Step 4: Flush transcript
     if let Err(e) = transcript::flush_transcript(session_id.as_str()) {
         warn!(error = %e, "failed to flush transcript during shutdown");
     } else {
         debug!("graceful_shutdown: transcript flushed");
     }
 
-    // Step 4: Persist session (save current messages)
+    // Step 5: Persist session (save current messages)
     let messages = engine.messages();
     if !messages.is_empty() {
         let cwd = engine.cwd();
@@ -121,10 +128,10 @@ pub async fn graceful_shutdown(engine: &QueryEngine) {
         );
     }
 
-    // Step 5: Reset terminal state
+    // Step 6: Reset terminal state
     graceful_shutdown_sync();
 
-    // Step 6: Emit session.end audit event and sync
+    // Step 7: Emit session.end audit event and sync
     {
         use allthecodes_observability::{AuditLevel, EventKind, Outcome, Stage};
         let ctx = engine.audit_context();
@@ -145,7 +152,7 @@ pub async fn graceful_shutdown(engine: &QueryEngine) {
         ctx.sync();
     }
 
-    // Step 7: Log final usage
+    // Step 8: Log final usage
     let usage = engine.usage();
     if usage.api_call_count > 0 {
         info!(

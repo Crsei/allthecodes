@@ -874,4 +874,66 @@ mod tests {
             other => panic!("expected message_delta, got {other:?}"),
         }
     }
+
+    #[test]
+    fn build_with_uuid_calculates_cost() {
+        let mut acc = StreamAccumulator::new();
+        acc.process_event(&StreamEvent::MessageStart {
+            usage: Usage {
+                input_tokens: 1000,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+        });
+        // claude-sonnet-4-20250514: input=$3/1M, output=$15/1M
+        let expected = 1000.0 * 3.0 / 1_000_000.0;
+        let uuid = uuid::Uuid::nil();
+        let msg = acc.build_with_uuid("claude-sonnet-4-20250514", uuid);
+        assert!(msg.cost_usd > 0.0);
+        assert!((msg.cost_usd - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn build_with_uuid_unknown_model_cost_zero() {
+        let mut acc = StreamAccumulator::new();
+        acc.process_event(&StreamEvent::MessageStart {
+            usage: Usage {
+                input_tokens: 1000,
+                output_tokens: 500,
+                reasoning_output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+        });
+        let uuid = uuid::Uuid::nil();
+        let msg = acc.build_with_uuid("unknown-model", uuid);
+        assert_eq!(msg.cost_usd, 0.0);
+    }
+
+    #[test]
+    fn build_with_uuid_cache_tokens_included() {
+        let mut acc = StreamAccumulator::new();
+        acc.process_event(&StreamEvent::MessageStart {
+            usage: Usage {
+                input_tokens: 1000,
+                output_tokens: 500,
+                reasoning_output_tokens: 0,
+                cache_read_input_tokens: 500,
+                cache_creation_input_tokens: 200,
+            },
+        });
+        // claude-sonnet-4-20250514: input=$3/1M, output=$15/1M
+        // cache_read = 500 * 3.0 * 0.1 / 1_000_000
+        // cache_creation = 200 * 3.0 * 1.25 / 1_000_000
+        let expected = 1000.0 * 3.0 / 1_000_000.0
+            + 500.0 * 15.0 / 1_000_000.0
+            + 500.0 * 3.0 * 0.1 / 1_000_000.0
+            + 200.0 * 3.0 * 1.25 / 1_000_000.0;
+        let uuid = uuid::Uuid::nil();
+        let msg = acc.build_with_uuid("claude-sonnet-4-20250514", uuid);
+        assert!(msg.cost_usd > 0.0);
+        assert!((msg.cost_usd - expected).abs() < 1e-10);
+    }
 }

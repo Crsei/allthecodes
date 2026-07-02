@@ -15,6 +15,8 @@ pub(super) struct SessionUsageSnapshot {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub api_calls: u64,
+    pub unknown_pricing_count: Option<u64>,
+    pub backfilled_count: Option<u64>,
 }
 
 impl App {
@@ -27,6 +29,8 @@ impl App {
         cache_read_tokens: u64,
         cache_creation_tokens: u64,
         api_calls: u64,
+        unknown_pricing_count: Option<u64>,
+        backfilled_count: Option<u64>,
     ) {
         self.session_usage = SessionUsageSnapshot {
             input_tokens,
@@ -34,6 +38,8 @@ impl App {
             cache_read_tokens,
             cache_creation_tokens,
             api_calls,
+            unknown_pricing_count,
+            backfilled_count,
         };
         // No dirty flip; `update_session_cost` already ran and marked it.
     }
@@ -160,13 +166,17 @@ impl App {
             cache_creation_tokens: self.session_usage.cache_creation_tokens,
             total_cost_usd: self.session_cost_usd,
             api_calls: self.session_usage.api_calls,
+            unknown_pricing_count: self.session_usage.unknown_pricing_count,
+            backfilled_count: self.session_usage.backfilled_count,
             session_duration_secs: None,
             resolved_output_style_name: crate::ui::status_line_resolver::resolve_output_style_name(
                 self.output_style.as_deref(),
                 std::path::Path::new(&self.cwd),
             ),
             editor_mode: self.vim.enabled.then_some("vim"),
-            worktree: crate::ui::status_line_resolver::current_worktree_status(),
+            worktree: crate::ui::status_line_resolver::current_worktree_status_for_session(
+                (!self.session_id.is_empty()).then_some(self.session_id.as_str()),
+            ),
             streaming: self.is_streaming,
             message_count: self.messages.len(),
         });

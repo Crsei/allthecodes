@@ -1,4 +1,5 @@
 use super::*;
+use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
 
 pub(crate) fn central_permission_decision_for_tool(
     tool_name: &str,
@@ -82,6 +83,21 @@ pub(crate) fn permission_result_from_decision(
         PermissionBehavior::Ask => crate::types::tool::PermissionResult::Ask {
             message: message.unwrap_or_else(|| format!("Allow tool '{}'?", tool_name)),
         },
+    }
+}
+
+pub(crate) fn runtime_permission_decision_label(
+    decision: &PermissionDecision,
+) -> AgentRuntimePermissionDecision {
+    use crate::permissions::decision::PermissionBehavior;
+
+    let from_hook = matches!(decision.reason, PermissionDecisionReason::Hook { .. });
+    match decision.behavior {
+        PermissionBehavior::Allow if from_hook => AgentRuntimePermissionDecision::AllowedByHook,
+        PermissionBehavior::Allow => AgentRuntimePermissionDecision::AllowedByPolicy,
+        PermissionBehavior::Deny if from_hook => AgentRuntimePermissionDecision::DeniedByHook,
+        PermissionBehavior::Deny => AgentRuntimePermissionDecision::DeniedByPolicy,
+        PermissionBehavior::Ask => AgentRuntimePermissionDecision::NotRequired,
     }
 }
 

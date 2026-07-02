@@ -758,6 +758,12 @@ mod tests {
         let response = ClientResponse::Capabilities(
             allthecodes_protocol::v1::capabilities::CapabilityDiscoveryResponse {
                 capabilities: std::collections::HashMap::new(),
+                backend: None,
+                protocol: None,
+                schema: None,
+                build: None,
+                features: None,
+                checked_at: None,
             },
         );
         let payload = IpcPayload::ClientResponse(ClientResponseEnvelope {

@@ -9,7 +9,46 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 use serial_test::serial;
+use std::io::Write;
+use std::path::PathBuf;
 use uuid::Uuid;
+
+fn user_message(uuid: &str, timestamp: i64, text: &str) -> Message {
+    Message::User(UserMessage {
+        uuid: Uuid::parse_str(uuid).unwrap(),
+        timestamp,
+        role: "user".into(),
+        content: MessageContent::Text(text.into()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    })
+}
+
+fn assistant_message(uuid: &str, timestamp: i64, text: &str) -> Message {
+    Message::Assistant(AssistantMessage {
+        uuid: Uuid::parse_str(uuid).unwrap(),
+        timestamp,
+        role: "assistant".into(),
+        content: vec![ContentBlock::Text { text: text.into() }],
+        usage: None,
+        stop_reason: Some("end_turn".into()),
+        is_api_error_message: false,
+        api_error: None,
+        cost_usd: 0.0,
+    })
+}
+
+fn seed_replay_session(session_id: &str, messages: &[Message]) -> PathBuf {
+    allthecodes_session::storage::save_session(session_id, messages, ".")
+        .expect("seed session snapshot");
+    allthecodes_session::transcript::record_transcript(session_id, messages)
+        .expect("seed transcript");
+    allthecodes_session::record_replay::create_rollout_from_messages(
+        session_id, messages, ".", None, None,
+    )
+    .expect("seed rollout")
+}
 
 #[tokio::test]
 #[serial]
@@ -124,6 +163,211 @@ async fn session_detail_handler_returns_current_storage_baseline() {
         body["messages"][1]["content_blocks"][1]["type"],
         json!("tool_use")
     );
+}
+
+#[tokio::test]
+#[serial]
+async fn session_detail_handler_returns_replay_status_fields() {
+    let (_home, _guard) = temp_home();
+    let state = make_web_state();
+    let session_id = "phase5-web-replay-detail";
+    let messages = vec![user_message(
+        "30000000-0000-0000-0000-000000000011",
+        11,
+        "phase5 replay user",
+    )];
+    let rollout_path = seed_replay_session(session_id, &messages);
+    allthecodes_session::record_replay::append_record_items(
+        session_id,
+        vec![
+            allthecodes_session::record_replay::RecordItem::PermissionRequest(
+                allthecodes_session::record_replay::types::PermissionRequestRecord {
+                    request_id: "perm-phase5".into(),
+                    tool_name: "Write".into(),
+                    context: Some(json!({ "path": "src/lib.rs" })),
+                },
+            ),
+        ],
+    )
+    .expect("append permission request");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&rollout_path)
+        .expect("open rollout")
+        .write_all(b"{not valid json}\n")
+        .expect("append bad rollout line");
+
+    let response = session_detail_handler(AxumPath(session_id.to_string()), State(state))
+        .await
+        .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["session_id"], json!(session_id));
+    assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(body["messages"][0]["content"], json!("phase5 replay user"));
+    assert_eq!(body["last_seq"], json!(3));
+    assert_eq!(
+        body["record_schema_version"],
+        json!(allthecodes_session::record_replay::RECORD_SCHEMA_VERSION)
+    );
+    assert!(body["rollout_path"].as_str().unwrap().contains(session_id));
+    assert_eq!(body["pending_interactions"].as_array().unwrap().len(), 1);
+    assert_eq!(body["pending_interactions"][0]["type"], json!("permission"));
+    assert_eq!(
+        body["pending_interactions"][0]["request_id"],
+        json!("perm-phase5")
+    );
+    assert_eq!(body["pending_interactions"][0]["label"], json!("Write"));
+    assert_eq!(body["pending_interactions"][0]["seq"], json!(3));
+    assert_eq!(body["replay_warnings"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn session_message_rollback_appends_event_and_preserves_history() {
+    let (_home, _guard) = temp_home();
+    let state = make_web_state();
+    let session_id = "phase6-web-rollback";
+    let messages = vec![
+        user_message("30000000-0000-0000-0000-000000000021", 21, "keep this user"),
+        assistant_message(
+            "30000000-0000-0000-0000-000000000022",
+            22,
+            "remove this assistant",
+        ),
+        user_message(
+            "30000000-0000-0000-0000-000000000023",
+            23,
+            "remove this user",
+        ),
+    ];
+    let rollout_path = seed_replay_session(session_id, &messages);
+    let target_id = messages[0].uuid().to_string();
+
+    let preview = session_message_rollback_preview_handler(
+        AxumPath((session_id.to_string(), target_id.clone())),
+        State(state.clone()),
+        None,
+    )
+    .await
+    .into_response();
+    assert_eq!(preview.status(), StatusCode::OK);
+    let preview_body = response_json(preview).await;
+    assert_eq!(preview_body["available"], json!(true));
+    assert_eq!(preview_body["target_seq"], json!(1));
+    assert_eq!(preview_body["last_seq"], json!(4));
+    assert_eq!(preview_body["removed_message_count"], json!(2));
+
+    let response = session_message_rollback_handler(
+        AxumPath((session_id.to_string(), target_id)),
+        State(state.clone()),
+        None,
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["ok"], json!(true));
+    assert_eq!(body["target_seq"], json!(1));
+    assert_eq!(body["last_seq"], json!(5));
+    assert_eq!(body["visible_message_count"], json!(1));
+
+    let detail = session_detail_handler(AxumPath(session_id.to_string()), State(state))
+        .await
+        .into_response();
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail_body = response_json(detail).await;
+    assert_eq!(detail_body["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        detail_body["messages"][0]["content"],
+        json!("keep this user")
+    );
+    assert_eq!(detail_body["last_seq"], json!(5));
+
+    let read =
+        allthecodes_session::record_replay::read_rollout_file(&rollout_path).expect("read rollout");
+    assert_eq!(
+        read.lines
+            .iter()
+            .filter(|line| matches!(
+                &line.item,
+                allthecodes_session::record_replay::RecordItem::Message(_)
+            ))
+            .count(),
+        3
+    );
+    assert!(read.lines.iter().any(|line| matches!(
+        &line.item,
+        allthecodes_session::record_replay::RecordItem::Rollback(_)
+    )));
+
+    let transcript = std::fs::read_to_string(allthecodes_session::transcript::get_transcript_file(
+        session_id,
+    ))
+    .expect("read transcript");
+    assert_eq!(transcript.lines().count(), 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn session_message_branch_records_parent_seq_and_child_rollout() {
+    let (_home, _guard) = temp_home();
+    let state = make_web_state();
+    let session_id = "phase6-web-branch";
+    let messages = vec![
+        user_message("30000000-0000-0000-0000-000000000031", 31, "branch user"),
+        assistant_message(
+            "30000000-0000-0000-0000-000000000032",
+            32,
+            "branch assistant",
+        ),
+        user_message(
+            "30000000-0000-0000-0000-000000000033",
+            33,
+            "parent continues",
+        ),
+    ];
+    let parent_rollout = seed_replay_session(session_id, &messages);
+    let branch_target_id = messages[1].uuid().to_string();
+
+    let response = session_message_branch_handler(
+        AxumPath((session_id.to_string(), branch_target_id)),
+        State(state),
+        None,
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let child_id = body["session_id"].as_str().unwrap();
+    assert!(!child_id.is_empty());
+
+    let parent_read = allthecodes_session::record_replay::read_rollout_file(&parent_rollout)
+        .expect("read parent rollout");
+    assert!(parent_read.lines.iter().any(|line| matches!(
+        &line.item,
+        allthecodes_session::record_replay::RecordItem::Branch(branch)
+            if branch.parent_session_id == session_id
+                && branch.new_session_id == child_id
+                && branch.branch_from_seq == 2
+    )));
+    let parent_reconstructed =
+        allthecodes_session::record_replay::reconstruct_recorded_messages(&parent_read.lines);
+    assert_eq!(parent_reconstructed.messages.len(), 3);
+
+    let child_rollout = allthecodes_session::record_replay::ensure_rollout_for_session(child_id)
+        .expect("child rollout");
+    let child_read = allthecodes_session::record_replay::read_rollout_file(&child_rollout)
+        .expect("read child rollout");
+    let child_reconstructed =
+        allthecodes_session::record_replay::reconstruct_recorded_messages(&child_read.lines);
+    let metadata = child_reconstructed.metadata.expect("child metadata");
+    assert_eq!(metadata.parent_session_id.as_deref(), Some(session_id));
+    assert_eq!(metadata.branch_from_seq, Some(2));
+    assert_eq!(child_reconstructed.messages.len(), 2);
 }
 
 #[tokio::test]

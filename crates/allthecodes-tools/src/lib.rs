@@ -44,6 +44,8 @@ pub mod tasks;
 pub mod tool;
 #[cfg(feature = "full")]
 pub mod workflow;
+#[cfg(feature = "full")]
+pub mod workflow_dynamic;
 
 #[cfg(all(test, feature = "full"))]
 mod semantic_tool_tests;

@@ -309,8 +309,25 @@ pub struct MessageDelta {
 }
 
 /// 请求开始事件 (标记新的 API 请求)
-#[derive(Debug, Clone)]
-pub struct RequestStartEvent;
+#[derive(Debug, Clone, Default)]
+pub struct RequestStartEvent {
+    /// Submit-level audit ID for this model request.
+    pub submit_id: Option<String>,
+    /// Query-turn audit ID for this model request.
+    pub turn_id: Option<String>,
+    /// Request-level audit ID for this model API call.
+    pub request_id: Option<String>,
+    /// Provider label, e.g. `anthropic` / `openai`.
+    pub provider: Option<String>,
+    /// Backend label, e.g. `native` / `codex`, when known.
+    pub backend: Option<String>,
+    /// Model used for this attempt.
+    pub model: Option<String>,
+    /// 1-based attempt number for this request.
+    pub attempt: u32,
+    /// Whether this request is a retry/fallback attempt.
+    pub is_retry: bool,
+}
 
 /// query() 产出的所有事件类型
 #[derive(Debug, Clone)]

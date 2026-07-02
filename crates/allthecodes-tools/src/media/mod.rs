@@ -210,6 +210,7 @@ impl Tool for ViewImageTool {
             }])),
             display_preview: Some(format!("Viewed image {}", validated.display())),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 

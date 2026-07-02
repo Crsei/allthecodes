@@ -509,6 +509,7 @@ fn internal_tool_error_result(
     ToolExecResult {
         tool_use_id,
         tool_name,
+        effective_input: serde_json::Value::Null,
         result: crate::types::tool::ToolResult {
             data: serde_json::json!(format!("Internal error: {}", error)),
             new_messages: vec![],
@@ -516,6 +517,8 @@ fn internal_tool_error_result(
         },
         is_error: true,
         hook_stopped_continuation: false,
+        duration_ms: None,
+        permission_decision: None,
     }
 }
 
@@ -879,6 +882,7 @@ mod tests {
             Ok(ToolExecResult {
                 tool_use_id: request.tool_use_id,
                 tool_name: request.tool_name,
+                effective_input: request.input,
                 result: ToolResult {
                     data: serde_json::json!("ok"),
                     new_messages: vec![],
@@ -886,6 +890,8 @@ mod tests {
                 },
                 is_error: false,
                 hook_stopped_continuation: false,
+                duration_ms: None,
+                permission_decision: None,
             })
         }
 
@@ -1114,6 +1120,7 @@ mod tests {
         let exec_result = ToolExecResult {
             tool_use_id: "tu_text".to_string(),
             tool_name: "TextTool".to_string(),
+            effective_input: serde_json::Value::Null,
             result: ToolResult {
                 data: serde_json::json!({"ok": true}),
                 new_messages: vec![],
@@ -1121,6 +1128,8 @@ mod tests {
             },
             is_error: false,
             hook_stopped_continuation: false,
+            duration_ms: None,
+            permission_decision: None,
         };
 
         let user_msg = make_tool_result_user_message(&deps, &exec_result, source_uuid);
@@ -1155,6 +1164,7 @@ mod tests {
         let exec_result = ToolExecResult {
             tool_use_id: "tu_preview".to_string(),
             tool_name: "Workflow".to_string(),
+            effective_input: serde_json::Value::Null,
             result: ToolResult {
                 data: serde_json::json!({"workflow_id": "workflow-1", "status": "started"}),
                 display_preview: Some("Workflow workflow-1 is started".to_string()),
@@ -1163,6 +1173,8 @@ mod tests {
             },
             is_error: false,
             hook_stopped_continuation: false,
+            duration_ms: None,
+            permission_decision: None,
         };
 
         let user_msg = make_tool_result_user_message(&deps, &exec_result, source_uuid);
@@ -1199,14 +1211,18 @@ mod tests {
         let exec_result = ToolExecResult {
             tool_use_id: "tu_image".to_string(),
             tool_name: "Screenshot".to_string(),
+            effective_input: serde_json::Value::Null,
             result: ToolResult {
                 data: serde_json::json!({"raw": "large"}),
                 model_content: Some(ToolResultContent::Blocks(vec![image])),
                 display_preview: Some("[Screenshot: image/png]".to_string()),
                 new_messages: vec![],
+                ..Default::default()
             },
             is_error: false,
             hook_stopped_continuation: false,
+            duration_ms: None,
+            permission_decision: None,
         };
 
         let user_msg = make_tool_result_user_message(&deps, &exec_result, source_uuid);
@@ -1241,14 +1257,18 @@ mod tests {
         let exec_result = ToolExecResult {
             tool_use_id: "tu_error".to_string(),
             tool_name: "FailingTool".to_string(),
+            effective_input: serde_json::Value::Null,
             result: ToolResult {
                 data: serde_json::json!("permission denied"),
                 model_content: Some(ToolResultContent::Text("ignored".to_string())),
                 display_preview: Some("ignored".to_string()),
                 new_messages: vec![],
+                ..Default::default()
             },
             is_error: true,
             hook_stopped_continuation: false,
+            duration_ms: None,
+            permission_decision: None,
         };
 
         let user_msg = make_tool_result_user_message(&deps, &exec_result, source_uuid);

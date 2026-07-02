@@ -34,6 +34,7 @@ fn preview_tool_result(data: Value, preview: impl Into<String>) -> ToolResult {
         model_content: None,
         display_preview: Some(preview),
         new_messages: vec![],
+        ..Default::default()
     }
 }
 

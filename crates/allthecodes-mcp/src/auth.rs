@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
 use rand::RngCore;
 use reqwest::StatusCode;
@@ -20,7 +20,7 @@ use tracing::warn;
 use url::Url;
 
 use super::{McpOAuthConfig, McpServerConfig};
-use crate::oauth_store::{McpCredentialsStoreMode, store_ops as oauth_store_ops};
+use crate::oauth_store::{store_ops as oauth_store_ops, McpCredentialsStoreMode};
 
 const DEFAULT_CLIENT_ID: &str = "allthecodes";
 const DEFAULT_CALLBACK_PORT: u16 = 1455;

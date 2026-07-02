@@ -109,6 +109,7 @@ impl Tool for SendUserFileTool {
             model_content: Some(ToolResultContent::Text(content)),
             display_preview: Some(format!("Sent {}", spec.path.display())),
             new_messages: vec![attachment],
+            ..Default::default()
         })
     }
 

@@ -1,6 +1,100 @@
 use super::*;
+use crate::session::record_replay::types::{
+    PermissionRequestRecord, PermissionResponseRecord, QuestionRequestRecord,
+    QuestionResponseRecord, RecordItem,
+};
+use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
 
 impl QueryEngineDeps {
+    async fn record_replay_items(&self, items: Vec<RecordItem>, context: &'static str) {
+        record_replay_items_for_handle(&self.session_recorder, &self.session_id, items, context)
+            .await;
+    }
+
+    async fn record_tool_permission_request(
+        &self,
+        request: &ToolExecRequest,
+        input: &serde_json::Value,
+        message: &str,
+        options: &[String],
+    ) {
+        self.record_replay_items(
+            vec![RecordItem::PermissionRequest(PermissionRequestRecord {
+                request_id: request.tool_use_id.clone(),
+                tool_name: request.tool_name.clone(),
+                context: Some(serde_json::json!({
+                    "message": message,
+                    "tool_input": input.clone(),
+                    "options": options,
+                })),
+            })],
+            "permission_request",
+        )
+        .await;
+    }
+
+    async fn record_tool_permission_response(
+        &self,
+        request_id: &str,
+        decision: impl Into<String>,
+        reason: Option<String>,
+    ) {
+        self.record_replay_items(
+            vec![RecordItem::PermissionResponse(PermissionResponseRecord {
+                request_id: request_id.to_string(),
+                decision: decision.into(),
+                reason,
+            })],
+            "permission_response",
+        )
+        .await;
+    }
+
+    fn recordable_ask_user_callback(&self) -> Option<crate::types::tool::AskUserCallback> {
+        let callback = self.state.read().ask_user_callback.clone()?;
+        let session_recorder = self.session_recorder.clone();
+        let session_id = self.session_id.clone();
+        Some(Arc::new(
+            move |request: allthecodes_types::callbacks::AskUserRequestPayload| {
+                let callback = callback.clone();
+                let session_recorder = session_recorder.clone();
+                let session_id = session_id.clone();
+                Box::pin(async move {
+                    let request_id = Uuid::new_v4().to_string();
+                    let prompt = request.question.clone();
+                    let options = serde_json::json!({
+                        "choices": request.choices.clone(),
+                        "allow_free_text": request.allow_free_text,
+                    });
+                    record_replay_items_for_handle(
+                        &session_recorder,
+                        &session_id,
+                        vec![RecordItem::QuestionRequest(QuestionRequestRecord {
+                            request_id: request_id.clone(),
+                            prompt,
+                            options: Some(options),
+                        })],
+                        "question_request",
+                    )
+                    .await;
+
+                    let response = callback(request).await;
+                    record_replay_items_for_handle(
+                        &session_recorder,
+                        &session_id,
+                        vec![RecordItem::QuestionResponse(QuestionResponseRecord {
+                            request_id,
+                            response: response.clone(),
+                        })],
+                        "question_response",
+                    )
+                    .await;
+                    response
+                })
+            },
+        ))
+    }
+
     // Production implementation of the canonical query-loop tool execution
     // boundary declared in `QueryDeps`. Main-loop and future stream-time
     // scheduling must stay routed here so permission, hook, progress, audit,
@@ -142,7 +236,7 @@ impl QueryEngineDeps {
                 .as_ref()
                 .map(|ac| ac.query_tracking.clone()),
             permission_callback: self.permission_callback.clone(),
-            ask_user_callback: self.state.read().ask_user_callback.clone(),
+            ask_user_callback: self.recordable_ask_user_callback(),
             permission_event_callback: self.permission_event_callback.clone(),
             bg_agent_tx: self.bg_agent_tx.clone(),
             hook_runner: self.hook_runner.clone(),
@@ -159,14 +253,14 @@ impl QueryEngineDeps {
 
         // Pre-tool hooks.
         let execution_started = std::time::Instant::now();
+        let mut permission_decision = AgentRuntimePermissionDecision::NotRequired;
 
         match tool.validate_input(&request.input, &ctx).await {
             ValidationResult::Ok => {}
             ValidationResult::Error { message, .. } => {
-                return Ok(ToolExecResult {
-                    tool_use_id: request.tool_use_id,
-                    tool_name: request.tool_name,
-                    result: crate::types::tool::ToolResult {
+                return Ok(tool_exec_result(
+                    &request,
+                    crate::types::tool::ToolResult {
                         data: serde_json::json!(format!(
                             "Input validation error: {}. The schema was not sent - please check the tool's input requirements.",
                             message
@@ -174,9 +268,12 @@ impl QueryEngineDeps {
                         new_messages: vec![],
                         ..Default::default()
                     },
-                    is_error: true,
-                    hook_stopped_continuation: false,
-                });
+                    true,
+                    false,
+                    request.input.clone(),
+                    elapsed_ms(execution_started),
+                    Some(AgentRuntimePermissionDecision::NotRequired),
+                ));
             }
         }
 
@@ -193,7 +290,13 @@ impl QueryEngineDeps {
             &ctx,
             execution_started,
         ) {
-            return Ok(tool_execution_result_to_exec_result(result));
+            return Ok(
+                tool_execution_result_to_exec_result(result).with_runtime_metadata(
+                    sanitized_input.clone(),
+                    elapsed_ms(execution_started),
+                    Some(AgentRuntimePermissionDecision::DeniedByPolicy),
+                ),
+            );
         }
 
         let (mut effective_input, permission_override) = match hooks
@@ -208,25 +311,26 @@ impl QueryEngineDeps {
                 permission_override,
             ),
             Ok(PreToolHookResult::Stop { message }) => {
-                return Ok(ToolExecResult {
-                    tool_use_id: request.tool_use_id,
-                    tool_name: request.tool_name,
-                    result: crate::types::tool::ToolResult {
+                return Ok(tool_exec_result(
+                    &request,
+                    crate::types::tool::ToolResult {
                         data: serde_json::json!(format!("Pre-tool hook stopped: {}", message)),
                         new_messages: vec![],
                         ..Default::default()
                     },
-                    is_error: true,
-                    hook_stopped_continuation: false,
-                });
+                    true,
+                    false,
+                    sanitized_input.clone(),
+                    elapsed_ms(execution_started),
+                    Some(AgentRuntimePermissionDecision::DeniedByHook),
+                ));
             }
             Err(e) => {
                 if hook_error_is_critical(&request.tool_name, &pre_configs) {
                     tracing::warn!(error = %e, tool = %request.tool_name, "critical pre-tool hook error, blocking tool execution");
-                    return Ok(ToolExecResult {
-                        tool_use_id: request.tool_use_id,
-                        tool_name: request.tool_name,
-                        result: crate::types::tool::ToolResult {
+                    return Ok(tool_exec_result(
+                        &request,
+                        crate::types::tool::ToolResult {
                             data: serde_json::json!(format!(
                                 "Critical pre-tool hook failed: {}",
                                 e
@@ -234,9 +338,12 @@ impl QueryEngineDeps {
                             new_messages: vec![],
                             ..Default::default()
                         },
-                        is_error: true,
-                        hook_stopped_continuation: false,
-                    });
+                        true,
+                        false,
+                        sanitized_input.clone(),
+                        elapsed_ms(execution_started),
+                        Some(AgentRuntimePermissionDecision::DeniedByHook),
+                    ));
                 } else {
                     tracing::warn!(error = %e, "optional pre-tool hook error, continuing");
                     (sanitized_input.clone(), None)
@@ -248,10 +355,9 @@ impl QueryEngineDeps {
             match tool.validate_input(&effective_input, &ctx).await {
                 ValidationResult::Ok => {}
                 ValidationResult::Error { message, .. } => {
-                    return Ok(ToolExecResult {
-                        tool_use_id: request.tool_use_id,
-                        tool_name: request.tool_name,
-                        result: crate::types::tool::ToolResult {
+                    return Ok(tool_exec_result(
+                        &request,
+                        crate::types::tool::ToolResult {
                             data: serde_json::json!(format!(
                                 "Pre-tool hook produced invalid input: {}.",
                                 message
@@ -259,9 +365,12 @@ impl QueryEngineDeps {
                             new_messages: vec![],
                             ..Default::default()
                         },
-                        is_error: true,
-                        hook_stopped_continuation: false,
-                    });
+                        true,
+                        false,
+                        effective_input.clone(),
+                        elapsed_ms(execution_started),
+                        Some(AgentRuntimePermissionDecision::DeniedByHook),
+                    ));
                 }
             }
 
@@ -273,13 +382,20 @@ impl QueryEngineDeps {
                 &ctx,
                 execution_started,
             ) {
-                return Ok(tool_execution_result_to_exec_result(result));
+                return Ok(
+                    tool_execution_result_to_exec_result(result).with_runtime_metadata(
+                        effective_input.clone(),
+                        elapsed_ms(execution_started),
+                        Some(AgentRuntimePermissionDecision::DeniedByPolicy),
+                    ),
+                );
             }
         }
 
         // Permission check (tool-local checks first, then central rules/mode).
         let hook_decision = match permission_override.as_ref() {
             Some(PermissionOverride::Allow) => {
+                permission_decision = AgentRuntimePermissionDecision::AllowedByHook;
                 tracing::debug!(
                     tool = %request.tool_name,
                     "Permission allow requested by hook override"
@@ -302,6 +418,7 @@ impl QueryEngineDeps {
         };
 
         if let Some(PermissionOverride::Deny { reason }) = permission_override.as_ref() {
+            permission_decision = AgentRuntimePermissionDecision::DeniedByHook;
             emit_hook_permission_decision(
                 &ctx,
                 "PreToolUse",
@@ -323,17 +440,25 @@ impl QueryEngineDeps {
                     .await;
             }
 
-            return Ok(ToolExecResult {
-                tool_use_id: request.tool_use_id,
-                tool_name: request.tool_name,
-                result: crate::types::tool::ToolResult {
+            self.record_tool_permission_response(
+                &request.tool_use_id,
+                "deny",
+                Some(format!("Permission denied by hook: {reason}")),
+            )
+            .await;
+            return Ok(tool_exec_result(
+                &request,
+                crate::types::tool::ToolResult {
                     data: serde_json::json!(format!("Permission denied by hook: {}", reason)),
                     new_messages: vec![],
                     ..Default::default()
                 },
-                is_error: true,
-                hook_stopped_continuation: false,
-            });
+                true,
+                false,
+                effective_input.clone(),
+                elapsed_ms(execution_started),
+                Some(permission_decision),
+            ));
         }
 
         let mut accepted_permission_feedback: Option<String> = None;
@@ -410,6 +535,7 @@ impl QueryEngineDeps {
                             &app_state,
                             &decision,
                         );
+                        permission_decision = runtime_permission_decision_label(&decision);
                         permission_result_from_decision(
                             &request.tool_name,
                             &mut effective_input,
@@ -422,8 +548,19 @@ impl QueryEngineDeps {
             match perm_result {
                 PermissionResult::Allow { updated_input } => {
                     effective_input = updated_input;
+                    if permission_decision != AgentRuntimePermissionDecision::NotRequired {
+                        self.record_tool_permission_response(
+                            &request.tool_use_id,
+                            "allow",
+                            Some(format!("{permission_decision:?}")),
+                        )
+                        .await;
+                    }
                 }
                 PermissionResult::Deny { message } => {
+                    if permission_decision == AgentRuntimePermissionDecision::NotRequired {
+                        permission_decision = AgentRuntimePermissionDecision::DeniedByPolicy;
+                    }
                     // Emit permission.resolved(denied) audit event
                     {
                         use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
@@ -453,17 +590,25 @@ impl QueryEngineDeps {
                             .await;
                     }
 
-                    return Ok(ToolExecResult {
-                        tool_use_id: request.tool_use_id,
-                        tool_name: request.tool_name,
-                        result: crate::types::tool::ToolResult {
+                    self.record_tool_permission_response(
+                        &request.tool_use_id,
+                        "deny",
+                        Some(message.clone()),
+                    )
+                    .await;
+                    return Ok(tool_exec_result(
+                        &request,
+                        crate::types::tool::ToolResult {
                             data: serde_json::json!(format!("Permission denied: {}", message)),
                             new_messages: vec![],
                             ..Default::default()
                         },
-                        is_error: true,
-                        hook_stopped_continuation: false,
-                    });
+                        true,
+                        false,
+                        effective_input.clone(),
+                        elapsed_ms(execution_started),
+                        Some(permission_decision),
+                    ));
                 }
                 PermissionResult::Ask { message } => {
                     // Emit permission.requested audit event
@@ -481,6 +626,20 @@ impl QueryEngineDeps {
                             })),
                         );
                     }
+
+                    let options = vec![
+                        "Allow".to_string(),
+                        "Deny".to_string(),
+                        "Always Allow".to_string(),
+                        "Auto Review".to_string(),
+                    ];
+                    self.record_tool_permission_request(
+                        &request,
+                        &effective_input,
+                        &message,
+                        &options,
+                    )
+                    .await;
 
                     // Fire PermissionRequest hook before interactive prompt
                     let mut hook_allowed = false;
@@ -512,6 +671,14 @@ impl QueryEngineDeps {
                                             tool = %request.tool_name,
                                             "PermissionRequest hook allowed tool execution"
                                         );
+                                        permission_decision =
+                                            AgentRuntimePermissionDecision::AllowedByHook;
+                                        self.record_tool_permission_response(
+                                            &request.tool_use_id,
+                                            "allow",
+                                            Some("PermissionRequest hook".to_string()),
+                                        )
+                                        .await;
                                         hook_allowed = true;
                                     }
                                     "deny" => {
@@ -533,19 +700,27 @@ impl QueryEngineDeps {
                                                 .await;
                                         }
 
-                                        return Ok(ToolExecResult {
-                                            tool_use_id: request.tool_use_id,
-                                            tool_name: request.tool_name,
-                                            result: crate::types::tool::ToolResult {
+                                        self.record_tool_permission_response(
+                                            &request.tool_use_id,
+                                            "deny",
+                                            Some("PermissionRequest hook".to_string()),
+                                        )
+                                        .await;
+                                        return Ok(tool_exec_result(
+                                            &request,
+                                            crate::types::tool::ToolResult {
                                                 data: serde_json::json!(
                                                     "Permission denied by hook"
                                                 ),
                                                 new_messages: vec![],
                                                 ..Default::default()
                                             },
-                                            is_error: true,
-                                            hook_stopped_continuation: false,
-                                        });
+                                            true,
+                                            false,
+                                            effective_input.clone(),
+                                            elapsed_ms(execution_started),
+                                            Some(AgentRuntimePermissionDecision::DeniedByHook),
+                                        ));
                                     }
                                     _ => {} // unknown decision, continue with normal prompt
                                 }
@@ -555,25 +730,27 @@ impl QueryEngineDeps {
 
                     if !hook_allowed {
                         if let Some(ref callback) = ctx.permission_callback {
-                            let options = vec![
-                                "Allow".to_string(),
-                                "Deny".to_string(),
-                                "Always Allow".to_string(),
-                                "Auto Review".to_string(),
-                            ];
                             let response = callback(PermissionRequestPayload {
                                 tool_use_id: request.tool_use_id.clone(),
                                 tool_name: request.tool_name.clone(),
                                 tool_input: effective_input.clone(),
-                                message,
-                                options,
+                                message: message.clone(),
+                                options: options.clone(),
                                 operation: None,
                             })
                             .await;
 
                             let decision = response.normalized_decision();
+                            self.record_tool_permission_response(
+                                &request.tool_use_id,
+                                decision.clone(),
+                                response.feedback.clone(),
+                            )
+                            .await;
                             match decision.as_str() {
                                 "allow" => {
+                                    permission_decision =
+                                        AgentRuntimePermissionDecision::AllowedByUser;
                                     accepted_permission_feedback = response.feedback.clone();
                                     // Emit permission.resolved(allow) audit event
                                     use crate::observability::{
@@ -592,7 +769,8 @@ impl QueryEngineDeps {
                                     );
                                 }
                                 "always_allow" => {
-                                    accepted_permission_feedback = response.feedback.clone();
+                                    permission_decision =
+                                        AgentRuntimePermissionDecision::AllowedByUser;
                                     let rule = exact_always_allow_rule(
                                         &request.tool_name,
                                         &effective_input,
@@ -622,6 +800,9 @@ impl QueryEngineDeps {
                                         return Ok(permission_denied_exec_result(
                                             &request,
                                             error_message,
+                                            effective_input.clone(),
+                                            execution_started,
+                                            AgentRuntimePermissionDecision::DeniedByUser,
                                         ));
                                     }
                                     {
@@ -633,6 +814,7 @@ impl QueryEngineDeps {
                                         rule = %rule,
                                         "local exact always_allow rule recorded"
                                     );
+                                    accepted_permission_feedback = response.feedback.clone();
                                     use crate::observability::{
                                         AuditLevel, EventKind, Outcome, Stage,
                                     };
@@ -651,6 +833,8 @@ impl QueryEngineDeps {
                                     );
                                 }
                                 "auto_review" => {
+                                    permission_decision =
+                                        AgentRuntimePermissionDecision::AllowedByUser;
                                     let risk_level =
                                         permission_risk_level(&request.tool_name, &effective_input);
                                     let action = Some(permission_action_summary(
@@ -696,6 +880,9 @@ impl QueryEngineDeps {
                                             format!(
                                                 "Permission denied: auto review unavailable ({reason})."
                                             ),
+                                            effective_input.clone(),
+                                            execution_started,
+                                            AgentRuntimePermissionDecision::DeniedByUser,
                                         ));
                                     }
 
@@ -762,6 +949,9 @@ impl QueryEngineDeps {
                                             &request,
                                             "Permission denied: auto review classifier is unavailable."
                                                 .to_string(),
+                                            effective_input.clone(),
+                                            execution_started,
+                                            AgentRuntimePermissionDecision::DeniedByUser,
                                         ));
                                     };
 
@@ -809,6 +999,9 @@ impl QueryEngineDeps {
                                                 "Permission denied: auto review could not classify this request: {}",
                                                 classifier.reason
                                             ),
+                                            effective_input.clone(),
+                                            execution_started,
+                                            AgentRuntimePermissionDecision::DeniedByUser,
                                         ));
                                     }
 
@@ -912,6 +1105,9 @@ impl QueryEngineDeps {
                                                 format!(
                                                     "Permission denied by auto review: {reason}"
                                                 ),
+                                                effective_input.clone(),
+                                                execution_started,
+                                                AgentRuntimePermissionDecision::DeniedByUser,
                                             ));
                                         }
                                     }
@@ -955,17 +1151,13 @@ impl QueryEngineDeps {
                                             .await;
                                     }
 
-                                    return Ok(ToolExecResult {
-                                        tool_use_id: request.tool_use_id,
-                                        tool_name: request.tool_name,
-                                        result: crate::types::tool::ToolResult {
-                                            data: serde_json::json!(denial_message),
-                                            new_messages: vec![],
-                                            ..Default::default()
-                                        },
-                                        is_error: true,
-                                        hook_stopped_continuation: false,
-                                    });
+                                    return Ok(permission_denied_exec_result(
+                                        &request,
+                                        denial_message,
+                                        effective_input.clone(),
+                                        execution_started,
+                                        AgentRuntimePermissionDecision::DeniedByUser,
+                                    ));
                                 }
                             }
                         } else {
@@ -983,20 +1175,19 @@ impl QueryEngineDeps {
                                     .await;
                             }
 
-                            return Ok(ToolExecResult {
-                                tool_use_id: request.tool_use_id,
-                                tool_name: request.tool_name,
-                                result: crate::types::tool::ToolResult {
-                                    data: serde_json::json!(format!(
-                                        "Permission required: {}",
-                                        message
-                                    )),
-                                    new_messages: vec![],
-                                    ..Default::default()
-                                },
-                                is_error: true,
-                                hook_stopped_continuation: false,
-                            });
+                            self.record_tool_permission_response(
+                                &request.tool_use_id,
+                                "deny",
+                                Some(format!("Permission required: {message}")),
+                            )
+                            .await;
+                            return Ok(permission_denied_exec_result(
+                                &request,
+                                format!("Permission required: {}", message),
+                                effective_input.clone(),
+                                execution_started,
+                                AgentRuntimePermissionDecision::DeniedByPolicy,
+                            ));
                         }
                     } // if !hook_allowed
                 }
@@ -1111,10 +1302,9 @@ impl QueryEngineDeps {
                         }
                         Err(e) if hook_error_is_critical(&request.tool_name, &post_configs) => {
                             tracing::warn!(error = %e, tool = %request.tool_name, "critical post-tool hook error, failing tool execution");
-                            return Ok(ToolExecResult {
-                                tool_use_id: request.tool_use_id,
-                                tool_name: request.tool_name,
-                                result: crate::types::tool::ToolResult {
+                            return Ok(tool_exec_result(
+                                &request,
+                                crate::types::tool::ToolResult {
                                     data: serde_json::json!(format!(
                                         "Critical post-tool hook failed: {}",
                                         e
@@ -1122,9 +1312,12 @@ impl QueryEngineDeps {
                                     new_messages: vec![],
                                     ..Default::default()
                                 },
-                                is_error: true,
-                                hook_stopped_continuation: false,
-                            });
+                                true,
+                                false,
+                                effective_input.clone(),
+                                elapsed_ms(tool_start),
+                                Some(permission_decision),
+                            ));
                         }
                         Err(e) => {
                             tracing::warn!(error = %e, tool = %request.tool_name, "optional post-tool hook error, continuing");
@@ -1143,13 +1336,15 @@ impl QueryEngineDeps {
                     tool.max_result_size_chars(),
                 );
 
-                Ok(ToolExecResult {
-                    tool_use_id: request.tool_use_id,
-                    tool_name: request.tool_name,
+                Ok(tool_exec_result(
+                    &request,
                     result,
-                    is_error: false,
+                    false,
                     hook_stopped_continuation,
-                })
+                    effective_input.clone(),
+                    elapsed_ms(tool_start),
+                    Some(permission_decision),
+                ))
             }
             Err(e) => {
                 crate::services::langfuse::finish_tool_span(
@@ -1190,10 +1385,9 @@ impl QueryEngineDeps {
                             if hook_error_is_critical(&request.tool_name, &failure_configs) =>
                         {
                             tracing::warn!(error = %hook_error, tool = %request.tool_name, "critical post-failure hook error, failing tool execution");
-                            return Ok(ToolExecResult {
-                                tool_use_id: request.tool_use_id,
-                                tool_name: request.tool_name,
-                                result: crate::types::tool::ToolResult {
+                            return Ok(tool_exec_result(
+                                &request,
+                                crate::types::tool::ToolResult {
                                     data: serde_json::json!(format!(
                                         "Critical post-failure hook failed after tool error ({}): {}",
                                         e, hook_error
@@ -1201,9 +1395,12 @@ impl QueryEngineDeps {
                                     new_messages: vec![],
                                     ..Default::default()
                                 },
-                                is_error: true,
-                                hook_stopped_continuation: false,
-                            });
+                                true,
+                                false,
+                                effective_input.clone(),
+                                elapsed_ms(tool_start),
+                                Some(permission_decision),
+                            ));
                         }
                         Err(hook_error) => {
                             tracing::warn!(error = %hook_error, tool = %request.tool_name, "optional post-failure hook error, continuing");
@@ -1211,35 +1408,105 @@ impl QueryEngineDeps {
                     }
                 }
 
-                Ok(ToolExecResult {
-                    tool_use_id: request.tool_use_id,
-                    tool_name: request.tool_name,
-                    result: crate::types::tool::ToolResult {
+                Ok(tool_exec_result(
+                    &request,
+                    crate::types::tool::ToolResult {
                         data: serde_json::json!(format!("Error: {}", e)),
                         new_messages: vec![],
                         ..Default::default()
                     },
-                    is_error: true,
-                    hook_stopped_continuation: false,
-                })
+                    true,
+                    false,
+                    effective_input.clone(),
+                    elapsed_ms(tool_start),
+                    Some(permission_decision),
+                ))
             }
         }
     }
 }
 
+fn filter_tools_for_allowed_override(tools: Tools, allowed_tools: Option<&Vec<String>>) -> Tools {
+    let Some(allowed_tools) = allowed_tools else {
+        return tools;
+    };
+    let allowed: HashSet<String> = allowed_tools
+        .iter()
+        .map(|tool| tool.to_ascii_lowercase())
+        .collect();
+    tools
+        .into_iter()
+        .filter(|tool| allowed.contains(&tool.name().to_ascii_lowercase()))
+        .collect()
+}
 
-fn permission_denied_exec_result(request: &ToolExecRequest, message: String) -> ToolExecResult {
+async fn record_replay_items_for_handle(
+    session_recorder: &Arc<Mutex<Option<crate::session::record_replay::SessionRecorderHandle>>>,
+    session_id: &str,
+    items: Vec<RecordItem>,
+    context: &'static str,
+) {
+    if items.is_empty() {
+        return;
+    }
+    let handle = session_recorder.lock().clone();
+    if let Some(handle) = handle {
+        if let Err(error) = handle.add(items).await {
+            tracing::warn!(
+                session_id = %session_id,
+                context,
+                %error,
+                "failed to record session replay item"
+            );
+        }
+    }
+}
+
+fn elapsed_ms(started: std::time::Instant) -> Option<u64> {
+    Some(started.elapsed().as_millis() as u64)
+}
+
+fn tool_exec_result(
+    request: &ToolExecRequest,
+    result: crate::types::tool::ToolResult,
+    is_error: bool,
+    hook_stopped_continuation: bool,
+    effective_input: serde_json::Value,
+    duration_ms: Option<u64>,
+    permission_decision: Option<AgentRuntimePermissionDecision>,
+) -> ToolExecResult {
     ToolExecResult {
         tool_use_id: request.tool_use_id.clone(),
         tool_name: request.tool_name.clone(),
-        result: crate::types::tool::ToolResult {
+        effective_input,
+        result,
+        is_error,
+        hook_stopped_continuation,
+        duration_ms,
+        permission_decision,
+    }
+}
+
+fn permission_denied_exec_result(
+    request: &ToolExecRequest,
+    message: String,
+    effective_input: serde_json::Value,
+    started: std::time::Instant,
+    permission_decision: AgentRuntimePermissionDecision,
+) -> ToolExecResult {
+    tool_exec_result(
+        request,
+        crate::types::tool::ToolResult {
             data: serde_json::json!(message),
             new_messages: vec![],
             ..Default::default()
         },
-        is_error: true,
-        hook_stopped_continuation: false,
-    }
+        true,
+        false,
+        effective_input,
+        elapsed_ms(started),
+        Some(permission_decision),
+    )
 }
 
 fn exact_always_allow_rule(tool_name: &str, input: &serde_json::Value) -> String {
@@ -1412,18 +1679,4 @@ fn permission_risk_level(tool_name: &str, input: &serde_json::Value) -> Option<S
         "WebFetch" | "WebSearch" => Some("safe".to_string()),
         _ => None,
     }
-}
-
-fn filter_tools_for_allowed_override(tools: Tools, allowed_tools: Option<&Vec<String>>) -> Tools {
-    let Some(allowed_tools) = allowed_tools else {
-        return tools;
-    };
-    let allowed: HashSet<String> = allowed_tools
-        .iter()
-        .map(|tool| tool.to_ascii_lowercase())
-        .collect();
-    tools
-        .into_iter()
-        .filter(|tool| allowed.contains(&tool.name().to_ascii_lowercase()))
-        .collect()
 }

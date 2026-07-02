@@ -4,6 +4,7 @@ use allthecodes_engine::agent_runtime::{AgentToolRegistry, DashboardEmitter};
 use allthecodes_engine::types::tool::Tool;
 use allthecodes_mcp::McpBindingContext;
 use allthecodes_startup as startup;
+use allthecodes_types::agent_runtime_record::AgentRuntimeExecutionRecord;
 use serde_json::Value;
 
 use crate::cli::Cli;
@@ -62,6 +63,10 @@ impl DashboardEmitter for RootDashboardEmitter {
             background,
             payload,
         )
+    }
+
+    fn emit_execution_record(&self, record: &AgentRuntimeExecutionRecord) -> anyhow::Result<()> {
+        crate::dashboard::emit_execution_record(record)
     }
 }
 

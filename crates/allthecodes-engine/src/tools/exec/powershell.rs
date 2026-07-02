@@ -19,7 +19,7 @@ use allthecodes_permissions::read_only_shell::is_read_only_powershell_command;
 use allthecodes_sandbox::{make_runner, policy_from_app_state, preflight_shell_command};
 use allthecodes_shell_command::ReadOnlyResult;
 use allthecodes_tools::exec::powershell as powershell_spec;
-use allthecodes_types::message::AssistantMessage;
+use allthecodes_types::{message::AssistantMessage, ShellExecutionOutput};
 use allthecodes_utils::bash::resolve_timeout;
 use allthecodes_utils::git_operation_tracking::track_git_operations_json;
 
@@ -30,6 +30,28 @@ use super::powershell_parser;
 use super::process_control::{
     configure_process_group, wait_for_exit_or_termination, ControlledExit,
 };
+
+fn shell_execution_output(
+    command: &str,
+    cwd: &std::path::Path,
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+    interrupted: bool,
+    termination: Option<&str>,
+    error: Option<String>,
+) -> ShellExecutionOutput {
+    ShellExecutionOutput {
+        command: Some(command.to_string()),
+        cwd: Some(cwd.to_path_buf()),
+        stdout,
+        stderr,
+        exit_code,
+        interrupted,
+        termination: termination.map(str::to_string),
+        error,
+    }
+}
 
 /// PowerShellTool -- execute PowerShell commands.
 pub struct PowerShellTool;
@@ -161,9 +183,20 @@ impl Tool for PowerShellTool {
         let (raw_command, timeout_ms) = Self::parse_input(&input);
 
         if raw_command.is_empty() {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             return Ok(ToolResult {
                 data: json!({ "error": "Command must not be empty" }),
                 new_messages: vec![],
+                shell: Some(shell_execution_output(
+                    &raw_command,
+                    &cwd,
+                    String::new(),
+                    String::new(),
+                    None,
+                    false,
+                    None,
+                    Some("Command must not be empty".to_string()),
+                )),
                 ..Default::default()
             });
         }
@@ -202,6 +235,16 @@ impl Tool for PowerShellTool {
                     "sandbox_blocked": true,
                 }),
                 new_messages: vec![],
+                shell: Some(shell_execution_output(
+                    &raw_command,
+                    &cwd,
+                    String::new(),
+                    String::new(),
+                    None,
+                    false,
+                    None,
+                    Some(err.to_string()),
+                )),
                 ..Default::default()
             });
         }
@@ -217,6 +260,21 @@ impl Tool for PowerShellTool {
                     "sandbox_blocked": true,
                 }),
                 new_messages: vec![],
+                shell: Some(shell_execution_output(
+                    &raw_command,
+                    &cwd,
+                    String::new(),
+                    String::new(),
+                    None,
+                    false,
+                    None,
+                    Some(
+                        allthecodes_sandbox::SandboxError::EscapeHatchDisabled {
+                            command: raw_command.clone(),
+                        }
+                        .to_string(),
+                    ),
+                )),
                 ..Default::default()
             });
         }
@@ -236,6 +294,16 @@ impl Tool for PowerShellTool {
                                 "sandbox_blocked": true,
                             }),
                             new_messages: vec![],
+                            shell: Some(shell_execution_output(
+                                &raw_command,
+                                &cwd,
+                                String::new(),
+                                String::new(),
+                                None,
+                                false,
+                                None,
+                                Some(e.to_string()),
+                            )),
                             ..Default::default()
                         });
                     }
@@ -259,6 +327,16 @@ impl Tool for PowerShellTool {
                 return Ok(ToolResult {
                     data: json!({ "error": format!("Failed to execute PowerShell command: {}", e) }),
                     new_messages: vec![],
+                    shell: Some(shell_execution_output(
+                        &raw_command,
+                        &cwd,
+                        String::new(),
+                        String::new(),
+                        None,
+                        false,
+                        None,
+                        Some(format!("Failed to execute PowerShell command: {}", e)),
+                    )),
                     ..Default::default()
                 });
             }
@@ -328,8 +406,8 @@ impl Tool for PowerShellTool {
                 combined = truncate_output(&combined, max_chars);
 
                 let mut data = json!({
-                    "stdout": stdout,
-                    "stderr": stderr,
+                    "stdout": stdout.clone(),
+                    "stderr": stderr.clone(),
                     "exit_code": exit_code,
                     "output": combined,
                 });
@@ -342,42 +420,95 @@ impl Tool for PowerShellTool {
                 Ok(ToolResult {
                     data,
                     new_messages: vec![],
+                    shell: Some(shell_execution_output(
+                        &raw_command,
+                        &cwd,
+                        stdout,
+                        stderr,
+                        Some(exit_code),
+                        false,
+                        None,
+                        None,
+                    )),
                     ..Default::default()
                 })
             }
-            ControlledExit::TimedOut(wait_result) => Ok(ToolResult {
-                data: json!({
-                    "error": format!("PowerShell command timed out after {}ms", timeout_duration.as_millis()),
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "exit_code": wait_result
-                        .ok()
-                        .and_then(|status| status.code())
-                        .unwrap_or(143),
-                    "interrupted": true,
-                    "termination": "timeout",
-                }),
-                new_messages: vec![],
-                ..Default::default()
-            }),
-            ControlledExit::Cancelled(wait_result) => Ok(ToolResult {
-                data: json!({
-                    "error": "PowerShell command interrupted",
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "exit_code": wait_result
-                        .ok()
-                        .and_then(|status| status.code())
-                        .unwrap_or(137),
-                    "interrupted": true,
-                    "termination": "cancelled",
-                }),
-                new_messages: vec![],
-                ..Default::default()
-            }),
+            ControlledExit::TimedOut(wait_result) => {
+                let exit_code = wait_result
+                    .ok()
+                    .and_then(|status| status.code())
+                    .unwrap_or(143);
+                let error = format!(
+                    "PowerShell command timed out after {}ms",
+                    timeout_duration.as_millis()
+                );
+                Ok(ToolResult {
+                    data: json!({
+                        "error": error,
+                        "stdout": stdout.clone(),
+                        "stderr": stderr.clone(),
+                        "exit_code": exit_code,
+                        "interrupted": true,
+                        "termination": "timeout",
+                    }),
+                    new_messages: vec![],
+                    shell: Some(shell_execution_output(
+                        &raw_command,
+                        &cwd,
+                        stdout,
+                        stderr,
+                        Some(exit_code),
+                        true,
+                        Some("timeout"),
+                        Some(format!(
+                            "PowerShell command timed out after {}ms",
+                            timeout_duration.as_millis()
+                        )),
+                    )),
+                    ..Default::default()
+                })
+            }
+            ControlledExit::Cancelled(wait_result) => {
+                let exit_code = wait_result
+                    .ok()
+                    .and_then(|status| status.code())
+                    .unwrap_or(137);
+                Ok(ToolResult {
+                    data: json!({
+                        "error": "PowerShell command interrupted",
+                        "stdout": stdout.clone(),
+                        "stderr": stderr.clone(),
+                        "exit_code": exit_code,
+                        "interrupted": true,
+                        "termination": "cancelled",
+                    }),
+                    new_messages: vec![],
+                    shell: Some(shell_execution_output(
+                        &raw_command,
+                        &cwd,
+                        stdout,
+                        stderr,
+                        Some(exit_code),
+                        true,
+                        Some("cancelled"),
+                        Some("PowerShell command interrupted".to_string()),
+                    )),
+                    ..Default::default()
+                })
+            }
             ControlledExit::Exited(Err(e)) => Ok(ToolResult {
                 data: json!({ "error": format!("Failed to execute PowerShell command: {}", e) }),
                 new_messages: vec![],
+                shell: Some(shell_execution_output(
+                    &raw_command,
+                    &cwd,
+                    stdout,
+                    stderr,
+                    None,
+                    false,
+                    None,
+                    Some(format!("Failed to execute PowerShell command: {}", e)),
+                )),
                 ..Default::default()
             }),
         }

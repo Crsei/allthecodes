@@ -1,7 +1,71 @@
 use super::*;
 use crate::types::tool::Tool;
 use serde_json::json;
+use std::sync::Arc;
 use uuid::Uuid;
+
+struct MockTool {
+    name: &'static str,
+    mcp_server: Option<&'static str>,
+}
+
+#[async_trait::async_trait]
+impl Tool for MockTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    async fn description(&self, _input: &serde_json::Value) -> String {
+        String::new()
+    }
+
+    fn input_json_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+        _parent_message: &crate::types::message::AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
+    ) -> anyhow::Result<crate::types::tool::ToolResult> {
+        Ok(Default::default())
+    }
+
+    async fn prompt(&self) -> String {
+        String::new()
+    }
+
+    fn mcp_server_name(&self) -> Option<&str> {
+        self.mcp_server
+    }
+}
+
+fn agent_definition(source: AgentDefinitionSource) -> AgentDefinitionEntry {
+    AgentDefinitionEntry {
+        name: "Explore".to_string(),
+        description: "explore".to_string(),
+        system_prompt: "prompt".to_string(),
+        tools: vec![],
+        disallowed_tools: vec![],
+        model: None,
+        color: None,
+        permission_mode: None,
+        memory: None,
+        max_turns: None,
+        effort: None,
+        background: false,
+        isolation: None,
+        skills: vec![],
+        hooks: serde_json::Value::Null,
+        mcp_servers: vec![],
+        initial_prompt: None,
+        filename: None,
+        source,
+        file_path: None,
+    }
+}
 
 #[test]
 fn test_resolve_model_alias() {
@@ -137,6 +201,59 @@ fn test_agent_input_deserialization() {
 fn test_max_result_size() {
     let tool = AgentTool;
     assert_eq!(tool.max_result_size_chars(), 200_000);
+}
+
+#[test]
+fn builtin_agent_does_not_get_mcp_tools_by_default() {
+    let tools: Tools = vec![
+        Arc::new(MockTool {
+            name: "Read",
+            mcp_server: None,
+        }),
+        Arc::new(MockTool {
+            name: "mcp__github__search",
+            mcp_server: Some("github"),
+        }),
+    ];
+    let definition = agent_definition(AgentDefinitionSource::Builtin);
+
+    let filtered = filter_tools_for_agent_definition(tools, &definition);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].name(), "Read");
+}
+
+#[test]
+fn builtin_agent_can_explicitly_allow_mcp_tool_by_tool_spec() {
+    let tools: Tools = vec![Arc::new(MockTool {
+        name: "mcp__github__search",
+        mcp_server: Some("github"),
+    })];
+    let mut definition = agent_definition(AgentDefinitionSource::Builtin);
+    definition.tools = vec!["mcp__github__search".to_string()];
+
+    let filtered = filter_tools_for_agent_definition(tools, &definition);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].name(), "mcp__github__search");
+}
+
+#[test]
+fn custom_agent_mcp_servers_field_filters_visible_servers() {
+    let tools: Tools = vec![
+        Arc::new(MockTool {
+            name: "mcp__github__search",
+            mcp_server: Some("github"),
+        }),
+        Arc::new(MockTool {
+            name: "mcp__linear__list",
+            mcp_server: Some("linear"),
+        }),
+    ];
+    let mut definition = agent_definition(AgentDefinitionSource::User);
+    definition.mcp_servers = vec![json!("linear")];
+
+    let filtered = filter_tools_for_agent_definition(tools, &definition);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].mcp_server_name(), Some("linear"));
 }
 
 #[tokio::test]

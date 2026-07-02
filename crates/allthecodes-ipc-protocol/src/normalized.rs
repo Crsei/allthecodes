@@ -8,6 +8,8 @@ use crate::protocol::{
     ToolResultContentInfo,
 };
 use crate::subsystem_types::SubsystemStatusSnapshot;
+use allthecodes_types::agent_events::AgentEvent;
+use allthecodes_types::agent_runtime_record::AgentRuntimeExecutionRecord;
 use allthecodes_types::permission_events::{
     HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
@@ -154,6 +156,16 @@ pub enum FlowControlEvent {
         input_tokens: u64,
         output_tokens: u64,
         cost_usd: f64,
+        #[serde(default)]
+        cache_read_input_tokens: u64,
+        #[serde(default)]
+        cache_creation_input_tokens: u64,
+        #[serde(default)]
+        reasoning_output_tokens: u64,
+        #[serde(default)]
+        api_call_count: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     GoalUpdated {
         event: String,
@@ -193,6 +205,12 @@ pub enum FlowControlEvent {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentRuntimeEvent {
+    ExecutionRecord { record: AgentRuntimeExecutionRecord },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProtocolError {
     pub message: String,
     pub recoverable: bool,
@@ -207,6 +225,7 @@ pub enum LegacyBackendPayload {
     Tool(ToolEvent),
     Permission(PermissionEvent),
     FlowControl(FlowControlEvent),
+    AgentRuntime(AgentRuntimeEvent),
     Error(ProtocolError),
     Unsupported { legacy_type: &'static str },
 }
@@ -411,10 +430,20 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
             input_tokens,
             output_tokens,
             cost_usd,
+            cache_read_input_tokens,
+            cache_creation_input_tokens,
+            reasoning_output_tokens,
+            api_call_count,
+            kind,
         } => LegacyBackendPayload::FlowControl(FlowControlEvent::UsageUpdate {
             input_tokens: *input_tokens,
             output_tokens: *output_tokens,
             cost_usd: *cost_usd,
+            cache_read_input_tokens: *cache_read_input_tokens,
+            cache_creation_input_tokens: *cache_creation_input_tokens,
+            reasoning_output_tokens: *reasoning_output_tokens,
+            api_call_count: *api_call_count,
+            kind: kind.clone(),
         }),
         BackendMessage::GoalUpdated { event, goal } => {
             LegacyBackendPayload::FlowControl(FlowControlEvent::GoalUpdated {
@@ -467,6 +496,11 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
                 recommendations: recommendations.clone(),
             })
         }
+        BackendMessage::AgentEvent {
+            event: AgentEvent::ExecutionRecord { record, .. },
+        } => LegacyBackendPayload::AgentRuntime(AgentRuntimeEvent::ExecutionRecord {
+            record: record.as_ref().clone(),
+        }),
         BackendMessage::Error {
             message,
             recoverable,
@@ -484,6 +518,10 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
 mod tests {
     use super::*;
     use crate::IpcEnvelope;
+    use allthecodes_types::agent_events::AgentEvent;
+    use allthecodes_types::agent_runtime_record::{
+        AgentRuntimeExecutionRecord, AgentRuntimePermissionDecision,
+    };
 
     #[test]
     fn legacy_tool_use_maps_to_normalized_payload() {
@@ -548,6 +586,43 @@ mod tests {
                 ..
             }) if tool_use_id == "tool-1" && tool == "Bash"
         ));
+    }
+
+    #[test]
+    fn legacy_execution_record_maps_to_agent_runtime_payload() {
+        let record = AgentRuntimeExecutionRecord {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            tool: "shell".to_string(),
+            tool_use_id: Some("toolu-1".to_string()),
+            permission_decision: Some(AgentRuntimePermissionDecision::DeniedByPolicy),
+            exit_code: Some(2),
+            had_error: true,
+            ..Default::default()
+        };
+        let msg = BackendMessage::AgentEvent {
+            event: AgentEvent::ExecutionRecord {
+                agent_id: "agent-1".to_string(),
+                record: Box::new(record.clone()),
+            },
+        };
+
+        let payload = legacy_backend_to_payload(&msg);
+
+        assert!(matches!(
+            &payload,
+            LegacyBackendPayload::AgentRuntime(AgentRuntimeEvent::ExecutionRecord { record: mapped })
+                if mapped == &record
+        ));
+
+        let json = serde_json::to_value(&payload).expect("serialize payload");
+        assert_eq!(json["category"], "agent_runtime");
+        assert_eq!(json["event"]["type"], "execution_record");
+        assert_eq!(json["event"]["record"]["session_id"], "session-1");
+        assert_eq!(
+            json["event"]["record"]["permission_decision"],
+            "denied_by_policy"
+        );
     }
 
     #[test]

@@ -29,6 +29,7 @@ use crate::{CommandContext, CommandHandler, CommandResult};
 use allthecodes_config::settings::{self, RawSettings, StatusLineSettings};
 use allthecodes_engine::status_line::payload::{build_payload_from_snapshot, StatusLineSnapshot};
 use allthecodes_engine::status_line::{StatusLineOutput, StatusLinePayload, StatusLineRunner};
+use allthecodes_services::cost_ledger;
 use allthecodes_types::message::Message;
 
 pub struct StatusLineHandler;
@@ -343,17 +344,53 @@ fn print_payload(ctx: &CommandContext) -> Result<String> {
 
 fn build_test_payload(ctx: &CommandContext) -> StatusLinePayload {
     let usage = gather_usage_snapshot(&ctx.messages);
+    let ledger_summary =
+        cost_ledger::get_session_cost_summary(ctx.session_id.as_str(), &ctx.messages);
+    let (
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+        total_cost_usd,
+        api_calls,
+        unknown_pricing_count,
+        backfilled_count,
+    ) = if ledger_summary.api_calls > 0 {
+        (
+            ledger_summary.total_input_tokens,
+            ledger_summary.total_output_tokens,
+            ledger_summary.total_cache_read_tokens,
+            ledger_summary.total_cache_creation_tokens,
+            ledger_summary.total_cost_usd,
+            ledger_summary.api_calls,
+            Some(ledger_summary.unknown_pricing_count),
+            Some(ledger_summary.backfilled_count),
+        )
+    } else {
+        (
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_creation_tokens,
+            usage.total_cost_usd,
+            usage.api_calls,
+            None,
+            None,
+        )
+    };
     build_payload_from_snapshot(StatusLineSnapshot {
         session_id: Some(ctx.session_id.to_string()),
         model_id: &ctx.app_state.main_loop_model,
         backend: Some(&ctx.app_state.main_loop_backend),
         cwd: &ctx.cwd,
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cache_read_tokens: usage.cache_read_tokens,
-        cache_creation_tokens: usage.cache_creation_tokens,
-        total_cost_usd: usage.total_cost_usd,
-        api_calls: usage.api_calls,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+        total_cost_usd,
+        api_calls,
+        unknown_pricing_count,
+        backfilled_count,
         session_duration_secs: None,
         resolved_output_style_name: command_output_style_name(
             ctx.app_state.settings.output_style.as_deref(),
@@ -536,6 +573,16 @@ mod tests {
                 assert_eq!(
                     v.pointer("/cost/apiCalls").and_then(|value| value.as_u64()),
                     Some(1)
+                );
+                assert_eq!(
+                    v.pointer("/cost/backfilledCount")
+                        .and_then(|value| value.as_u64()),
+                    Some(1)
+                );
+                assert_eq!(
+                    v.pointer("/cost/unknownPricingCount")
+                        .and_then(|value| value.as_u64()),
+                    Some(0)
                 );
                 assert_eq!(
                     v.pointer("/messageCount").and_then(|value| value.as_u64()),

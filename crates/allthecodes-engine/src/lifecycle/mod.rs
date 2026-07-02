@@ -38,6 +38,10 @@ use crate::observability::AuditContext;
 use crate::services::session_memory::{
     extract_session_insight, SessionMemoryConfig, SessionMemoryService,
 };
+use crate::session::record_replay::types::{MessageRecord, SessionMetaRecord};
+use crate::session::record_replay::{
+    RecordItem, RecorderOpenMode, RecorderStats, SessionRecorderHandle,
+};
 use crate::types::app_state::AppState;
 use crate::types::config::QueryEngineConfig;
 use crate::types::message::{ContentBlock, Message, MessageContent};
@@ -224,6 +228,103 @@ impl Drop for ActiveSteerGuard {
     }
 }
 
+pub(crate) async fn ensure_session_recorder_handle(
+    recorder_ref: &Arc<Mutex<Option<SessionRecorderHandle>>>,
+    config: &QueryEngineConfig,
+    session_id: &SessionId,
+) -> anyhow::Result<Option<SessionRecorderHandle>> {
+    let existing_handle = { recorder_ref.lock().clone() };
+    if let Some(handle) = existing_handle {
+        if handle.session_id() == session_id.as_str() {
+            return Ok(Some(handle));
+        }
+        let previous_session_id = handle.session_id().to_string();
+        if let Err(error) = handle.shutdown().await {
+            warn!(
+                session_id = %previous_session_id,
+                error = %error,
+                "failed to shutdown previous session recorder"
+            );
+        }
+    }
+
+    let record_config = crate::session::record_replay::RecordReplayConfig::from_env();
+    if !record_config.enabled {
+        return Ok(None);
+    }
+
+    let session_id_string = session_id.as_str().to_string();
+    let mode = match crate::session::record_replay::lookup_rollout(&session_id_string)? {
+        Some(rollout_path) => {
+            let read = crate::session::record_replay::read_rollout_file(&rollout_path)?;
+            let next_seq = read
+                .lines
+                .iter()
+                .map(|line| line.seq)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            RecorderOpenMode::Resume {
+                session_id: session_id_string.clone(),
+                rollout_path,
+                next_seq,
+            }
+        }
+        None => {
+            let created_at = chrono::Utc::now();
+            let cwd_path = std::path::Path::new(&config.cwd);
+            let workspace_root = crate::session::storage::workspace_root(cwd_path);
+            RecorderOpenMode::Create {
+                session_id: session_id_string.clone(),
+                cwd: std::path::PathBuf::from(&config.cwd),
+                created_at,
+                metadata: SessionMetaRecord {
+                    created_at,
+                    cwd: config.cwd.clone(),
+                    workspace_key: Some(crate::session::storage::workspace_key(cwd_path)),
+                    workspace_root: Some(workspace_root.to_string_lossy().to_string()),
+                    workspace_name: Some(crate::session::storage::workspace_name(&workspace_root)),
+                    model: config
+                        .resolved_model
+                        .clone()
+                        .or_else(|| config.user_specified_model.clone()),
+                    config_summary: None,
+                    parent_session_id: None,
+                    branch_from_seq: None,
+                    migrated_from: None,
+                },
+            }
+        }
+    };
+
+    let handle = SessionRecorderHandle::open(mode, record_config).await?;
+    let mut guard = recorder_ref.lock();
+    match guard.as_ref() {
+        Some(existing) if existing.session_id() == session_id.as_str() => {
+            Ok(Some(existing.clone()))
+        }
+        _ => {
+            *guard = Some(handle.clone());
+            Ok(Some(handle))
+        }
+    }
+}
+
+pub(crate) async fn record_session_items(
+    recorder_ref: &Arc<Mutex<Option<SessionRecorderHandle>>>,
+    config: &QueryEngineConfig,
+    session_id: &SessionId,
+    items: Vec<RecordItem>,
+) -> anyhow::Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    if let Some(handle) = ensure_session_recorder_handle(recorder_ref, config, session_id).await? {
+        handle.add(items).await?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // QueryEngine
 // ---------------------------------------------------------------------------
@@ -272,6 +373,8 @@ pub struct QueryEngine {
     /// when mode is Auto.
     /// Returns `None` if the classifier is unavailable or skipped.
     pub(crate) auto_classifier_fn: Option<AutoClassifierFn>,
+    /// Durable append-only recorder for the active session.
+    pub(crate) session_recorder: Arc<Mutex<Option<SessionRecorderHandle>>>,
 }
 
 impl QueryEngine {
@@ -336,6 +439,60 @@ impl QueryEngine {
             command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
             command_executor: crate::command_runtime::global_command_executor(),
             auto_classifier_fn: None,
+            session_recorder: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Ensure the active session has an open durable record log.
+    pub async fn ensure_session_recorder(&self) -> anyhow::Result<Option<SessionRecorderHandle>> {
+        ensure_session_recorder_handle(
+            &self.session_recorder,
+            &self.config,
+            &self.current_session_id(),
+        )
+        .await
+    }
+
+    /// Append canonical record items for the active session.
+    pub async fn record_items(&self, items: Vec<RecordItem>) -> anyhow::Result<()> {
+        record_session_items(
+            &self.session_recorder,
+            &self.config,
+            &self.current_session_id(),
+            items,
+        )
+        .await
+    }
+
+    /// Append one typed message to the durable record log.
+    pub async fn record_message(&self, message: &Message) -> anyhow::Result<()> {
+        self.record_items(vec![RecordItem::Message(MessageRecord::from_message(
+            message,
+        ))])
+        .await
+    }
+
+    /// Flush pending record items without closing the recorder.
+    pub async fn flush_session_record(&self) -> anyhow::Result<Option<RecorderStats>> {
+        let handle = self.session_recorder.lock().clone();
+        match handle {
+            Some(handle) => handle.flush().await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Flush and close the active session recorder.
+    pub async fn shutdown_session_record(&self) -> anyhow::Result<Option<RecorderStats>> {
+        let handle = self.session_recorder.lock().take();
+        match handle {
+            Some(handle) => match handle.shutdown().await {
+                Ok(stats) => Ok(Some(stats)),
+                Err(error) => {
+                    *self.session_recorder.lock() = Some(handle);
+                    Err(error)
+                }
+            },
+            None => Ok(None),
         }
     }
 

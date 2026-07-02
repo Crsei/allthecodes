@@ -104,7 +104,8 @@ fn handle_resume_by_id(target: &str, ctx: &mut CommandContext) -> Result<Command
 
 /// Load a session's messages into the command context.
 fn resume_session_by_id(session_id: &str, ctx: &mut CommandContext) -> Result<CommandResult> {
-    let messages = session_resume::resume_session(session_id)?;
+    let resumed = session_resume::resume_session_detail(session_id)?;
+    let messages = resumed.messages;
     if messages.is_empty() {
         return Ok(CommandResult::Output(format!(
             "Session {} has no saved conversation messages. Start a new prompt or use /session list to choose another session.",
@@ -119,13 +120,30 @@ fn resume_session_by_id(session_id: &str, ctx: &mut CommandContext) -> Result<Co
         ctx.app_state.team_context = None;
     }
 
+    let mut notice = format!(
+        "Loaded history from session {} ({} messages) into the current conversation.",
+        session_id, msg_count,
+    );
+    if let Some(last_seq) = resumed.last_seq {
+        notice.push_str(&format!("\nReplay log last seq: {last_seq}."));
+    }
+    if !resumed.replay_warnings.is_empty() {
+        notice.push_str(&format!(
+            "\nReplay produced {} warning(s); see debug logs for details.",
+            resumed.replay_warnings.len()
+        ));
+    }
+    if !resumed.pending_interactions.is_empty() {
+        notice.push_str(&format!(
+            "\n{} pending permission/question interaction(s) were marked interrupted and will not be replayed.",
+            resumed.pending_interactions.len()
+        ));
+    }
+
     Ok(CommandResult::SwitchSession {
         session_id: allthecodes_bootstrap::SessionId::from_string(session_id),
         messages,
-        notice: format!(
-            "Loaded history from session {} ({} messages) into the current conversation.",
-            session_id, msg_count,
-        ),
+        notice,
     })
 }
 

@@ -7,7 +7,7 @@ use super::SerializableMessage;
 // ---------------------------------------------------------------------------
 
 /// Convert the internal `Message` enum to a serializable form.
-pub(super) fn messages_to_serializable(messages: &[Message]) -> Vec<SerializableMessage> {
+pub(crate) fn messages_to_serializable(messages: &[Message]) -> Vec<SerializableMessage> {
     messages
         .iter()
         .map(|msg| {
@@ -111,7 +111,7 @@ fn system_message_to_serializable_data(
 /// entries remain persisted in JSON/SQLite but are dropped when loading through
 /// this compatibility path; new record logs store a typed message envelope
 /// instead.
-pub(super) fn serializable_to_messages(msgs: &[SerializableMessage]) -> Vec<Message> {
+pub(crate) fn serializable_to_messages(msgs: &[SerializableMessage]) -> Vec<Message> {
     use allthecodes_types::message::*;
     use uuid::Uuid;
 

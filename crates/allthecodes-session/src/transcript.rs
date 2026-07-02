@@ -257,6 +257,65 @@ pub fn record_transcript(session_id: &str, messages: &[Message]) -> Result<()> {
     Ok(())
 }
 
+/// Rebuild the transcript file from a visible message list.
+///
+/// This treats the transcript as a derived view. The canonical record log is
+/// not modified; callers should only use this after replay has produced the
+/// visible history they want mirrored for legacy transcript consumers.
+pub fn rebuild_transcript_from_messages(session_id: &str, messages: &[Message]) -> Result<PathBuf> {
+    let dir = get_transcript_dir();
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create transcript directory {}", dir.display()))?;
+
+    let path = get_transcript_file(session_id);
+    let tmp_path = path.with_extension("ndjson.tmp");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&tmp_path)
+        .with_context(|| format!("Failed to open transcript temp file {}", tmp_path.display()))?;
+
+    for msg in messages {
+        let (msg_type, payload) = message_to_payload(msg);
+        let entry = TranscriptEntry {
+            timestamp: message_timestamp(msg),
+            session_id: session_id.to_string(),
+            msg_type,
+            uuid: msg.uuid().to_string(),
+            payload,
+        };
+        let line = serde_json::to_string(&entry).context("Failed to serialize transcript entry")?;
+        writeln!(file, "{}", line).with_context(|| {
+            format!(
+                "Failed to write transcript temp file {}",
+                tmp_path.display()
+            )
+        })?;
+    }
+    file.sync_all()
+        .with_context(|| format!("Failed to sync transcript temp file {}", tmp_path.display()))?;
+    drop(file);
+
+    std::fs::rename(&tmp_path, &path).with_context(|| {
+        format!(
+            "Failed to replace transcript {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
+    Ok(path)
+}
+
+/// Rebuild the transcript from the session's replay log.
+pub fn rebuild_transcript_from_replay(session_id: &str) -> Result<PathBuf> {
+    let rollout_path = crate::record_replay::index::ensure_rollout_for_session(session_id)?;
+    let read = crate::record_replay::reader::read_rollout_file(&rollout_path)
+        .with_context(|| format!("Failed to read rollout {}", rollout_path.display()))?;
+    let messages = crate::record_replay::reconstruct::reconstruct_messages(&read.lines);
+    rebuild_transcript_from_messages(session_id, &messages)
+}
+
 /// Flush the transcript file for `session_id` by syncing to disk.
 ///
 /// This is a no-op on most systems (the OS flushes on close), but provides
@@ -327,6 +386,16 @@ fn message_to_payload(msg: &Message) -> (String, serde_json::Value) {
             "attachment".into(),
             serde_json::json!({ "attachment": a.attachment }),
         ),
+    }
+}
+
+fn message_timestamp(msg: &Message) -> i64 {
+    match msg {
+        Message::User(m) => m.timestamp,
+        Message::Assistant(m) => m.timestamp,
+        Message::System(m) => m.timestamp,
+        Message::Progress(m) => m.timestamp,
+        Message::Attachment(m) => m.timestamp,
     }
 }
 
@@ -489,5 +558,39 @@ mod tests {
 
         let copied = copy_transcript_entries("parent2", "child2", None).unwrap();
         assert_eq!(copied, 1);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_rebuild_transcript_from_messages_replaces_visible_view() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        let first = Message::User(allthecodes_types::message::UserMessage {
+            uuid: uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000031").unwrap(),
+            timestamp: 10,
+            role: "user".into(),
+            content: allthecodes_types::message::MessageContent::Text("first".into()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        });
+        let second = Message::User(allthecodes_types::message::UserMessage {
+            uuid: uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000032").unwrap(),
+            timestamp: 11,
+            role: "user".into(),
+            content: allthecodes_types::message::MessageContent::Text("second".into()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        });
+
+        record_transcript("rebuilt", &[first.clone(), second]).unwrap();
+        rebuild_transcript_from_messages("rebuilt", &[first]).unwrap();
+
+        let content = std::fs::read_to_string(get_transcript_file("rebuilt")).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let value: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(value["payload"]["text"], "first");
     }
 }

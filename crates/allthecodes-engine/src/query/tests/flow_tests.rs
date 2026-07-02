@@ -307,6 +307,7 @@ async fn streaming_tool_execution_gate_starts_safe_tools_before_message_stop() {
     );
     let mut params = make_query_params(vec![make_user_message_for_test("run safe tools")]);
     params.gates.streaming_tool_execution = true;
+    params.gates.deferred_tool_loading = false;
 
     let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
 
@@ -387,6 +388,7 @@ async fn streaming_tool_execution_aborts_started_tools_on_stream_fallback() {
     );
     let mut params = make_query_params(vec![make_user_message_for_test("run then fallback")]);
     params.gates.streaming_tool_execution = true;
+    params.gates.deferred_tool_loading = false;
     params.fallback_model = Some("fallback-model".to_string());
 
     let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;

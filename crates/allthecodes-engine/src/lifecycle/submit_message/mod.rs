@@ -14,9 +14,14 @@ use futures::Stream;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::bootstrap::SessionId;
 use crate::codex_exec;
 use crate::input_processing;
 use crate::result;
+use crate::session::record_replay::types::{
+    CompactionBoundaryRecord, CompactionKind, MessageRecord, QueryEventRecord, RecordItem,
+    TurnFinishStatus, TurnFinishedRecord, TurnStartedRecord,
+};
 use crate::session::transcript;
 use crate::types::config::{QueryParams, QuerySource, SubmitContextMode, SubmitMessageOverrides};
 use allthecodes_engine::query::loop_impl;
@@ -36,6 +41,9 @@ use stream_handler::{
     process_stream_item, StreamAction, StreamContext,
 };
 use system_prompt_build::build_submit_system_prompt;
+
+type SessionRecorderSlot =
+    Arc<parking_lot::Mutex<Option<crate::session::record_replay::SessionRecorderHandle>>>;
 
 #[cfg(feature = "telemetry")]
 type SubmitTelemetrySpan = Option<crate::telemetry_bridge::SpanId>;
@@ -182,6 +190,100 @@ fn selected_skill_instruction_parts(skill_ids: &[String], session_id: Option<&st
         .collect()
 }
 
+fn prompt_summary(prompt: &str) -> Option<String> {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(200).collect())
+}
+
+async fn record_items_best_effort(
+    recorder_ref: &SessionRecorderSlot,
+    config: &crate::types::config::QueryEngineConfig,
+    session_id: &SessionId,
+    items: Vec<RecordItem>,
+    context: &str,
+) {
+    if let Err(error) = super::record_session_items(recorder_ref, config, session_id, items).await {
+        warn!(session_id = %session_id, %error, context, "failed to record session items");
+    }
+}
+
+async fn record_turn_finished_best_effort(
+    recorder_ref: &SessionRecorderSlot,
+    config: &crate::types::config::QueryEngineConfig,
+    session_id: &SessionId,
+    status: TurnFinishStatus,
+    error: Option<String>,
+) {
+    record_items_best_effort(
+        recorder_ref,
+        config,
+        session_id,
+        vec![RecordItem::TurnFinished(TurnFinishedRecord {
+            status,
+            abort_reason: None,
+            error,
+            usage: None,
+        })],
+        "turn_finished",
+    )
+    .await;
+}
+
+async fn flush_record_best_effort(recorder_ref: &SessionRecorderSlot, session_id: &SessionId) {
+    let handle = recorder_ref.lock().clone();
+    if let Some(handle) = handle {
+        if let Err(error) = handle.flush().await {
+            warn!(session_id = %session_id, %error, "failed to flush session record");
+        }
+    }
+}
+
+fn record_items_for_query_yield(
+    item: &crate::types::message::QueryYield,
+    backend_name: &str,
+    model_name: &str,
+) -> Vec<RecordItem> {
+    match item {
+        crate::types::message::QueryYield::Message(message) => {
+            let mut items = vec![RecordItem::Message(MessageRecord::from_message(message))];
+            if let crate::types::message::Message::System(system) = message {
+                match &system.subtype {
+                    crate::types::message::SystemSubtype::CompactBoundary { compact_metadata } => {
+                        items.push(RecordItem::CompactionBoundary(CompactionBoundaryRecord {
+                            kind: CompactionKind::Compact,
+                            summary_message_uuid: Some(system.uuid.to_string()),
+                            metadata: compact_metadata
+                                .as_ref()
+                                .and_then(|metadata| serde_json::to_value(metadata).ok()),
+                        }))
+                    }
+                    crate::types::message::SystemSubtype::MicrocompactBoundary {
+                        microcompact_metadata,
+                    } => items.push(RecordItem::CompactionBoundary(CompactionBoundaryRecord {
+                        kind: CompactionKind::Microcompact,
+                        summary_message_uuid: Some(system.uuid.to_string()),
+                        metadata: microcompact_metadata
+                            .as_ref()
+                            .and_then(|metadata| serde_json::to_value(metadata).ok()),
+                    })),
+                    _ => {}
+                }
+            }
+            items
+        }
+        crate::types::message::QueryYield::RequestStart(_) => {
+            vec![RecordItem::QueryEvent(QueryEventRecord::RequestStart {
+                provider: Some(backend_name.to_string()),
+                model: Some(model_name.to_string()),
+            })]
+        }
+        _ => Vec::new(),
+    }
+}
+
 impl QueryEngine {
     /// Submit a user message and return a stream of `SdkMessage` items.
     ///
@@ -224,6 +326,7 @@ impl QueryEngine {
         let command_dispatcher = self.command_dispatcher.clone();
         let command_executor = self.command_executor.clone();
         let auto_classifier_fn = self.auto_classifier_fn.clone();
+        let session_recorder = self.session_recorder.clone();
 
         let stream = async_stream::stream! {
             let _active_steer_guard = super::ActiveSteerGuard::activate(active_steer_state.clone());
@@ -270,6 +373,26 @@ impl QueryEngine {
                                 let reason = output.reason
                                     .or(output.stop_reason)
                                     .unwrap_or_else(|| "Blocked by UserPromptSubmit hook".to_string());
+                                record_items_best_effort(
+                                    &session_recorder,
+                                    &config,
+                                    &session_id,
+                                    vec![
+                                        RecordItem::TurnStarted(TurnStartedRecord {
+                                            user_message_uuid: None,
+                                            input_summary: prompt_summary(&prompt),
+                                        }),
+                                        RecordItem::TurnFinished(TurnFinishedRecord {
+                                            status: TurnFinishStatus::Interrupted,
+                                            abort_reason: Some(reason.clone()),
+                                            error: None,
+                                            usage: None,
+                                        }),
+                                    ],
+                                    "user_prompt_submit_blocked",
+                                )
+                                .await;
+                                flush_record_best_effort(&session_recorder, &session_id).await;
                                 finish_hook_telemetry(hook_span, "blocked");
                                 let telemetry_model = config
                                     .user_specified_model
@@ -411,6 +534,26 @@ impl QueryEngine {
                     &processed.messages,
                 );
             }
+            if !processed.messages.is_empty() {
+                let mut record_items = vec![RecordItem::TurnStarted(TurnStartedRecord {
+                    user_message_uuid: processed
+                        .messages
+                        .first()
+                        .map(|message| message.uuid().to_string()),
+                    input_summary: prompt_summary(&prompt),
+                })];
+                record_items.extend(processed.messages.iter().map(|message| {
+                    RecordItem::Message(MessageRecord::from_message(message))
+                }));
+                record_items_best_effort(
+                    &session_recorder,
+                    &config,
+                    &session_id,
+                    record_items,
+                    "processed_input",
+                )
+                .await;
+            }
 
             let (tools_snapshot, model_name, backend_name, app_settings) = {
                 let s = state_ref.read();
@@ -504,6 +647,19 @@ impl QueryEngine {
                     &model_name,
                     &UsageTracking::default(),
                 );
+                record_turn_finished_best_effort(
+                    &session_recorder,
+                    &config,
+                    &session_id,
+                    if local_command.is_error {
+                        TurnFinishStatus::Errored
+                    } else {
+                        TurnFinishStatus::Completed
+                    },
+                    local_command.is_error.then(|| local_text.clone()),
+                )
+                .await;
+                flush_record_best_effort(&session_recorder, &session_id).await;
 
                 yield SdkMessage::Result(SdkResult {
                     subtype: if local_command.is_error {
@@ -607,6 +763,15 @@ impl QueryEngine {
                     &model_name,
                     &UsageTracking::default(),
                 );
+                record_turn_finished_best_effort(
+                    &session_recorder,
+                    &config,
+                    &session_id,
+                    TurnFinishStatus::Errored,
+                    Some(result.clone()),
+                )
+                .await;
+                flush_record_best_effort(&session_recorder, &session_id).await;
 
                 yield SdkMessage::Result(SdkResult {
                     subtype: ResultSubtype::ErrorDuringExecution,
@@ -668,6 +833,7 @@ impl QueryEngine {
                 audit_ctx: submit_audit_ctx,
                 langfuse_trace: submit_langfuse_trace.clone(),
                 api_client,
+                session_recorder: session_recorder.clone(),
                 agent_context: config.agent_context.clone(),
                 permission_callback,
                 permission_event_callback,
@@ -692,8 +858,25 @@ impl QueryEngine {
 
             let api_started_at = Instant::now();
             let replay_user_messages = query_source == QuerySource::Sdk;
+            let mut current_request_event: Option<crate::types::message::RequestStartEvent> = None;
 
             while let Some(item) = inner_stream.next().await {
+                let record_items =
+                    record_items_for_query_yield(&item, &backend_name, &model_name);
+                if !record_items.is_empty() {
+                    record_items_best_effort(
+                        &session_recorder,
+                        &config,
+                        &session_id,
+                        record_items,
+                        "query_yield",
+                    )
+                    .await;
+                }
+                if let crate::types::message::QueryYield::RequestStart(request_event) = &item {
+                    current_request_event = Some(request_event.clone());
+                }
+
                 let mut stream_ctx = StreamContext {
                     config: &config,
                     state_ref: &state_ref,
@@ -703,6 +886,8 @@ impl QueryEngine {
                     submit_langfuse_trace: &mut submit_langfuse_trace,
                     telemetry_submit_span: &mut telemetry_submit_span,
                     model_name: &model_name,
+                    backend_name: &backend_name,
+                    request_event: current_request_event.as_ref(),
                     api_started_at,
                 };
 
@@ -711,6 +896,19 @@ impl QueryEngine {
                     match action {
                         StreamAction::Yield(message) => yield message,
                         StreamAction::Terminate(result) => {
+                            record_turn_finished_best_effort(
+                                &session_recorder,
+                                &config,
+                                &session_id,
+                                if result.is_error {
+                                    TurnFinishStatus::Errored
+                                } else {
+                                    TurnFinishStatus::Completed
+                                },
+                                result.is_error.then(|| result.result.clone()),
+                            )
+                            .await;
+                            flush_record_best_effort(&session_recorder, &session_id).await;
                             yield SdkMessage::Result(result);
                             terminated = true;
                             break;
@@ -726,6 +924,19 @@ impl QueryEngine {
                     if let Some(goal_update) = stop.goal_update {
                         yield goal_update;
                     }
+                    record_turn_finished_best_effort(
+                        &session_recorder,
+                        &config,
+                        &session_id,
+                        if stop.result.is_error {
+                            TurnFinishStatus::Errored
+                        } else {
+                            TurnFinishStatus::Completed
+                        },
+                        stop.result.is_error.then(|| stop.result.result.clone()),
+                    )
+                    .await;
+                    flush_record_best_effort(&session_recorder, &session_id).await;
                     yield SdkMessage::Result(stop.result);
                     return;
                 }
@@ -804,6 +1015,20 @@ impl QueryEngine {
             {
                 yield goal_update;
             }
+
+            record_turn_finished_best_effort(
+                &session_recorder,
+                &config,
+                &session_id,
+                if is_success {
+                    TurnFinishStatus::Completed
+                } else {
+                    TurnFinishStatus::Errored
+                },
+                (!is_success).then(|| text_result.clone()),
+            )
+            .await;
+            flush_record_best_effort(&session_recorder, &session_id).await;
 
             yield SdkMessage::Result(SdkResult {
                 subtype,

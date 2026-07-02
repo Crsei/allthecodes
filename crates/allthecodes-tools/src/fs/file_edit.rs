@@ -692,6 +692,7 @@ impl Tool for FileEditTool {
                 model_content: Some(ToolResultContent::Text(output)),
                 display_preview: Some(display_preview),
                 new_messages: vec![super::edited_text_file_message(file_path)],
+                ..Default::default()
             })
         }
     }

@@ -18,7 +18,7 @@ use allthecodes_sandbox::{make_runner, policy_from_app_state, preflight_shell_co
 use allthecodes_shell_command::ReadOnlyResult;
 use allthecodes_tools::exec::bash as bash_spec;
 pub(crate) use allthecodes_tools::exec::truncate_output;
-use allthecodes_types::message::AssistantMessage;
+use allthecodes_types::{message::AssistantMessage, ShellExecutionOutput};
 use allthecodes_utils::bash::{
     extract_command_name, extract_command_prefixes, has_malformed_tokens, has_unterminated_quotes,
     is_command_parseable, parse_command, resolve_timeout, split_compound_command,
@@ -32,6 +32,28 @@ use allthecodes_shell_command::provider::{BashProvider, ShellProvider};
 use super::process_control::{
     configure_process_group, wait_for_exit_or_termination, ControlledExit,
 };
+
+fn shell_execution_output(
+    command: &str,
+    cwd: &std::path::Path,
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+    interrupted: bool,
+    termination: Option<&str>,
+    error: Option<String>,
+) -> ShellExecutionOutput {
+    ShellExecutionOutput {
+        command: Some(command.to_string()),
+        cwd: Some(cwd.to_path_buf()),
+        stdout,
+        stderr,
+        exit_code,
+        interrupted,
+        termination: termination.map(str::to_string),
+        error,
+    }
+}
 
 /// Snapshot for `ToolProgress::output` — carries the tail-capped
 /// rendering of the current stdout/stderr buffers plus whole-stream
@@ -249,9 +271,20 @@ impl Tool for BashTool {
         let (raw_command, timeout_ms, _description) = Self::parse_input(&input);
 
         if raw_command.is_empty() {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             return Ok(ToolResult {
                 data: json!({ "error": "Command must not be empty" }),
                 new_messages: vec![],
+                shell: Some(shell_execution_output(
+                    &raw_command,
+                    &cwd,
+                    String::new(),
+                    String::new(),
+                    None,
+                    false,
+                    None,
+                    Some("Command must not be empty".to_string()),
+                )),
                 ..Default::default()
             });
         }
@@ -295,6 +328,16 @@ impl Tool for BashTool {
                     "sandbox_blocked": true,
                 }),
                 new_messages: vec![],
+                shell: Some(shell_execution_output(
+                    &raw_command,
+                    &cwd,
+                    String::new(),
+                    String::new(),
+                    None,
+                    false,
+                    None,
+                    Some(err.to_string()),
+                )),
                 ..Default::default()
             });
         }
@@ -312,6 +355,21 @@ impl Tool for BashTool {
                     "sandbox_blocked": true,
                 }),
                 new_messages: vec![],
+                shell: Some(shell_execution_output(
+                    &raw_command,
+                    &cwd,
+                    String::new(),
+                    String::new(),
+                    None,
+                    false,
+                    None,
+                    Some(
+                        allthecodes_sandbox::SandboxError::EscapeHatchDisabled {
+                            command: command.clone(),
+                        }
+                        .to_string(),
+                    ),
+                )),
                 ..Default::default()
             });
         }
@@ -335,6 +393,16 @@ impl Tool for BashTool {
                                 "sandbox_blocked": true,
                             }),
                             new_messages: vec![],
+                            shell: Some(shell_execution_output(
+                                &raw_command,
+                                &cwd,
+                                String::new(),
+                                String::new(),
+                                None,
+                                false,
+                                None,
+                                Some(e.to_string()),
+                            )),
                             ..Default::default()
                         });
                     }
@@ -368,6 +436,16 @@ impl Tool for BashTool {
                         "error": format!("Failed to spawn command: {}", e)
                     }),
                     new_messages: vec![],
+                    shell: Some(shell_execution_output(
+                        &raw_command,
+                        &cwd,
+                        String::new(),
+                        String::new(),
+                        None,
+                        false,
+                        None,
+                        Some(format!("Failed to spawn command: {}", e)),
+                    )),
                     ..Default::default()
                 });
             }
@@ -505,8 +583,8 @@ impl Tool for BashTool {
                 }
 
                 let mut data = json!({
-                    "stdout": stdout,
-                    "stderr": stderr,
+                    "stdout": stdout.clone(),
+                    "stderr": stderr.clone(),
                     "exit_code": exit_code,
                     "output": combined,
                 });
@@ -519,45 +597,92 @@ impl Tool for BashTool {
                 Ok(ToolResult {
                     data,
                     new_messages: vec![],
+                    shell: Some(shell_execution_output(
+                        &raw_command,
+                        &cwd,
+                        stdout,
+                        stderr,
+                        Some(exit_code),
+                        false,
+                        None,
+                        None,
+                    )),
                     ..Default::default()
                 })
             }
-            ControlledExit::TimedOut(wait_result) => Ok(ToolResult {
-                data: json!({
-                    "error": format!(
-                        "Command timed out after {}ms",
-                        timeout_duration.as_millis()
-                    ),
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "exit_code": wait_result
-                        .ok()
-                        .and_then(|status| status.code())
-                        .unwrap_or(143),
-                    "interrupted": true,
-                    "termination": "timeout",
-                }),
-                new_messages: vec![],
-                ..Default::default()
-            }),
-            ControlledExit::Cancelled(wait_result) => Ok(ToolResult {
-                data: json!({
-                    "error": "Command interrupted",
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "exit_code": wait_result
-                        .ok()
-                        .and_then(|status| status.code())
-                        .unwrap_or(137),
-                    "interrupted": true,
-                    "termination": "cancelled",
-                }),
-                new_messages: vec![],
-                ..Default::default()
-            }),
+            ControlledExit::TimedOut(wait_result) => {
+                let exit_code = wait_result
+                    .ok()
+                    .and_then(|status| status.code())
+                    .unwrap_or(143);
+                let error = format!("Command timed out after {}ms", timeout_duration.as_millis());
+                Ok(ToolResult {
+                    data: json!({
+                        "error": error,
+                        "stdout": stdout.clone(),
+                        "stderr": stderr.clone(),
+                        "exit_code": exit_code,
+                        "interrupted": true,
+                        "termination": "timeout",
+                    }),
+                    new_messages: vec![],
+                    shell: Some(shell_execution_output(
+                        &raw_command,
+                        &cwd,
+                        stdout,
+                        stderr,
+                        Some(exit_code),
+                        true,
+                        Some("timeout"),
+                        Some(format!(
+                            "Command timed out after {}ms",
+                            timeout_duration.as_millis()
+                        )),
+                    )),
+                    ..Default::default()
+                })
+            }
+            ControlledExit::Cancelled(wait_result) => {
+                let exit_code = wait_result
+                    .ok()
+                    .and_then(|status| status.code())
+                    .unwrap_or(137);
+                Ok(ToolResult {
+                    data: json!({
+                        "error": "Command interrupted",
+                        "stdout": stdout.clone(),
+                        "stderr": stderr.clone(),
+                        "exit_code": exit_code,
+                        "interrupted": true,
+                        "termination": "cancelled",
+                    }),
+                    new_messages: vec![],
+                    shell: Some(shell_execution_output(
+                        &raw_command,
+                        &cwd,
+                        stdout,
+                        stderr,
+                        Some(exit_code),
+                        true,
+                        Some("cancelled"),
+                        Some("Command interrupted".to_string()),
+                    )),
+                    ..Default::default()
+                })
+            }
             ControlledExit::Exited(Err(e)) => Ok(ToolResult {
                 data: json!({ "error": format!("Failed to execute command: {}", e) }),
                 new_messages: vec![],
+                shell: Some(shell_execution_output(
+                    &raw_command,
+                    &cwd,
+                    stdout,
+                    stderr,
+                    None,
+                    false,
+                    None,
+                    Some(format!("Failed to execute command: {}", e)),
+                )),
                 ..Default::default()
             }),
         }

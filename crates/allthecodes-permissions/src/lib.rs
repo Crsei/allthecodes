@@ -6,6 +6,7 @@
 // Decision state machine: full flow from rules → hooks → mode
 
 pub mod bash_matcher;
+pub mod command_risk;
 pub mod dangerous;
 pub mod decision;
 pub mod path_validation;

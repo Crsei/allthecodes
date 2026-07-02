@@ -390,6 +390,7 @@ fn build_child_config(
         &ctx.session_id,
         Some(&AgentContext {
             agent_id: agent_id.to_string(),
+            parent_agent_id: ctx.agent_id.clone(),
             query_tracking: QueryChainTracking {
                 chain_id: ctx
                     .query_tracking
@@ -444,6 +445,7 @@ fn build_child_config(
         auto_save_session: false,
         agent_context: Some(AgentContext {
             agent_id: agent_id.to_string(),
+            parent_agent_id: ctx.agent_id.clone(),
             query_tracking: QueryChainTracking {
                 chain_id,
                 depth: current_depth + 1,

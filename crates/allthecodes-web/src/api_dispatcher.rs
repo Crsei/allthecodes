@@ -216,6 +216,9 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::IpcWs - legacy IPC bridge, excluded.
 // ClientRequest::GitLog - legacy REST handler, GitProcessor target.
 // ClientRequest::GitDiff - legacy REST handler, GitProcessor target.
+// ClientRequest::WorktreeSessionsList - dispatched.
+// ClientRequest::WorktreeSessionsCurrent - dispatched.
+// ClientRequest::WorktreeSessionsBySession - dispatched.
 // ClientRequest::Proxy - legacy REST handler, ProxyProcessor target.
 // ClientRequest::Usage - legacy REST handler, UsageProcessor target.
 // ClientRequest::FilesTree - dispatched.
@@ -312,6 +315,9 @@ pub(crate) const DISPATCHED_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::GatewayStatus,
     ApiMethod::GatewaysList,
     ApiMethod::ModelsList,
+    ApiMethod::WorktreeSessionsList,
+    ApiMethod::WorktreeSessionsCurrent,
+    ApiMethod::WorktreeSessionsBySession,
 ];
 
 const DEDICATED_TRANSPORT_OPERATIONS: &[ApiMethod] = &[
@@ -878,6 +884,38 @@ pub async fn dispatch(
             .await?;
             Ok(ClientResponse::ModelsList(response))
         }
+        ClientRequest::WorktreeSessionsList(params) => {
+            let response = dispatch_tracked_processor::<handlers::WorktreeSessionsListProcessor>(
+                state,
+                context,
+                ApiMethod::WorktreeSessionsList,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::WorktreeSessionsList(response))
+        }
+        ClientRequest::WorktreeSessionsCurrent(NoParams {}) => {
+            let response =
+                dispatch_tracked_processor::<handlers::WorktreeSessionsCurrentProcessor>(
+                    state,
+                    context,
+                    ApiMethod::WorktreeSessionsCurrent,
+                    NoParams {},
+                )
+                .await?;
+            Ok(ClientResponse::WorktreeSessionsCurrent(response))
+        }
+        ClientRequest::WorktreeSessionsBySession(params) => {
+            let response =
+                dispatch_tracked_processor::<handlers::WorktreeSessionsBySessionProcessor>(
+                    state,
+                    context,
+                    ApiMethod::WorktreeSessionsBySession,
+                    params,
+                )
+                .await?;
+            Ok(ClientResponse::WorktreeSessionsBySession(response))
+        }
         other => Err(ApiError::NotImplemented {
             capability: format!("{:?}", other.method()),
         }),
@@ -1177,7 +1215,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 47);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 50);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

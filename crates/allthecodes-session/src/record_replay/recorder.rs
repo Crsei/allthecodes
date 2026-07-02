@@ -323,7 +323,41 @@ async fn flush_writer(
     stats: &mut RecorderStats,
     config: &RecordReplayConfig,
 ) -> Result<RecorderStats> {
+    let flushed = !pending.is_empty();
     drain_pending(writer, pending, stats).await?;
+
+    if flushed {
+        // Best-effort SQLite index update
+        if let Some(last_seq) = stats.last_seq {
+            let first_seq_val = stats
+                .last_seq
+                .map(|ls| ls.saturating_sub(stats.written_events.saturating_sub(1)))
+                .unwrap_or(0);
+            let entry = crate::record_replay::index::SessionRolloutIndexEntry {
+                session_id: stats.session_id.clone(),
+                rollout_path: stats.rollout_path.clone(),
+                schema_version: stats.schema_version,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                first_seq: first_seq_val,
+                last_seq,
+                event_count: stats.written_events,
+                status: "active".to_string(),
+                parent_session_id: None,
+                branch_from_seq: None,
+                workspace_key: None,
+                workspace_root: None,
+                workspace_name: None,
+            };
+            if let Err(e) = crate::record_replay::index::upsert_rollout(&entry) {
+                warn!(
+                    session_id = %stats.session_id,
+                    error = %e,
+                    "failed to update session_rollouts index after flush"
+                );
+            }
+        }
+    }
     writer
         .flush()
         .await
@@ -482,6 +516,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn recorder_resume_appends_from_next_seq() {
         let temp = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();

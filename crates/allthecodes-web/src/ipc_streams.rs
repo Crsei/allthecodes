@@ -13,11 +13,14 @@ use allthecodes_server::{
     ConnectionId, EventLog, EventSeq, OutboundRouter, ReplayBatch, ReplayStatus, RouterSendError,
     SequencedEvent, DEFAULT_EVENT_LOG_CAPACITY, DEFAULT_WRITER_CHANNEL_CAPACITY,
 };
+use allthecodes_types::agent_channel::{agent_channel, AgentIpcEvent, AgentReceiver, AgentSender};
 
 pub struct IpcSessionHub {
     session_id: String,
     runtime: IpcRuntime,
     bridge_rx: Mutex<Option<mpsc::Receiver<BackendMessage>>>,
+    agent_tx: AgentSender,
+    agent_rx: Mutex<Option<AgentReceiver>>,
     event_log: EventLog<BackendMessage>,
     router: OutboundRouter<BackendMessage>,
     active_owner: Mutex<Option<ConnectionId>>,
@@ -28,10 +31,13 @@ impl IpcSessionHub {
     pub fn new(session_id: impl Into<String>) -> Arc<Self> {
         let session_id = session_id.into();
         let (runtime, bridge_rx) = IpcRuntime::new(session_id.clone(), 256);
+        let (agent_tx, agent_rx) = agent_channel();
         Arc::new(Self {
             session_id,
             runtime,
             bridge_rx: Mutex::new(Some(bridge_rx)),
+            agent_tx,
+            agent_rx: Mutex::new(Some(agent_rx)),
             event_log: EventLog::new(DEFAULT_EVENT_LOG_CAPACITY),
             router: OutboundRouter::new(DEFAULT_WRITER_CHANNEL_CAPACITY),
             active_owner: Mutex::new(None),
@@ -62,6 +68,14 @@ impl IpcSessionHub {
 
     pub fn take_bridge_receiver(&self) -> Option<mpsc::Receiver<BackendMessage>> {
         self.bridge_rx.lock().take()
+    }
+
+    pub fn agent_sender(&self) -> AgentSender {
+        self.agent_tx.clone()
+    }
+
+    pub fn take_agent_receiver(&self) -> Option<AgentReceiver> {
+        self.agent_rx.lock().take()
     }
 
     pub fn publish(&self, message: BackendMessage) -> SequencedEvent<BackendMessage> {
@@ -172,6 +186,15 @@ impl IpcSessionHub {
     }
 }
 
+pub(crate) async fn forward_agent_ipc_event(runtime: &IpcRuntime, event: AgentIpcEvent) -> bool {
+    let message = match event {
+        AgentIpcEvent::Agent(event) => BackendMessage::AgentEvent { event },
+        AgentIpcEvent::Team(event) => BackendMessage::TeamEvent { event },
+    };
+
+    runtime.send_backend(message).await.is_ok()
+}
+
 pub fn ipc_seq_marker(session_id: &str, seq: EventSeq) -> BackendMessage {
     BackendMessage::StatusLineUpdate {
         payload: serde_json::json!({
@@ -189,11 +212,33 @@ pub fn ipc_seq_marker(session_id: &str, seq: EventSeq) -> BackendMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allthecodes_types::agent_events::AgentEvent;
+    use allthecodes_types::agent_runtime_record::{
+        AgentRuntimeExecutionRecord, AgentRuntimePermissionDecision,
+    };
 
     fn info(text: &str) -> BackendMessage {
         BackendMessage::SystemInfo {
             text: text.to_string(),
             level: "info".to_string(),
+        }
+    }
+
+    fn execution_record_message() -> BackendMessage {
+        BackendMessage::AgentEvent {
+            event: AgentEvent::ExecutionRecord {
+                agent_id: "agent-1".to_string(),
+                record: Box::new(AgentRuntimeExecutionRecord {
+                    session_id: "session-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    tool: "shell".to_string(),
+                    tool_use_id: Some("toolu-1".to_string()),
+                    permission_decision: Some(AgentRuntimePermissionDecision::DeniedByPolicy),
+                    exit_code: Some(2),
+                    had_error: true,
+                    ..Default::default()
+                }),
+            },
         }
     }
 
@@ -212,6 +257,40 @@ mod tests {
             BackendMessage::SystemInfo { text, .. } if text == "hello"
         ));
         assert_eq!(hub.replay_after(Some(0)).events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_sender_forwards_execution_record_to_runtime_queue() {
+        let hub = IpcSessionHub::new("session-1");
+        let mut bridge_rx = hub.take_bridge_receiver().expect("bridge receiver");
+        let mut agent_rx = hub.take_agent_receiver().expect("agent receiver");
+        let runtime = hub.runtime().clone();
+        let bridge_task = tokio::spawn(async move {
+            if let Some(event) = agent_rx.recv().await {
+                assert!(forward_agent_ipc_event(&runtime, event).await);
+            }
+        });
+
+        hub.agent_sender()
+            .send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
+                match execution_record_message() {
+                    BackendMessage::AgentEvent { event } => event,
+                    _ => unreachable!("execution_record_message returns agent event"),
+                },
+            ))
+            .expect("send agent event");
+
+        let outbound = bridge_rx.recv().await.expect("bridged backend message");
+        let encoded = serde_json::to_value(&outbound).expect("serialize bridged message");
+        assert_eq!(encoded["type"], "agent_event");
+        assert_eq!(encoded["event"]["kind"], "execution_record");
+        assert_eq!(encoded["event"]["record"]["session_id"], "session-1");
+        assert_eq!(
+            encoded["event"]["record"]["permission_decision"],
+            "denied_by_policy"
+        );
+
+        bridge_task.await.expect("agent bridge task");
     }
 
     #[test]
@@ -255,5 +334,28 @@ mod tests {
         assert!(error.is_none());
         assert_eq!(payload["transport"]["event_log_seq"], 42);
         assert_eq!(payload["transport"]["session_id"], "session-1");
+    }
+
+    #[test]
+    fn execution_record_replays_as_legacy_agent_event() {
+        let hub = IpcSessionHub::new("session-1");
+
+        let event = hub.publish(execution_record_message());
+
+        assert_eq!(event.seq, 1);
+        let replay = hub.replay_after(Some(0));
+        assert_eq!(replay.events.len(), 1);
+        let encoded = serde_json::to_value(&replay.events[0].message)
+            .expect("serialize replayed backend message");
+        assert_eq!(encoded["type"], "agent_event");
+        assert_eq!(encoded["event"]["kind"], "execution_record");
+        assert_eq!(encoded["event"]["record"]["session_id"], "session-1");
+        assert_eq!(encoded["event"]["record"]["tool"], "shell");
+        assert_eq!(
+            encoded["event"]["record"]["permission_decision"],
+            "denied_by_policy"
+        );
+        assert_eq!(encoded["event"]["record"]["exit_code"], 2);
+        assert_eq!(encoded["event"]["record"]["had_error"], true);
     }
 }

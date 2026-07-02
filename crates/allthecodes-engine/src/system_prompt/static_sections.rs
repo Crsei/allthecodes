@@ -114,6 +114,7 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
         && enabled_tools.contains(&"CreateGoal")
         && enabled_tools.contains(&"UpdateGoal");
     let has_semantic_orchestration = enabled_tools.contains(&"Workflow")
+        || enabled_tools.contains(&"DynamicWorkflow")
         || enabled_tools.contains(&"ListAgents")
         || enabled_tools.contains(&"FollowupTask")
         || enabled_tools.contains(&"WaitAgent")
@@ -196,7 +197,7 @@ pub(super) fn using_tools_section(enabled_tools: &[&str]) -> String {
 
     if has_semantic_orchestration {
         items.push(
-            "Use Workflow for durable multi-step workflow specs. Use ListAgents, FollowupTask, WaitAgent, and CloseAgent for cross-agent operations in an active Agent Teams session.".into()
+            "Use Workflow for durable multi-step workflow specs. Use DynamicWorkflow for JSON DAG-based agent orchestration with fan-out (map/reduce) patterns. Use ListAgents, FollowupTask, WaitAgent, and CloseAgent for cross-agent operations in an active Agent Teams session.".into()
         );
     }
 

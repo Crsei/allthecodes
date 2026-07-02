@@ -15,6 +15,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::{CommandContext, CommandHandler, CommandResult};
+use allthecodes_services::cost_ledger;
 use allthecodes_session::storage::{self, SessionInfo};
 use allthecodes_types::message::Message;
 
@@ -139,7 +140,11 @@ struct InsightsReport {
     total_output_tokens: u64,
     total_cache_read_tokens: u64,
     total_cache_creation_tokens: u64,
+    total_reasoning_output_tokens: u64,
     total_cost_usd: f64,
+    api_calls: u64,
+    unknown_pricing_count: u64,
+    backfilled_count: u64,
     /// Oldest `last_modified` among included sessions.
     oldest: Option<i64>,
     /// Newest `last_modified` among included sessions.
@@ -197,7 +202,7 @@ fn compute_insights(filter: &InsightsFilter) -> Result<InsightsReport> {
     if filter.include_usage {
         for s in &included {
             if let Ok(messages) = storage::load_session(&s.session_id) {
-                accumulate_usage(&messages, &mut report);
+                accumulate_session_usage(&s.session_id, &messages, &mut report);
             }
         }
     }
@@ -239,7 +244,7 @@ fn passes(s: &SessionInfo, filter: &InsightsFilter) -> bool {
     true
 }
 
-fn accumulate_usage(messages: &[Message], report: &mut InsightsReport) {
+fn accumulate_session_usage(session_id: &str, messages: &[Message], report: &mut InsightsReport) {
     for msg in messages {
         match msg {
             Message::User(u) => {
@@ -248,19 +253,37 @@ fn accumulate_usage(messages: &[Message], report: &mut InsightsReport) {
                 }
                 report.total_user_messages += 1;
             }
-            Message::Assistant(a) => {
+            Message::Assistant(_) => {
                 report.total_assistant_messages += 1;
-                report.total_cost_usd += a.cost_usd;
-                if let Some(usage) = &a.usage {
-                    report.total_input_tokens += usage.input_tokens;
-                    report.total_output_tokens += usage.output_tokens;
-                    report.total_cache_read_tokens += usage.cache_read_input_tokens;
-                    report.total_cache_creation_tokens += usage.cache_creation_input_tokens;
-                }
             }
             _ => {}
         }
     }
+
+    let summary = cost_ledger::get_session_cost_summary(session_id, messages);
+    report.total_input_tokens = report
+        .total_input_tokens
+        .saturating_add(summary.total_input_tokens);
+    report.total_output_tokens = report
+        .total_output_tokens
+        .saturating_add(summary.total_output_tokens);
+    report.total_cache_read_tokens = report
+        .total_cache_read_tokens
+        .saturating_add(summary.total_cache_read_tokens);
+    report.total_cache_creation_tokens = report
+        .total_cache_creation_tokens
+        .saturating_add(summary.total_cache_creation_tokens);
+    report.total_reasoning_output_tokens = report
+        .total_reasoning_output_tokens
+        .saturating_add(summary.total_reasoning_output_tokens);
+    report.total_cost_usd += summary.total_cost_usd;
+    report.api_calls = report.api_calls.saturating_add(summary.api_calls);
+    report.unknown_pricing_count = report
+        .unknown_pricing_count
+        .saturating_add(summary.unknown_pricing_count);
+    report.backfilled_count = report
+        .backfilled_count
+        .saturating_add(summary.backfilled_count);
 }
 
 fn format_report(report: &InsightsReport, label: &str) -> String {
@@ -306,10 +329,27 @@ fn format_report(report: &InsightsReport, label: &str) -> String {
             "    Cache creation:    {}",
             thousands(report.total_cache_creation_tokens)
         ));
+        if report.total_reasoning_output_tokens > 0 {
+            lines.push(format!(
+                "    Reasoning output:  {}",
+                thousands(report.total_reasoning_output_tokens)
+            ));
+        }
+        lines.push(format!(
+            "  API calls:           {}",
+            thousands(report.api_calls)
+        ));
         lines.push(format!(
             "  Estimated cost:      {}",
             fmt_cost(report.total_cost_usd)
         ));
+        if report.backfilled_count > 0 || report.unknown_pricing_count > 0 {
+            lines.push(format!(
+                "  Cost quality:        backfilled={} unknown_pricing={}",
+                thousands(report.backfilled_count),
+                thousands(report.unknown_pricing_count)
+            ));
+        }
     } else {
         lines.push(String::new());
         lines.push("  (Usage stats skipped — rerun without --fast to load session bodies.)".into());
@@ -465,6 +505,27 @@ mod tests {
         .unwrap();
     }
 
+    fn write_cost_event(session_id: &str, cost_event_data: serde_json::Value) {
+        let dir = allthecodes_config::paths::runs_dir(session_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let event = serde_json::json!({
+            "event_id": format!("evt_{session_id}"),
+            "ts": "2026-01-01T00:00:00Z",
+            "session_id": session_id,
+            "source": "tui",
+            "kind": "cost_recorded",
+            "stage": "cost",
+            "level": "info",
+            "outcome": "completed",
+            "data": cost_event_data,
+        });
+        std::fs::write(
+            dir.join("events.ndjson"),
+            format!("{}\n", serde_json::to_string(&event).unwrap()),
+        )
+        .unwrap();
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn test_insights_no_sessions() {
@@ -495,6 +556,60 @@ mod tests {
                 assert!(text.contains("Session insights (all workspaces)"));
                 assert!(text.contains("Sessions included:   2"));
                 assert!(text.contains("Token usage"));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_insights_prefers_runtime_cost_ledger() {
+        let temp = tempfile::tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        write_session("cc", "/p1", 1_700_000_100);
+        write_cost_event(
+            "cc",
+            serde_json::json!({
+                "schema_version": 1,
+                "session_id": "cc",
+                "message_id": "000000cc-0000-0000-0000-000000000002",
+                "provider": "anthropic",
+                "backend": "native",
+                "model": "unknown-live-model",
+                "pricing": {
+                    "source": "unknown",
+                    "matched_key": "",
+                    "currency": "USD",
+                    "input_per_1m": 0.0,
+                    "output_per_1m": 0.0,
+                    "cache_read_multiplier": 0.1,
+                    "cache_creation_multiplier": 1.25
+                },
+                "usage": {
+                    "input_tokens": 1000u64,
+                    "output_tokens": 25u64,
+                    "reasoning_output_tokens": 7u64,
+                    "cache_read_input_tokens": 3u64,
+                    "cache_creation_input_tokens": 2u64
+                },
+                "cost_usd": 0.5,
+                "stop_reason": "end_turn",
+                "is_retry": false,
+                "attempt": 1,
+                "backfilled": false
+            }),
+        );
+
+        let mut ctx = test_ctx(PathBuf::from("/some/where"));
+        let result = InsightsHandler.execute("", &mut ctx).await.unwrap();
+        match result {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Input:             1,000"));
+                assert!(text.contains("Output:            25"));
+                assert!(text.contains("Reasoning output:  7"));
+                assert!(text.contains("Estimated cost:      $0.50"));
+                assert!(text.contains("unknown_pricing=1"));
             }
             _ => panic!(),
         }

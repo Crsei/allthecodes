@@ -262,7 +262,10 @@ mod tests {
     fn parse_flags_rejects_static_sensitive_header() {
         let parsed = parse_flags(&["--header=Authorization=Bearer secret"]);
 
-        assert!(parsed.error.unwrap().contains("refusing static sensitive HTTP header"));
+        assert!(parsed
+            .error
+            .unwrap()
+            .contains("refusing static sensitive HTTP header"));
     }
 
     #[test]

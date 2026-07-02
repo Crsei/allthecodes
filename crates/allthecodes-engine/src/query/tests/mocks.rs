@@ -23,6 +23,8 @@ use crate::types::message::{
 };
 use crate::types::state::AutoCompactTracking;
 use crate::types::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, Tools};
+use allthecodes_types::agent_events::AgentEvent;
+use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
 
 #[allow(clippy::large_enum_variant)]
 pub enum MockStreamStep {
@@ -57,6 +59,12 @@ pub struct MockDeps {
     pub steer_drains: parking_lot::Mutex<VecDeque<Vec<String>>>,
     pub app_state: parking_lot::Mutex<AppState>,
     pub audit_session_id: parking_lot::Mutex<String>,
+    pub session_id: String,
+    pub agent_id: Option<String>,
+    pub parent_agent_id: Option<String>,
+    pub agent_type: Option<String>,
+    pub tool_result_override: parking_lot::Mutex<Option<ToolExecResult>>,
+    pub agent_events: parking_lot::Mutex<Vec<AgentEvent>>,
 }
 
 impl MockDeps {
@@ -96,6 +104,12 @@ impl MockDeps {
             steer_drains: parking_lot::Mutex::new(VecDeque::new()),
             app_state: parking_lot::Mutex::new(AppState::default()),
             audit_session_id: parking_lot::Mutex::new("query-test".to_string()),
+            session_id: String::new(),
+            agent_id: None,
+            parent_agent_id: None,
+            agent_type: None,
+            tool_result_override: parking_lot::Mutex::new(None),
+            agent_events: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -122,6 +136,29 @@ impl MockDeps {
     pub fn with_audit_session(self, session_id: &str) -> Self {
         *self.audit_session_id.lock() = session_id.to_string();
         self
+    }
+
+    pub fn with_runtime_identity(
+        mut self,
+        session_id: &str,
+        agent_id: &str,
+        parent_agent_id: Option<&str>,
+        agent_type: Option<&str>,
+    ) -> Self {
+        self.session_id = session_id.to_string();
+        self.agent_id = Some(agent_id.to_string());
+        self.parent_agent_id = parent_agent_id.map(str::to_string);
+        self.agent_type = agent_type.map(str::to_string);
+        self
+    }
+
+    pub fn with_tool_result_override(self, result: ToolExecResult) -> Self {
+        *self.tool_result_override.lock() = Some(result);
+        self
+    }
+
+    pub fn recorded_agent_events(&self) -> Vec<AgentEvent> {
+        self.agent_events.lock().clone()
     }
 
     pub fn recorded_params(&self) -> Vec<ModelCallParams> {
@@ -282,9 +319,17 @@ impl QueryDeps for MockDeps {
         self.active_tools.fetch_sub(1, Ordering::SeqCst);
         self.tool_completed_count.fetch_add(1, Ordering::SeqCst);
 
+        if let Some(mut result) = self.tool_result_override.lock().clone() {
+            result.tool_use_id = request.tool_use_id;
+            result.tool_name = request.tool_name;
+            result.effective_input = request.input;
+            return Ok(result);
+        }
+
         Ok(ToolExecResult {
             tool_use_id: request.tool_use_id,
             tool_name: request.tool_name,
+            effective_input: request.input,
             result: crate::types::tool::ToolResult {
                 data: serde_json::json!("mock tool output"),
                 new_messages: vec![],
@@ -292,6 +337,8 @@ impl QueryDeps for MockDeps {
             },
             is_error: false,
             hook_stopped_continuation: self.hook_stopped_tool_execution.load(Ordering::SeqCst),
+            duration_ms: None,
+            permission_decision: Some(AgentRuntimePermissionDecision::NotRequired),
         })
     }
 
@@ -335,6 +382,26 @@ impl QueryDeps for MockDeps {
 
     fn audit_context(&self) -> allthecodes_observability::AuditContext {
         allthecodes_observability::AuditContext::noop(self.audit_session_id.lock().clone())
+    }
+
+    fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    fn agent_id(&self) -> Option<&str> {
+        self.agent_id.as_deref()
+    }
+
+    fn agent_type(&self) -> Option<&str> {
+        self.agent_type.as_deref()
+    }
+
+    fn parent_agent_id(&self) -> Option<&str> {
+        self.parent_agent_id.as_deref()
+    }
+
+    fn send_agent_event(&self, event: AgentEvent) {
+        self.agent_events.lock().push(event);
     }
 }
 
@@ -680,6 +747,7 @@ pub async fn run_observable_input_backfill_case(
     );
     let mut params = make_query_params(vec![make_user_message_for_test("send message")]);
     params.gates.streaming_tool_execution = streaming_tool_execution;
+    params.gates.deferred_tool_loading = false;
 
     let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
     let recorded_params = deps.recorded_params();
@@ -820,14 +888,18 @@ impl QueryDeps for ImageMockDeps {
         Ok(ToolExecResult {
             tool_use_id: request.tool_use_id,
             tool_name: request.tool_name,
+            effective_input: request.input,
             result: crate::types::tool::ToolResult {
                 data: serde_json::json!("[Image: image/png]"),
                 model_content: Some(ToolResultContent::Blocks(image_blocks)),
                 display_preview: Some("[Image: image/png]".to_string()),
                 new_messages: vec![],
+                ..Default::default()
             },
             is_error: false,
             hook_stopped_continuation: false,
+            duration_ms: None,
+            permission_decision: Some(AgentRuntimePermissionDecision::NotRequired),
         })
     }
 
@@ -943,6 +1015,7 @@ impl QueryDeps for CuMockDeps {
                 }])),
                 display_preview: Some("[Screenshot: 1920x1080]".to_string()),
                 new_messages: vec![],
+                shell: None,
             }
         } else {
             // click, type_text, key, scroll 鈫?text confirmation
@@ -959,9 +1032,12 @@ impl QueryDeps for CuMockDeps {
         Ok(ToolExecResult {
             tool_use_id: request.tool_use_id,
             tool_name: request.tool_name,
+            effective_input: request.input,
             result,
             is_error: false,
             hook_stopped_continuation: false,
+            duration_ms: None,
+            permission_decision: Some(AgentRuntimePermissionDecision::NotRequired),
         })
     }
 

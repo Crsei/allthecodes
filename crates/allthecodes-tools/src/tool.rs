@@ -103,6 +103,7 @@ pub struct ToolResult {
     pub model_content: Option<allthecodes_types::message::ToolResultContent>,
     pub display_preview: Option<String>,
     pub new_messages: Vec<allthecodes_types::message::Message>,
+    pub shell: Option<allthecodes_types::ShellExecutionOutput>,
 }
 
 impl ToolResult {
@@ -116,6 +117,7 @@ impl ToolResult {
             model_content: Some(model_content),
             display_preview: Some(display_preview),
             new_messages: vec![],
+            shell: None,
         }
     }
 }

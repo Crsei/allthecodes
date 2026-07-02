@@ -3,11 +3,17 @@
 //! Goes beyond `/cost` by providing per-message token breakdowns,
 //! top-5 most expensive API calls, token efficiency metrics,
 //! and estimated cost breakdown by token type.
+//!
+//! This handler uses the shared `cost_ledger` from `allthecodes-services` as its
+//! primary aggregation path.  When cost_ledger events are not available (e.g. older
+//! sessions), it falls back to the original per-message aggregation from assistant
+//! messages.
 
 use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::{CommandContext, CommandHandler, CommandResult};
+use allthecodes_services::cost_ledger;
 use allthecodes_types::message::Message;
 
 /// Handler for the `/extra-usage` slash command.
@@ -22,6 +28,19 @@ struct MsgStats {
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
     cost_usd: f64,
+}
+
+/// Build per-message stats from a cost_ledger CostEvent.
+fn stats_from_event(index: usize, event: &cost_ledger::CostEvent) -> MsgStats {
+    MsgStats {
+        index,
+        input_tokens: event.usage.input_tokens,
+        output_tokens: event.usage.output_tokens,
+        reasoning_output_tokens: event.usage.reasoning_output_tokens,
+        cache_read_tokens: event.usage.cache_read_input_tokens,
+        cache_creation_tokens: event.usage.cache_creation_input_tokens,
+        cost_usd: event.cost_usd,
+    }
 }
 
 use allthecodes_types::models::pricing;
@@ -51,7 +70,7 @@ fn fmt_cost(usd: f64) -> String {
     }
 }
 
-/// Collect per-message stats from the conversation.
+/// Collect per-message stats from the conversation (fallback path).
 fn collect_stats(messages: &[Message]) -> Vec<MsgStats> {
     let mut idx: usize = 0;
     let mut stats = Vec::new();
@@ -90,7 +109,21 @@ fn collect_stats(messages: &[Message]) -> Vec<MsgStats> {
 #[async_trait]
 impl CommandHandler for ExtraUsageHandler {
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> Result<CommandResult> {
-        let stats = collect_stats(&ctx.messages);
+        let session_id = ctx.session_id.as_str();
+
+        // Primary path: use the shared cost_ledger to get per-event stats.
+        let ledger_events = cost_ledger::get_session_cost_events(session_id, &ctx.messages);
+
+        let stats: Vec<MsgStats> = if !ledger_events.is_empty() {
+            ledger_events
+                .iter()
+                .enumerate()
+                .map(|(i, e)| stats_from_event(i + 1, e))
+                .collect()
+        } else {
+            // Fallback: per-message aggregation from assistant messages.
+            collect_stats(&ctx.messages)
+        };
 
         if stats.is_empty() {
             return Ok(CommandResult::Output(
@@ -99,6 +132,9 @@ impl CommandHandler for ExtraUsageHandler {
         }
 
         let mut lines: Vec<String> = Vec::new();
+
+        // Use cost_ledger for aggregated totals.
+        let ledger_summary = cost_ledger::get_session_cost_summary(session_id, &ctx.messages);
 
         // --- Section 1: Per-message token breakdown ---
         lines.push("Extended Usage Analysis".into());
@@ -148,12 +184,25 @@ impl CommandHandler for ExtraUsageHandler {
         }
 
         // --- Section 3: Token efficiency metrics ---
-        let total_input: u64 = stats.iter().map(|s| s.input_tokens).sum();
-        let total_output: u64 = stats.iter().map(|s| s.output_tokens).sum();
-        let _total_reasoning: u64 = stats.iter().map(|s| s.reasoning_output_tokens).sum();
-        let total_cache_read: u64 = stats.iter().map(|s| s.cache_read_tokens).sum();
-        let total_cache_create: u64 = stats.iter().map(|s| s.cache_creation_tokens).sum();
-        let total_cost: f64 = stats.iter().map(|s| s.cost_usd).sum();
+        // Prefer cost_ledger totals when available.
+        let (total_input, total_output, total_cache_read, total_cache_create, total_cost) =
+            if ledger_summary.api_calls > 0 {
+                (
+                    ledger_summary.total_input_tokens,
+                    ledger_summary.total_output_tokens,
+                    ledger_summary.total_cache_read_tokens,
+                    ledger_summary.total_cache_creation_tokens,
+                    ledger_summary.total_cost_usd,
+                )
+            } else {
+                (
+                    stats.iter().map(|s| s.input_tokens).sum(),
+                    stats.iter().map(|s| s.output_tokens).sum(),
+                    stats.iter().map(|s| s.cache_read_tokens).sum(),
+                    stats.iter().map(|s| s.cache_creation_tokens).sum(),
+                    stats.iter().map(|s| s.cost_usd).sum(),
+                )
+            };
 
         let output_input_ratio = if total_input > 0 {
             total_output as f64 / total_input as f64
@@ -408,7 +457,10 @@ mod tests {
                 // Message 3: 1,000 cache-read, 500 cache-write
                 assert!(text.contains("1,000"), "expected 1,000 in output");
                 // Verify top-5 ranking: message #3 (cost 0.015) should be first
-                assert!(text.contains("1. Call #3"), "expected Call #3 as most expensive");
+                assert!(
+                    text.contains("1. Call #3"),
+                    "expected Call #3 as most expensive"
+                );
                 // Verify cache hit rate is present and non-zero
                 assert!(text.contains("Cache hit rate"));
                 // Should NOT be 0.0% because we have cache reads

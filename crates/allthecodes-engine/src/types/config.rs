@@ -373,6 +373,8 @@ pub struct QueryEngineConfig {
 pub struct AgentContext {
     /// Unique ID of this agent instance.
     pub agent_id: String,
+    /// Parent agent ID, if this agent was spawned by another agent.
+    pub parent_agent_id: Option<String>,
     /// Chain tracking for recursion depth enforcement.
     pub query_tracking: QueryChainTracking,
     /// Root Langfuse session ID inherited from the parent agent chain.

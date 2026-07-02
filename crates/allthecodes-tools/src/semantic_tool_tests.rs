@@ -849,6 +849,7 @@ mod tests {
             total_output_tokens: 500,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
+            total_reasoning_output_tokens: 0,
             total_cost_usd: 0.0,
             api_call_count: 1,
         };

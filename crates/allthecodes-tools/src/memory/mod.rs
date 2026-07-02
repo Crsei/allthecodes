@@ -397,6 +397,7 @@ impl Tool for LocalMemoryRecallTool {
                         if truncated { ", truncated" } else { "" }
                     )),
                     new_messages: vec![],
+                    ..Default::default()
                 })
             }
             _ => bail!("unsupported LocalMemoryRecall action: {action}"),

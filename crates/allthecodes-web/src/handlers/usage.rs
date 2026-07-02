@@ -18,9 +18,29 @@ use serde_json::Value;
 
 use crate::state::WebState;
 use allthecodes_protocol::ApiError as ProtocolApiError;
+use allthecodes_services::cost_ledger;
 use allthecodes_session::request_snapshot::ApiRequestSnapshot;
 use allthecodes_session::storage::SessionFile;
 use allthecodes_types::message::Usage;
+
+// ---------------------------------------------------------------------------
+// Cost quality types
+// ---------------------------------------------------------------------------
+
+/// Summary of cost-data quality for a usage dashboard response.
+///
+/// Reports how many events are backfilled (estimated from assistant messages
+/// rather than runtime audit events) and how many have unknown/zero pricing.
+#[derive(Debug, Clone, Serialize)]
+pub struct CostQualitySummary {
+    /// Number of backfilled cost events (estimated from session file data).
+    pub backfilled_count: usize,
+    /// Number of events with unknown or missing pricing (model not in built-in
+    /// table and no env override).
+    pub unknown_pricing_count: usize,
+    /// Total number of cost events aggregated.
+    pub total_cost_events: usize,
+}
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -39,6 +59,11 @@ pub struct UsageDashboardResponse {
     pub partial: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Cost-data quality summary: how many events are backfilled vs real, and
+    /// how many have unknown pricing.  Absent when the handler cannot compute
+    /// cost quality (e.g. zero-event sessions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_quality: Option<CostQualitySummary>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -318,6 +343,28 @@ fn aggregate_usage_dashboard(
         ));
     }
 
+    // Collect cost quality information from the cost ledger for each session
+    // that had usage events in the period.  We walk the sessions dir again
+    // (cheap, only reading session IDs and delegating to the ledger) so that
+    // per-session backfill / unknown-pricing markers are available.
+    let cost_quality = compute_cost_quality(sessions_dir, generated_at_i64, spec.since);
+
+    // Emit warnings for cost data quality
+    if let Some(ref cq) = cost_quality {
+        if cq.backfilled_count > 0 {
+            warnings.push(format!(
+                "{} cost events are backfilled from session files (not runtime audit events).",
+                cq.backfilled_count,
+            ));
+        }
+        if cq.unknown_pricing_count > 0 {
+            warnings.push(format!(
+                "{} cost events have unknown pricing (model not in built-in table).",
+                cq.unknown_pricing_count,
+            ));
+        }
+    }
+
     UsageDashboardResponse {
         profile_id,
         period,
@@ -328,7 +375,84 @@ fn aggregate_usage_dashboard(
         by_provider: provider_rows_to_response(by_provider),
         partial: false,
         warnings,
+        cost_quality,
     }
+}
+
+/// Walk sessions in the period, load their cost events from the ledger, and
+/// produce a [`CostQualitySummary`].
+fn compute_cost_quality(
+    sessions_dir: std::path::PathBuf,
+    generated_at: i64,
+    since: Option<i64>,
+) -> Option<CostQualitySummary> {
+    if !sessions_dir.exists() {
+        return None;
+    }
+
+    let mut total_cost_events: usize = 0;
+    let mut backfilled_count: usize = 0;
+    let mut unknown_pricing_count: usize = 0;
+    let mut had_any: bool = false;
+
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path();
+            if !is_session_json_candidate(&path) {
+                continue;
+            }
+
+            // Quick-read the session ID from the file header to pass to the ledger.
+            let contents = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let session_file: SessionFile = match serde_json::from_str(&contents) {
+                Ok(sf) => sf,
+                Err(_) => continue,
+            };
+
+            let events = cost_ledger::get_session_cost_events_with_backfill_from_json(
+                &session_file.session_id,
+            );
+            if events.is_empty() {
+                continue;
+            }
+            let fallback_timestamp = normalize_timestamp_seconds(session_file.last_modified);
+            let events: Vec<_> = events
+                .into_iter()
+                .filter(|event| {
+                    event_in_period(
+                        event.timestamp.unwrap_or(fallback_timestamp),
+                        generated_at,
+                        since,
+                    )
+                })
+                .collect();
+            if events.is_empty() {
+                continue;
+            }
+            // Re-aggregate to get backfilled/unknown counts from the ledger.
+            let summary = cost_ledger::aggregate_cost_events(&events);
+            total_cost_events += events.len();
+            backfilled_count += summary.backfilled_count as usize;
+            unknown_pricing_count += summary.unknown_pricing_count as usize;
+            had_any = true;
+        }
+    }
+
+    if !had_any {
+        return None;
+    }
+
+    Some(CostQualitySummary {
+        backfilled_count,
+        unknown_pricing_count,
+        total_cost_events,
+    })
 }
 
 fn current_unix_seconds() -> u64 {
@@ -389,9 +513,64 @@ fn is_session_json_candidate(path: &Path) -> bool {
 fn read_session_usage_events(path: &Path) -> Result<Vec<UsageEvent>, ()> {
     let contents = std::fs::read_to_string(path).map_err(|_| ())?;
     let session_file: SessionFile = serde_json::from_str(&contents).map_err(|_| ())?;
+    let fallback_timestamp = normalize_timestamp_seconds(session_file.last_modified);
+    let ledger_events =
+        cost_ledger::get_session_cost_events_with_backfill_from_json(&session_file.session_id);
+    if !ledger_events.is_empty() {
+        let mut events: Vec<UsageEvent> = ledger_events
+            .into_iter()
+            .map(|event| usage_event_from_cost_event(event, fallback_timestamp))
+            .collect();
+        attach_request_identities(&session_file.session_id, &mut events);
+        return Ok(events);
+    }
+
     let mut events = usage_events_from_session(&session_file);
     attach_request_identities(&session_file.session_id, &mut events);
     Ok(events)
+}
+
+fn usage_event_from_cost_event(
+    event: cost_ledger::CostEvent,
+    fallback_timestamp: i64,
+) -> UsageEvent {
+    let request = request_identity_from_cost_event(&event);
+    UsageEvent {
+        session_id: event.session_id,
+        timestamp: event.timestamp.unwrap_or(fallback_timestamp),
+        usage: Usage {
+            input_tokens: event.usage.input_tokens,
+            output_tokens: event.usage.output_tokens,
+            reasoning_output_tokens: event.usage.reasoning_output_tokens,
+            cache_read_input_tokens: event.usage.cache_read_input_tokens,
+            cache_creation_input_tokens: event.usage.cache_creation_input_tokens,
+        },
+        cost_usd: event.cost_usd,
+        request,
+    }
+}
+
+fn request_identity_from_cost_event(event: &cost_ledger::CostEvent) -> Option<RequestIdentity> {
+    let model = event
+        .model
+        .as_deref()
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| {
+            event.pricing.as_ref().and_then(|pricing| {
+                (!pricing.matched_key.trim().is_empty()).then_some(pricing.matched_key.as_str())
+            })
+        })?;
+    let provider = event
+        .provider
+        .as_deref()
+        .filter(|provider| !provider.trim().is_empty())
+        .or(event.backend.as_deref())
+        .unwrap_or("unknown");
+
+    Some(RequestIdentity {
+        provider: provider.to_string(),
+        model: model.to_string(),
+    })
 }
 
 fn usage_events_from_session(session_file: &SessionFile) -> Vec<UsageEvent> {
@@ -434,7 +613,9 @@ fn attach_request_identities(session_id: &str, events: &mut [UsageEvent]) {
 
     snapshots.sort_by_key(|snapshot| snapshot.sequence);
     for (event, snapshot) in events.iter_mut().zip(snapshots) {
-        event.request = request_identity_from_snapshot(snapshot);
+        if event.request.is_none() {
+            event.request = request_identity_from_snapshot(snapshot);
+        }
     }
 }
 
@@ -721,6 +902,19 @@ mod tests {
             .expect("write snapshots");
     }
 
+    fn write_cost_event(session_id: &str, event: Value) {
+        let dir = allthecodes_config::paths::runs_dir(session_id);
+        std::fs::create_dir_all(&dir).expect("runs dir");
+        std::fs::write(
+            dir.join("events.ndjson"),
+            format!(
+                "{}\n",
+                serde_json::to_string(&event).expect("cost event json")
+            ),
+        )
+        .expect("write cost events");
+    }
+
     fn assistant_usage(uuid: &str, timestamp: i64, usage: Value, cost_usd: f64) -> Value {
         json!({
             "type": "assistant",
@@ -823,6 +1017,99 @@ mod tests {
         assert_eq!(dashboard.totals.session_count, Some(1));
         assert!((dashboard.totals.total_cost_usd - 0.125).abs() < f64::EPSILON);
         assert!(!dashboard.partial);
+    }
+
+    #[test]
+    #[serial]
+    fn usage_dashboard_prefers_runtime_cost_ledger_over_session_messages() {
+        let (_home, _guard) = temp_home();
+        let now = 1_800_000_000;
+        let event_time = Utc
+            .timestamp_opt(now - 5, 0)
+            .single()
+            .expect("event timestamp")
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
+
+        write_session(
+            "session-ledger",
+            vec![assistant_usage("a1", now - 10, usage(10, 1, 0, 0), 0.01)],
+        );
+        write_cost_event(
+            "session-ledger",
+            json!({
+                "event_id": "evt_cost",
+                "ts": event_time,
+                "session_id": "session-ledger",
+                "submit_id": "sub_1",
+                "turn_id": "turn_1",
+                "request_id": "req_1",
+                "message_id": "msg_1",
+                "source": "tui",
+                "kind": "cost_recorded",
+                "stage": "cost",
+                "level": "info",
+                "outcome": "completed",
+                "data": {
+                    "schema_version": 1,
+                    "session_id": "session-ledger",
+                    "message_id": "msg_1",
+                    "provider": "anthropic",
+                    "backend": "native",
+                    "model": "claude-sonnet-4-20250514",
+                    "pricing": {
+                        "source": "builtin",
+                        "matched_key": "claude-sonnet-4",
+                        "currency": "USD",
+                        "input_per_1m": 3.0,
+                        "output_per_1m": 15.0,
+                        "cache_read_multiplier": 0.1,
+                        "cache_creation_multiplier": 1.25
+                    },
+                    "usage": {
+                        "input_tokens": 200,
+                        "output_tokens": 20,
+                        "reasoning_output_tokens": 7,
+                        "cache_read_input_tokens": 5,
+                        "cache_creation_input_tokens": 2
+                    },
+                    "cost_usd": 0.5,
+                    "stop_reason": "end_turn",
+                    "is_retry": false,
+                    "attempt": 1,
+                    "backfilled": false
+                }
+            }),
+        );
+        write_request_snapshots(
+            "session-ledger",
+            vec![request_snapshot(
+                0,
+                "session-ledger",
+                "openai",
+                "snapshot-model-should-not-win",
+            )],
+        );
+
+        let dashboard = aggregate_usage_dashboard("7d".to_string(), None, now as u64);
+
+        assert_eq!(dashboard.totals.total_input_tokens, 200);
+        assert_eq!(dashboard.totals.total_output_tokens, 20);
+        assert_eq!(dashboard.totals.total_cache_read_tokens, 5);
+        assert_eq!(dashboard.totals.total_cache_creation_tokens, 2);
+        assert_eq!(dashboard.totals.api_call_count, 1);
+        assert!((dashboard.totals.total_cost_usd - 0.5).abs() < f64::EPSILON);
+        assert_eq!(dashboard.by_model.len(), 1);
+        assert_eq!(dashboard.by_model[0].id, "claude-sonnet-4-20250514");
+        assert_eq!(
+            dashboard.by_model[0].provider_id.as_deref(),
+            Some("anthropic")
+        );
+        assert_eq!(dashboard.by_provider.len(), 1);
+        assert_eq!(dashboard.by_provider[0].id, "anthropic");
+        let cost_quality = dashboard.cost_quality.expect("cost quality");
+        assert_eq!(cost_quality.total_cost_events, 1);
+        assert_eq!(cost_quality.backfilled_count, 0);
+        assert_eq!(cost_quality.unknown_pricing_count, 0);
     }
 
     #[test]
@@ -984,10 +1271,13 @@ mod tests {
         let dashboard = aggregate_usage_dashboard("7d".to_string(), None, now as u64);
 
         assert_eq!(dashboard.totals.total_input_tokens, 10);
-        assert_eq!(
-            dashboard.warnings,
-            vec!["Skipped 1 unreadable session files.".to_string()]
-        );
+        assert!(dashboard
+            .warnings
+            .contains(&"Skipped 1 unreadable session files.".to_string()));
+        assert!(dashboard.warnings.contains(
+            &"1 cost events are backfilled from session files (not runtime audit events)."
+                .to_string()
+        ));
     }
 }
 

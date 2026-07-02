@@ -37,6 +37,8 @@ pub struct StatusLineSnapshot<'a> {
     pub cache_creation_tokens: u64,
     pub total_cost_usd: f64,
     pub api_calls: u64,
+    pub unknown_pricing_count: Option<u64>,
+    pub backfilled_count: Option<u64>,
     pub session_duration_secs: Option<u64>,
     /// Pre-resolved canonical output-style name. Callers compute this by
     /// calling `allthecodes_engine::output_style::resolve(style, cwd).name()`.
@@ -65,6 +67,8 @@ pub fn build_payload_from_snapshot(snapshot: StatusLineSnapshot<'_>) -> StatusLi
     payload.cost = Some(CostStatus {
         total_usd: snapshot.total_cost_usd,
         api_calls: snapshot.api_calls,
+        unknown_pricing_count: snapshot.unknown_pricing_count,
+        backfilled_count: snapshot.backfilled_count,
         session_duration_secs: snapshot.session_duration_secs,
     });
     payload.output_style = snapshot.resolved_output_style_name;
@@ -245,6 +249,8 @@ mod tests {
             cost: Some(CostStatus {
                 total_usd: 0.0123,
                 api_calls: 3,
+                unknown_pricing_count: None,
+                backfilled_count: None,
                 session_duration_secs: Some(42),
             }),
             output_style: Some("default".into()),
@@ -296,6 +302,8 @@ mod tests {
             cache_creation_tokens: 0,
             total_cost_usd: 0.42,
             api_calls: 3,
+            unknown_pricing_count: Some(1),
+            backfilled_count: Some(2),
             session_duration_secs: Some(9),
             resolved_output_style_name: Some("default".into()),
             editor_mode: Some("vim"),
@@ -311,6 +319,17 @@ mod tests {
             Some("NORMAL")
         );
         assert_eq!(payload.cost.as_ref().map(|cost| cost.api_calls), Some(3));
+        assert_eq!(
+            payload
+                .cost
+                .as_ref()
+                .and_then(|cost| cost.unknown_pricing_count),
+            Some(1)
+        );
+        assert_eq!(
+            payload.cost.as_ref().and_then(|cost| cost.backfilled_count),
+            Some(2)
+        );
         assert_eq!(
             payload
                 .context

@@ -29,6 +29,8 @@ pub(super) struct StreamContext<'a> {
     pub(super) submit_langfuse_trace: &'a mut Option<crate::services::langfuse::LangfuseTrace>,
     pub(super) telemetry_submit_span: &'a mut SubmitTelemetrySpan,
     pub(super) model_name: &'a str,
+    pub(super) backend_name: &'a str,
+    pub(super) request_event: Option<&'a crate::types::message::RequestStartEvent>,
     pub(super) api_started_at: Instant,
 }
 
@@ -77,6 +79,82 @@ fn handle_assistant_message(
             state.usage.add_usage(msg_usage, assistant_msg.cost_usd);
         }
     }
+
+    // Emit a durable cost event for completed model API calls.
+    if let Some(ref usage) = assistant_msg.usage {
+        use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
+        let mut audit_ctx = ctx.state_ref.read().audit_ctx.clone();
+        if let Some(request_event) = ctx.request_event {
+            audit_ctx.submit_id = request_event.submit_id.clone();
+            audit_ctx.turn_id = request_event.turn_id.clone();
+            audit_ctx.request_id = request_event.request_id.clone();
+        }
+        audit_ctx.message_id = Some(assistant_msg.uuid.to_string());
+
+        let cost_usd = assistant_msg.cost_usd;
+        let model = ctx
+            .request_event
+            .and_then(|event| event.model.clone())
+            .unwrap_or_else(|| ctx.model_name.to_string());
+        let provider = ctx.request_event.and_then(|event| event.provider.clone());
+        let backend = ctx
+            .request_event
+            .and_then(|event| event.backend.clone())
+            .unwrap_or_else(|| ctx.backend_name.to_string());
+        let attempt = ctx
+            .request_event
+            .map(|event| event.attempt.max(1))
+            .unwrap_or(1);
+        let is_retry = ctx
+            .request_event
+            .map(|event| event.is_retry)
+            .unwrap_or(false);
+        let pricing_match = allthecodes_types::models::get_pricing_match(&model);
+
+        let data = serde_json::json!({
+            "schema_version": 1,
+            "session_id": ctx.session_id.to_string(),
+            "submit_id": audit_ctx.submit_id.clone(),
+            "turn_id": audit_ctx.turn_id.clone(),
+            "request_id": audit_ctx.request_id.clone(),
+            "message_id": assistant_msg.uuid.to_string(),
+            "provider": provider,
+            "backend": backend,
+            "model": model,
+            "pricing": {
+                "source": pricing_match.source,
+                "matched_key": pricing_match.matched_key,
+                "currency": "USD",
+                "input_per_1m": pricing_match.pricing.input_per_1m,
+                "output_per_1m": pricing_match.pricing.output_per_1m,
+                "cache_read_multiplier": 0.1,
+                "cache_creation_multiplier": 1.25,
+            },
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "reasoning_output_tokens": usage.reasoning_output_tokens,
+                "cache_read_input_tokens": usage.cache_read_input_tokens,
+                "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+            },
+            "cost_usd": cost_usd,
+            "stop_reason": assistant_msg.stop_reason.clone(),
+            "is_retry": is_retry,
+            "attempt": attempt,
+            "backfilled": false,
+        });
+
+        audit_ctx.emit(
+            EventKind::CostRecorded,
+            Stage::Cost,
+            AuditLevel::Info,
+            Outcome::Completed,
+            None,
+            Some(data),
+        );
+        audit_ctx.flush();
+    }
+
     let action = StreamAction::Yield(SdkMessage::Assistant(SdkAssistantMessage {
         message: assistant_msg.clone(),
         session_id: ctx.session_id.to_string(),
@@ -637,6 +715,8 @@ mod tests {
             submit_langfuse_trace: &mut submit_langfuse_trace,
             telemetry_submit_span: &mut telemetry_submit_span,
             model_name: "test-model",
+            backend_name: "test-backend",
+            request_event: None,
             api_started_at: Instant::now(),
         };
 
@@ -691,6 +771,8 @@ mod tests {
             submit_langfuse_trace: &mut submit_langfuse_trace,
             telemetry_submit_span: &mut telemetry_submit_span,
             model_name: "test-model",
+            backend_name: "test-backend",
+            request_event: None,
             api_started_at: Instant::now(),
         };
 
@@ -737,6 +819,8 @@ mod tests {
             submit_langfuse_trace: &mut submit_langfuse_trace,
             telemetry_submit_span: &mut telemetry_submit_span,
             model_name: "test-model",
+            backend_name: "test-backend",
+            request_event: None,
             api_started_at: Instant::now(),
         };
 
