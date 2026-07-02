@@ -11,6 +11,7 @@
 
 use crate::lsp::{CompletionItemInfo, DocumentChange};
 use crate::subsystem_types::*;
+use allthecodes_types::mcp::{McpBinding, McpPermission, McpToolScope};
 use serde::{Deserialize, Serialize};
 
 // ===========================================================================
@@ -151,6 +152,10 @@ pub enum McpEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Full binding snapshot after a list or mutation command.
+    BindingsUpdated { bindings: Vec<McpBinding> },
+    /// Binding validation or persistence failure.
+    BindingError { server_id: String, error: String },
 }
 
 /// Events emitted by the plugin subsystem.
@@ -417,6 +422,31 @@ pub enum McpCommand {
     /// Return redacted OAuth credential status.
     QueryAuth {
         server_name: String,
+    },
+    /// Return currently effective MCP bindings.
+    ListBindings,
+    /// Create or replace a binding in the correct scope store.
+    BindServer {
+        binding: McpBinding,
+    },
+    /// Remove a binding from the correct scope store.
+    UnbindServer {
+        server_id: String,
+        scope: McpToolScope,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        thread_id: Option<String>,
+    },
+    /// Replace permissions for an existing binding.
+    SetBindingPermissions {
+        server_id: String,
+        scope: McpToolScope,
+        permissions: Vec<McpPermission>,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        thread_id: Option<String>,
     },
 }
 
@@ -877,6 +907,25 @@ mod tests {
     }
 
     #[test]
+    fn mcp_event_bindings_updated_serializes() {
+        let event = McpEvent::BindingsUpdated {
+            bindings: vec![McpBinding {
+                server_id: "github".into(),
+                scope: McpToolScope::Session,
+                session_id: Some("s1".into()),
+                permissions: vec![McpPermission::Connect],
+                ..Default::default()
+            }],
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["kind"], "bindings_updated");
+        assert_eq!(value["bindings"][0]["serverId"], "github");
+        assert_eq!(value["bindings"][0]["scope"], "session");
+        assert_eq!(value["bindings"][0]["sessionId"], "s1");
+        assert_eq!(value["bindings"][0]["permissions"][0], "connect");
+    }
+
+    #[test]
     fn plugin_event_refresh_needed_serializes() {
         let event = PluginEvent::RefreshNeeded {
             reason: "installed_plugins.json changed".into(),
@@ -1163,6 +1212,34 @@ mod tests {
                 assert_eq!(server_name, "remote");
                 assert_eq!(code, "abc");
                 assert_eq!(state.as_deref(), Some("state-1"));
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mcp_command_bind_server_deserializes() {
+        let json = r#"{
+            "kind":"bind_server",
+            "binding":{
+                "serverId":"github",
+                "scope":"thread",
+                "sessionId":"s1",
+                "threadId":"agent-a",
+                "permissions":["connect","list_tools"]
+            }
+        }"#;
+        let cmd: McpCommand = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            McpCommand::BindServer { binding } => {
+                assert_eq!(binding.server_id, "github");
+                assert_eq!(binding.scope, McpToolScope::Thread);
+                assert_eq!(binding.session_id.as_deref(), Some("s1"));
+                assert_eq!(binding.thread_id.as_deref(), Some("agent-a"));
+                assert_eq!(
+                    binding.permissions,
+                    vec![McpPermission::Connect, McpPermission::ListTools]
+                );
             }
             other => panic!("unexpected variant: {:?}", other),
         }

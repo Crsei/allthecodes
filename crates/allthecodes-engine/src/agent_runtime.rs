@@ -11,6 +11,7 @@ use std::time::Duration;
 use crate::types::tool::Tool;
 use allthecodes_tasks::{TaskCreateOptions, TaskEntry, TaskRuntimeHandle, TaskStatus};
 use allthecodes_types::agent_types::AgentNode;
+use allthecodes_types::mcp::McpBindingContext;
 use allthecodes_types::output::{EventSeq, OutputReadBatch};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -266,6 +267,10 @@ impl BuiltinAgentRegistry for BuiltinAgentRegistryImpl {
 
 pub trait AgentToolRegistry: Send + Sync {
     fn get_all_tools(&self) -> Vec<Arc<dyn Tool>>;
+
+    fn get_tools_for_mcp_context(&self, _ctx: &McpBindingContext) -> Vec<Arc<dyn Tool>> {
+        self.get_all_tools()
+    }
 }
 
 struct NoopAgentToolRegistry;
@@ -454,6 +459,10 @@ pub fn builtin_agent_prompt(name: &str) -> Option<String> {
 
 pub fn all_tools() -> Vec<Arc<dyn Tool>> {
     adapters().read().tools.get_all_tools()
+}
+
+pub fn tools_for_mcp_context(ctx: &McpBindingContext) -> Vec<Arc<dyn Tool>> {
+    adapters().read().tools.get_tools_for_mcp_context(ctx)
 }
 
 pub async fn spawn_teammate(

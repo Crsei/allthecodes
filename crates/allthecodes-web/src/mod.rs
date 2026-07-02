@@ -16,7 +16,10 @@ pub mod ws;
 use std::net::SocketAddr;
 
 use allthecodes_server::RootProbeResponse;
-use axum::{routing::get, Json, Router};
+use axum::{
+    routing::{get, patch},
+    Json, Router,
+};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -42,6 +45,24 @@ pub fn build_router(state: WebState) -> Router {
         .route(
             "/proxy/{provider_id}/v1/responses",
             axum::routing::post(handlers::openai_proxy_responses_handler),
+        )
+        .route(
+            "/api/mcp-bindings",
+            get(handlers::mcp_bindings_list_handler).post(handlers::mcp_bindings_create_handler),
+        )
+        .route(
+            "/api/mcp-bindings/{server_id}",
+            patch(handlers::mcp_bindings_update_handler)
+                .delete(handlers::mcp_bindings_delete_handler),
+        )
+        .route(
+            "/api/v2/mcp-bindings",
+            get(handlers::mcp_bindings_list_handler).post(handlers::mcp_bindings_create_handler),
+        )
+        .route(
+            "/api/v2/mcp-bindings/{server_id}",
+            patch(handlers::mcp_bindings_update_handler)
+                .delete(handlers::mcp_bindings_delete_handler),
         )
         .route("/api/rpc/ws", get(ws::api_rpc::api_rpc_ws_handler));
 

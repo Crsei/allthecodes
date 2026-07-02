@@ -6,11 +6,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use allthecodes_types::mcp::{McpBinding, McpBindingContext, McpPermission, McpToolScope};
 use anyhow::Result;
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 
 use super::client::McpClient;
+use super::discovery::BoundMcpServerConfig;
 use super::{
     McpResource, McpResourceWithServer, McpRuntimeContext, McpServerConfig, McpSubsystemEvent,
     McpToolDef, ReadResourceResult, SharedMcpEventSink,
@@ -25,6 +27,9 @@ pub struct McpManager {
     /// Active clients, keyed by server name.
     pub clients: HashMap<String, McpClient>,
     runtime: McpRuntimeContext,
+    bindings: Vec<McpBinding>,
+    display_names: HashMap<String, String>,
+    source_scopes: HashMap<String, String>,
 }
 
 impl McpManager {
@@ -40,6 +45,9 @@ impl McpManager {
         Self {
             clients: HashMap::new(),
             runtime,
+            bindings: Vec::new(),
+            display_names: HashMap::new(),
+            source_scopes: HashMap::new(),
         }
     }
 
@@ -54,12 +62,45 @@ impl McpManager {
         self.runtime.emit_event(event);
     }
 
+    pub fn set_bindings(&mut self, bindings: Vec<McpBinding>) {
+        self.bindings = bindings;
+        self.runtime.emit_event(McpSubsystemEvent::BindingsUpdated {
+            bindings: self.bindings.clone(),
+        });
+    }
+
+    pub fn bindings(&self) -> Vec<McpBinding> {
+        self.bindings.clone()
+    }
+
+    pub fn server_display_name<'a>(&'a self, server_id: &'a str) -> &'a str {
+        self.display_names
+            .get(server_id)
+            .map(String::as_str)
+            .unwrap_or(server_id)
+    }
+
+    pub fn server_source_scope(&self, server_id: &str) -> Option<&str> {
+        self.source_scopes.get(server_id).map(String::as_str)
+    }
+
     /// Connect to all configured MCP servers.
     ///
     /// Discovers servers from settings, connects to each one, and
     /// initializes them. Failures for individual servers are logged
     /// but do not prevent other servers from connecting.
     pub async fn connect_all(&mut self, configs: Vec<McpServerConfig>) -> Result<()> {
+        if self.bindings.is_empty() {
+            self.bindings = configs
+                .iter()
+                .map(|config| McpBinding {
+                    server_id: config.name.clone(),
+                    scope: McpToolScope::Global,
+                    permissions: McpBinding::full_permissions(),
+                    ..Default::default()
+                })
+                .collect();
+        }
         for config in configs {
             let name = config.name.clone();
             if let Err(e) = self.connect_server(config).await {
@@ -72,6 +113,35 @@ impl McpManager {
         }
 
         Ok(())
+    }
+
+    pub async fn connect_all_bound(
+        &mut self,
+        configs: Vec<BoundMcpServerConfig>,
+        bindings: Vec<McpBinding>,
+    ) -> Result<()> {
+        self.set_bindings(bindings);
+        for bound in configs {
+            let name = bound.server_id.clone();
+            if let Err(e) = self.connect_bound_server(bound).await {
+                warn!(
+                    server = %name,
+                    error = %e,
+                    "MCP: failed to connect to bound server"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn connect_bound_server(&mut self, bound: BoundMcpServerConfig) -> Result<()> {
+        let mut config = bound.config;
+        config.name = bound.server_id.clone();
+        self.display_names
+            .insert(bound.server_id.clone(), bound.display_name);
+        self.source_scopes
+            .insert(bound.server_id.clone(), bound.source_scope);
+        self.connect_server(config).await
     }
 
     /// Connect a single configured server and replace any existing client with
@@ -210,11 +280,29 @@ impl McpManager {
             .collect()
     }
 
+    pub fn tools_for_context(&self, ctx: &McpBindingContext) -> Vec<McpToolDef> {
+        self.clients
+            .iter()
+            .filter(|(server_id, _)| self.server_allowed(ctx, server_id, McpPermission::ListTools))
+            .flat_map(|(_, client)| client.tools.iter().cloned())
+            .collect()
+    }
+
     /// Get all resources from all connected servers.
     pub fn all_resources(&self) -> Vec<McpResource> {
         self.clients
             .values()
             .flat_map(|c| c.resources.iter().cloned())
+            .collect()
+    }
+
+    pub fn resources_for_context(&self, ctx: &McpBindingContext) -> Vec<McpResource> {
+        self.clients
+            .iter()
+            .filter(|(server_id, _)| {
+                self.server_allowed(ctx, server_id, McpPermission::ReadResources)
+            })
+            .flat_map(|(_, client)| client.resources.iter().cloned())
             .collect()
     }
 
@@ -225,6 +313,33 @@ impl McpManager {
         let clients = self.clients_for_resource_query(server)?;
         Ok(clients
             .into_iter()
+            .flat_map(|(server_name, client)| {
+                client
+                    .resources
+                    .iter()
+                    .cloned()
+                    .map(move |resource| McpResourceWithServer {
+                        server: server_name.clone(),
+                        uri: resource.uri,
+                        name: resource.name,
+                        description: resource.description,
+                        mime_type: resource.mime_type,
+                    })
+            })
+            .collect())
+    }
+
+    pub fn list_resources_for_context(
+        &self,
+        ctx: &McpBindingContext,
+        server: Option<&str>,
+    ) -> Result<Vec<McpResourceWithServer>> {
+        let clients = self.clients_for_resource_query(server)?;
+        Ok(clients
+            .into_iter()
+            .filter(|(server_name, _)| {
+                self.server_allowed(ctx, server_name, McpPermission::ReadResources)
+            })
             .flat_map(|(server_name, client)| {
                 client
                     .resources
@@ -256,6 +371,22 @@ impl McpManager {
         }
 
         client.read_resource(uri).await
+    }
+
+    pub async fn read_resource_for_context(
+        &self,
+        ctx: &McpBindingContext,
+        server: &str,
+        uri: &str,
+    ) -> Result<ReadResourceResult> {
+        if !self.server_allowed(ctx, server, McpPermission::ReadResources) {
+            anyhow::bail!(
+                "MCP resource read denied: server '{}' is not bound with read_resources permission for thread '{}'",
+                server,
+                ctx.thread_id
+            );
+        }
+        self.read_resource(server, uri).await
     }
 
     fn clients_for_resource_query(
@@ -295,6 +426,46 @@ impl McpManager {
         self.clients
             .values()
             .find(|c| c.tools.iter().any(|t| t.name == tool_name))
+    }
+
+    pub fn can_call_tool(&self, ctx: &McpBindingContext, server_id: &str, tool: &str) -> bool {
+        self.server_allowed(ctx, server_id, McpPermission::CallTools)
+            && self
+                .clients
+                .get(server_id)
+                .map(|client| client.tools.iter().any(|def| def.name == tool))
+                .unwrap_or(false)
+    }
+
+    pub fn permission_denied_message(
+        &self,
+        ctx: &McpBindingContext,
+        server_id: &str,
+        permission: McpPermission,
+    ) -> String {
+        format!(
+            "MCP permission denied: server '{}' is not bound with {} permission for thread '{}'",
+            server_id,
+            permission.as_str(),
+            ctx.thread_id
+        )
+    }
+
+    fn server_allowed(
+        &self,
+        ctx: &McpBindingContext,
+        server_id: &str,
+        permission: McpPermission,
+    ) -> bool {
+        if self.bindings.is_empty() {
+            return true;
+        }
+        self.bindings.iter().any(|binding| {
+            binding.server_id == server_id
+                && ctx.matches_binding(binding)
+                && binding.allows(McpPermission::Connect)
+                && binding.allows(permission)
+        })
     }
 
     /// Disconnect from all servers.
@@ -360,6 +531,17 @@ mod tests {
                 ..Default::default()
             };
         }
+        client
+    }
+
+    fn tool_client(name: &str, tool_name: &str) -> McpClient {
+        let mut client = test_client(name, Vec::new(), false);
+        client.tools = vec![McpToolDef {
+            name: tool_name.to_string(),
+            description: String::new(),
+            input_schema: json!({"type": "object"}),
+            server_name: name.to_string(),
+        }];
         client
     }
 
@@ -429,5 +611,66 @@ mod tests {
         assert!(err
             .to_string()
             .contains("MCP server 'alpha' does not support resources"));
+    }
+
+    #[test]
+    fn tools_for_context_filters_session_and_thread_bindings() {
+        let mut manager = McpManager::new();
+        manager
+            .clients
+            .insert("alpha".to_string(), tool_client("alpha", "search"));
+        manager
+            .clients
+            .insert("beta".to_string(), tool_client("beta", "read"));
+        manager.set_bindings(vec![
+            McpBinding {
+                server_id: "alpha".to_string(),
+                scope: McpToolScope::Session,
+                session_id: Some("s1".to_string()),
+                permissions: McpBinding::full_permissions(),
+                ..Default::default()
+            },
+            McpBinding {
+                server_id: "beta".to_string(),
+                scope: McpToolScope::Thread,
+                session_id: Some("s1".to_string()),
+                thread_id: Some("agent-a".to_string()),
+                permissions: McpBinding::full_permissions(),
+                ..Default::default()
+            },
+        ]);
+
+        let main_ctx = McpBindingContext::main(None, "s1");
+        let main_tools = manager.tools_for_context(&main_ctx);
+        assert_eq!(main_tools.len(), 1);
+        assert_eq!(main_tools[0].server_name, "alpha");
+
+        let agent_ctx = McpBindingContext::agent(None, "s1", "agent-a");
+        let agent_tools = manager.tools_for_context(&agent_ctx);
+        assert_eq!(agent_tools.len(), 1);
+        assert_eq!(agent_tools[0].server_name, "beta");
+
+        let sibling_ctx = McpBindingContext::agent(None, "s1", "agent-b");
+        assert!(manager.tools_for_context(&sibling_ctx).is_empty());
+    }
+
+    #[test]
+    fn can_call_tool_requires_call_tools_permission() {
+        let mut manager = McpManager::new();
+        manager
+            .clients
+            .insert("alpha".to_string(), tool_client("alpha", "search"));
+        manager.set_bindings(vec![McpBinding {
+            server_id: "alpha".to_string(),
+            scope: McpToolScope::Global,
+            permissions: vec![McpPermission::Connect, McpPermission::ListTools],
+            ..Default::default()
+        }]);
+
+        let ctx = McpBindingContext::main(None, "s1");
+        assert!(!manager.can_call_tool(&ctx, "alpha", "search"));
+        assert!(manager
+            .permission_denied_message(&ctx, "alpha", McpPermission::CallTools)
+            .contains("call_tools"));
     }
 }

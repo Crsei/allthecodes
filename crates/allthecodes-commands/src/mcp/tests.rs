@@ -259,6 +259,81 @@ async fn mcp_remove_ambiguous_requires_scope() {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn mcp_bind_session_persists_under_allthecodes_home() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let _g = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+
+    let handler = McpHandler;
+    let mut ctx = test_ctx(cwd.path().to_path_buf());
+    let res = handler
+        .execute(
+            "bind github --session --permissions=connect,list_tools",
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+    match res {
+        CommandResult::Output(text) => assert!(
+            text.contains("Bound MCP server `github` at session scope"),
+            "unexpected: {}",
+            text
+        ),
+        _ => panic!("expected Output"),
+    }
+
+    let path = home
+        .path()
+        .join("runs")
+        .join(ctx.session_id.as_str())
+        .join("mcp-bindings.json");
+    assert!(path.exists(), "session binding file missing");
+    assert!(!path.to_string_lossy().contains(".Codex"));
+    let disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(disk["bindings"][0]["serverId"], "github");
+    assert_eq!(disk["bindings"][0]["scope"], "session");
+    assert_eq!(disk["bindings"][0]["permissions"][1], "list_tools");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn mcp_unbind_session_removes_binding() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let _g = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+
+    let handler = McpHandler;
+    let mut ctx = test_ctx(cwd.path().to_path_buf());
+    handler
+        .execute("bind github --session", &mut ctx)
+        .await
+        .unwrap();
+    let res = handler
+        .execute("unbind github --session", &mut ctx)
+        .await
+        .unwrap();
+    match res {
+        CommandResult::Output(text) => assert!(
+            text.contains("Unbound MCP server `github` at session scope"),
+            "unexpected: {}",
+            text
+        ),
+        _ => panic!("expected Output"),
+    }
+
+    let path = home
+        .path()
+        .join("runs")
+        .join(ctx.session_id.as_str())
+        .join("mcp-bindings.json");
+    let disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(disk["bindings"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn mcp_approve_project_mcp_json_servers_records_enabled() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();

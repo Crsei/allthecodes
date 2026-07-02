@@ -308,6 +308,7 @@ dependencies = [
 name = "allthecodes-config"
 version = "0.1.0"
 dependencies = [
+ "allthecodes-types",
  "anyhow",
  "chrono",
  "dirs",

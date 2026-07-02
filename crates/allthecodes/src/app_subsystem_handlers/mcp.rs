@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use allthecodes_ipc_protocol::subsystem_events::{McpCommand, McpEvent};
 // Note: subsystem_types imported as needed per item below
 use allthecodes_ipc_protocol::BackendMessage;
+use allthecodes_mcp::bindings::BindingSelector;
+use allthecodes_types::mcp::McpBinding;
 
 use super::mcp_config::{remove_mcp_entry, toggle_mcp_entry_enabled, upsert_mcp_entry};
 use super::snapshot::{
@@ -318,6 +320,27 @@ fn handle_mcp_command_at_cwd(cmd: McpCommand, cwd: &Path) -> Vec<BackendMessage>
         }
         McpCommand::ClearAuth { server_name } => clear_mcp_auth(cwd, &server_name),
         McpCommand::QueryAuth { server_name } => query_mcp_auth(cwd, &server_name),
+        McpCommand::ListBindings => list_mcp_bindings(cwd),
+        McpCommand::BindServer { binding } => bind_mcp_server(cwd, binding),
+        McpCommand::UnbindServer {
+            server_id,
+            scope,
+            session_id,
+            thread_id,
+        } => {
+            let selector = BindingSelector::new(server_id, scope, session_id, thread_id);
+            unbind_mcp_server(cwd, selector)
+        }
+        McpCommand::SetBindingPermissions {
+            server_id,
+            scope,
+            permissions,
+            session_id,
+            thread_id,
+        } => {
+            let selector = BindingSelector::new(server_id, scope, session_id, thread_id);
+            set_mcp_binding_permissions(cwd, selector, permissions)
+        }
         McpCommand::StartAuth { server_name } | McpCommand::CompleteAuth { server_name, .. } => {
             vec![BackendMessage::McpEvent {
                 event: McpEvent::ConfigError {
@@ -326,6 +349,108 @@ fn handle_mcp_command_at_cwd(cmd: McpCommand, cwd: &Path) -> Vec<BackendMessage>
                 },
             }]
         }
+    }
+}
+
+fn list_mcp_bindings(cwd: &Path) -> Vec<BackendMessage> {
+    let bindings = if let Some(manager) = allthecodes_mcp::runtime::current_manager() {
+        match manager.try_lock() {
+            Ok(manager) => manager.bindings(),
+            Err(_) => match allthecodes_mcp::discovery::discover_bound_mcp_servers(cwd, None) {
+                Ok(discovered) => discovered.bindings,
+                Err(error) => {
+                    return vec![mcp_binding_error_message("discovery", error.to_string())];
+                }
+            },
+        }
+    } else {
+        match allthecodes_mcp::discovery::discover_bound_mcp_servers(cwd, None) {
+            Ok(discovered) => discovered.bindings,
+            Err(error) => return vec![mcp_binding_error_message("discovery", error.to_string())],
+        }
+    };
+    vec![BackendMessage::McpEvent {
+        event: McpEvent::BindingsUpdated { bindings },
+    }]
+}
+
+fn bind_mcp_server(cwd: &Path, binding: McpBinding) -> Vec<BackendMessage> {
+    let server_id = binding.server_id.clone();
+    let session_id = binding.session_id.clone();
+    match allthecodes_mcp::bindings::upsert_binding(cwd, binding) {
+        Ok(()) => binding_snapshot_messages(cwd, session_id.as_deref()),
+        Err(error) => vec![mcp_binding_error_message(&server_id, error.to_string())],
+    }
+}
+
+fn unbind_mcp_server(cwd: &Path, selector: BindingSelector) -> Vec<BackendMessage> {
+    let server_id = selector.server_id.clone();
+    let session_id = selector.session_id.clone();
+    match allthecodes_mcp::bindings::remove_binding(cwd, selector) {
+        Ok(_) => binding_snapshot_messages(cwd, session_id.as_deref()),
+        Err(error) => vec![mcp_binding_error_message(&server_id, error.to_string())],
+    }
+}
+
+fn set_mcp_binding_permissions(
+    cwd: &Path,
+    selector: BindingSelector,
+    permissions: Vec<allthecodes_types::mcp::McpPermission>,
+) -> Vec<BackendMessage> {
+    let server_id = selector.server_id.clone();
+    let session_id = selector.session_id.clone();
+    match allthecodes_mcp::bindings::set_binding_permissions(cwd, selector, permissions) {
+        Ok(true) => binding_snapshot_messages(cwd, session_id.as_deref()),
+        Ok(false) => vec![mcp_binding_error_message(
+            &server_id,
+            "MCP binding was not found".to_string(),
+        )],
+        Err(error) => vec![mcp_binding_error_message(&server_id, error.to_string())],
+    }
+}
+
+fn binding_snapshot_messages(cwd: &Path, session_id: Option<&str>) -> Vec<BackendMessage> {
+    match allthecodes_mcp::discovery::discover_bound_mcp_servers(cwd, session_id) {
+        Ok(discovered) => {
+            let bindings = sync_runtime_bindings(discovered.bindings);
+            vec![BackendMessage::McpEvent {
+                event: McpEvent::BindingsUpdated { bindings },
+            }]
+        }
+        Err(error) => vec![mcp_binding_error_message("discovery", error.to_string())],
+    }
+}
+
+fn sync_runtime_bindings(fresh: Vec<McpBinding>) -> Vec<McpBinding> {
+    let Some(manager) = allthecodes_mcp::runtime::current_manager() else {
+        return fresh;
+    };
+    let Ok(mut manager) = manager.try_lock() else {
+        return fresh;
+    };
+    let mut bindings = fresh;
+    for existing in manager.bindings() {
+        if matches!(
+            existing.scope,
+            allthecodes_types::mcp::McpToolScope::Session
+                | allthecodes_types::mcp::McpToolScope::Thread
+        ) && !bindings
+            .iter()
+            .any(|binding| binding.identity_key() == existing.identity_key())
+        {
+            bindings.push(existing);
+        }
+    }
+    manager.set_bindings(bindings.clone());
+    bindings
+}
+
+fn mcp_binding_error_message(server_id: &str, error: String) -> BackendMessage {
+    BackendMessage::McpEvent {
+        event: McpEvent::BindingError {
+            server_id: server_id.to_string(),
+            error,
+        },
     }
 }
 
@@ -610,6 +735,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
         let msgs = handle_mcp_command(McpCommand::UpsertConfig {
             entry: Box::new(entry),
@@ -648,6 +776,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
         let msgs = handle_mcp_command(McpCommand::UpsertConfig {
             entry: Box::new(entry),
@@ -696,6 +827,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
         let _ = handle_mcp_command(McpCommand::UpsertConfig {
             entry: Box::new(seed),

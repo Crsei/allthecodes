@@ -352,6 +352,34 @@ pub fn settings_schema() -> Value {
             "env": {
                 "type": "object",
                 "additionalProperties": { "type": "string" }
+            },
+            "mcpBindings": {
+                "type": "array",
+                "description": "Explicit MCP server bindings by runtime scope. Legacy mcpServers still create compatibility bindings.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "required": ["serverId", "scope"],
+                    "properties": {
+                        "serverId": { "type": "string" },
+                        "scope": {
+                            "type": "string",
+                            "enum": ["global", "project", "session", "thread"]
+                        },
+                        "projectPath": { "type": "string" },
+                        "sessionId": { "type": "string" },
+                        "threadId": { "type": "string" },
+                        "permissions": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["connect", "list_tools", "call_tools", "read_resources"]
+                            }
+                        },
+                        "readOnly": { "type": "boolean" },
+                        "sourceScope": { "type": "string" }
+                    }
+                }
             }
         }
     })

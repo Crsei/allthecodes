@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use allthecodes_types::mcp::McpBinding;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -184,6 +185,9 @@ pub struct RawSettings {
     /// Values are strings only. The startup bridge applies these without
     /// overwriting variables already provided by the shell, `.env`, or CI.
     pub env: Option<HashMap<String, String>>,
+
+    // -- MCP ------------------------------------------------------------
+    pub mcp_bindings: Option<Vec<McpBinding>>,
 
     // -- Arbitrary passthrough ------------------------------------------
     #[serde(flatten)]
@@ -382,6 +386,12 @@ impl RawSettings {
             }
             self.env = Some(merged);
             sources.insert("env".to_string(), source);
+        }
+
+        if let Some(bindings) = other.mcp_bindings {
+            let merged = merge_mcp_bindings(self.mcp_bindings.take(), bindings);
+            self.mcp_bindings = Some(merged);
+            sources.insert("mcpBindings".to_string(), source);
         }
 
         for (k, v) in other.extra {
@@ -583,6 +593,19 @@ pub(crate) fn merge_str_lists(base: Option<&[String]>, over: Option<&[String]>) 
                 out.push(item.clone());
             }
         }
+    }
+    out
+}
+
+pub(crate) fn merge_mcp_bindings(
+    base: Option<Vec<McpBinding>>,
+    over: Vec<McpBinding>,
+) -> Vec<McpBinding> {
+    let mut out = base.unwrap_or_default();
+    for binding in over {
+        let key = binding.identity_key();
+        out.retain(|existing| existing.identity_key() != key);
+        out.push(binding);
     }
     out
 }

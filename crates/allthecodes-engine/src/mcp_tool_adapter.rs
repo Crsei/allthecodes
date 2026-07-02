@@ -5,6 +5,7 @@
 //! holds a reference to the manager so it can find the right client at
 //! call time.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -13,11 +14,13 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tracing::debug;
 
+use crate::types::config::AgentContext;
 use crate::types::message::{AssistantMessage, ContentBlock, ImageSource, ToolResultContent};
 use crate::types::tool::*;
 
+use allthecodes_mcp::bindings::canonical_workspace_root;
 use allthecodes_mcp::manager::McpManager;
-use allthecodes_mcp::{McpToolDef, ToolCallContent};
+use allthecodes_mcp::{McpBindingContext, McpPermission, McpToolDef, ToolCallContent};
 
 const MCP_SKILL_URI_PREFIX: &str = "skill://";
 
@@ -38,6 +41,8 @@ pub struct McpToolWrapper {
     pub server_name: String,
     /// Shared manager for accessing the MCP client at call time.
     pub manager: Arc<Mutex<McpManager>>,
+    /// Runtime scope used for visibility and call permission checks.
+    pub binding_context: McpBindingContext,
 }
 
 #[async_trait]
@@ -79,6 +84,16 @@ impl Tool for McpToolWrapper {
         );
 
         let manager = self.manager.lock().await;
+        if !manager.can_call_tool(&self.binding_context, &self.server_name, &self.def.name) {
+            anyhow::bail!(
+                "{}",
+                manager.permission_denied_message(
+                    &self.binding_context,
+                    &self.server_name,
+                    McpPermission::CallTools,
+                )
+            );
+        }
 
         let client = manager.clients.get(&self.server_name).ok_or_else(|| {
             anyhow::anyhow!(
@@ -293,6 +308,14 @@ pub fn mcp_tools_to_tools(
     defs: Vec<McpToolDef>,
     manager: Arc<Mutex<McpManager>>,
 ) -> Vec<Arc<dyn Tool>> {
+    mcp_tools_to_tools_for_context(defs, manager, McpBindingContext::startup(None))
+}
+
+pub fn mcp_tools_to_tools_for_context(
+    defs: Vec<McpToolDef>,
+    manager: Arc<Mutex<McpManager>>,
+    binding_context: McpBindingContext,
+) -> Vec<Arc<dyn Tool>> {
     defs.into_iter()
         .map(|def| {
             let server_name = def.server_name.clone();
@@ -302,6 +325,7 @@ pub fn mcp_tools_to_tools(
                 exposed_name,
                 server_name,
                 manager: manager.clone(),
+                binding_context: binding_context.clone(),
             }) as Arc<dyn Tool>
         })
         .collect()
@@ -322,73 +346,123 @@ pub async fn discover_mcp_skill_resources(
     Vec<crate::skills::SkillDefinition>,
     Vec<crate::skills::SkillDiagnostic>,
 ) {
+    discover_mcp_skill_resources_for_context(manager, &McpBindingContext::startup(None)).await
+}
+
+pub async fn discover_mcp_skill_resources_for_context(
+    manager: &McpManager,
+    binding_context: &McpBindingContext,
+) -> (
+    Vec<crate::skills::SkillDefinition>,
+    Vec<crate::skills::SkillDiagnostic>,
+) {
     let mut skills = Vec::new();
     let mut diagnostics = Vec::new();
 
-    for (server_name, client) in &manager.clients {
-        for resource in client
-            .resources
-            .iter()
-            .filter(|r| r.uri.starts_with(MCP_SKILL_URI_PREFIX))
+    let resources = match manager.list_resources_for_context(binding_context, None) {
+        Ok(resources) => resources,
+        Err(err) => {
+            diagnostics.push(crate::skills::SkillDiagnostic::warning(
+                "mcp-skill-list-failed",
+                format!("Failed to list MCP skill resources: {err}"),
+            ));
+            return (skills, diagnostics);
+        }
+    };
+
+    for resource in resources
+        .into_iter()
+        .filter(|resource| resource.uri.starts_with(MCP_SKILL_URI_PREFIX))
+    {
+        let server_name = resource.server.clone();
+        let raw_name = resource.uri.trim_start_matches(MCP_SKILL_URI_PREFIX);
+        let skill_name = format!(
+            "mcp__{}__{}",
+            normalize_mcp_skill_component(&server_name),
+            normalize_mcp_skill_component(raw_name)
+        );
+
+        let read = match manager
+            .read_resource_for_context(binding_context, &server_name, &resource.uri)
+            .await
         {
-            let raw_name = resource.uri.trim_start_matches(MCP_SKILL_URI_PREFIX);
-            let skill_name = format!(
-                "mcp__{}__{}",
-                normalize_mcp_skill_component(server_name),
-                normalize_mcp_skill_component(raw_name)
-            );
-
-            let read = match client.read_resource(&resource.uri).await {
-                Ok(read) => read,
-                Err(err) => {
-                    diagnostics.push(
-                        crate::skills::SkillDiagnostic::warning(
-                            "mcp-skill-read-failed",
-                            format!(
-                                "Failed to read MCP skill resource '{}' from '{}': {}",
-                                resource.uri, server_name, err
-                            ),
-                        )
-                        .with_skill(skill_name)
-                        .with_source(crate::skills::SkillSource::Mcp(server_name.clone())),
-                    );
-                    continue;
-                }
-            };
-
-            let text = read
-                .contents
-                .iter()
-                .filter_map(|content| content.text.as_deref())
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            if text.trim().is_empty() {
+            Ok(read) => read,
+            Err(err) => {
                 diagnostics.push(
                     crate::skills::SkillDiagnostic::warning(
-                        "mcp-skill-empty",
+                        "mcp-skill-read-failed",
                         format!(
-                            "MCP skill resource '{}' from '{}' returned no text content.",
-                            resource.uri, server_name
+                            "Failed to read MCP skill resource '{}' from '{}': {}",
+                            resource.uri, server_name, err
                         ),
                     )
                     .with_skill(skill_name)
-                    .with_source(crate::skills::SkillSource::Mcp(server_name.clone())),
+                    .with_source(crate::skills::SkillSource::Mcp(server_name)),
                 );
                 continue;
             }
+        };
 
-            let (skill, parse_diagnostics) = crate::skills::loader::load_skill_from_content(
-                &text,
-                &skill_name,
-                crate::skills::SkillSource::Mcp(server_name.clone()),
+        let text = read
+            .contents
+            .iter()
+            .filter_map(|content| content.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if text.trim().is_empty() {
+            diagnostics.push(
+                crate::skills::SkillDiagnostic::warning(
+                    "mcp-skill-empty",
+                    format!(
+                        "MCP skill resource '{}' from '{}' returned no text content.",
+                        resource.uri, server_name
+                    ),
+                )
+                .with_skill(skill_name)
+                .with_source(crate::skills::SkillSource::Mcp(server_name)),
             );
-            skills.push(skill);
-            diagnostics.extend(parse_diagnostics);
+            continue;
         }
+
+        let (skill, parse_diagnostics) = crate::skills::loader::load_skill_from_content(
+            &text,
+            &skill_name,
+            crate::skills::SkillSource::Mcp(server_name),
+        );
+        skills.push(skill);
+        diagnostics.extend(parse_diagnostics);
     }
 
     (skills, diagnostics)
+}
+
+pub fn mcp_binding_context_for_engine(
+    cwd: &str,
+    session_id: &str,
+    agent_context: Option<&AgentContext>,
+) -> McpBindingContext {
+    let project_path = Some(canonical_workspace_root(Path::new(cwd)));
+    if let Some(agent_context) = agent_context {
+        McpBindingContext::agent(
+            project_path,
+            session_id.to_string(),
+            agent_context.agent_id.clone(),
+        )
+    } else {
+        McpBindingContext::main(project_path, session_id.to_string())
+    }
+}
+
+pub fn mcp_binding_context_for_tool_use(ctx: &ToolUseContext) -> McpBindingContext {
+    let project_path = std::env::current_dir()
+        .ok()
+        .map(|cwd| canonical_workspace_root(&cwd));
+    if let Some(agent_id) = ctx.agent_id.as_ref() {
+        McpBindingContext::agent(project_path, ctx.session_id.clone(), agent_id.clone())
+    } else {
+        McpBindingContext::main(project_path, ctx.session_id.clone())
+    }
 }
 
 fn normalize_mcp_skill_component(value: &str) -> String {
@@ -493,6 +567,7 @@ mod tests {
             exposed_name: "mcp__filesystem__read_file".to_string(),
             server_name: "filesystem".to_string(),
             manager,
+            binding_context: McpBindingContext::startup(None),
         };
 
         assert_eq!(wrapper.name(), "mcp__filesystem__read_file");

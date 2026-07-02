@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use serde::Deserialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::permissions::dangerous::set_permission_mode_with_auto_mode_safety;
@@ -285,8 +286,27 @@ fn build_child_config(
             })
         })
     });
+    let child_mcp_context = crate::mcp_tool_adapter::mcp_binding_context_for_engine(
+        &cwd,
+        &ctx.session_id,
+        Some(&AgentContext {
+            agent_id: agent_id.to_string(),
+            query_tracking: QueryChainTracking {
+                chain_id: ctx
+                    .query_tracking
+                    .as_ref()
+                    .map(|tracking| tracking.chain_id.clone())
+                    .unwrap_or_default(),
+                depth: current_depth + 1,
+            },
+            langfuse_session_id: ctx.langfuse_session_id.clone(),
+            agent_type: child_agent_type.map(|value| value.to_string()),
+            team_context: None,
+            tool_permission_context: None,
+        }),
+    );
     let child_tools = filter_tools_for_optional_definition(
-        crate::agent_runtime::all_tools(),
+        crate::agent_runtime::tools_for_mcp_context(&child_mcp_context),
         definition.as_ref(),
     );
     let chain_id = ctx
@@ -364,6 +384,9 @@ fn filter_tools_for_optional_definition(
     let available: Tools = tools
         .into_iter()
         .filter(|tool| {
+            if !agent_definition_allows_mcp_tool(tool.as_ref(), definition) {
+                return false;
+            }
             !definition
                 .disallowed_tools
                 .iter()
@@ -390,6 +413,57 @@ fn filter_tools_for_optional_definition(
     }
 
     resolved
+}
+
+fn agent_definition_allows_mcp_tool(tool: &dyn Tool, definition: &AgentDefinitionEntry) -> bool {
+    let Some(server_name) = tool.mcp_server_name() else {
+        return true;
+    };
+    let allowlisted_servers = mcp_server_allowlist(definition);
+    if !allowlisted_servers.is_empty() && !allowlisted_servers.contains(server_name) {
+        return false;
+    }
+    if matches!(definition.source, AgentDefinitionSource::Builtin)
+        && allowlisted_servers.is_empty()
+        && !definition
+            .tools
+            .iter()
+            .any(|spec| tool_name_from_spec(spec).starts_with("mcp__"))
+    {
+        return false;
+    }
+    true
+}
+
+fn mcp_server_allowlist(definition: &AgentDefinitionEntry) -> HashSet<String> {
+    definition
+        .mcp_servers
+        .iter()
+        .filter_map(mcp_server_name_from_value)
+        .collect()
+}
+
+fn mcp_server_name_from_value(value: &Value) -> Option<String> {
+    if let Some(name) = value.as_str() {
+        return non_empty_string(name);
+    }
+    let object = value.as_object()?;
+    if let Some(name) = object.get("name").and_then(Value::as_str) {
+        return non_empty_string(name);
+    }
+    if object.len() == 1 {
+        return object.keys().next().and_then(|name| non_empty_string(name));
+    }
+    None
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 pub(super) fn agent_definition_permission_mode(

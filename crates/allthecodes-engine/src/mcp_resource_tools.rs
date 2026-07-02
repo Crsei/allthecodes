@@ -49,7 +49,7 @@ impl Tool for ListMcpResourcesTool {
     async fn call(
         &self,
         input: Value,
-        _ctx: &ToolUseContext,
+        ctx: &ToolUseContext,
         _parent_message: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
@@ -58,9 +58,10 @@ impl Tool for ListMcpResourcesTool {
             bail!("No MCP runtime manager is installed for this session");
         };
 
+        let binding_context = crate::mcp_tool_adapter::mcp_binding_context_for_tool_use(ctx);
         let resources = {
             let manager = manager.lock().await;
-            manager.list_resources(server)?
+            manager.list_resources_for_context(&binding_context, server)?
         };
         let content = if resources.is_empty() {
             "No resources found. MCP servers may still provide tools even if they have no resources."
@@ -74,6 +75,7 @@ impl Tool for ListMcpResourcesTool {
             model_content: Some(ToolResultContent::Text(content.clone())),
             display_preview: Some(content),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 
@@ -163,7 +165,7 @@ impl Tool for ReadMcpResourceTool {
     async fn call(
         &self,
         input: Value,
-        _ctx: &ToolUseContext,
+        ctx: &ToolUseContext,
         _parent_message: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
@@ -176,9 +178,12 @@ impl Tool for ReadMcpResourceTool {
         let Some(manager) = allthecodes_mcp::runtime::current_manager() else {
             bail!("No MCP runtime manager is installed for this session");
         };
+        let binding_context = crate::mcp_tool_adapter::mcp_binding_context_for_tool_use(ctx);
         let result = {
             let manager = manager.lock().await;
-            manager.read_resource(server, uri).await?
+            manager
+                .read_resource_for_context(&binding_context, server, uri)
+                .await?
         };
         let model_text = format_resource_contents(server, &result.contents);
 
@@ -187,6 +192,7 @@ impl Tool for ReadMcpResourceTool {
             model_content: Some(ToolResultContent::Text(model_text.clone())),
             display_preview: Some(model_text),
             new_messages: vec![],
+            ..Default::default()
         })
     }
 
@@ -306,6 +312,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         });
         client.state = McpConnectionState::Connected;
         client.resources = resources;

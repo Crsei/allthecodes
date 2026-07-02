@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use allthecodes_types::mcp::McpBinding;
 use serde_json::Value;
 
 use super::layers::{ConfigLayer, ConfigLayerEntry};
@@ -39,6 +40,7 @@ pub struct EffectiveSettings {
     pub claude_in_chrome_default_enabled: Option<bool>,
     pub api_key: Option<String>,
     pub env: HashMap<String, String>,
+    pub mcp_bindings: Vec<McpBinding>,
     pub extra: HashMap<String, Value>,
 
     // -- New typed fields ----------------------------------------------
@@ -162,6 +164,7 @@ impl EffectiveSettings {
             claude_in_chrome_default_enabled: raw.claude_in_chrome_default_enabled,
             api_key: raw.api_key,
             env: raw.env.unwrap_or_default(),
+            mcp_bindings: raw.mcp_bindings.unwrap_or_default(),
             extra: raw.extra,
             permissions: perms,
             sandbox: raw.sandbox.unwrap_or_default(),

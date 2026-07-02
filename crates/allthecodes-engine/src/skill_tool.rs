@@ -16,10 +16,13 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::path::Path;
 use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::types::tool::*;
+use allthecodes_mcp::bindings::canonical_workspace_root;
+use allthecodes_mcp::McpBindingContext;
 use allthecodes_skills::{SkillContext, SkillDefinition};
 use allthecodes_types::message::{AssistantMessage, Message, MessageContent, UserMessage};
 
@@ -214,8 +217,14 @@ impl Tool for SkillTool {
                 let cwd = std::env::current_dir()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| ".".to_string());
+                let fork_agent_id = Uuid::new_v4().to_string();
+                let mcp_context = McpBindingContext::agent(
+                    Some(canonical_workspace_root(Path::new(&cwd))),
+                    ctx.session_id.clone(),
+                    fork_agent_id.clone(),
+                );
 
-                let tools = crate::agent_runtime::all_tools()
+                let tools = crate::agent_runtime::tools_for_mcp_context(&mcp_context)
                     .into_iter()
                     .filter(|t| {
                         skill.frontmatter.allowed_tools.is_empty()
@@ -243,6 +252,7 @@ impl Tool for SkillTool {
                 );
 
                 let params = crate::agent::fork::ForkParams {
+                    agent_id: Some(fork_agent_id),
                     prompt: expanded_prompt,
                     cwd,
                     model: fork_model,

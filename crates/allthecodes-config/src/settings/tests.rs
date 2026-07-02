@@ -4,6 +4,7 @@ use std::path::Path;
 use super::load::apply_active_auth_profile;
 use super::raw::{merge_permissions, merge_str_lists};
 use super::*;
+use allthecodes_types::mcp::{McpBinding, McpPermission, McpToolScope};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -945,6 +946,72 @@ fn env_key_parses_as_typed_map_not_extra() {
 }
 
 #[test]
+fn mcp_bindings_round_trip_and_merge_by_identity() {
+    let raw: RawSettings = serde_json::from_str(
+        r#"{
+            "mcpBindings": [
+                {
+                    "serverId": "github",
+                    "scope": "session",
+                    "sessionId": "s1",
+                    "permissions": ["connect", "list_tools"]
+                }
+            ]
+        }"#,
+    )
+    .unwrap();
+    let bindings = raw.mcp_bindings.as_ref().expect("bindings parsed");
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].server_id, "github");
+    assert_eq!(bindings[0].scope, McpToolScope::Session);
+    assert_eq!(
+        bindings[0].permissions,
+        vec![McpPermission::Connect, McpPermission::ListTools]
+    );
+    assert!(!raw.extra.contains_key("mcpBindings"));
+
+    let serialized = serde_json::to_value(&raw).unwrap();
+    assert!(serialized.get("mcpBindings").is_some());
+
+    let mut acc = RawSettings {
+        mcp_bindings: Some(vec![McpBinding {
+            server_id: "github".to_string(),
+            scope: McpToolScope::Session,
+            session_id: Some("s1".to_string()),
+            permissions: vec![McpPermission::Connect],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut sources = SourceMap::new();
+    acc.merge_from(
+        RawSettings {
+            mcp_bindings: Some(vec![McpBinding {
+                server_id: "github".to_string(),
+                scope: McpToolScope::Session,
+                session_id: Some("s1".to_string()),
+                permissions: vec![McpPermission::CallTools],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        },
+        SettingsSource::Project,
+        &mut sources,
+    );
+
+    let merged = acc.mcp_bindings.expect("bindings merged");
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].permissions, vec![McpPermission::CallTools]);
+    assert_eq!(sources.get("mcpBindings"), Some(&SettingsSource::Project));
+
+    let effective = EffectiveSettings::from_raw(RawSettings {
+        mcp_bindings: Some(merged),
+        ..Default::default()
+    });
+    assert_eq!(effective.mcp_bindings.len(), 1);
+}
+
+#[test]
 fn env_values_must_be_strings() {
     let err = serde_json::from_str::<RawSettings>(
         r#"{"env": {"ANTHROPIC_MODEL": ["not", "a", "string"]}}"#,
@@ -1262,6 +1329,7 @@ fn schema_has_known_keys() {
         "model_reasoning_effort",
         "fastMode",
         "env",
+        "mcpBindings",
     ] {
         assert!(props.contains_key(key), "missing schema key: {}", key);
     }

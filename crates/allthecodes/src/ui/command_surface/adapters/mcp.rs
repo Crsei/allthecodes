@@ -3,19 +3,50 @@ use std::path::Path;
 use crate::ui::command_surface::CommandSurfaceOutcome;
 use crate::ui::mcp::index::{McpServer, McpServerKind, McpServerStatus, McpTool};
 use crate::ui::mcp::mcp_list_panel::McpListPanelState;
+use allthecodes_types::mcp::McpBinding;
+
 pub(crate) fn build_mcp_servers(cwd: &Path) -> Vec<McpServer> {
     crate::app_runtime_adapters::ensure_installed();
     let entries = allthecodes_ipc::subsystem_handlers::build_mcp_server_config_entries(cwd);
     let status = allthecodes_ipc::subsystem_handlers::build_mcp_server_info_list();
+    let discovered = allthecodes_mcp::discovery::discover_bound_mcp_servers(cwd, None).ok();
+    let bindings = runtime_bindings().unwrap_or_else(|| {
+        discovered
+            .as_ref()
+            .map(|found| found.bindings.clone())
+            .unwrap_or_default()
+    });
     entries
         .into_iter()
         .map(|entry| {
             let live = status.iter().find(|item| item.name == entry.name);
+            let source_label = entry.scope.label();
+            let server_id = discovered
+                .as_ref()
+                .and_then(|found| {
+                    found
+                        .servers
+                        .iter()
+                        .find(|server| {
+                            server.display_name == entry.name && server.source_scope == source_label
+                        })
+                        .map(|server| server.server_id.clone())
+                })
+                .unwrap_or_else(|| entry.name.clone());
             let kind = match entry.transport.as_str() {
                 "sse" | "streamable-http" => McpServerKind::Remote,
                 _ => McpServerKind::Stdio,
             };
             let mut server = McpServer::new(entry.name.clone(), kind);
+            server.config_source = Some(source_label.clone());
+            if let Some(binding) = binding_for_server(&bindings, &server_id, &source_label) {
+                server.binding_scope = Some(binding.scope.as_str().to_string());
+                server.binding_permissions = binding
+                    .effective_permissions()
+                    .into_iter()
+                    .map(|permission| permission.as_str().to_string())
+                    .collect();
+            }
             server.status = if entry.disabled.unwrap_or(false) {
                 McpServerStatus::Disabled
             } else {
@@ -36,6 +67,28 @@ pub(crate) fn build_mcp_servers(cwd: &Path) -> Vec<McpServer> {
             server
         })
         .collect()
+}
+
+fn runtime_bindings() -> Option<Vec<McpBinding>> {
+    let manager = allthecodes_mcp::runtime::current_manager()?;
+    let manager = manager.try_lock().ok()?;
+    Some(manager.bindings())
+}
+
+fn binding_for_server<'a>(
+    bindings: &'a [McpBinding],
+    server_id: &str,
+    source_label: &str,
+) -> Option<&'a McpBinding> {
+    bindings
+        .iter()
+        .find(|binding| binding.server_id == server_id)
+        .or_else(|| {
+            bindings.iter().find(|binding| {
+                binding.source_scope.as_deref() == Some(source_label)
+                    && binding.server_id == server_id
+            })
+        })
 }
 
 pub(crate) fn status_from_label(value: &str) -> McpServerStatus {

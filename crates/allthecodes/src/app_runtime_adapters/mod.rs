@@ -534,6 +534,21 @@ fn install_root_subsystem_event_sinks(event_tx: tokio::sync::broadcast::Sender<S
                     error,
                 },
             ),
+            allthecodes_mcp::McpSubsystemEvent::BindingsUpdated { bindings } => {
+                SubsystemEvent::Mcp(
+                    allthecodes_ipc_protocol::subsystem_events::McpEvent::BindingsUpdated {
+                        bindings,
+                    },
+                )
+            }
+            allthecodes_mcp::McpSubsystemEvent::BindingError { server_id, error } => {
+                SubsystemEvent::Mcp(
+                    allthecodes_ipc_protocol::subsystem_events::McpEvent::BindingError {
+                        server_id,
+                        error,
+                    },
+                )
+            }
         };
         let _ = mcp_tx.send(adapted);
     });

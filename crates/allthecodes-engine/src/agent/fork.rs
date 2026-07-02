@@ -37,6 +37,8 @@ use super::collect_stream_result;
 /// Parameters for [`run_fork`].
 #[derive(Clone)]
 pub struct ForkParams {
+    /// Optional stable agent id. When absent, a UUID is generated.
+    pub agent_id: Option<String>,
     /// The prompt to submit to the forked agent.
     pub prompt: String,
     /// Working directory for the child engine.
@@ -92,7 +94,10 @@ pub struct ForkOutcome {
 /// cache-safe prompting.
 pub async fn run_fork(params: ForkParams) -> Result<ForkOutcome> {
     let started = std::time::Instant::now();
-    let agent_id = Uuid::new_v4().to_string();
+    let agent_id = params
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let chain_id = Uuid::new_v4().to_string();
 
     info!(
@@ -166,6 +171,7 @@ mod tests {
 
     fn default_params() -> ForkParams {
         ForkParams {
+            agent_id: None,
             prompt: "hello".to_string(),
             cwd: ".".to_string(),
             model: "claude-sonnet-4-20250514".to_string(),

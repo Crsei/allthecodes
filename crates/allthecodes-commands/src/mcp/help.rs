@@ -6,6 +6,9 @@ pub(super) fn help_text() -> String {
        /mcp add <name> [flags]         create a new stdio config (user scope by default)\n  \
        /mcp edit <name> [flags]        update an existing config (auto-detects scope)\n  \
        /mcp remove <name> [--scope=..] delete a config from an editable scope\n  \
+       /mcp bindings                  list effective MCP bindings\n  \
+       /mcp bind <name> --global|--project|--session|--thread=<id>\n  \
+       /mcp unbind <name> --global|--project|--session|--thread=<id>\n  \
        /mcp approve <name...> [--all-project] approve .mcp.json project server(s)\n  \
        /mcp reject <name...>           reject .mcp.json project server(s)\n  \
        /mcp connect <name>             connect an existing server\n  \
@@ -32,6 +35,9 @@ pub(super) fn help_text() -> String {
        --env-http-header=Header=EnvVar  HTTP header from env var (repeatable)\n\
        --oauth-resource=<url>       OAuth resource parameter (RFC 8707)\n\
        --auth=oauth                 authentication mode (chatgpt is reserved)\n\n\
+     Flags for bind:\n  \
+       --read-only         grant connect/list_tools/read_resources only\n  \
+       --permissions=connect,list_tools,call_tools,read_resources\n\n\
      Discovery sources (low -> high precedence):\n\
      - plugin-contributed MCP servers\n\
      - ~/.allthecodes/settings.json (user scope)\n\

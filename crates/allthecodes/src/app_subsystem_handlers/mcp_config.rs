@@ -333,6 +333,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
 
         let written = upsert_mcp_entry(cwd.path(), entry).expect("upsert ok");
@@ -368,6 +371,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
 
         upsert_mcp_entry(cwd.path(), entry).expect("upsert ok");
@@ -400,6 +406,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
 
         let err = upsert_mcp_entry(cwd.path(), entry).expect_err("plugin scope rejected");
@@ -426,6 +435,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
         upsert_mcp_entry(cwd.path(), entry).expect("upsert ok");
 
@@ -487,6 +499,9 @@ mod tests {
             env: None,
             browser_mcp: None,
             disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
         };
         upsert_mcp_entry(cwd.path(), entry).expect("upsert ok");
 

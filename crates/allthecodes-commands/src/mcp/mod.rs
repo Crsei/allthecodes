@@ -4,6 +4,7 @@
 //! surface stays limited to dispatch and `/help` routing.
 
 mod auth;
+mod bindings;
 mod config;
 mod flags;
 mod help;
@@ -19,6 +20,7 @@ use async_trait::async_trait;
 
 use super::{CommandContext, CommandHandler, CommandResult};
 use auth::handle_auth;
+use bindings::{handle_bind, handle_bindings, handle_unbind};
 use config::{handle_add, handle_edit, handle_mcpjson_decision, handle_remove};
 #[cfg(test)]
 use flags::parse_flags;
@@ -41,6 +43,9 @@ impl CommandHandler for McpHandler {
             Some("add") => handle_add(&parts[1..], ctx),
             Some("edit") | Some("update") => handle_edit(&parts[1..], ctx),
             Some("remove") | Some("rm") | Some("delete") => handle_remove(&parts[1..], ctx),
+            Some("bindings") => handle_bindings(ctx),
+            Some("bind") => handle_bind(&parts[1..], ctx),
+            Some("unbind") => handle_unbind(&parts[1..], ctx),
             Some("approve") | Some("enable") => handle_mcpjson_decision(&parts[1..], ctx, true),
             Some("reject") | Some("disable") => handle_mcpjson_decision(&parts[1..], ctx, false),
             Some("connect") => handle_connect(&parts[1..], ctx).await,

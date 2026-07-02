@@ -224,11 +224,20 @@ impl QueryEngineDeps {
             return Ok(self.state.read().tools.clone());
         };
 
+        let binding_context = crate::mcp_tool_adapter::mcp_binding_context_for_engine(
+            &self.cwd,
+            &self.session_id,
+            self.agent_context.as_ref(),
+        );
         let mcp_tool_defs = {
             let manager_guard = manager.lock().await;
-            manager_guard.all_tools()
+            manager_guard.tools_for_context(&binding_context)
         };
-        let mcp_tools = crate::mcp_tool_adapter::mcp_tools_to_tools(mcp_tool_defs, manager);
+        let mcp_tools = crate::mcp_tool_adapter::mcp_tools_to_tools_for_context(
+            mcp_tool_defs,
+            manager,
+            binding_context,
+        );
 
         let refreshed = {
             let mut state = self.state.write();

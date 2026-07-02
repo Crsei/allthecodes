@@ -9,6 +9,7 @@
 //! Protocol specification: https://modelcontextprotocol.io/specification/2025-03-26/
 
 pub mod auth;
+pub mod bindings;
 pub mod channel;
 pub mod client;
 pub mod discovery;
@@ -24,6 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use allthecodes_types::mcp::McpOAuthConfig;
+pub use allthecodes_types::mcp::{McpBinding, McpBindingContext, McpPermission, McpToolScope};
 
 /// Tool information surfaced to the host when `ToolsDiscovered` fires.
 #[derive(Debug, Clone)]
@@ -69,6 +71,13 @@ pub enum McpSubsystemEvent {
         server_name: String,
         success: bool,
         error: Option<String>,
+    },
+    BindingsUpdated {
+        bindings: Vec<McpBinding>,
+    },
+    BindingError {
+        server_id: String,
+        error: String,
     },
 }
 

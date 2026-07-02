@@ -1,8 +1,11 @@
 //! MCP server discovery - finds configured servers from settings and plugins.
 
 use super::McpServerConfig;
+use crate::bindings::{canonical_workspace_root, list_explicit_bindings, merge_bindings};
+use allthecodes_types::mcp::{McpBinding, McpToolScope};
 use anyhow::{bail, Context, Result};
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -36,6 +39,22 @@ pub struct ScopedMcpServer {
     /// usable MCP server. The `config` field then carries only the preserved
     /// name plus a disabled placeholder so callers can show the bad row.
     pub error: Option<String>,
+}
+
+/// Runtime server config paired with its stable server id and source metadata.
+#[derive(Debug, Clone)]
+pub struct BoundMcpServerConfig {
+    pub server_id: String,
+    pub display_name: String,
+    pub source_scope: String,
+    pub config: McpServerConfig,
+}
+
+/// Discovery output used by context-aware MCP runtimes.
+#[derive(Debug, Clone, Default)]
+pub struct McpDiscoveryBindings {
+    pub servers: Vec<BoundMcpServerConfig>,
+    pub bindings: Vec<McpBinding>,
 }
 
 // ---------------------------------------------------------------------------
@@ -190,12 +209,60 @@ pub fn discover_mcp_servers_scoped(cwd: &Path) -> Result<Vec<ScopedMcpServer>> {
     }
 
     // Highest precedence: project config .allthecodes/settings.json
-    let project_settings = cwd.join(".allthecodes").join("settings.json");
+    let project_settings =
+        allthecodes_config::settings::project_settings_path(&canonical_workspace_root(cwd));
     for entry in load_mcp_from_settings(&project_settings, DiscoveryScope::Project)? {
         out.push(entry);
     }
 
     Ok(out)
+}
+
+pub fn discover_bound_mcp_servers(
+    cwd: &Path,
+    session_id: Option<&str>,
+) -> Result<McpDiscoveryBindings> {
+    let workspace_root = canonical_workspace_root(cwd);
+    let scoped = discover_mcp_servers_scoped(&workspace_root)?;
+    let mut diagnostics = Vec::new();
+    let mut name_counts: HashMap<String, usize> = HashMap::new();
+    for entry in &scoped {
+        if entry.error.is_none() {
+            *name_counts.entry(entry.config.name.clone()).or_default() += 1;
+        }
+    }
+
+    let mut servers = Vec::new();
+    let mut implicit_bindings = Vec::new();
+    for entry in scoped {
+        if let Some(error) = entry.error {
+            diagnostics.push(error);
+            continue;
+        }
+        let display_name = entry.config.name.clone();
+        let source_scope = source_scope_string(&entry.scope);
+        let server_id = server_id_for_entry(&entry, name_counts.get(&display_name).copied());
+        implicit_bindings.push(implicit_binding_for_entry(
+            &server_id,
+            &entry.scope,
+            &workspace_root,
+        ));
+        servers.push(BoundMcpServerConfig {
+            server_id,
+            display_name,
+            source_scope,
+            config: entry.config,
+        });
+    }
+
+    if !diagnostics.is_empty() {
+        bail!("MCP discovery diagnostics: {}", diagnostics.join("; "));
+    }
+
+    let explicit = list_explicit_bindings(&workspace_root, session_id)?;
+    let bindings = merge_bindings(implicit_bindings, explicit);
+
+    Ok(McpDiscoveryBindings { servers, bindings })
 }
 
 fn load_mcp_from_settings(path: &Path, scope: DiscoveryScope) -> Result<Vec<ScopedMcpServer>> {
@@ -261,6 +328,74 @@ fn invalid_server_placeholder(name: &str) -> McpServerConfig {
         bearer_token_env_var: None,
         env_http_headers: None,
         auth: None,
+    }
+}
+
+fn server_id_for_entry(entry: &ScopedMcpServer, count: Option<usize>) -> String {
+    if count.unwrap_or_default() <= 1 {
+        return entry.config.name.clone();
+    }
+    let (scope, source_id) = source_scope_parts(&entry.scope);
+    format!("{}:{}:{}", scope, source_id, entry.config.name)
+}
+
+fn implicit_binding_for_entry(
+    server_id: &str,
+    scope: &DiscoveryScope,
+    workspace_root: &Path,
+) -> McpBinding {
+    match scope {
+        DiscoveryScope::User => McpBinding {
+            server_id: server_id.to_string(),
+            scope: McpToolScope::Global,
+            permissions: McpBinding::full_permissions(),
+            read_only: false,
+            source_scope: Some("user".to_string()),
+            ..Default::default()
+        },
+        DiscoveryScope::Project => McpBinding {
+            server_id: server_id.to_string(),
+            scope: McpToolScope::Project,
+            project_path: Some(workspace_root.to_path_buf()),
+            permissions: McpBinding::full_permissions(),
+            read_only: false,
+            source_scope: Some("project".to_string()),
+            ..Default::default()
+        },
+        DiscoveryScope::Plugin(plugin_id) => McpBinding {
+            server_id: server_id.to_string(),
+            scope: McpToolScope::Global,
+            permissions: McpBinding::read_only_permissions(),
+            read_only: true,
+            source_scope: Some(format!("plugin:{plugin_id}")),
+            ..Default::default()
+        },
+        DiscoveryScope::Ide(ide_id) => McpBinding {
+            server_id: server_id.to_string(),
+            scope: McpToolScope::Global,
+            permissions: McpBinding::read_only_permissions(),
+            read_only: true,
+            source_scope: Some(format!("ide:{ide_id}")),
+            ..Default::default()
+        },
+    }
+}
+
+fn source_scope_string(scope: &DiscoveryScope) -> String {
+    match scope {
+        DiscoveryScope::User => "user".to_string(),
+        DiscoveryScope::Project => "project".to_string(),
+        DiscoveryScope::Plugin(plugin_id) => format!("plugin:{plugin_id}"),
+        DiscoveryScope::Ide(ide_id) => format!("ide:{ide_id}"),
+    }
+}
+
+fn source_scope_parts(scope: &DiscoveryScope) -> (&'static str, &str) {
+    match scope {
+        DiscoveryScope::User => ("user", ""),
+        DiscoveryScope::Project => ("project", ""),
+        DiscoveryScope::Plugin(plugin_id) => ("plugin", plugin_id.as_str()),
+        DiscoveryScope::Ide(ide_id) => ("ide", ide_id.as_str()),
     }
 }
 
@@ -376,6 +511,100 @@ mod tests {
             .find(|s| s.config.name == "p-server")
             .expect("project entry");
         assert_eq!(p.scope, DiscoveryScope::Project);
+    }
+
+    #[test]
+    #[serial]
+    fn bound_discovery_generates_implicit_bindings_and_preserves_source_scope() {
+        let home = TempDir::new().expect("home tempdir");
+        let cwd = TempDir::new().expect("cwd tempdir");
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+
+        std::fs::write(
+            home.path().join("settings.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "mcpServers": {
+                    "u-server": {"transport": "stdio", "command": "u-cmd"}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let project_dir = cwd.path().join(".allthecodes");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("settings.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "mcpServers": {
+                    "p-server": {"transport": "stdio", "command": "p-cmd"}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let discovered = discover_bound_mcp_servers(cwd.path(), None).unwrap();
+        assert_eq!(discovered.servers.len(), 2);
+        let user = discovered
+            .bindings
+            .iter()
+            .find(|binding| binding.server_id == "u-server")
+            .expect("user binding");
+        assert_eq!(user.scope, McpToolScope::Global);
+        assert!(user.allows(allthecodes_types::mcp::McpPermission::CallTools));
+
+        let project = discovered
+            .bindings
+            .iter()
+            .find(|binding| binding.server_id == "p-server")
+            .expect("project binding");
+        assert_eq!(project.scope, McpToolScope::Project);
+        assert_eq!(project.project_path.as_deref(), Some(cwd.path()));
+        assert_eq!(project.source_scope.as_deref(), Some("project"));
+    }
+
+    #[test]
+    #[serial]
+    fn duplicate_names_get_source_scoped_runtime_ids() {
+        let home = TempDir::new().expect("home tempdir");
+        let cwd = TempDir::new().expect("cwd tempdir");
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+
+        std::fs::write(
+            home.path().join("settings.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "mcpServers": {
+                    "same": {"transport": "stdio", "command": "user-cmd"}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let project_dir = cwd.path().join(".allthecodes");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("settings.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "mcpServers": {
+                    "same": {"transport": "stdio", "command": "project-cmd"}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let discovered = discover_bound_mcp_servers(cwd.path(), None).unwrap();
+        let ids = discovered
+            .servers
+            .iter()
+            .map(|server| server.server_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"user::same"));
+        assert!(ids.contains(&"project::same"));
+        assert!(discovered
+            .servers
+            .iter()
+            .all(|server| server.display_name == "same"));
     }
 
     #[test]

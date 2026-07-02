@@ -322,19 +322,22 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
 
     // B.3d: Discover and connect MCP servers
     let _mcp_manager = {
-        use allthecodes_engine::mcp_tool_adapter::mcp_tools_to_tools;
-        use allthecodes_mcp::discovery::discover_mcp_servers;
+        use allthecodes_engine::mcp_tool_adapter::mcp_tools_to_tools_for_context;
+        use allthecodes_mcp::bindings::canonical_workspace_root;
+        use allthecodes_mcp::discovery::{discover_bound_mcp_servers, BoundMcpServerConfig};
         use allthecodes_mcp::manager::McpManager;
+        use allthecodes_mcp::{McpBinding, McpBindingContext, McpToolScope};
 
         let cwd_path = std::path::Path::new(&cwd);
-        let mut server_configs = match discover_mcp_servers(cwd_path) {
-            Ok(configs) => configs,
+        let mut discovered = match discover_bound_mcp_servers(cwd_path, None) {
+            Ok(discovered) => discovered,
             Err(err) => {
                 warn!(error = %err, "MCP server discovery failed");
-                Vec::new()
+                Default::default()
             }
         };
         let mcp_manager = Arc::new(tokio::sync::Mutex::new(McpManager::new()));
+        let workspace_root = canonical_workspace_root(cwd_path);
 
         // First-party Chrome integration: when --chrome is on (or env opts in),
         // register a synthetic `claude-in-chrome` MCP server that points back
@@ -347,21 +350,37 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
                 // De-dupe: if the user also put `claude-in-chrome` in
                 // settings.json for some reason, the explicit config wins.
                 let name = allthecodes_browser::common::CLAUDE_IN_CHROME_MCP_SERVER_NAME;
-                if !server_configs.iter().any(|c| c.name == name) {
-                    server_configs.push(allthecodes_mcp::McpServerConfig {
-                        name: name.to_string(),
-                        transport: "stdio".to_string(),
-                        command: Some(exe.to_string_lossy().into_owned()),
-                        args: Some(vec!["--claude-in-chrome-mcp".to_string()]),
-                        url: None,
-                        headers: None,
-                        oauth: None,
-                        env: None,
-                        browser_mcp: Some(true),
-                        disabled: None,
-                        bearer_token_env_var: None,
-                        env_http_headers: None,
-                        auth: None,
+                if !discovered
+                    .servers
+                    .iter()
+                    .any(|server| server.server_id == name || server.display_name == name)
+                {
+                    discovered.servers.push(BoundMcpServerConfig {
+                        server_id: name.to_string(),
+                        display_name: name.to_string(),
+                        source_scope: "builtin".to_string(),
+                        config: allthecodes_mcp::McpServerConfig {
+                            name: name.to_string(),
+                            transport: "stdio".to_string(),
+                            command: Some(exe.to_string_lossy().into_owned()),
+                            args: Some(vec!["--claude-in-chrome-mcp".to_string()]),
+                            url: None,
+                            headers: None,
+                            oauth: None,
+                            env: None,
+                            browser_mcp: Some(true),
+                            disabled: None,
+                            bearer_token_env_var: None,
+                            env_http_headers: None,
+                            auth: None,
+                        },
+                    });
+                    discovered.bindings.push(McpBinding {
+                        server_id: name.to_string(),
+                        scope: McpToolScope::Global,
+                        permissions: McpBinding::full_permissions(),
+                        source_scope: Some("builtin".to_string()),
+                        ..Default::default()
                     });
                     info!(
                         "MCP: registered first-party claude-in-chrome bridge (spawns --claude-in-chrome-mcp subprocess)"
@@ -374,22 +393,38 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
         // alongside the registered tools; config flags (browserMcp: true) are
         // authoritative even if the server fails to list any recognized
         // browser-shaped tools.
-        let configs_for_browser = server_configs.clone();
+        let configs_for_browser = discovered
+            .servers
+            .iter()
+            .map(|bound| {
+                let mut config = bound.config.clone();
+                config.name = bound.server_id.clone();
+                config
+            })
+            .collect::<Vec<_>>();
 
-        if !server_configs.is_empty() {
+        if !discovered.servers.is_empty() {
             info!(
-                count = server_configs.len(),
+                count = discovered.servers.len(),
                 "MCP: connecting to configured servers"
             );
             let mut mgr = mcp_manager.lock().await;
-            if let Err(e) = mgr.connect_all(server_configs).await {
+            if let Err(e) = mgr
+                .connect_all_bound(discovered.servers, discovered.bindings)
+                .await
+            {
                 warn!(error = %e, "MCP: some servers failed to connect");
             }
 
             // Merge MCP tools with base tools
-            let mcp_tool_defs = mgr.all_tools();
+            let startup_context = McpBindingContext::startup(Some(workspace_root.clone()));
+            let mcp_tool_defs = mgr.tools_for_context(&startup_context);
             if !mcp_tool_defs.is_empty() {
-                let mcp_tools = mcp_tools_to_tools(mcp_tool_defs, mcp_manager.clone());
+                let mcp_tools = mcp_tools_to_tools_for_context(
+                    mcp_tool_defs,
+                    mcp_manager.clone(),
+                    startup_context.clone(),
+                );
                 info!(
                     count = mcp_tools.len(),
                     "MCP: discovered tools, merging with base tools"
@@ -398,7 +433,11 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
             }
 
             let (mcp_skills, mcp_skill_diagnostics) =
-                allthecodes_engine::mcp_tool_adapter::discover_mcp_skill_resources(&mgr).await;
+                allthecodes_engine::mcp_tool_adapter::discover_mcp_skill_resources_for_context(
+                    &mgr,
+                    &startup_context,
+                )
+                .await;
             if !mcp_skills.is_empty() || !mcp_skill_diagnostics.is_empty() {
                 let report = allthecodes_skills::register_skills_resolved_with_diagnostics(
                     mcp_skills,
