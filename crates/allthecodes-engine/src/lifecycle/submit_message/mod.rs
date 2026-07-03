@@ -19,8 +19,7 @@ use crate::codex_exec;
 use crate::input_processing;
 use crate::result;
 use crate::session::record_replay::types::{
-    CompactionBoundaryRecord, CompactionKind, MessageRecord, QueryEventRecord, RecordItem,
-    TurnFinishStatus, TurnFinishedRecord, TurnStartedRecord,
+    MessageRecord, RecordItem, TurnFinishStatus, TurnFinishedRecord, TurnStartedRecord,
 };
 use crate::types::config::{QueryParams, QuerySource, SubmitContextMode, SubmitMessageOverrides};
 use allthecodes_engine::query::loop_impl;
@@ -274,49 +273,6 @@ async fn commit_submit_transaction_outcome_best_effort(
         messages.push(SdkMessage::Result(result));
     }
     messages
-}
-
-fn record_items_for_query_yield(
-    item: &crate::types::message::QueryYield,
-    backend_name: &str,
-    model_name: &str,
-) -> Vec<RecordItem> {
-    match item {
-        crate::types::message::QueryYield::Message(message) => {
-            let mut items = vec![RecordItem::Message(MessageRecord::from_message(message))];
-            if let crate::types::message::Message::System(system) = message {
-                match &system.subtype {
-                    crate::types::message::SystemSubtype::CompactBoundary { compact_metadata } => {
-                        items.push(RecordItem::CompactionBoundary(CompactionBoundaryRecord {
-                            kind: CompactionKind::Compact,
-                            summary_message_uuid: Some(system.uuid.to_string()),
-                            metadata: compact_metadata
-                                .as_ref()
-                                .and_then(|metadata| serde_json::to_value(metadata).ok()),
-                        }))
-                    }
-                    crate::types::message::SystemSubtype::MicrocompactBoundary {
-                        microcompact_metadata,
-                    } => items.push(RecordItem::CompactionBoundary(CompactionBoundaryRecord {
-                        kind: CompactionKind::Microcompact,
-                        summary_message_uuid: Some(system.uuid.to_string()),
-                        metadata: microcompact_metadata
-                            .as_ref()
-                            .and_then(|metadata| serde_json::to_value(metadata).ok()),
-                    })),
-                    _ => {}
-                }
-            }
-            items
-        }
-        crate::types::message::QueryYield::RequestStart(_) => {
-            vec![RecordItem::QueryEvent(QueryEventRecord::RequestStart {
-                provider: Some(backend_name.to_string()),
-                model: Some(model_name.to_string()),
-            })]
-        }
-        _ => Vec::new(),
-    }
 }
 
 impl QueryEngine {
@@ -925,8 +881,9 @@ impl QueryEngine {
             let mut current_request_event: Option<crate::types::message::RequestStartEvent> = None;
 
             while let Some(item) = inner_stream.next().await {
+                let turn_event = QueryTurnEvent::from(item);
                 let record_items =
-                    record_items_for_query_yield(&item, &backend_name, &model_name);
+                    turn_event.record_items(&backend_name, &model_name);
                 if !record_items.is_empty() {
                     record_items_best_effort(
                         &session_recorder,
@@ -937,7 +894,7 @@ impl QueryEngine {
                     )
                     .await;
                 }
-                if let crate::types::message::QueryYield::RequestStart(request_event) = &item {
+                if let QueryTurnEvent::RequestStart(request_event) = &turn_event {
                     current_request_event = Some(request_event.clone());
                 }
 
@@ -956,7 +913,6 @@ impl QueryEngine {
                 };
 
                 let mut terminated = false;
-                let turn_event = QueryTurnEvent::from(item);
                 for action in process_stream_item(turn_event, &mut stream_ctx) {
                     match action {
                         StreamAction::Yield(message) => yield message,

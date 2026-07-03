@@ -5,9 +5,13 @@ use allthecodes_types::sdk::*;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::session::record_replay::types::{
+    CompactionBoundaryRecord, CompactionKind, MessageRecord, QueryEventRecord, RecordItem,
+};
 use crate::types::config::QueryEngineConfig;
 use crate::types::message::{
-    Attachment, Message, MessageContent, QueryYield, StreamEvent, SystemSubtype, Usage,
+    Attachment, Message, MessageContent, QueryYield, RequestStartEvent, StreamEvent, SystemSubtype,
+    Usage,
 };
 
 use super::super::types::AbortReason;
@@ -17,7 +21,7 @@ use super::{finish_submit_telemetry, SubmitTelemetrySpan, SubmitTurnState};
 
 pub(super) enum QueryTurnEvent {
     Stream(StreamEvent),
-    RequestStart,
+    RequestStart(RequestStartEvent),
     Message(Message),
     Tombstone(crate::types::message::TombstoneMessage),
     ToolUseSummary(crate::types::message::ToolUseSummaryMessage),
@@ -27,10 +31,57 @@ impl From<QueryYield> for QueryTurnEvent {
     fn from(item: QueryYield) -> Self {
         match item {
             QueryYield::Stream(event) => Self::Stream(event),
-            QueryYield::RequestStart(_) => Self::RequestStart,
+            QueryYield::RequestStart(request_start) => Self::RequestStart(request_start),
             QueryYield::Message(message) => Self::Message(message),
             QueryYield::Tombstone(tombstone) => Self::Tombstone(tombstone),
             QueryYield::ToolUseSummary(summary) => Self::ToolUseSummary(summary),
+        }
+    }
+}
+
+impl QueryTurnEvent {
+    pub(super) fn record_items(&self, backend_name: &str, model_name: &str) -> Vec<RecordItem> {
+        match self {
+            Self::Message(message) => {
+                let mut items = vec![RecordItem::Message(MessageRecord::from_message(message))];
+                if let Message::System(system) = message {
+                    match &system.subtype {
+                        SystemSubtype::CompactBoundary { compact_metadata } => {
+                            items.push(RecordItem::CompactionBoundary(CompactionBoundaryRecord {
+                                kind: CompactionKind::Compact,
+                                summary_message_uuid: Some(system.uuid.to_string()),
+                                metadata: compact_metadata
+                                    .as_ref()
+                                    .and_then(|metadata| serde_json::to_value(metadata).ok()),
+                            }))
+                        }
+                        SystemSubtype::MicrocompactBoundary {
+                            microcompact_metadata,
+                        } => items.push(RecordItem::CompactionBoundary(CompactionBoundaryRecord {
+                            kind: CompactionKind::Microcompact,
+                            summary_message_uuid: Some(system.uuid.to_string()),
+                            metadata: microcompact_metadata
+                                .as_ref()
+                                .and_then(|metadata| serde_json::to_value(metadata).ok()),
+                        })),
+                        _ => {}
+                    }
+                }
+                items
+            }
+            Self::RequestStart(request_start) => {
+                vec![RecordItem::QueryEvent(QueryEventRecord::RequestStart {
+                    provider: request_start
+                        .provider
+                        .clone()
+                        .or_else(|| Some(backend_name.to_string())),
+                    model: request_start
+                        .model
+                        .clone()
+                        .or_else(|| Some(model_name.to_string())),
+                })]
+            }
+            _ => Vec::new(),
         }
     }
 }
@@ -78,7 +129,7 @@ pub(super) fn process_stream_item(
             handle_attachment_message(attachment_msg, ctx)
         }
         QueryTurnEvent::Stream(event) => handle_stream_event(event, ctx),
-        QueryTurnEvent::RequestStart => handle_request_start(),
+        QueryTurnEvent::RequestStart(_) => handle_request_start(),
         QueryTurnEvent::Tombstone(tombstone) => handle_tombstone(tombstone, ctx),
         QueryTurnEvent::ToolUseSummary(summary_msg) => handle_tool_use_summary(summary_msg, ctx),
     }
@@ -899,10 +950,34 @@ mod tests {
     }
 
     #[test]
-    fn query_yield_wraps_into_typed_turn_event_before_submit_handling() {
-        let event = QueryTurnEvent::from(QueryYield::RequestStart(Default::default()));
-        assert!(matches!(event, QueryTurnEvent::RequestStart));
+    fn submit_transaction_query_yield_adapter_preserves_request_start_payload() {
+        let event = QueryTurnEvent::from(QueryYield::RequestStart(
+            crate::types::message::RequestStartEvent {
+                submit_id: Some("submit-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
+                request_id: Some("request-1".to_string()),
+                provider: Some("anthropic".to_string()),
+                backend: Some("native".to_string()),
+                model: Some("claude-test".to_string()),
+                attempt: 2,
+                is_retry: true,
+            },
+        ));
+        let QueryTurnEvent::RequestStart(request_event) = event else {
+            panic!("expected typed request start event");
+        };
+        assert_eq!(request_event.submit_id.as_deref(), Some("submit-1"));
+        assert_eq!(request_event.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(request_event.request_id.as_deref(), Some("request-1"));
+        assert_eq!(request_event.provider.as_deref(), Some("anthropic"));
+        assert_eq!(request_event.backend.as_deref(), Some("native"));
+        assert_eq!(request_event.model.as_deref(), Some("claude-test"));
+        assert_eq!(request_event.attempt, 2);
+        assert!(request_event.is_retry);
+    }
 
+    #[test]
+    fn submit_transaction_query_turn_event_records_request_start_and_messages() {
         let system = SystemMessage {
             uuid: uuid::Uuid::new_v4(),
             timestamp: 1,
@@ -912,7 +987,29 @@ mod tests {
             content: "notice".to_string(),
         };
         let event = QueryTurnEvent::from(QueryYield::Message(Message::System(system)));
-        assert!(matches!(event, QueryTurnEvent::Message(Message::System(_))));
+        let records = event.record_items("native", "claude-test");
+        assert!(matches!(
+            records.as_slice(),
+            [crate::session::record_replay::types::RecordItem::Message(_)]
+        ));
+
+        let request_start = QueryTurnEvent::from(QueryYield::RequestStart(
+            crate::types::message::RequestStartEvent {
+                provider: Some("anthropic".to_string()),
+                model: Some("claude-test".to_string()),
+                ..Default::default()
+            },
+        ));
+        let records = request_start.record_items("native", "fallback-model");
+        assert!(matches!(
+            records.as_slice(),
+            [crate::session::record_replay::types::RecordItem::QueryEvent(
+                crate::session::record_replay::types::QueryEventRecord::RequestStart {
+                    provider: Some(provider),
+                    model: Some(model),
+                },
+            )] if provider == "anthropic" && model == "claude-test"
+        ));
     }
 }
 
