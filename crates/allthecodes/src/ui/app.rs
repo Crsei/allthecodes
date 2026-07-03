@@ -4,6 +4,7 @@ pub mod app_event;
 pub mod app_event_sender;
 mod domain;
 mod input;
+mod overlays;
 mod render;
 pub mod status;
 #[cfg(test)]
@@ -30,7 +31,7 @@ use workspace_trust::is_workspace_trusted;
 
 use super::command_palette::CommandPalette;
 use super::command_surface::{CommandSurface, CommandSurfaceTarget};
-use super::history_search_dialog::{HistorySearchDialog, HistorySearchEntry};
+use super::history_search_dialog::HistorySearchEntry;
 use super::notifications::in_app::{
     InAppNotification, NotificationPriority, NotificationState, NotificationTone,
 };
@@ -49,6 +50,7 @@ use super::transcript::{TranscriptState, ViewMode};
 use super::vim::VimState;
 use app_event::AppEvent;
 use domain::{ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiStore};
+use overlays::OverlayState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalStatusSnapshot {
@@ -196,9 +198,7 @@ pub struct App {
     is_streaming: bool,
     prompt_queue: PromptQueueStore,
     spinner_state: SpinnerState,
-    bypass_permissions_mode_dialog: Option<BypassPermissionsModeDialog>,
-    permission_dialog: Option<PermissionDialog>,
-    question_dialog: Option<QuestionDialog>,
+    overlays: OverlayState,
     exit_guard: ExitGuard,
     should_quit: bool,
     design_theme_provider: ThemeProvider,
@@ -219,11 +219,8 @@ pub struct App {
     history_index: Option<usize>,
     saved_input: String,
     command_palette: CommandPalette,
-    command_surface: Option<CommandSurface>,
     pending_command_surface_after_submit: Option<CommandSurfaceTarget>,
-    history_search_dialog: Option<HistorySearchDialog>,
     agent_nav: AgentNavigationState,
-    agent_tree_dialog: Option<AgentTreeDialog>,
     show_agent_footer: bool,
     current_agent_thread_id: Option<String>,
 
@@ -303,9 +300,7 @@ impl App {
             is_streaming: false,
             prompt_queue: PromptQueueStore::default(),
             spinner_state: SpinnerState::new(),
-            bypass_permissions_mode_dialog: None,
-            permission_dialog: None,
-            question_dialog: None,
+            overlays: OverlayState::default(),
             exit_guard: ExitGuard::new(),
             should_quit: false,
             design_theme_provider,
@@ -326,11 +321,8 @@ impl App {
             history_index: None,
             saved_input: String::new(),
             command_palette: CommandPalette::new(),
-            command_surface: None,
             pending_command_surface_after_submit: None,
-            history_search_dialog: None,
             agent_nav: AgentNavigationState::default(),
-            agent_tree_dialog: None,
             show_agent_footer: true,
             current_agent_thread_id: None,
             render_layout: RenderLayoutStore::default(),
@@ -408,7 +400,8 @@ impl App {
         body.push_str(&format!("backend: {}\n", self.session_ui.backend_name));
         body.push_str(&format!(
             "command_surface: {}\n",
-            self.command_surface
+            self.overlays
+                .command_surface
                 .as_ref()
                 .map(CommandSurface::title)
                 .unwrap_or("none")
@@ -488,18 +481,18 @@ impl App {
 
     #[cfg(test)]
     pub fn show_permission_dialog(&mut self, tool_name: &str, input: &str, message: &str) {
-        self.permission_dialog = Some(PermissionDialog::new(tool_name, input, message));
+        self.overlays.permission_dialog = Some(PermissionDialog::new(tool_name, input, message));
         self.dirty = true;
     }
 
     pub fn show_question_dialog(&mut self, id: impl Into<String>, request: AskUserRequestPayload) {
-        self.question_dialog = Some(QuestionDialog::new(id, request));
+        self.overlays.question_dialog = Some(QuestionDialog::new(id, request));
         self.dirty = true;
     }
 
     pub fn show_permission_request(&mut self, request: PermissionDialogRequest) {
         self.add_permission_marker(&request);
-        self.permission_dialog = Some(if request.tool_use_id.is_empty() {
+        self.overlays.permission_dialog = Some(if request.tool_use_id.is_empty() {
             let input = request.tool_input.to_string();
             PermissionDialog::new(&request.tool_name, &input, &request.message)
         } else {
@@ -537,13 +530,14 @@ impl App {
     }
 
     pub fn show_bypass_permissions_mode_dialog(&mut self, disabled: bool) {
-        self.bypass_permissions_mode_dialog = Some(BypassPermissionsModeDialog::new(disabled));
+        self.overlays.bypass_permissions_mode_dialog =
+            Some(BypassPermissionsModeDialog::new(disabled));
         self.dirty = true;
     }
 
     #[cfg(test)]
     pub fn dismiss_permission_dialog(&mut self) {
-        self.permission_dialog = None;
+        self.overlays.clear_permission();
         self.dirty = true;
     }
 
@@ -714,7 +708,7 @@ impl App {
 
     /// Open a modal slash-command surface above the normal prompt.
     pub fn open_command_surface(&mut self, surface: CommandSurface) {
-        self.command_surface = Some(surface);
+        self.overlays.command_surface = Some(surface);
         self.command_palette.close();
         self.dirty = true;
     }
@@ -729,12 +723,12 @@ impl App {
 
     #[cfg(test)]
     pub fn command_surface_active(&self) -> bool {
-        self.command_surface.is_some()
+        self.overlays.command_surface.is_some()
     }
 
     #[cfg(test)]
     pub fn history_search_active(&self) -> bool {
-        self.history_search_dialog.is_some()
+        self.overlays.history_search_dialog.is_some()
     }
 
     /// Current transcript state exposed read-only so tests can assert
@@ -814,7 +808,9 @@ impl App {
             }
             AppEvent::Backend { message } => {
                 let message = message.as_ref();
-                if let Some(CommandSurface::Tasks(surface)) = self.command_surface.as_mut() {
+                if let Some(CommandSurface::Tasks(surface)) =
+                    self.overlays.command_surface.as_mut()
+                {
                     if backend_message_updates_tasks(message) {
                         surface.handle_event(message);
                         self.dirty = true;
@@ -949,10 +945,10 @@ impl App {
     }
 
     pub(super) fn toggle_agent_tree_dialog(&mut self) {
-        if self.agent_tree_dialog.is_some() {
-            self.agent_tree_dialog = None;
+        if self.overlays.agent_tree_dialog.is_some() {
+            self.overlays.agent_tree_dialog = None;
         } else if self.agent_nav.thread_count() > 1 {
-            self.agent_tree_dialog = Some(AgentTreeDialog::from_state(
+            self.overlays.agent_tree_dialog = Some(AgentTreeDialog::from_state(
                 &self.agent_nav,
                 self.current_agent_thread_id(),
             ));

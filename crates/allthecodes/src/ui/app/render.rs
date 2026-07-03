@@ -275,7 +275,7 @@ impl App {
 
         self.render_status_bar(bottom_chunks.status, frame.buffer_mut(), &custom_lines);
 
-        if let Some(ref surface) = self.command_surface {
+        if let Some(ref surface) = self.overlays.command_surface {
             render_command_surface_overlay(
                 surface,
                 size,
@@ -285,7 +285,7 @@ impl App {
             );
         }
 
-        if let Some(ref dialog) = self.history_search_dialog {
+        if let Some(ref dialog) = self.overlays.history_search_dialog {
             render_history_search_overlay(
                 dialog,
                 size,
@@ -297,7 +297,7 @@ impl App {
         }
 
         let current_thread_id = self.current_agent_thread_id().to_string();
-        if let Some(ref mut dialog) = self.agent_tree_dialog {
+        if let Some(ref mut dialog) = self.overlays.agent_tree_dialog {
             render_agent_tree_overlay(
                 dialog,
                 &self.agent_nav,
@@ -310,7 +310,7 @@ impl App {
             );
         }
 
-        if let Some(ref dialog) = self.permission_dialog {
+        if let Some(ref dialog) = self.overlays.permission_dialog {
             dialog.render(
                 size,
                 Some(bottom_chunks.input),
@@ -319,7 +319,7 @@ impl App {
             );
         }
 
-        if let Some(ref dialog) = self.question_dialog {
+        if let Some(ref dialog) = self.overlays.question_dialog {
             dialog.render(
                 size,
                 Some(bottom_chunks.input),
@@ -328,7 +328,7 @@ impl App {
             );
         }
 
-        if let Some(ref dialog) = self.bypass_permissions_mode_dialog {
+        if let Some(ref dialog) = self.overlays.bypass_permissions_mode_dialog {
             dialog.render(
                 size,
                 Some(bottom_chunks.input),

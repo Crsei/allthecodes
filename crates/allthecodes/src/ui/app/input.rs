@@ -19,6 +19,7 @@ use crate::ui::slack_channel_completion::SlackChannelCompletionProvider;
 use crate::ui::transcript::ViewMode;
 use crate::ui::vim::VimAction;
 
+use super::overlays::ActiveOverlay;
 use super::{current_unix_secs, App, AppAction, MouseFocus};
 
 /// Tracks the state of an active completion session.
@@ -138,40 +139,16 @@ impl App {
             return self.handle_workspace_trust_key(key);
         }
 
-        if let Some(ref mut dialog) = self.bypass_permissions_mode_dialog {
-            if let Some(choice) = dialog.handle_key(key) {
-                self.bypass_permissions_mode_dialog = None;
-                return AppAction::BypassPermissionsModeResponse(choice);
+        match self.overlays.active_overlay() {
+            Some(ActiveOverlay::BypassPermissions) => {
+                return self.handle_bypass_permissions_key(key);
             }
-            return AppAction::None;
-        }
-
-        if let Some(ref mut dialog) = self.question_dialog {
-            if let Some(answer) = dialog.handle_key(key) {
-                self.question_dialog = None;
-                return AppAction::QuestionResponse(answer);
-            }
-            return AppAction::None;
-        }
-
-        if let Some(ref mut dialog) = self.permission_dialog {
-            if let Some(choice) = dialog.handle_key(key) {
-                self.permission_dialog = None;
-                return AppAction::PermissionResponse(choice);
-            }
-            return AppAction::None;
-        }
-
-        if self.agent_tree_dialog.is_some() {
-            return self.handle_agent_tree_key(key);
-        }
-
-        if self.history_search_dialog.is_some() {
-            return self.handle_history_search_key(key);
-        }
-
-        if self.command_surface.is_some() {
-            return self.handle_command_surface_key(key);
+            Some(ActiveOverlay::Question) => return self.handle_question_key(key),
+            Some(ActiveOverlay::Permission) => return self.handle_permission_key(key),
+            Some(ActiveOverlay::AgentTree) => return self.handle_agent_tree_key(key),
+            Some(ActiveOverlay::HistorySearch) => return self.handle_history_search_key(key),
+            Some(ActiveOverlay::CommandSurface) => return self.handle_command_surface_key(key),
+            None => {}
         }
 
         if self.conversation.selection().is_some() {
@@ -495,19 +472,52 @@ impl App {
         true
     }
 
+    fn handle_bypass_permissions_key(&mut self, key: KeyEvent) -> AppAction {
+        let Some(dialog) = self.overlays.bypass_permissions_mode_dialog.as_mut() else {
+            return AppAction::None;
+        };
+        if let Some(choice) = dialog.handle_key(key) {
+            self.overlays.bypass_permissions_mode_dialog = None;
+            return AppAction::BypassPermissionsModeResponse(choice);
+        }
+        AppAction::None
+    }
+
+    fn handle_question_key(&mut self, key: KeyEvent) -> AppAction {
+        let Some(dialog) = self.overlays.question_dialog.as_mut() else {
+            return AppAction::None;
+        };
+        if let Some(answer) = dialog.handle_key(key) {
+            self.overlays.clear_question();
+            return AppAction::QuestionResponse(answer);
+        }
+        AppAction::None
+    }
+
+    fn handle_permission_key(&mut self, key: KeyEvent) -> AppAction {
+        let Some(dialog) = self.overlays.permission_dialog.as_mut() else {
+            return AppAction::None;
+        };
+        if let Some(choice) = dialog.handle_key(key) {
+            self.overlays.clear_permission();
+            return AppAction::PermissionResponse(choice);
+        }
+        AppAction::None
+    }
+
     fn handle_command_surface_key(&mut self, key: KeyEvent) -> AppAction {
-        let Some(surface) = self.command_surface.as_mut() else {
+        let Some(surface) = self.overlays.command_surface.as_mut() else {
             return AppAction::None;
         };
 
         match surface.handle_key(key) {
             CommandSurfaceOutcome::None => AppAction::None,
             CommandSurfaceOutcome::Close => {
-                self.command_surface = None;
+                self.overlays.command_surface = None;
                 AppAction::None
             }
             CommandSurfaceOutcome::FillPrompt(text) => {
-                self.command_surface = None;
+                self.overlays.command_surface = None;
                 self.prompt.input = text;
                 self.prompt.cursor_position = self.prompt.input.len();
                 self.prompt.is_active = true;
@@ -515,14 +525,14 @@ impl App {
                 AppAction::None
             }
             CommandSurfaceOutcome::Submit(text) => {
-                self.command_surface = None;
+                self.overlays.command_surface = None;
                 AppAction::Submit(text)
             }
             CommandSurfaceOutcome::SubmitThenOpen {
                 command,
                 next_surface,
             } => {
-                self.command_surface = None;
+                self.overlays.command_surface = None;
                 self.set_pending_command_surface_after_submit(next_surface);
                 AppAction::Submit(command)
             }
@@ -532,7 +542,7 @@ impl App {
                 decision,
                 install_prompt,
             } => {
-                self.command_surface = None;
+                self.overlays.command_surface = None;
                 if let Some(text) = install_prompt {
                     self.prompt.input = text;
                     self.prompt.cursor_position = self.prompt.input.len();
@@ -549,19 +559,19 @@ impl App {
     }
 
     fn handle_history_search_key(&mut self, key: KeyEvent) -> AppAction {
-        let Some(dialog) = self.history_search_dialog.as_mut() else {
+        let Some(dialog) = self.overlays.history_search_dialog.as_mut() else {
             return AppAction::None;
         };
 
         match dialog.handle_key(key) {
             HistorySearchDialogEvent::None => AppAction::None,
             HistorySearchDialogEvent::Cancelled => {
-                self.history_search_dialog = None;
+                self.overlays.history_search_dialog = None;
                 self.sync_command_palette();
                 AppAction::None
             }
             HistorySearchDialogEvent::Selected(prompt) => {
-                self.history_search_dialog = None;
+                self.overlays.history_search_dialog = None;
                 self.prompt.input = prompt;
                 self.prompt.cursor_position = self.prompt.input.len();
                 self.prompt.is_active = true;
@@ -574,24 +584,24 @@ impl App {
     }
 
     fn handle_agent_tree_key(&mut self, key: KeyEvent) -> AppAction {
-        let Some(mut dialog) = self.agent_tree_dialog.take() else {
+        let Some(mut dialog) = self.overlays.agent_tree_dialog.take() else {
             return AppAction::None;
         };
         let current_thread_id = self.current_agent_thread_id().to_string();
 
         match (key.modifiers, key.code) {
             (_, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                self.agent_tree_dialog = None;
+                self.overlays.agent_tree_dialog = None;
                 self.dirty = true;
             }
             (_, KeyCode::Up) => {
                 dialog.move_prev(&self.agent_nav, &current_thread_id);
-                self.agent_tree_dialog = Some(dialog);
+                self.overlays.agent_tree_dialog = Some(dialog);
                 self.dirty = true;
             }
             (_, KeyCode::Down) | (_, KeyCode::Tab) => {
                 dialog.move_next(&self.agent_nav, &current_thread_id);
-                self.agent_tree_dialog = Some(dialog);
+                self.overlays.agent_tree_dialog = Some(dialog);
                 self.dirty = true;
             }
             (_, KeyCode::Enter) => {
@@ -600,15 +610,15 @@ impl App {
                 {
                     self.current_agent_thread_id = Some(selected);
                     let selected = self.current_agent_thread_id().to_string();
-                    self.agent_tree_dialog = None;
+                    self.overlays.agent_tree_dialog = None;
                     self.dirty = true;
                     return AppAction::AgentThreadSelected(selected);
                 }
-                self.agent_tree_dialog = None;
+                self.overlays.agent_tree_dialog = None;
                 self.dirty = true;
             }
             _ => {
-                self.agent_tree_dialog = Some(dialog);
+                self.overlays.agent_tree_dialog = Some(dialog);
             }
         }
 
@@ -1221,13 +1231,13 @@ impl App {
             .rev()
             .cloned()
             .collect::<Vec<_>>();
-        self.history_search_dialog = Some(HistorySearchDialog::from_entries(
+        self.overlays.history_search_dialog = Some(HistorySearchDialog::from_entries(
             entries,
             self.prompt.input.clone(),
             current_unix_secs(),
         ));
         self.command_palette.close();
-        self.command_surface = None;
+        self.overlays.command_surface = None;
         self.dirty = true;
     }
 

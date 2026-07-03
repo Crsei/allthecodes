@@ -434,7 +434,7 @@ fn test_only_app_accessors_drive_state() {
 
     app.show_permission_dialog("bash", "ls", "Run command?");
     app.dismiss_permission_dialog();
-    assert!(app.permission_dialog.is_none());
+    assert!(app.overlays.permission_dialog.is_none());
     let _runner = app.status_line_runner();
 }
 
@@ -518,13 +518,13 @@ fn agent_tree_dialog_navigation_select_and_close() {
             "worker-2".to_string()
         ]))
     );
-    assert!(app.agent_tree_dialog.is_none());
+    assert!(app.overlays.agent_tree_dialog.is_none());
 
     assert_eq!(
         app.dispatch_bound_action(&Action::new_static("agents:tree")),
         Some(AppAction::None)
     );
-    assert!(app.agent_tree_dialog.is_some());
+    assert!(app.overlays.agent_tree_dialog.is_some());
 
     assert_eq!(send_key(&mut app, KeyCode::Up), AppAction::None);
     assert_eq!(
@@ -532,15 +532,15 @@ fn agent_tree_dialog_navigation_select_and_close() {
         AppAction::AgentThreadSelected("worker-1".to_string())
     );
     assert_eq!(app.current_agent_thread_id(), "worker-1");
-    assert!(app.agent_tree_dialog.is_none());
+    assert!(app.overlays.agent_tree_dialog.is_none());
 
     assert_eq!(
         app.dispatch_bound_action(&Action::new_static("agents:tree")),
         Some(AppAction::None)
     );
-    assert!(app.agent_tree_dialog.is_some());
+    assert!(app.overlays.agent_tree_dialog.is_some());
     assert_eq!(send_key(&mut app, KeyCode::Esc), AppAction::None);
-    assert!(app.agent_tree_dialog.is_none());
+    assert!(app.overlays.agent_tree_dialog.is_none());
 }
 
 #[test]
