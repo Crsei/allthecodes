@@ -86,7 +86,9 @@ pub fn initialize_file_changed_watcher(_cwd: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
+    #[serial]
     #[test]
     fn test_update_and_get_watch_paths() {
         reset_file_changed_watcher();
@@ -97,6 +99,7 @@ mod tests {
         assert!(paths.contains(&"/tmp/test".to_string()));
     }
 
+    #[serial]
     #[test]
     fn test_handle_file_event() {
         reset_file_changed_watcher();
@@ -111,5 +114,59 @@ mod tests {
         handle_file_event("/tmp/test.txt", "change");
 
         assert!(called.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    // CS-002: Reset clears all state.
+    #[serial]
+    #[test]
+    fn test_reset_clears_state() {
+        reset_file_changed_watcher();
+
+        // Set up some state.
+        update_watch_paths(&["/tmp/foo".into(), "/tmp/bar".into()]);
+        set_file_changed_notifier(Some(Box::new(|_, _| {})));
+
+        assert!(!get_watch_paths().is_empty());
+
+        reset_file_changed_watcher();
+
+        assert!(get_watch_paths().is_empty());
+
+        // Also verify no panic when calling handle_file_event after reset.
+        handle_file_event("/tmp/test.txt", "change");
+    }
+
+    // CS-002: Empty watch paths update doesn't crash.
+    #[serial]
+    #[test]
+    fn test_update_watch_paths_empty() {
+        reset_file_changed_watcher();
+
+        // First put something in, then clear with empty slice.
+        update_watch_paths(&["/tmp/foo".into()]);
+        assert_eq!(get_watch_paths().len(), 1);
+
+        update_watch_paths(&[]);
+        assert!(get_watch_paths().is_empty());
+    }
+
+    // CS-002: Get watch paths returns empty when nothing set.
+    #[serial]
+    #[test]
+    fn test_get_watch_paths_empty_initial() {
+        reset_file_changed_watcher();
+        let paths = get_watch_paths();
+        assert!(paths.is_empty());
+    }
+
+    // CS-002: Duplicate paths are de-duplicated by HashSet.
+    #[serial]
+    #[test]
+    fn test_update_watch_paths_dedup() {
+        reset_file_changed_watcher();
+
+        update_watch_paths(&["/tmp/dup".into(), "/tmp/dup".into(), "/tmp/unique".into()]);
+        let paths = get_watch_paths();
+        assert_eq!(paths.len(), 2);
     }
 }

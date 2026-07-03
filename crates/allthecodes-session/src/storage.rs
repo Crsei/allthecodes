@@ -1463,6 +1463,121 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------
+    // Phase 0: Behavior locking tests per TDD plan
+    // ------------------------------------------------------------------
+
+    /// Lock storage_load_session_fixture_roundtrip: JSON fixture loaded via
+    /// load_session -> messages roundtrip back through SessionFile serialization.
+    #[test]
+    #[serial_test::serial]
+    fn test_storage_load_session_fixture_roundtrip() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        write_fixture_session(
+            "fixture-rt",
+            phase0_legacy_serializable_messages(),
+            "/proj",
+        )
+        .unwrap();
+
+        let loaded = load_session("fixture-rt").unwrap();
+        assert_eq!(loaded.len(), 4);
+
+        // Re-serialize to SessionFile and verify the JSON reproduces the
+        // original messages (user text, tool_use, tool_result, system).
+        let resaved = SessionFile {
+            session_id: "fixture-rt".into(),
+            created_at: 0,
+            last_modified: 0,
+            cwd: "/proj".into(),
+            custom_title: None,
+            chat_mode_override: None,
+            messages: serialization::messages_to_serializable(&loaded),
+        };
+        let json = serde_json::to_string_pretty(&resaved).unwrap();
+        let reparsed: SessionFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed.messages.len(), 4);
+        assert!(reparsed.messages.iter().any(|sm| sm.msg_type == "user"));
+        assert!(reparsed.messages.iter().any(|sm| sm.msg_type == "assistant"));
+        assert!(reparsed.messages.iter().any(|sm| sm.msg_type == "system"));
+    }
+
+    /// Lock resume_session_baseline: resume from known fixture yields correct
+    /// message count and types.
+    #[test]
+    #[serial_test::serial]
+    fn test_resume_session_baseline() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        write_fixture_session(
+            "resume-baseline",
+            phase0_legacy_serializable_messages(),
+            "/proj",
+        )
+        .unwrap();
+
+        let resumed = crate::resume::resume_session("resume-baseline").unwrap();
+        assert_eq!(resumed.len(), 4);
+        // Same assertions as legacy baseline: user, assistant (with tool_use),
+        // tool_result user, system all survive; progress and attachment dropped.
+        assert!(resumed.iter().any(|msg| matches!(msg, Message::User(_))));
+        assert!(resumed.iter().any(|msg| matches!(msg, Message::Assistant(_))));
+        assert!(resumed.iter().any(|msg| matches!(msg, Message::System(_))));
+        // Tool messages survived
+        assert!(resumed.iter().any(|msg| {
+            matches!(
+                msg,
+                Message::Assistant(AssistantMessage { content, .. })
+                    if content.iter().any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "Read"))
+            )
+        }));
+        assert!(resumed.iter().any(|msg| {
+            matches!(
+                msg,
+                Message::User(UserMessage {
+                    content: MessageContent::Blocks(blocks),
+                    ..
+                }) if blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "toolu_phase0"))
+            )
+        }));
+        // Progress and attachment dropped
+        assert!(!resumed.iter().any(|msg| matches!(msg, Message::Progress(_))));
+        assert!(!resumed.iter().any(|msg| matches!(msg, Message::Attachment(_))));
+    }
+
+    /// SQLite projection: when a session with all message types is saved via
+    /// SQLite, the projection matches what the session JSON carries.
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial_test::serial]
+    fn test_sqlite_projection_matches_session_json() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        let messages = phase0_typed_messages();
+        save_session("sqlite-proj", &messages, "/proj").unwrap();
+
+        // Read back via SQLite (load_session is wired to use SQLite when available)
+        let loaded = load_session("sqlite-proj").unwrap();
+        assert_eq!(loaded.len(), 4);
+
+        // Read from JSON file as well
+        let file_path = get_session_file("sqlite-proj");
+        let json_content = std::fs::read_to_string(&file_path).unwrap();
+        let file: SessionFile = serde_json::from_str(&json_content).unwrap();
+
+        // Both projections carry the same count (both drop progress+attachment on load)
+        assert_eq!(loaded.len(), serializable_to_messages(&file.messages).len());
+
+        // The SQLite representation of the same data in the DB should have
+        // also recorded progress and attachment rows even though load_session
+        // drops them.
+        let sqlite_types = query_sqlite_message_types("sqlite-proj").unwrap();
+        assert!(sqlite_types.contains(&"progress".to_string()));
+        assert!(sqlite_types.contains(&"attachment".to_string()));
+    }
+
     #[cfg(windows)]
     #[test]
     fn test_workspace_key_is_case_insensitive_on_windows() {

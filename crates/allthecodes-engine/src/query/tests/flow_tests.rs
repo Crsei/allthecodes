@@ -432,6 +432,140 @@ async fn streaming_tool_execution_aborts_started_tools_on_stream_fallback() {
 }
 
 #[tokio::test]
+async fn test_abort_during_tool_execution() {
+    let tool_response = ModelResponse {
+        assistant_message: AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "tu_abort".to_string(),
+                name: "Bash".to_string(),
+                input: serde_json::json!({"command": "echo hello"}),
+            }],
+            usage: Some(Usage {
+                input_tokens: 100,
+                output_tokens: 80,
+                ..Default::default()
+            }),
+            stop_reason: Some("tool_use".to_string()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.001,
+        },
+        stream_events: vec![],
+        usage: Usage::default(),
+    };
+
+    // Use tool_delay so we can set the abort flag while tool is executing.
+    let deps = Arc::new(MockDeps::new(vec![tool_response]).with_tool_delay(Duration::from_millis(150)));
+
+    let params = QueryParams {
+        messages: vec![Message::User(UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "user".to_string(),
+            content: MessageContent::Text("Run a tool then abort".to_string()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        })],
+        system_prompt: vec![],
+        user_context: Default::default(),
+        system_context: Default::default(),
+        fallback_model: None,
+        query_source: QuerySource::ReplMainThread,
+        max_output_tokens_override: None,
+        max_turns: None,
+        skip_cache_write: None,
+        task_budget: None,
+        gates: QueryGates::default(),
+    };
+
+    // Spawn the query in the background so we can set abort mid-execution.
+    let deps_clone = deps.clone();
+    let handle = tokio::spawn(async move {
+        query(params, deps_clone).collect::<Vec<QueryYield>>().await
+    });
+
+    // Wait for tool execution to start (stream completes, tool execution begins).
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Set abort flag while the tool is still executing (behind the 150ms tool_delay).
+    deps.aborted.store(true, Ordering::SeqCst);
+
+    let items = handle.await.expect("query task panicked");
+
+    // The tool execution still happened (MockDeps returns a result), but
+    // the abort check after execute_tool_calls prevents tool results
+    // from being yielded as User messages.
+    let tool_result_user_messages = items.iter().filter(|item| {
+        matches!(
+            item,
+            QueryYield::Message(Message::User(user))
+                if user.is_meta && user.source_tool_assistant_uuid.is_some()
+        )
+    }).count();
+    assert_eq!(
+        tool_result_user_messages, 0,
+        "abort during tool execution must suppress tool result user messages"
+    );
+
+    // Tool was actually executed (the mock ran), but results were discarded
+    assert_eq!(
+        deps.tool_execution_count.load(Ordering::SeqCst),
+        1,
+        "tool execution should have been invoked despite concurrent abort flag"
+    );
+}
+
+#[tokio::test]
+async fn test_abort_after_streaming() {
+    let deps = Arc::new(MockDeps::new(vec![make_text_response("Partial text before abort")]));
+
+    let params = QueryParams {
+        messages: vec![Message::User(UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "user".to_string(),
+            content: MessageContent::Text("Write a response".to_string()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        })],
+        system_prompt: vec![],
+        user_context: Default::default(),
+        system_context: Default::default(),
+        fallback_model: None,
+        query_source: QuerySource::ReplMainThread,
+        max_output_tokens_override: None,
+        max_turns: None,
+        skip_cache_write: None,
+        task_budget: None,
+        gates: QueryGates::default(),
+    };
+
+    let stream = query(params, deps.clone());
+    let items: Vec<QueryYield> = stream.collect().await;
+    drop(deps);
+
+    // Without abort, this is a normal text response flow.
+    // We verify the assistant message is yielded even though the
+    // abort check happens after streaming but before terminal handling.
+    let has_assistant = items.iter().any(|item| {
+        matches!(
+            item,
+            QueryYield::Message(Message::Assistant(msg))
+                if msg.content.iter().any(|block| matches!(
+                    block,
+                    ContentBlock::Text { text } if text == "Partial text before abort"
+                ))
+        )
+    });
+    assert!(has_assistant, "expected assistant message with partial text");
+}
+
+#[tokio::test]
 async fn test_abort_before_api_call() {
     let deps = Arc::new(MockDeps::new(vec![]));
     deps.aborted

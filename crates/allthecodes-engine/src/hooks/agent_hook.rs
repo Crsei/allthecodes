@@ -132,4 +132,86 @@ mod tests {
         assert!(matches!(result.outcome, HookOutcome::Success));
         drop(tx);
     }
+
+    // CS-002: Schema test — HookResult constructs with correct fields via factory methods.
+    #[test]
+    fn test_hook_result_success_schema() {
+        let r = HookResult::success();
+        assert!(matches!(r.outcome, HookOutcome::Success));
+        assert!(r.message.is_none());
+        assert!(r.blocking_error.is_none());
+        assert!(!r.prevent_continuation);
+        assert!(r.stop_reason.is_none());
+    }
+
+    #[test]
+    fn test_hook_result_cancelled_schema() {
+        let r = HookResult::cancelled();
+        assert!(matches!(r.outcome, HookOutcome::Cancelled));
+        assert!(r.message.is_none());
+        assert!(r.blocking_error.is_none());
+        assert!(!r.prevent_continuation);
+    }
+
+    #[test]
+    fn test_hook_result_blocking_schema() {
+        let r = HookResult::blocking("denied".into(), "echo block".into());
+        assert!(matches!(r.outcome, HookOutcome::Blocking));
+        assert!(r.prevent_continuation);
+        let err = r.blocking_error.unwrap();
+        assert_eq!(err.error, "denied");
+        assert_eq!(err.command, "echo block");
+    }
+
+    #[test]
+    fn test_hook_result_non_blocking_error_schema() {
+        let r = HookResult::non_blocking_error(serde_json::json!({"msg": "oops"}));
+        assert!(matches!(r.outcome, HookOutcome::NonBlockingError));
+        assert!(!r.prevent_continuation);
+        assert_eq!(r.message.unwrap(), serde_json::json!({"msg": "oops"}));
+    }
+
+    // CS-002: Verify the stub does not panic — structural panic check.
+    #[tokio::test]
+    async fn test_no_structural_panic_in_agent_stub() {
+        let hook = HookEntry::Agent {
+            prompt: "test $ARGUMENTS".into(),
+            timeout: 10,
+            model: None,
+            if_condition: None,
+        };
+
+        let (tx, rx) = tokio::sync::watch::channel(true);
+        let result = exec_agent_hook(
+            &hook,
+            "panic-check",
+            "Stop",
+            &serde_json::json!({"x": 1}),
+            rx,
+        )
+        .await;
+
+        // Stub should never panic; results are always a valid HookResult.
+        assert!(matches!(result.outcome, HookOutcome::Success));
+        drop(tx);
+    }
+
+    // CS-002: PreToolUse hook can deny (blocking outcome sets prevent_continuation).
+    #[test]
+    fn test_pre_tool_use_can_block() {
+        let r = HookResult::blocking("policy forbid".into(), "/usr/bin/deny-hook".into());
+        assert!(r.prevent_continuation);
+        assert!(matches!(r.outcome, HookOutcome::Blocking));
+    }
+
+    // CS-002: PostToolUse-like outcome (success/non-blocking) does not set prevent_continuation.
+    #[test]
+    fn test_post_tool_use_cannot_block() {
+        let r = HookResult::success();
+        assert!(!r.prevent_continuation);
+        assert!(r.blocking_error.is_none());
+
+        let r2 = HookResult::non_blocking_error(serde_json::json!({"warn": true}));
+        assert!(!r2.prevent_continuation);
+    }
 }

@@ -274,3 +274,633 @@ fn string_vec_from_value(value: &serde_json::Value) -> Option<Vec<String>> {
             .collect(),
     )
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use allthecodes_types::message::{
+        AssistantMessage, ContentBlock, Message, MessageContent, SystemMessage, SystemSubtype,
+        ToolResultContent, UserMessage,
+    };
+    use uuid::Uuid;
+
+    /// Helper: build a minimal SerializableMessage from parts.
+    fn sm(msg_type: &str, uuid: &str, ts: i64, data: serde_json::Value) -> SerializableMessage {
+        SerializableMessage {
+            msg_type: msg_type.into(),
+            uuid: uuid.into(),
+            timestamp: ts,
+            data,
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Roundtrip: messages_to_serializable -> serializable_to_messages
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_user_text_message() {
+        let msgs = vec![Message::User(UserMessage {
+            uuid: Uuid::parse_str("a0000000-0000-0000-0000-000000000001").unwrap(),
+            timestamp: 100,
+            role: "user".into(),
+            content: MessageContent::Text("hello".into()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        })];
+        let serialized = messages_to_serializable(&msgs);
+        let deserialized = serializable_to_messages(&serialized);
+        assert_eq!(deserialized.len(), 1);
+        match &deserialized[0] {
+            Message::User(u) => {
+                assert!(matches!(&u.content, MessageContent::Text(t) if t == "hello"));
+                assert!(!u.is_meta);
+            }
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_user_meta_message() {
+        let msgs = vec![Message::User(UserMessage {
+            uuid: Uuid::parse_str("a0000000-0000-0000-0000-000000000002").unwrap(),
+            timestamp: 101,
+            role: "user".into(),
+            content: MessageContent::Text("meta".into()),
+            is_meta: true,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        })];
+        let serialized = messages_to_serializable(&msgs);
+        let deserialized = serializable_to_messages(&serialized);
+        match &deserialized[0] {
+            Message::User(u) => assert!(u.is_meta),
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_user_with_tool_result_blocks() {
+        let msgs = vec![Message::User(UserMessage {
+            uuid: Uuid::parse_str("a0000000-0000-0000-0000-000000000003").unwrap(),
+            timestamp: 102,
+            role: "user".into(),
+            content: MessageContent::Blocks(vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "tu_roundtrip".into(),
+                    content: ToolResultContent::Text("result data".into()),
+                    is_error: false,
+                },
+            ]),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        })];
+        let serialized = messages_to_serializable(&msgs);
+        let deserialized = serializable_to_messages(&serialized);
+        match &deserialized[0] {
+            Message::User(u) => match &u.content {
+                MessageContent::Blocks(blocks) => {
+                    assert!(blocks.iter().any(|b| matches!(
+                        b,
+                        ContentBlock::ToolResult { tool_use_id, .. }
+                            if tool_use_id == "tu_roundtrip"
+                    )));
+                }
+                other => panic!("expected Blocks, got {other:?}"),
+            },
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_assistant_with_tool_use() {
+        let msgs = vec![Message::Assistant(AssistantMessage {
+            uuid: Uuid::parse_str("a0000000-0000-0000-0000-000000000004").unwrap(),
+            timestamp: 103,
+            role: "assistant".into(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "Let me look that up.".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "tu_assistant_1".into(),
+                    name: "Read".into(),
+                    input: serde_json::json!({ "path": "Cargo.toml" }),
+                },
+            ],
+            usage: None,
+            stop_reason: Some("tool_use".into()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.02,
+        })];
+        let serialized = messages_to_serializable(&msgs);
+        let deserialized = serializable_to_messages(&serialized);
+        match &deserialized[0] {
+            Message::Assistant(a) => {
+                assert!(a.content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::Text { text } if text == "Let me look that up."
+                )));
+                assert!(a.content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::ToolUse { id, name, .. }
+                        if id == "tu_assistant_1" && name == "Read"
+                )));
+                assert_eq!(a.stop_reason.as_deref(), Some("tool_use"));
+                // cost_usd may be serialized via serde_json::Number; compare approximately
+                assert!((a.cost_usd - 0.02).abs() < 1e-9);
+            }
+            other => panic!("expected Assistant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_system_warning() {
+        let msgs = vec![Message::System(SystemMessage {
+            uuid: Uuid::parse_str("a0000000-0000-0000-0000-000000000005").unwrap(),
+            timestamp: 104,
+            subtype: SystemSubtype::Warning,
+            content: "test warning".into(),
+        })];
+        let serialized = messages_to_serializable(&msgs);
+        let deserialized = serializable_to_messages(&serialized);
+        match &deserialized[0] {
+            Message::System(s) => {
+                assert_eq!(s.content, "test warning");
+                assert!(matches!(s.subtype, SystemSubtype::Warning));
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_system_compact_boundary() {
+        use allthecodes_types::message::CompactMetadata;
+        let msgs = vec![Message::System(SystemMessage {
+            uuid: Uuid::parse_str("a0000000-0000-0000-0000-000000000006").unwrap(),
+            timestamp: 105,
+            subtype: SystemSubtype::CompactBoundary {
+                compact_metadata: Some(CompactMetadata {
+                    pre_compact_token_count: 1000,
+                    post_compact_token_count: 200,
+                    preserved_segment: None,
+                    pre_compact_discovered_tools: None,
+                }),
+            },
+            content: "compacted".into(),
+        })];
+        let serialized = messages_to_serializable(&msgs);
+        let deserialized = serializable_to_messages(&serialized);
+        match &deserialized[0] {
+            Message::System(s) => {
+                assert!(matches!(s.subtype, SystemSubtype::CompactBoundary { .. }));
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_system_local_command() {
+        let msgs = vec![Message::System(SystemMessage {
+            uuid: Uuid::parse_str("a0000000-0000-0000-0000-000000000007").unwrap(),
+            timestamp: 106,
+            subtype: SystemSubtype::LocalCommand {
+                content: "echo hello".into(),
+            },
+            content: "local".into(),
+        })];
+        let serialized = messages_to_serializable(&msgs);
+        let deserialized = serializable_to_messages(&serialized);
+        match &deserialized[0] {
+            Message::System(s) => {
+                assert!(matches!(s.subtype, SystemSubtype::LocalCommand { .. }));
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Progress and attachment deserialization: known to be dropped
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn deserialize_progress_is_dropped() {
+        let sms = vec![sm(
+            "progress",
+            "b0000000-0000-0000-0000-000000000001",
+            200,
+            serde_json::json!({
+                "tool_use_id": "tu_progress",
+                "data": { "progress": 0.5 }
+            }),
+        )];
+        let messages = serializable_to_messages(&sms);
+        assert!(
+            messages.is_empty(),
+            "progress entries are dropped by serializable_to_messages; got {} messages",
+            messages.len()
+        );
+    }
+
+    #[test]
+    fn deserialize_attachment_is_dropped() {
+        let sms = vec![sm(
+            "attachment",
+            "b0000000-0000-0000-0000-000000000002",
+            201,
+            serde_json::json!({
+                "attachment": { "type": "edited_text_file", "path": "src/main.rs" }
+            }),
+        )];
+        let messages = serializable_to_messages(&sms);
+        assert!(
+            messages.is_empty(),
+            "attachment entries are dropped by serializable_to_messages; got {} messages",
+            messages.len()
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 0: SerializableMessage deserialization baseline tests
+    // ------------------------------------------------------------------
+    // These tests directly construct SerializableMessage values and pass
+    // them through serializable_to_messages, covering the exact names
+    // listed in the TDD test plan.
+
+    #[test]
+    fn deserialize_user_message() {
+        let sm = sm(
+            "user",
+            "f0000000-0000-0000-0000-000000000001",
+            700,
+            serde_json::json!({ "content": "hello user", "is_meta": false }),
+        );
+        let messages = serializable_to_messages(&[sm]);
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            Message::User(u) => {
+                assert!(matches!(&u.content, MessageContent::Text(t) if t == "hello user"));
+                assert!(!u.is_meta);
+                assert_eq!(u.timestamp, 700);
+            }
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_assistant_message() {
+        let sm = sm(
+            "assistant",
+            "f0000000-0000-0000-0000-000000000002",
+            701,
+            serde_json::json!({
+                "content": [
+                    { "type": "text", "text": "hello assistant" }
+                ],
+                "stop_reason": "end_turn",
+                "cost_usd": 0.01
+            }),
+        );
+        let messages = serializable_to_messages(&[sm]);
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            Message::Assistant(a) => {
+                assert!(a.content.len() == 1);
+                assert!(matches!(&a.content[0], ContentBlock::Text { text } if text == "hello assistant"));
+                assert_eq!(a.stop_reason.as_deref(), Some("end_turn"));
+            }
+            other => panic!("expected Assistant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_system_message() {
+        let sm = sm(
+            "system",
+            "f0000000-0000-0000-0000-000000000003",
+            702,
+            serde_json::json!({ "content": "system note", "subtype": "Warning" }),
+        );
+        let messages = serializable_to_messages(&[sm]);
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            Message::System(s) => {
+                assert_eq!(s.content, "system note");
+                assert!(matches!(s.subtype, SystemSubtype::Warning));
+                assert_eq!(s.timestamp, 702);
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_tool_use() {
+        let sm = sm(
+            "assistant",
+            "f0000000-0000-0000-0000-000000000004",
+            703,
+            serde_json::json!({
+                "content": [
+                    { "type": "text", "text": "Let me check" },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_deser",
+                        "name": "Bash",
+                        "input": { "command": "ls" }
+                    }
+                ],
+                "stop_reason": "tool_use"
+            }),
+        );
+        let messages = serializable_to_messages(&[sm]);
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            Message::Assistant(a) => {
+                let tool_blocks: Vec<_> = a
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::ToolUse { id, name, .. } = b {
+                            Some((id.as_str(), name.as_str()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(tool_blocks, vec![("toolu_deser", "Bash")]);
+            }
+            other => panic!("expected Assistant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_tool_result() {
+        let sm = sm(
+            "user",
+            "f0000000-0000-0000-0000-000000000005",
+            704,
+            serde_json::json!({
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_deser",
+                        "content": "ls output here",
+                        "is_error": false
+                    }
+                ],
+                "is_meta": false
+            }),
+        );
+        let messages = serializable_to_messages(&[sm]);
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            Message::User(u) => {
+                let tool_results: Vec<_> = match &u.content {
+                    MessageContent::Blocks(blocks) => blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if let ContentBlock::ToolResult { tool_use_id, content, is_error } = b {
+                                let text = match content {
+                                    ToolResultContent::Text(t) => t.as_str(),
+                                    _ => "",
+                                };
+                                Some((tool_use_id.as_str(), text, *is_error))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    _ => vec![],
+                };
+                assert_eq!(tool_results, vec![("toolu_deser", "ls output here", false)]);
+            }
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    /// Lock behavior: roundtrip of a full legacy SerializableMessage list that
+    /// contains user, assistant (with tool_use), tool_result user, system,
+    /// progress, and attachment. Progress and attachment are expected to be
+    /// dropped during deserialization; the rest should survive.
+    #[test]
+    fn deserialize_legacy_session_with_tool_messages() {
+        let sms = vec![
+            // 0: user
+            sm(
+                "user",
+                "g0000000-0000-0000-0000-000000000001",
+                800,
+                serde_json::json!({ "content": "read the file", "is_meta": false }),
+            ),
+            // 1: assistant with tool_use
+            sm(
+                "assistant",
+                "g0000000-0000-0000-0000-000000000002",
+                801,
+                serde_json::json!({
+                    "content": [
+                        { "type": "text", "text": "sure" },
+                        { "type": "tool_use", "id": "tu_legacy", "name": "Read", "input": { "file_path": "foo.txt" } }
+                    ],
+                    "stop_reason": "tool_use",
+                    "cost_usd": 0.02
+                }),
+            ),
+            // 2: user with tool_result
+            sm(
+                "user",
+                "g0000000-0000-0000-0000-000000000003",
+                802,
+                serde_json::json!({
+                    "content": [
+                        { "type": "tool_result", "tool_use_id": "tu_legacy", "content": "file content", "is_error": false }
+                    ],
+                    "is_meta": false
+                }),
+            ),
+            // 3: system
+            sm(
+                "system",
+                "g0000000-0000-0000-0000-000000000004",
+                803,
+                serde_json::json!({ "content": "system msg", "subtype": "Warning" }),
+            ),
+            // 4: progress — expected to be dropped
+            sm(
+                "progress",
+                "g0000000-0000-0000-0000-000000000005",
+                804,
+                serde_json::json!({ "tool_use_id": "tu_legacy", "data": {} }),
+            ),
+            // 5: attachment — expected to be dropped
+            sm(
+                "attachment",
+                "g0000000-0000-0000-0000-000000000006",
+                805,
+                serde_json::json!({ "attachment": { "type": "edited_text_file", "path": "foo.txt" } }),
+            ),
+        ];
+        let messages = serializable_to_messages(&sms);
+        // 6 input → 4 survive (user, assistant, user, system)
+        assert_eq!(messages.len(), 4);
+        assert!(matches!(&messages[0], Message::User(_)));
+        assert!(matches!(&messages[1], Message::Assistant(_)));
+        assert!(matches!(&messages[2], Message::User(_)));
+        assert!(matches!(&messages[3], Message::System(_)));
+
+        // Verify tool_use content survived in assistant
+        match &messages[1] {
+            Message::Assistant(a) => {
+                assert!(a.content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::ToolUse { id, name, .. }
+                        if id == "tu_legacy" && name == "Read"
+                )));
+            }
+            other => panic!("expected Assistant, got {other:?}"),
+        }
+
+        // Verify tool_result content survived in user
+        match &messages[2] {
+            Message::User(u) => {
+                assert!(matches!(&u.content, MessageContent::Blocks(blocks)
+                    if blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "tu_legacy"))));
+            }
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_progress() {
+        // SerializableMessage with type "progress" is dropped by
+        // serializable_to_messages. This test locks that behavior.
+        let sm = sm(
+            "progress",
+            "f0000000-0000-0000-0000-000000000006",
+            705,
+            serde_json::json!({
+                "tool_use_id": "toolu_progress",
+                "data": { "progress": 0.75 }
+            }),
+        );
+        let messages = serializable_to_messages(&[sm]);
+        assert!(
+            messages.is_empty(),
+            "progress entries are dropped by serializable_to_messages; got {}",
+            messages.len()
+        );
+    }
+
+    #[test]
+    fn deserialize_attachment() {
+        // SerializableMessage with type "attachment" is dropped by
+        // serializable_to_messages. This test locks that behavior.
+        let sm = sm(
+            "attachment",
+            "f0000000-0000-0000-0000-000000000007",
+            706,
+            serde_json::json!({
+                "attachment": { "type": "edited_text_file", "path": "Cargo.toml" }
+            }),
+        );
+        let messages = serializable_to_messages(&[sm]);
+        assert!(
+            messages.is_empty(),
+            "attachment entries are dropped by serializable_to_messages; got {}",
+            messages.len()
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Edge cases: unknowns, empty data, missing fields
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn deserialize_unknown_type_is_dropped() {
+        let sms = vec![sm(
+            "bogus_type",
+            "c0000000-0000-0000-0000-000000000001",
+            300,
+            serde_json::json!({ "content": "whatever" }),
+        )];
+        let messages = serializable_to_messages(&sms);
+        assert!(
+            messages.is_empty(),
+            "unknown msg_type entries are dropped; got {} messages",
+            messages.len()
+        );
+    }
+
+    #[test]
+    fn deserialize_invalid_uuid_falls_back_and_does_not_panic() {
+        let sms = vec![SerializableMessage {
+            msg_type: "user".into(),
+            uuid: "not-a-uuid".into(),
+            timestamp: 400,
+            data: serde_json::json!({ "content": "hello", "is_meta": false }),
+        }];
+        let messages = serializable_to_messages(&sms);
+        // Should not panic; falls back to a random UUID
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn deserialize_user_missing_content_does_not_panic() {
+        let sms = vec![sm(
+            "user",
+            "d0000000-0000-0000-0000-000000000001",
+            500,
+            serde_json::json!({ "is_meta": false }),
+        )];
+        let messages = serializable_to_messages(&sms);
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            Message::User(u) => match &u.content {
+                MessageContent::Text(t) => assert_eq!(t, ""),
+                other => panic!("expected empty Text, got {other:?}"),
+            },
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_mixed_types_preserves_known_drops_other() {
+        let sms = vec![
+            sm(
+                "user",
+                "e0000000-0000-0000-0000-000000000001",
+                600,
+                serde_json::json!({ "content": "first", "is_meta": false }),
+            ),
+            sm(
+                "progress",
+                "e0000000-0000-0000-0000-000000000002",
+                601,
+                serde_json::json!({ "tool_use_id": "x", "data": {} }),
+            ),
+            sm(
+                "attachment",
+                "e0000000-0000-0000-0000-000000000003",
+                602,
+                serde_json::json!({ "attachment": { "type": "max_turns_reached", "max_turns": 10, "turn_count": 10 } }),
+            ),
+            sm(
+                "system",
+                "e0000000-0000-0000-0000-000000000004",
+                603,
+                serde_json::json!({ "content": "sys", "subtype": "Warning" }),
+            ),
+        ];
+        let messages = serializable_to_messages(&sms);
+        assert_eq!(messages.len(), 2); // only user + system survive
+        assert!(matches!(&messages[0], Message::User(_)));
+        assert!(matches!(&messages[1], Message::System(_)));
+    }
+}

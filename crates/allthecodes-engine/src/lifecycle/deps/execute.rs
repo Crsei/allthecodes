@@ -1680,3 +1680,482 @@ fn permission_risk_level(tool_name: &str, input: &serde_json::Value) -> Option<S
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
+    use crate::types::tool::ToolResult;
+    use serde_json::json;
+
+    // ------------------------------------------------------------------
+    // exact_always_allow_rule
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn exact_always_allow_rule_constructs_for_bash() {
+        let input = json!({"command": "ls -la"});
+        let rule = exact_always_allow_rule("Bash", &input);
+        // rule: Bash(exact-hex:<hex of "ls -la">)
+        assert!(rule.starts_with("Bash(exact-hex:"));
+        assert!(rule.ends_with(")"));
+        assert!(rule.len() > "Bash(exact-hex:)".len() + 1);
+    }
+
+    #[test]
+    fn exact_always_allow_rule_constructs_for_read() {
+        let input = json!({"file_path": "/tmp/test.txt"});
+        let rule = exact_always_allow_rule("Read", &input);
+        assert!(rule.starts_with("Read(exact-hex:"));
+        assert!(rule.len() > "Read(exact-hex:)".len() + 1);
+    }
+
+    #[test]
+    fn exact_always_allow_rule_constructs_for_edit() {
+        let input = json!({"file_path": "/tmp/foo.rs"});
+        let rule = exact_always_allow_rule("Edit", &input);
+        assert!(rule.starts_with("Edit(exact-hex:"));
+    }
+
+    #[test]
+    fn exact_always_allow_rule_falls_back_to_json_for_unknown_tool() {
+        let input = json!({"key": "value"});
+        let rule = exact_always_allow_rule("CustomTool", &input);
+        assert!(rule.starts_with("CustomTool(exact-hex:"));
+        assert!(rule.len() > "CustomTool(exact-hex:)".len() + 1);
+    }
+
+    // ------------------------------------------------------------------
+    // canonical_permission_rule_tool
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn permission_rule_tool_maps_bash() {
+        assert_eq!(canonical_permission_rule_tool("bash"), "Bash");
+        assert_eq!(canonical_permission_rule_tool("Bash"), "Bash");
+    }
+
+    #[test]
+    fn permission_rule_tool_maps_powershell() {
+        for name in &["PowerShell", "powershell", "pwsh", "Pwsh"] {
+            assert_eq!(
+                canonical_permission_rule_tool(name),
+                "PowerShell",
+                "unexpected mapping for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn permission_rule_tool_maps_read_like() {
+        for name in &["read", "read_file", "FileRead"] {
+            assert_eq!(
+                canonical_permission_rule_tool(name),
+                "Read",
+                "unexpected mapping for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn permission_rule_tool_maps_edit_like() {
+        for name in &["edit_file", "file_edit", "FileEdit"] {
+            assert_eq!(
+                canonical_permission_rule_tool(name),
+                "Edit",
+                "unexpected mapping for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn permission_rule_tool_maps_write_like() {
+        for name in &["write_file", "file_write", "FileWrite"] {
+            assert_eq!(
+                canonical_permission_rule_tool(name),
+                "Write",
+                "unexpected mapping for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn permission_rule_tool_maps_multi_edit() {
+        assert_eq!(canonical_permission_rule_tool("FileMultiEdit"), "MultiEdit");
+    }
+
+    #[test]
+    fn permission_rule_tool_passthrough_for_unknown() {
+        assert_eq!(
+            canonical_permission_rule_tool("WebSearch"),
+            "WebSearch"
+        );
+        assert_eq!(
+            canonical_permission_rule_tool("Agent"),
+            "Agent"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // exact_rule_subject
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn exact_rule_subject_extracts_command_for_bash() {
+        let input = json!({"command": "cargo build"});
+        let subject = exact_rule_subject("Bash", &input);
+        assert_eq!(subject, "cargo build");
+    }
+
+    #[test]
+    fn exact_rule_subject_extracts_file_path_for_read() {
+        let input = json!({"file_path": "src/main.rs"});
+        let subject = exact_rule_subject("Read", &input);
+        assert_eq!(subject, "src/main.rs");
+    }
+
+    #[test]
+    fn exact_rule_subject_falls_back_to_json() {
+        let input = json!({"a": 1, "b": 2});
+        let subject = exact_rule_subject("CustomTool", &input);
+        let parsed: serde_json::Value = serde_json::from_str(&subject).unwrap();
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], 2);
+    }
+
+    // ------------------------------------------------------------------
+    // shell_command_subject
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn shell_command_subject_prefers_command_field() {
+        let input = json!({"command": "ls", "cmd": "rm"});
+        assert_eq!(shell_command_subject(&input), "ls");
+    }
+
+    #[test]
+    fn shell_command_subject_falls_back_to_cmd() {
+        let input = json!({"cmd": "echo hello"});
+        assert_eq!(shell_command_subject(&input), "echo hello");
+    }
+
+    #[test]
+    fn shell_command_subject_falls_back_to_script() {
+        let input = json!({"script": "#!/bin/bash"});
+        assert_eq!(shell_command_subject(&input), "#!/bin/bash");
+    }
+
+    #[test]
+    fn shell_command_subject_falls_back_to_json() {
+        let input = json!({"other": "value"});
+        assert!(shell_command_subject(&input).contains("other"));
+    }
+
+    // ------------------------------------------------------------------
+    // input_string_field
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn input_string_field_finds_first_match() {
+        let input = json!({"file_path": "a.rs", "path": "b.rs"});
+        assert_eq!(
+            input_string_field(&input, &["file_path", "path"]),
+            Some("a.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn input_string_field_skips_empty_strings() {
+        let input = json!({"file_path": "", "path": "real.rs"});
+        assert_eq!(
+            input_string_field(&input, &["file_path", "path"]),
+            Some("real.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn input_string_field_returns_none_for_missing_keys() {
+        let input = json!({});
+        assert_eq!(input_string_field(&input, &["file_path"]), None);
+    }
+
+    #[test]
+    fn input_string_field_returns_none_for_non_string_values() {
+        let input = json!({"file_path": 42});
+        assert_eq!(input_string_field(&input, &["file_path"]), None);
+    }
+
+    // ------------------------------------------------------------------
+    // stable_json_subject
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn stable_json_subject_serializes_object() {
+        let input = json!({"x": 1, "y": [2]});
+        let subject = stable_json_subject(&input);
+        let parsed: serde_json::Value = serde_json::from_str(&subject).unwrap();
+        assert_eq!(parsed["x"], 1);
+    }
+
+    #[test]
+    fn stable_json_subject_serializes_string_value() {
+        let input = json!("hello");
+        let subject = stable_json_subject(&input);
+        assert_eq!(subject, r#""hello""#);
+    }
+
+    // ------------------------------------------------------------------
+    // permission_action_summary
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn permission_action_summary_for_bash() {
+        let input = json!({"command": "cargo test"});
+        let summary = permission_action_summary("Bash", &input);
+        assert_eq!(summary, "Run cargo test");
+    }
+
+    #[test]
+    fn permission_action_summary_for_read() {
+        let input = json!({"file_path": "/tmp/log.txt"});
+        let summary = permission_action_summary("Read", &input);
+        assert_eq!(summary, "Read /tmp/log.txt");
+    }
+
+    #[test]
+    fn permission_action_summary_for_read_fallback() {
+        let input = json!({"other": "value"});
+        let summary = permission_action_summary("Read", &input);
+        assert_eq!(summary, "Use Read");
+    }
+
+    #[test]
+    fn permission_action_summary_for_edit() {
+        let input = json!({"file_path": "src/lib.rs"});
+        let summary = permission_action_summary("Edit", &input);
+        assert_eq!(summary, "Edit src/lib.rs");
+    }
+
+    #[test]
+    fn permission_action_summary_for_write() {
+        let input = json!({"file_path": "/tmp/out.txt"});
+        let summary = permission_action_summary("Write", &input);
+        assert_eq!(summary, "Write /tmp/out.txt");
+    }
+
+    #[test]
+    fn permission_action_summary_for_webfetch() {
+        let input = json!({"url": "https://example.com"});
+        let summary = permission_action_summary("WebFetch", &input);
+        assert_eq!(summary, "Fetch https://example.com");
+    }
+
+    #[test]
+    fn permission_action_summary_for_websearch() {
+        let input = json!({"query": "rust async"});
+        let summary = permission_action_summary("WebSearch", &input);
+        assert_eq!(summary, "Search rust async");
+    }
+
+    #[test]
+    fn permission_action_summary_unknown_tool() {
+        let input = json!({"any": "val"});
+        let summary = permission_action_summary("CustomTool", &input);
+        assert_eq!(summary, "Use CustomTool");
+    }
+
+    // ------------------------------------------------------------------
+    // permission_risk_level
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn permission_risk_level_bash_destructive_rm_rf() {
+        let input = json!({"command": "rm -rf /"});
+        assert_eq!(
+            permission_risk_level("Bash", &input),
+            Some("destructive".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_bash_destructive_remove_item() {
+        let input = json!({"command": "Remove-Item -Recurse C:\\"});
+        assert_eq!(
+            permission_risk_level("PowerShell", &input),
+            Some("destructive".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_bash_destructive_shutdown() {
+        let input = json!({"command": "shutdown -h now"});
+        assert_eq!(
+            permission_risk_level("Bash", &input),
+            Some("destructive".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_bash_high_sudo() {
+        let input = json!({"command": "sudo apt install"});
+        assert_eq!(
+            permission_risk_level("bash", &input),
+            Some("high".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_bash_high_curl() {
+        let input = json!({"command": "curl https://example.com"});
+        assert_eq!(
+            permission_risk_level("Bash", &input),
+            Some("high".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_bash_medium() {
+        let input = json!({"command": "ls -la"});
+        assert_eq!(
+            permission_risk_level("Bash", &input),
+            Some("medium".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_edit_medium() {
+        let input = json!({});
+        assert_eq!(
+            permission_risk_level("Edit", &input),
+            Some("medium".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_write_medium() {
+        let input = json!({});
+        assert_eq!(
+            permission_risk_level("FileWrite", &input),
+            Some("medium".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_webfetch_safe() {
+        let input = json!({"url": "https://example.com"});
+        assert_eq!(
+            permission_risk_level("WebFetch", &input),
+            Some("safe".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_websearch_safe() {
+        let input = json!({"query": "test"});
+        assert_eq!(
+            permission_risk_level("WebSearch", &input),
+            Some("safe".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_risk_level_unknown_tool_returns_none() {
+        let input = json!({});
+        assert_eq!(permission_risk_level("Read", &input), None);
+    }
+
+    // ------------------------------------------------------------------
+    // elapsed_ms
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn elapsed_ms_returns_some_nonzero() {
+        let started = std::time::Instant::now();
+        let ms = elapsed_ms(started).unwrap();
+        assert!(ms < 1000, "fresh Instant should be < 1s");
+    }
+
+    // ------------------------------------------------------------------
+    // filter_tools_for_allowed_override
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn filter_tools_for_allowed_override_returns_all_when_no_override() {
+        let tools: Tools = Vec::new();
+        let result = filter_tools_for_allowed_override(tools, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn filter_tools_for_allowed_override_filters_by_name_case_insensitive() {
+        struct NamedTool(&'static str);
+        #[async_trait::async_trait]
+        impl crate::types::tool::Tool for NamedTool {
+            fn name(&self) -> &str { self.0 }
+            fn input_json_schema(&self) -> serde_json::Value { json!({}) }
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &crate::types::tool::ToolUseContext,
+                _parent_message: &crate::types::message::AssistantMessage,
+                _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
+            ) -> anyhow::Result<ToolResult> { Ok(ToolResult::default()) }
+            async fn description(&self, _input: &serde_json::Value) -> String { self.0.to_string() }
+            async fn prompt(&self) -> String { String::new() }
+        }
+
+        let tools: Tools = vec![
+            Arc::new(NamedTool("Bash")),
+            Arc::new(NamedTool("Read")),
+            Arc::new(NamedTool("Edit")),
+        ];
+
+        let allowed = vec!["bash".to_string(), "read".to_string()];
+        let filtered = filter_tools_for_allowed_override(tools, Some(&allowed));
+        let names: Vec<String> = filtered.iter().map(|t| t.name().to_string()).collect();
+        assert_eq!(names, vec!["Bash", "Read"]);
+    }
+
+    // ------------------------------------------------------------------
+    // permission_auto_review_event
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn permission_auto_review_event_constructs() {
+        let event = permission_auto_review_event(
+            "review-1",
+            "tool-use-1",
+            "started",
+            Some("high".to_string()),
+            true,
+            Some("user authorized".to_string()),
+            Some("Run ls".to_string()),
+        );
+        assert_eq!(event.review_id, "review-1");
+        assert_eq!(event.target_tool_use_id, "tool-use-1");
+        assert_eq!(event.status, "started");
+        assert_eq!(event.risk_level, Some("high".to_string()));
+        assert!(event.user_authorization);
+        assert_eq!(event.rationale, Some("user authorized".to_string()));
+        assert_eq!(event.action, Some("Run ls".to_string()));
+        assert_eq!(event.decision_source, "auto_review");
+    }
+
+    #[test]
+    fn permission_auto_review_event_without_optionals() {
+        let event = permission_auto_review_event(
+            "review-2",
+            "tool-use-2",
+            "failed",
+            None,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(event.status, "failed");
+        assert!(event.risk_level.is_none());
+        assert!(!event.user_authorization);
+        assert!(event.rationale.is_none());
+        assert!(event.action.is_none());
+    }
+}
