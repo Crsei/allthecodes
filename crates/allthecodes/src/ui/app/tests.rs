@@ -335,6 +335,71 @@ fn app_overlay_priority_is_stable_for_question_then_permission() {
 }
 
 #[test]
+fn app_overlay_priority_falls_back_through_all_overlays() {
+    let mut app = App::new();
+    app.set_session_id("session-main".to_string());
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::AgentEvent {
+            event: spawned_agent_event("worker-1", "Builder worker", Some("builder")),
+        }),
+    });
+    app.push_history("previous prompt".to_string());
+    app.open_history_search();
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::from_items(vec![]),
+    ));
+    app.dispatch_bound_action(&Action::new_static("agents:tree"));
+    app.show_permission_dialog("Bash", r#"{"command":"cargo test"}"#, "Run command?");
+    app.show_question_dialog(
+        "q-1",
+        AskUserRequestPayload {
+            question: "Pick one".to_string(),
+            choices: vec!["A".to_string()],
+            allow_free_text: false,
+        },
+    );
+    app.show_bypass_permissions_mode_dialog(false);
+
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::BypassPermissions)
+    );
+
+    app.overlays.bypass_permissions_mode_dialog = None;
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::Question)
+    );
+
+    app.overlays.clear_question();
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::Permission)
+    );
+
+    app.dismiss_permission_dialog();
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::AgentTree)
+    );
+
+    app.overlays.agent_tree_dialog = None;
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::HistorySearch)
+    );
+
+    app.overlays.history_search_dialog = None;
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::CommandSurface)
+    );
+
+    app.overlays.command_surface = None;
+    assert_eq!(app.active_overlay_for_tests(), None);
+}
+
+#[test]
 fn app_owns_queued_prompt_fifo() {
     let mut app = App::new();
 
