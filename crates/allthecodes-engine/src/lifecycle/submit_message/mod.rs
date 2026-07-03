@@ -318,6 +318,7 @@ impl QueryEngine {
         let overrides = normalize_submit_overrides(overrides);
 
         let state_ref = self.state.clone();
+        let runtime_services = self.runtime_services.clone();
         let active_session_id_ref = self.active_session_id.clone();
         let aborted_ref = self.aborted.clone();
         let active_steer_state = self.active_steer_state.clone();
@@ -701,6 +702,7 @@ impl QueryEngine {
                 &prompt_tools_snapshot,
                 &model_name,
                 &backend_name,
+                &runtime_services,
             )
             .await;
             if let Some(skill_ids) = overrides.skill_ids.as_ref() {
@@ -745,7 +747,7 @@ impl QueryEngine {
             // Create API client for the selected backend.
             let mut submit_langfuse_trace = None;
             let api_client: Option<Arc<allthecodes_api::api::client::ApiClient>> =
-                allthecodes_api::api::client::ApiClient::from_backend(Some(&backend_name)).map(Arc::new);
+                runtime_services.model_client_factory.client_for_backend(Some(&backend_name));
             if api_client.is_none() {
                 let result = if codex_exec::is_codex_backend(&backend_name) {
                     format!(
@@ -827,6 +829,7 @@ impl QueryEngine {
             let deps = Arc::new(QueryEngineDeps {
                 aborted: aborted_ref.clone(),
                 state: state_ref.clone(),
+                runtime_services: runtime_services.clone(),
                 cwd: config.cwd.clone(),
                 session_id: session_id.to_string(),
                 query_source: query_source.clone(),

@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 use crate::command_runtime::{CommandContext, CommandExecutor, CommandResult};
 use crate::lifecycle::*;
+use crate::runtime_services::{
+    CommandDispatcherService, HookRunnerService, ModelClientFactoryService,
+    PermissionMessageResolver, RuntimeServices, ToolRegistryService,
+};
 use crate::types::config::{AgentContext, QueryEngineConfig, QuerySource};
 use crate::types::message::{
     AssistantMessage, ContentBlock, Message, MessageContent, Usage, UserMessage,
@@ -139,6 +143,101 @@ impl crate::types::tool::Tool for TestTool {
     async fn prompt(&self) -> String {
         String::new()
     }
+}
+
+struct NamedServiceTool(&'static str);
+
+#[async_trait::async_trait]
+impl crate::types::tool::Tool for NamedServiceTool {
+    fn name(&self) -> &str {
+        self.0
+    }
+
+    async fn description(&self, _input: &serde_json::Value) -> String {
+        format!("{} service tool", self.0)
+    }
+
+    fn input_json_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+        _parent_message: &AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
+    ) -> anyhow::Result<crate::types::tool::ToolResult> {
+        Ok(crate::types::tool::ToolResult::default())
+    }
+
+    async fn prompt(&self) -> String {
+        String::new()
+    }
+}
+
+struct TestRuntimeToolRegistry {
+    tools: crate::types::tool::Tools,
+}
+
+impl ToolRegistryService for TestRuntimeToolRegistry {
+    fn active_tools(&self) -> crate::types::tool::Tools {
+        self.tools.clone()
+    }
+}
+
+struct TestPermissionMessageResolver {
+    message: &'static str,
+}
+
+impl PermissionMessageResolver for TestPermissionMessageResolver {
+    fn resolve_permission_message(&self, _tool_name: &str) -> Option<String> {
+        Some(self.message.to_string())
+    }
+}
+
+struct TestHookRunnerService;
+
+impl HookRunnerService for TestHookRunnerService {
+    fn hook_runner(&self) -> Arc<dyn HookRunner> {
+        Arc::new(allthecodes_types::hooks::NoopHookRunner::new())
+    }
+}
+
+struct TestCommandDispatcherService;
+
+impl CommandDispatcherService for TestCommandDispatcherService {
+    fn command_dispatcher(&self) -> Arc<dyn allthecodes_types::commands::CommandDispatcher> {
+        Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new())
+    }
+}
+
+struct TestModelClientFactoryService;
+
+impl ModelClientFactoryService for TestModelClientFactoryService {
+    fn client_for_backend(
+        &self,
+        _backend_name: Option<&str>,
+    ) -> Option<Arc<allthecodes_api::api::client::ApiClient>> {
+        None
+    }
+}
+
+fn test_runtime_services(
+    tool_name: &'static str,
+    permission_message: &'static str,
+) -> Arc<RuntimeServices> {
+    Arc::new(RuntimeServices {
+        tool_registry: Arc::new(TestRuntimeToolRegistry {
+            tools: vec![Arc::new(NamedServiceTool(tool_name))],
+        }),
+        permission_message_resolver: Arc::new(TestPermissionMessageResolver {
+            message: permission_message,
+        }),
+        hook_runner: Arc::new(TestHookRunnerService),
+        command_dispatcher: Arc::new(TestCommandDispatcherService),
+        model_client_factory: Arc::new(TestModelClientFactoryService),
+    })
 }
 
 struct DeferredTargetTool {
@@ -441,6 +540,7 @@ fn make_lifecycle_deps(
     super::deps::QueryEngineDeps {
         aborted: engine.aborted.clone(),
         state: engine.state.clone(),
+        runtime_services: engine.runtime_services.clone(),
         cwd: "/tmp".to_string(),
         session_id: "permission-matrix".to_string(),
         query_source: crate::types::config::QuerySource::ReplMainThread,
@@ -508,6 +608,47 @@ fn test_query_engine_creation() {
     assert!(engine.usage().total_cost_usd == 0.0);
     assert!(!engine.session_id.as_str().is_empty());
     assert_eq!(engine.current_session_id(), engine.session_id);
+}
+
+#[test]
+fn runtime_services_tool_registry_is_per_engine() {
+    let engine_a =
+        QueryEngine::new_with_services(make_config(), test_runtime_services("ServiceToolA", "A"));
+    let engine_b =
+        QueryEngine::new_with_services(make_config(), test_runtime_services("ServiceToolB", "B"));
+
+    assert_eq!(engine_a.tool_names(), vec!["ServiceToolA".to_string()]);
+    assert_eq!(engine_b.tool_names(), vec!["ServiceToolB".to_string()]);
+}
+
+#[test]
+fn runtime_services_permission_resolver_is_per_engine() {
+    let engine_a =
+        QueryEngine::new_with_services(make_config(), test_runtime_services("ToolA", "message A"));
+    let engine_b =
+        QueryEngine::new_with_services(make_config(), test_runtime_services("ToolB", "message B"));
+
+    let decision_a = super::deps::central_permission_decision_for_tool(
+        "AnyTool",
+        &Value::Null,
+        &engine_a.app_state(),
+        None,
+        None,
+        None,
+        &engine_a.runtime_services,
+    );
+    let decision_b = super::deps::central_permission_decision_for_tool(
+        "AnyTool",
+        &Value::Null,
+        &engine_b.app_state(),
+        None,
+        None,
+        None,
+        &engine_b.runtime_services,
+    );
+
+    assert_eq!(decision_a.message.as_deref(), Some("message A"));
+    assert_eq!(decision_b.message.as_deref(), Some("message B"));
 }
 
 #[tokio::test]
@@ -662,6 +803,7 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
     let deps = super::deps::QueryEngineDeps {
         aborted: engine.aborted.clone(),
         state: engine.state.clone(),
+        runtime_services: engine.runtime_services.clone(),
         cwd: "/tmp".to_string(),
         session_id: "canonical-deferred".to_string(),
         query_source: crate::types::config::QuerySource::ReplMainThread,

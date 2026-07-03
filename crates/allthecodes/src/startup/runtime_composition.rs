@@ -42,7 +42,10 @@ impl RuntimeComposition {
             AppStateRuntime::InitOnly => return Ok(Self::InitOnly),
             AppStateRuntime::Ready(app_state) => app_state,
         };
-        let ready = EngineFactory::build(startup, settings, mcp, model, app_state).await?;
+        let runtime_services = EngineFactory::runtime_services(mcp.tools.clone());
+        let ready =
+            EngineFactory::build(startup, settings, mcp, model, app_state, runtime_services)
+                .await?;
 
         Ok(Self::Ready(Box::new(ready)))
     }

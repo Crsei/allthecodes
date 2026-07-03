@@ -1,8 +1,13 @@
 use std::sync::Arc;
 
 use allthecodes_engine::lifecycle::QueryEngine;
+use allthecodes_engine::runtime_services::{
+    CommandDispatcherService, HookRunnerService, ModelClientFactoryService,
+    PermissionMessageResolver, RuntimeServices, ToolRegistryService,
+};
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_engine::types::config::QueryEngineConfig;
+use allthecodes_engine::types::tool::Tools;
 use tracing::{debug, info, warn};
 
 use crate::classifier_model;
@@ -14,13 +19,69 @@ use crate::startup::startup_context::StartupContext;
 
 pub(crate) struct EngineFactory;
 
+struct StartupToolRegistryService {
+    tools: Tools,
+}
+
+impl ToolRegistryService for StartupToolRegistryService {
+    fn active_tools(&self) -> Tools {
+        self.tools.clone()
+    }
+}
+
+struct RootPermissionMessageResolver;
+
+impl PermissionMessageResolver for RootPermissionMessageResolver {
+    fn resolve_permission_message(&self, tool_name: &str) -> Option<String> {
+        crate::resolve_descriptive_permission_message(tool_name)
+    }
+}
+
+struct ShellHookRunnerService;
+
+impl HookRunnerService for ShellHookRunnerService {
+    fn hook_runner(&self) -> Arc<dyn allthecodes_types::hooks::HookRunner> {
+        Arc::new(allthecodes_tools::hooks::ShellHookRunner::new())
+    }
+}
+
+struct FullCommandDispatcherService;
+
+impl CommandDispatcherService for FullCommandDispatcherService {
+    fn command_dispatcher(&self) -> Arc<dyn allthecodes_types::commands::CommandDispatcher> {
+        Arc::new(allthecodes_commands::DefaultCommandDispatcher::for_full_registry())
+    }
+}
+
+struct ApiClientFactoryService;
+
+impl ModelClientFactoryService for ApiClientFactoryService {
+    fn client_for_backend(
+        &self,
+        backend_name: Option<&str>,
+    ) -> Option<Arc<allthecodes_api::api::client::ApiClient>> {
+        allthecodes_api::api::client::ApiClient::from_backend(backend_name).map(Arc::new)
+    }
+}
+
 impl EngineFactory {
+    pub(crate) fn runtime_services(tools: Tools) -> Arc<RuntimeServices> {
+        Arc::new(RuntimeServices {
+            tool_registry: Arc::new(StartupToolRegistryService { tools }),
+            permission_message_resolver: Arc::new(RootPermissionMessageResolver),
+            hook_runner: Arc::new(ShellHookRunnerService),
+            command_dispatcher: Arc::new(FullCommandDispatcherService),
+            model_client_factory: Arc::new(ApiClientFactoryService),
+        })
+    }
+
     pub(crate) async fn build(
         startup: StartupContext,
         settings: SettingsRuntime,
         mcp: McpRuntime,
         model: ModelRuntime,
         mut app_state: AppState,
+        runtime_services: Arc<RuntimeServices>,
     ) -> anyhow::Result<RuntimeReady> {
         let StartupContext {
             cli,
@@ -119,11 +180,7 @@ impl EngineFactory {
         };
 
         let engine = {
-            let mut e = QueryEngine::new(engine_config);
-            e.set_hook_runner(Arc::new(allthecodes_tools::hooks::ShellHookRunner::new()));
-            e.set_command_dispatcher(Arc::new(
-                allthecodes_commands::DefaultCommandDispatcher::for_full_registry(),
-            ));
+            let mut e = QueryEngine::new_with_services(engine_config, runtime_services);
 
             if let Some(ref client) = model.detected_client {
                 let auto_mode_policy = Arc::new(

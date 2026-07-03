@@ -54,6 +54,58 @@ use startup_crate::tool_registry as registry;
 // Main entry point
 // ---------------------------------------------------------------------------
 
+fn computer_use_permission_message(tool_name: &str) -> Option<String> {
+    let action = allthecodes_computer_use::detection::extract_cu_action(tool_name)?;
+    let risk = allthecodes_computer_use::detection::classify_risk(action);
+    let risk_tag = match risk {
+        allthecodes_computer_use::detection::CuRiskLevel::Medium => "[medium risk]",
+        allthecodes_computer_use::detection::CuRiskLevel::High => "[HIGH RISK]",
+    };
+    let description = match action {
+        "screenshot" => "read the screen (take a screenshot)",
+        "cursor_position" => "read the current cursor position",
+        "left_click" => "click the left mouse button on your screen",
+        "right_click" => "click the right mouse button on your screen",
+        "middle_click" => "click the middle mouse button on your screen",
+        "double_click" => "double-click the mouse on your screen",
+        "type_text" | "type" => "type text using the keyboard",
+        "key" => "press a keyboard shortcut",
+        "scroll" => "scroll the mouse wheel",
+        "mouse_move" => "move the mouse cursor",
+        _ => {
+            return Some(format!(
+                "Allow desktop control action '{}' {}?",
+                action, risk_tag
+            ));
+        }
+    };
+    Some(format!("Allow {} {}?", description, risk_tag))
+}
+
+fn browser_permission_message(tool_name: &str) -> Option<String> {
+    if let Some(message) = allthecodes_browser::permissions::browser_permission_message(tool_name) {
+        return Some(message);
+    }
+    if let Some(rest) = tool_name.strip_prefix("mcp__") {
+        if let Some((server, action)) = rest.split_once("__") {
+            if allthecodes_browser::detection::is_browser_server(server) {
+                let category = allthecodes_browser::permissions::classify_browser_action(action);
+                return Some(format!(
+                    "Allow browser action '{}' via MCP server '{}' {}?",
+                    action,
+                    server,
+                    category.risk_tag()
+                ));
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn resolve_descriptive_permission_message(tool_name: &str) -> Option<String> {
+    computer_use_permission_message(tool_name).or_else(|| browser_permission_message(tool_name))
+}
+
 fn main() -> ExitCode {
     startup_crate::load_env_files();
     allthecodes_tools::registry::install_tool_registry_providers(
@@ -67,52 +119,8 @@ fn main() -> ExitCode {
     // Wire cc-permissions' descriptive-prompt callbacks. cc-permissions moved
     // out of the root crate in Phase 4 (issue #73); the Computer Use and
     // browser prompt strings still live here, so we register look-ups.
-    allthecodes_permissions::decision::set_cu_message_callback(|tool_name: &str| {
-        let action = allthecodes_computer_use::detection::extract_cu_action(tool_name)?;
-        let risk = allthecodes_computer_use::detection::classify_risk(action);
-        let risk_tag = match risk {
-            allthecodes_computer_use::detection::CuRiskLevel::Medium => "[medium risk]",
-            allthecodes_computer_use::detection::CuRiskLevel::High => "[HIGH RISK]",
-        };
-        let description = match action {
-            "screenshot" => "read the screen (take a screenshot)",
-            "cursor_position" => "read the current cursor position",
-            "left_click" => "click the left mouse button on your screen",
-            "right_click" => "click the right mouse button on your screen",
-            "middle_click" => "click the middle mouse button on your screen",
-            "double_click" => "double-click the mouse on your screen",
-            "type_text" | "type" => "type text using the keyboard",
-            "key" => "press a keyboard shortcut",
-            "scroll" => "scroll the mouse wheel",
-            "mouse_move" => "move the mouse cursor",
-            _ => {
-                return Some(format!(
-                    "Allow desktop control action '{}' {}?",
-                    action, risk_tag
-                ));
-            }
-        };
-        Some(format!("Allow {} {}?", description, risk_tag))
-    });
-    allthecodes_permissions::decision::set_browser_message_callback(|tool_name: &str| {
-        if let Some(m) = allthecodes_browser::permissions::browser_permission_message(tool_name) {
-            return Some(m);
-        }
-        if let Some(rest) = tool_name.strip_prefix("mcp__") {
-            if let Some((server, action)) = rest.split_once("__") {
-                if allthecodes_browser::detection::is_browser_server(server) {
-                    let cat = allthecodes_browser::permissions::classify_browser_action(action);
-                    return Some(format!(
-                        "Allow browser action '{}' via MCP server '{}' {}?",
-                        action,
-                        server,
-                        cat.risk_tag()
-                    ));
-                }
-            }
-        }
-        None
-    });
+    allthecodes_permissions::decision::set_cu_message_callback(computer_use_permission_message);
+    allthecodes_permissions::decision::set_browser_message_callback(browser_permission_message);
 
     // Phase A: parse args first so fast paths can exit immediately
     let cli = Cli::parse();

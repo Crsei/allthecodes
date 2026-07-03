@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::runtime_services::RuntimeServices;
 use crate::system_prompt;
 use crate::types::message::{ContentBlock, Message, MessageContent};
 
@@ -27,6 +28,7 @@ pub(super) async fn build_submit_system_prompt(
     tools_snapshot: &crate::types::tool::Tools,
     model_name: &str,
     backend_name: &str,
+    runtime_services: &Arc<RuntimeServices>,
 ) -> SubmitSystemPrompt {
     // Pull live language/output_style off AppState so /config set takes effect
     // on the next submit without restarting the engine.
@@ -80,6 +82,7 @@ pub(super) async fn build_submit_system_prompt(
         &already_surfaced_memory_keys,
         backend_name,
         model_name,
+        runtime_services.model_client_factory.as_ref(),
         model_assisted_memory_recall,
         ignore_memory,
     )

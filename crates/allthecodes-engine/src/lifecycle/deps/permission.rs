@@ -8,6 +8,7 @@ pub(crate) fn central_permission_decision_for_tool(
     hook_decision: Option<&crate::permissions::decision::HookPermissionDecision>,
     auto_classifier: Option<&AutoClassifierDecision>,
     denial_tracker: Option<&mut DenialTracker>,
+    runtime_services: &crate::runtime_services::RuntimeServices,
 ) -> PermissionDecision {
     use crate::permissions::decision::{self, PermissionBehavior};
 
@@ -24,13 +25,19 @@ pub(crate) fn central_permission_decision_for_tool(
             },
         }
     } else {
-        decision::has_permissions_to_use_tool_with_hook_and_auto_classifier(
+        let permission_message_resolver = |tool_name: &str| {
+            runtime_services
+                .permission_message_resolver
+                .resolve_permission_message(tool_name)
+        };
+        decision::has_permissions_to_use_tool_with_hook_auto_classifier_and_message_resolver(
             tool_name,
             input,
             &app_state.tool_permission_context,
             hook_decision,
             auto_classifier,
             denial_tracker,
+            Some(&permission_message_resolver),
         )
     };
     if matches!(&decision.behavior, PermissionBehavior::Ask)

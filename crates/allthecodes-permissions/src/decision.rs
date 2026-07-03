@@ -278,7 +278,7 @@ where
     *BROWSER_MESSAGE_CB.lock() = Some(Box::new(cb));
 }
 
-fn descriptive_permission_message(tool_name: &str) -> Option<String> {
+pub fn process_descriptive_permission_message(tool_name: &str) -> Option<String> {
     if let Some(cb) = CU_MESSAGE_CB.lock().as_ref() {
         if let Some(m) = cb(tool_name) {
             return Some(m);
@@ -292,6 +292,17 @@ fn descriptive_permission_message(tool_name: &str) -> Option<String> {
     }
 
     None
+}
+
+type PermissionMessageResolverRef<'a> = &'a (dyn Fn(&str) -> Option<String> + Send + Sync);
+
+fn descriptive_permission_message(
+    tool_name: &str,
+    resolver: Option<PermissionMessageResolverRef<'_>>,
+) -> Option<String> {
+    resolver
+        .and_then(|resolver| resolver(tool_name))
+        .or_else(|| process_descriptive_permission_message(tool_name))
 }
 
 // ---------------------------------------------------------------------------
@@ -378,7 +389,30 @@ pub fn has_permissions_to_use_tool_with_hook_and_auto_classifier(
     ctx: &ToolPermissionContext,
     hook: Option<&HookPermissionDecision>,
     auto_classifier: Option<&AutoClassifierDecision>,
+    denial_tracker: Option<&mut DenialTracker>,
+) -> PermissionDecision {
+    has_permissions_to_use_tool_with_hook_auto_classifier_and_message_resolver(
+        tool_name,
+        input,
+        ctx,
+        hook,
+        auto_classifier,
+        denial_tracker,
+        None,
+    )
+}
+
+/// Like [`has_permissions_to_use_tool_with_hook_and_auto_classifier`] but uses
+/// an explicit descriptive permission message resolver before falling back to
+/// process-wide compatibility callbacks.
+pub fn has_permissions_to_use_tool_with_hook_auto_classifier_and_message_resolver(
+    tool_name: &str,
+    input: &Value,
+    ctx: &ToolPermissionContext,
+    hook: Option<&HookPermissionDecision>,
+    auto_classifier: Option<&AutoClassifierDecision>,
     mut denial_tracker: Option<&mut DenialTracker>,
+    permission_message_resolver: Option<PermissionMessageResolverRef<'_>>,
 ) -> PermissionDecision {
     let updated_input = hook.and_then(|h| h.updated_input.clone());
 
@@ -433,12 +467,13 @@ pub fn has_permissions_to_use_tool_with_hook_and_auto_classifier(
     if let Some((source, pattern)) =
         check_pattern_rules(tool_name, effective_input, &ctx.always_ask_rules)
     {
-        let message = descriptive_permission_message(tool_name).unwrap_or_else(|| {
-            format!(
-                "Ask rule '{}' (source={}) requires confirmation.",
-                pattern, source
-            )
-        });
+        let message = descriptive_permission_message(tool_name, permission_message_resolver)
+            .unwrap_or_else(|| {
+                format!(
+                    "Ask rule '{}' (source={}) requires confirmation.",
+                    pattern, source
+                )
+            });
         return PermissionDecision {
             behavior: PermissionBehavior::Ask,
             updated_input: updated_input.clone(),
@@ -555,9 +590,10 @@ pub fn has_permissions_to_use_tool_with_hook_and_auto_classifier(
             }
         }
         PermissionMode::Plan => {
-            let message = descriptive_permission_message(tool_name).unwrap_or_else(|| {
-                format!("Tool '{}' requires confirmation in plan mode.", tool_name)
-            });
+            let message = descriptive_permission_message(tool_name, permission_message_resolver)
+                .unwrap_or_else(|| {
+                    format!("Tool '{}' requires confirmation in plan mode.", tool_name)
+                });
             PermissionDecision {
                 behavior: PermissionBehavior::Ask,
                 updated_input,
@@ -568,7 +604,7 @@ pub fn has_permissions_to_use_tool_with_hook_and_auto_classifier(
             }
         }
         PermissionMode::Default => {
-            let message = descriptive_permission_message(tool_name)
+            let message = descriptive_permission_message(tool_name, permission_message_resolver)
                 .unwrap_or_else(|| format!("Allow tool '{}'?", tool_name));
             PermissionDecision {
                 behavior: PermissionBehavior::Ask,
@@ -593,8 +629,9 @@ pub fn has_permissions_to_use_tool_with_hook_and_auto_classifier(
                     },
                 }
             } else {
-                let message = descriptive_permission_message(tool_name)
-                    .unwrap_or_else(|| format!("Allow tool '{}'?", tool_name));
+                let message =
+                    descriptive_permission_message(tool_name, permission_message_resolver)
+                        .unwrap_or_else(|| format!("Allow tool '{}'?", tool_name));
                 PermissionDecision {
                     behavior: PermissionBehavior::Ask,
                     updated_input,

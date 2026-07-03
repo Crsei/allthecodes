@@ -483,6 +483,7 @@ impl QueryEngineDeps {
                             hook_decision.as_ref(),
                             None,
                             None,
+                            &self.runtime_services,
                         );
 
                         if auto_classifier_needed(&decision) {
@@ -507,6 +508,7 @@ impl QueryEngineDeps {
                                     hook_decision.as_ref(),
                                     None,
                                     Some(&mut state.auto_denial_tracker),
+                                    &self.runtime_services,
                                 );
                             } else if let Some(auto_classifier) = self
                                 .compute_auto_classifier(
@@ -525,6 +527,7 @@ impl QueryEngineDeps {
                                     hook_decision.as_ref(),
                                     Some(&auto_classifier),
                                     Some(&mut state.auto_denial_tracker),
+                                    &self.runtime_services,
                                 );
                             }
                         }

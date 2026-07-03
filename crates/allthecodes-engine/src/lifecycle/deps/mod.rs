@@ -24,6 +24,7 @@ use crate::permissions::decision::{
     AutoClassifierDecision, AutoClassifierStage, AutoClassifierVerdict, DenialTracker,
     PermissionDecision, PermissionDecisionReason,
 };
+use crate::runtime_services::RuntimeServices;
 use crate::tool_runtime::execution::{
     find_tool, is_plan_mode_plan_file_write, sandbox_allowed_command_applies, security_validate,
     ToolExecutionResult,
@@ -62,6 +63,7 @@ pub(crate) use permission::{
 pub(crate) struct QueryEngineDeps {
     pub(crate) aborted: Arc<AtomicBool>,
     pub(crate) state: Arc<RwLock<QueryEngineState>>,
+    pub(crate) runtime_services: Arc<RuntimeServices>,
     pub(crate) cwd: String,
     pub(crate) session_id: String,
     pub(crate) query_source: QuerySource,

@@ -324,6 +324,14 @@ pub fn get_all_tools() -> Tools {
     get_all_tools_with_providers(&installed_tool_registry_providers())
 }
 
+/// Compatibility entry point for process-default runtime service adapters.
+///
+/// New engine construction should pass an explicit tool registry service. This
+/// wrapper keeps remaining legacy callers visibly tied to installed globals.
+pub fn process_default_active_tools() -> Tools {
+    get_all_tools()
+}
+
 /// Get tools for a concrete runtime policy using the supplied providers.
 pub fn get_tools_for_policy_with_providers(
     providers: &ToolRegistryProviders,

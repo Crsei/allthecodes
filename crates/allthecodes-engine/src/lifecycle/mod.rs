@@ -35,6 +35,7 @@ use tracing::{info, warn};
 
 use crate::bootstrap::SessionId;
 use crate::observability::AuditContext;
+use crate::runtime_services::RuntimeServices;
 use crate::services::session_memory::{
     extract_session_insight, SessionMemoryConfig, SessionMemoryService,
 };
@@ -345,6 +346,8 @@ pub struct QueryEngine {
     pub(crate) active_session_id: Arc<RwLock<SessionId>>,
     /// Immutable configuration snapshot.
     pub(crate) config: QueryEngineConfig,
+    /// Explicit runtime services for this engine instance.
+    pub(crate) runtime_services: Arc<RuntimeServices>,
 
     /// Consolidated mutable session state.
     pub(crate) state: Arc<RwLock<QueryEngineState>>,
@@ -382,8 +385,17 @@ impl QueryEngine {
 
     /// Create a new QueryEngine with the given configuration.
     pub fn new(config: QueryEngineConfig) -> Self {
+        let runtime_services = Arc::new(RuntimeServices::from_static_tools(config.tools.clone()));
+        Self::new_with_services(config, runtime_services)
+    }
+
+    /// Create a new QueryEngine with explicit runtime services.
+    pub fn new_with_services(
+        config: QueryEngineConfig,
+        runtime_services: Arc<RuntimeServices>,
+    ) -> Self {
         let initial_messages = config.initial_messages.clone().unwrap_or_default();
-        let tools = config.tools.clone();
+        let tools = runtime_services.tool_registry.active_tools();
         let session_id = SessionId::new();
 
         // Initialize AppState with resolved model from config
@@ -409,6 +421,7 @@ impl QueryEngine {
             session_id: session_id.clone(),
             active_session_id: Arc::new(RwLock::new(session_id)),
             config,
+            runtime_services: runtime_services.clone(),
             state: Arc::new(RwLock::new(QueryEngineState {
                 messages: initial_messages,
                 abort_reason: None,
@@ -435,8 +448,8 @@ impl QueryEngine {
             aborted: Arc::new(AtomicBool::new(false)),
             pending_bg_results: crate::agent_runtime::PendingBackgroundResults::new(),
             active_steer_state: Arc::new(Mutex::new(ActiveSteerState::default())),
-            hook_runner: Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
-            command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
+            hook_runner: runtime_services.hook_runner.hook_runner(),
+            command_dispatcher: runtime_services.command_dispatcher.command_dispatcher(),
             command_executor: crate::command_runtime::global_command_executor(),
             auto_classifier_fn: None,
             session_recorder: Arc::new(Mutex::new(None)),
