@@ -593,6 +593,7 @@ impl App {
             return AppAction::None;
         };
         let current_thread_id = self.current_agent_thread_id().to_string();
+        let agent_nav = self.runtime_state().agent_nav().clone();
 
         match (key.modifiers, key.code) {
             (_, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
@@ -600,20 +601,18 @@ impl App {
                 self.dirty = true;
             }
             (_, KeyCode::Up) => {
-                dialog.move_prev(&self.agent_nav, &current_thread_id);
+                dialog.move_prev(&agent_nav, &current_thread_id);
                 self.overlays.agent_tree_dialog = Some(dialog);
                 self.dirty = true;
             }
             (_, KeyCode::Down) | (_, KeyCode::Tab) => {
-                dialog.move_next(&self.agent_nav, &current_thread_id);
+                dialog.move_next(&agent_nav, &current_thread_id);
                 self.overlays.agent_tree_dialog = Some(dialog);
                 self.dirty = true;
             }
             (_, KeyCode::Enter) => {
-                if let Some(selected) =
-                    dialog.selected_thread_id(&self.agent_nav, &current_thread_id)
-                {
-                    self.current_agent_thread_id = Some(selected);
+                if let Some(selected) = dialog.selected_thread_id(&agent_nav, &current_thread_id) {
+                    self.runtime_view.set_current_agent_thread(Some(selected));
                     let selected = self.current_agent_thread_id().to_string();
                     self.overlays.agent_tree_dialog = None;
                     self.dirty = true;

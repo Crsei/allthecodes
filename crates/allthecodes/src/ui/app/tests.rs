@@ -485,7 +485,7 @@ fn agent_event_updates_navigation_and_footer_rendering() {
         }),
     });
 
-    assert_eq!(app.agent_nav.thread_count(), 2);
+    assert_eq!(app.runtime_state().agent_nav().thread_count(), 2);
     assert!(app.agent_footer_visible());
     assert_eq!(app.current_agent_thread_id(), "worker-1");
 

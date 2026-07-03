@@ -308,10 +308,11 @@ impl App {
         }
 
         let current_thread_id = self.current_agent_thread_id().to_string();
+        let agent_nav = self.runtime_state().agent_nav().clone();
         if let Some(ref mut dialog) = self.overlays.agent_tree_dialog {
             render_agent_tree_overlay(
                 dialog,
-                &self.agent_nav,
+                &agent_nav,
                 &current_thread_id,
                 size,
                 bottom_chunks.input,
