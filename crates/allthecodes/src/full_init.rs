@@ -5,47 +5,47 @@ use allthecodes_config::settings;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::app_state::{AppState, SettingsJson};
 use allthecodes_engine::types::config::QueryEngineConfig;
-use allthecodes_startup as startup;
+use allthecodes_startup as startup_crate;
 use allthecodes_web as web;
 use anyhow::Context;
 use axum::Router;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
+use crate::classifier_model;
 use crate::cli::Cli;
+use crate::startup::{ModeRouter, RuntimeComposition, RuntimeReady, StartupContext};
 use crate::startup_model::{
     resolve_model_alias_for_effective_settings, resolve_startup_model, settings_effort_value,
     settings_thinking_enabled,
 };
 use crate::startup_skills::{
-    discover_plugin_skills_for_root, log_skill_report, persist_skill_usage,
-    register_user_invocable_skill_commands,
+    discover_plugin_skills_for_root, log_skill_report, register_user_invocable_skill_commands,
 };
-use crate::ui::tui;
-use crate::{classifier_model, dashboard, shutdown};
-use startup::runtime_config::{
+use startup_crate::runtime_config::{
     build_tool_permission_context, chrome_cli_override, resolve_cwd, resolve_permission_mode,
 };
-use startup::tool_registry as registry;
+use startup_crate::tool_registry as registry;
 
 // ---------------------------------------------------------------------------
 // Phase B: Full initialization and REPL
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
-    let cwd = resolve_cwd(&cli);
+    let startup = StartupContext::from_cli(cli).await?;
+    let runtime = RuntimeComposition::build(startup).await?;
+    ModeRouter::new(runtime).run().await
+}
 
-    // If -C / --cwd was given, switch the process working directory so that
-    // all tools (Bash, Glob, Grep, etc.) operate in the target workspace.
-    if cli.cwd.is_some() {
-        let target = std::path::Path::new(&cwd);
-        if target.is_dir() {
-            std::env::set_current_dir(target)
-                .with_context(|| format!("failed to set working directory to {}", cwd))?;
-            info!(cwd = %cwd, "working directory changed via --cwd");
-        } else {
-            anyhow::bail!("--cwd path does not exist or is not a directory: {}", cwd);
-        }
-    }
+pub(crate) async fn build_runtime_composition(
+    startup: StartupContext,
+) -> anyhow::Result<RuntimeComposition> {
+    let StartupContext {
+        cli,
+        cwd,
+        initial_prompt,
+        ..
+    } = startup;
+    let cwd = cwd.to_string_lossy().into_owned();
 
     // First-run initialization: if no settings.json exists, seed from template.
     let first_run_initialized = match allthecodes_config::settings::initialize_first_run() {
@@ -740,7 +740,7 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
     // B.5: Init-only fast path
     if cli.init_only {
         info!("init-only mode: initialization complete");
-        return Ok(ExitCode::SUCCESS);
+        return Ok(RuntimeComposition::InitOnly);
     }
 
     // B.6: Handle session resume (before engine creation)
@@ -967,140 +967,16 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(model.clone()),
     );
 
-    // B.9: Non-interactive output modes
-    // JSON output mode takes priority (SDK sends both -p and --output-format json)
-    if cli.output_format.as_deref() == Some("json") {
-        let prompt = cli.prompt.join(" ");
-        if prompt.is_empty() {
-            // Read prompt from stdin (SDK pipes it)
-            use std::io::Read;
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            return startup::modes::run_json_mode(&engine, buf.trim()).await;
-        }
-        return startup::modes::run_json_mode(&engine, &prompt).await;
-    }
-
-    // Plain text print mode (-p without --output-format json)
-    if cli.print {
-        let prompt = cli.prompt.join(" ");
-        if prompt.is_empty() {
-            error!("print mode requires a prompt argument");
-            return Ok(ExitCode::FAILURE);
-        }
-        return startup::modes::run_print_mode(&engine, &prompt).await;
-    }
-
-    // B.10: Unified server mode
-    let initial_prompt = if !cli.prompt.is_empty() {
-        Some(cli.prompt.join(" "))
-    } else {
-        None
-    };
-
-    let listen = cli
-        .listen
-        .as_deref()
-        .map(allthecodes_server::ListenUrl::parse)
-        .transpose()
-        .with_context(|| {
-            format!(
-                "failed to parse --listen {}",
-                cli.listen.as_deref().unwrap_or_default()
-            )
-        })?;
-    let server_mode = allthecodes_server::ServerMode::from_listen_and_fallback(
-        listen,
-        cli.web,
-        cli.daemon,
-        cli.web_port,
-        cli.port,
-    )?;
-
-    if server_mode.is_active() {
-        // Validate Kairos feature for daemon or all modes
-        if matches!(
-            server_mode,
-            allthecodes_server::ServerMode::Daemon { .. }
-                | allthecodes_server::ServerMode::All { .. }
-        ) {
-            use allthecodes_config::features::{self, Feature};
-            if !features::enabled(Feature::Kairos) {
-                eprintln!("error: --daemon requires FEATURE_KAIROS=1");
-                return Ok(ExitCode::FAILURE);
-            }
-        }
-
-        let exit_code = run_server_mode(server_mode, engine, &cli, initial_prompt).await?;
-        persist_skill_usage();
-        return Ok(exit_code);
-    }
-
-    // B.11: Enter TUI, headless, or ACP mode
-    if cli.headless {
-        let result = allthecodes_ipc::headless::run_headless(
-            crate::app_runtime_adapters::headless_config(engine, model),
-        )
-        .await
-        .map(|()| ExitCode::SUCCESS);
-        persist_skill_usage();
-        return result;
-    }
-
-    // ACP mode: runs before TUI/headless routing, exits when stdio closes.
-    if cli.acp {
-        let result = allthecodes_acp::run_stdio(
-            crate::full_init::acp_runtime_bridge::build_acp_runtime_config(
-                crate::full_init::acp_runtime_bridge::AcpBridgeInputs {
-                    model,
-                    cwd: cwd.clone(),
-                    tools: tools.clone(),
-                    app_state_template: app_state.clone(),
-                    merged_config: merged_config.clone(),
-                    cli_overrides: crate::full_init::acp_runtime_bridge::AcpCliOverrides::from_cli(
-                        &cli,
-                    ),
-                },
-            ),
-        )
-        .await
-        .map(|()| ExitCode::SUCCESS);
-        persist_skill_usage();
-        return result;
-    }
-
-    // Register shutdown handler
-    let shutdown_token = shutdown::register_shutdown_handler();
-
-    let mut dashboard_companion = if allthecodes_config::features::enabled(
-        allthecodes_config::features::Feature::SubagentDashboard,
-    ) {
-        match dashboard::DashboardCompanion::spawn(dashboard::DashboardConfig::default()).await {
-            Ok(child) => Some(child),
-            Err(e) => {
-                warn!(error = %e, "failed to start subagent dashboard companion");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let tui_result = tui::run_tui(engine.clone(), initial_prompt, &model, shutdown_token).await;
-
-    // Phase I: Shutdown and cleanup
-    shutdown::graceful_shutdown(&engine).await;
-    if let Some(companion) = dashboard_companion.as_mut() {
-        companion.kill();
-    }
-
-    match tui_result {
-        Ok(()) => Ok(ExitCode::SUCCESS),
-        Err(e) => {
-            error!("TUI error: {:#}", e);
-            Ok(ExitCode::FAILURE)
-        }
-    }
+    Ok(RuntimeComposition::Ready(Box::new(RuntimeReady {
+        cli,
+        cwd,
+        initial_prompt,
+        model,
+        tools,
+        app_state,
+        merged_config,
+        engine,
+    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,7 +988,7 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
 /// For Web-only mode this runs the server in the foreground (blocking).
 /// For Daemon or All modes it delegates to [`run_daemon_with_server`] which
 /// also runs background loops (tick, scheduler, supervisor).
-async fn run_server_mode(
+pub(crate) async fn run_server_mode(
     server_mode: allthecodes_server::ServerMode,
     engine: Arc<QueryEngine>,
     cli: &Cli,

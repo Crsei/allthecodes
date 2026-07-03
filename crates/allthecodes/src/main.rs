@@ -21,6 +21,7 @@ mod classifier_model;
 mod cli;
 mod command_runtime_bridge;
 mod full_init;
+mod startup;
 mod startup_daemon_adapters;
 mod startup_model;
 mod startup_skills;
@@ -38,7 +39,7 @@ mod dashboard;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use allthecodes_startup as startup;
+use allthecodes_startup as startup_crate;
 use clap::Parser;
 use tracing::{error, info};
 
@@ -46,19 +47,19 @@ use crate::cli::Cli;
 use crate::full_init::run_full_init;
 use crate::startup_daemon_adapters::install_daemon_runtime_adapters;
 use crate::startup_traits::{RootAgentToolRegistry, RootDashboardEmitter};
-use startup::runtime_config::resolve_cwd;
-use startup::tool_registry as registry;
+use startup_crate::runtime_config::resolve_cwd;
+use startup_crate::tool_registry as registry;
 
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
 fn main() -> ExitCode {
-    startup::load_env_files();
+    startup_crate::load_env_files();
     allthecodes_tools::registry::install_tool_registry_providers(
         registry::root_tool_registry_providers(),
     );
-    startup::engine_runtime::install(
+    startup_crate::engine_runtime::install(
         Arc::new(RootDashboardEmitter),
         Arc::new(RootAgentToolRegistry),
     );
@@ -129,20 +130,20 @@ fn main() -> ExitCode {
     // REPL, no HTTP server. Just bridge Chrome <-> local socket and exit
     // when Chrome closes stdin.
     if cli.chrome_native_host {
-        return startup::fast_paths::run_chrome_native_host();
+        return startup_crate::fast_paths::run_chrome_native_host();
     }
 
     // Fast path: --claude-in-chrome-mcp
     // Spawned as a stdio MCP subprocess by the allthecodes MCP manager when
     // --chrome is active. Bridges MCP <-> native-host socket.
     if cli.claude_in_chrome_mcp {
-        return startup::fast_paths::run_claude_in_chrome_mcp();
+        return startup_crate::fast_paths::run_claude_in_chrome_mcp();
     }
 
     if let Some(output_dir) = cli.export_ui_snapshots.as_deref() {
-        return startup::fast_paths::run_export_ui_snapshots(output_dir, |dir| {
+        return startup_crate::fast_paths::run_export_ui_snapshots(output_dir, |dir| {
             crate::ui::snapshot_export::export_ui_snapshots(dir)
-                .map(|report| startup::fast_paths::SnapshotExportReport {
+                .map(|report| startup_crate::fast_paths::SnapshotExportReport {
                     output_dir: report.output_dir,
                     index_path: report.index_path,
                     snapshot_count: report.snapshot_count,
@@ -153,7 +154,7 @@ fn main() -> ExitCode {
 
     let tracing_cwd = resolve_cwd(&cli);
     if let Err(error) =
-        startup::apply_settings_env_before_tracing(std::path::Path::new(&tracing_cwd))
+        startup_crate::apply_settings_env_before_tracing(std::path::Path::new(&tracing_cwd))
     {
         eprintln!(
             "warning: failed to apply settings.env before tracing: {:#}",
@@ -170,7 +171,7 @@ fn main() -> ExitCode {
     };
     let _tracing_guard = {
         let _enter = rt.enter();
-        startup::logging::init_tracing(cli.verbose)
+        startup_crate::logging::init_tracing(cli.verbose)
     };
 
     info!("allthecodes v{}", env!("CARGO_PKG_VERSION"));
@@ -200,7 +201,7 @@ fn main() -> ExitCode {
     if cli.dump_system_prompt {
         allthecodes_plugins::init_plugins();
         let tools = registry::get_tools_for_active_session();
-        return startup::fast_paths::run_dump_system_prompt(&cli, &tools);
+        return startup_crate::fast_paths::run_dump_system_prompt(&cli, &tools);
     }
 
     if !cli.print && cli.output_format.is_none() {
