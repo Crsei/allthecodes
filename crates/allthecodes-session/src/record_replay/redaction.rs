@@ -186,4 +186,150 @@ mod tests {
             other => panic!("unexpected item: {other:?}"),
         }
     }
+
+    #[test]
+    fn redact_api_key_from_tool_input() {
+        // The command string contains "Authorization:" and "bearer " (both
+        // matched case-insensitively by looks_like_inline_secret), and the
+        // string is >= 24 chars, so the entire command is redacted.
+        //
+        // Note: the current implementation does NOT specifically redact "sk-..."
+        // tokens embedded in free-form text. This test documents the present
+        // behavior and will need updating if inline API key detection is added.
+        let item = RecordItem::PermissionRequest(PermissionRequestRecord {
+            request_id: "req-1".to_string(),
+            tool_name: "Bash".to_string(),
+            context: Some(serde_json::json!({
+                "command": "curl -H 'Authorization: Bearer sk-abc123' https://api.example.com"
+            })),
+        });
+
+        let redacted = redact_record_item(item, &RecordReplayConfig::default());
+
+        assert_eq!(redacted.summary.secret_values_redacted, 1);
+        match redacted.item {
+            RecordItem::PermissionRequest(record) => {
+                let ctx = record.context.unwrap();
+                let cmd = ctx["command"].as_str().unwrap();
+                // The whole string matches looks_like_inline_secret because
+                // the lowercased command contains both "authorization:" and "bearer ".
+                assert_eq!(cmd, REDACTED_VALUE);
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn redact_authorization_header() {
+        let item = RecordItem::PermissionRequest(PermissionRequestRecord {
+            request_id: "req-2".to_string(),
+            tool_name: "WebFetch".to_string(),
+            context: Some(serde_json::json!({
+                "headers": {
+                    "Authorization": "Bearer sk-test-token-value-here-12345"
+                },
+                "url": "https://api.example.com/data"
+            })),
+        });
+
+        let redacted = redact_record_item(item, &RecordReplayConfig::default());
+
+        assert_eq!(redacted.summary.secret_values_redacted, 1);
+        match redacted.item {
+            RecordItem::PermissionRequest(record) => {
+                let ctx = record.context.unwrap();
+                assert_eq!(ctx["headers"]["Authorization"], REDACTED_VALUE);
+                assert_eq!(ctx["url"], "https://api.example.com/data");
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn redact_large_base64_blob() {
+        // Build a string that is long enough (>1024 chars) and is >=90%
+        // base64 characters (alphanumeric + '+' / '/' / '=' / '-' / '_')
+        // with no whitespace — triggers looks_like_large_blob.
+        let base64ish: String = (0..200)
+            .map(|_i| format!("ABCDEFGHijklmnOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="))
+            .collect();
+        assert!(base64ish.len() > LARGE_BLOB_CHARS);
+
+        let item = RecordItem::ToolProgress(ToolProgressRecord {
+            tool_use_id: "toolu-1".to_string(),
+            data: serde_json::json!({ "image_data": base64ish }),
+        });
+
+        let redacted = redact_record_item(item, &RecordReplayConfig::default());
+
+        assert_eq!(redacted.summary.large_values_elided, 1);
+        match redacted.item {
+            RecordItem::ToolProgress(record) => {
+                let elided = record.data["image_data"].as_str().unwrap();
+                assert!(elided.starts_with("[elided "));
+                assert!(elided.ends_with(" chars]"));
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn redact_leaves_normal_paths_untouched() {
+        let item = RecordItem::PermissionRequest(PermissionRequestRecord {
+            request_id: "req-3".to_string(),
+            tool_name: "Read".to_string(),
+            context: Some(serde_json::json!({
+                "file_path": "/home/user/project/src/main.rs"
+            })),
+        });
+
+        let redacted = redact_record_item(item, &RecordReplayConfig::default());
+
+        assert_eq!(redacted.summary.secret_values_redacted, 0);
+        assert_eq!(redacted.summary.large_values_elided, 0);
+        match redacted.item {
+            RecordItem::PermissionRequest(record) => {
+                let ctx = record.context.unwrap();
+                assert_eq!(
+                    ctx["file_path"],
+                    "/home/user/project/src/main.rs"
+                );
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn redaction_summary_in_metadata() {
+        // Ensure the returned RedactionSummary correctly counts multiple
+        // redactions of different kinds in a single item.
+        let blob = "x".repeat(LARGE_STRING_CHARS + 1);
+        let item = RecordItem::ToolProgress(ToolProgressRecord {
+            tool_use_id: "toolu-1".to_string(),
+            data: serde_json::json!({
+                "api_key": "sk-this-is-a-secret-value-that-exceeds-24-chars-for-test",
+                "authorization": "Bearer some-very-long-secret-token-here",
+                "payload": blob,
+                "normal_field": "hello world",
+            }),
+        });
+
+        let redacted = redact_record_item(item, &RecordReplayConfig::default());
+
+        // Two sensitive keys (api_key, authorization) + one large value (payload)
+        assert_eq!(redacted.summary.secret_values_redacted, 2);
+        assert_eq!(redacted.summary.large_values_elided, 1);
+
+        // The summary is accessible from the returned RedactedRecordItem
+        match redacted.item {
+            RecordItem::ToolProgress(record) => {
+                assert_eq!(record.data["api_key"], REDACTED_VALUE);
+                assert_eq!(record.data["authorization"], REDACTED_VALUE);
+                assert_eq!(record.data["normal_field"], "hello world");
+                let elided = record.data["payload"].as_str().unwrap();
+                assert!(elided.starts_with("[elided "));
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
 }

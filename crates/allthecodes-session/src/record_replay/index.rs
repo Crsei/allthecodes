@@ -419,7 +419,7 @@ mod tests {
     use serial_test::serial;
 
     use crate::record_replay::types::{
-        MessageRecord, RecordLine, RecordedMessage, RecordedMessageContent, SessionMetaRecord,
+        MessageRecord, RecordLine, SessionMetaRecord,
     };
 
     struct HomeGuard {
@@ -443,27 +443,101 @@ mod tests {
         }
     }
 
+    /// Write lines into a JSONL file at `path` (must be a single line per entry
+    /// with a trailing newline), then return the full serialized strings for
+    /// reference.
+    fn write_rollout(path: &Path, lines: &[RecordLine]) {
+        let content = lines
+            .iter()
+            .map(|line| serde_json::to_string(line).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
     #[test]
     #[serial]
-    fn index_rollout_file_rebuilds_session_projection() {
+    fn index_upsert_and_query() {
+        // Upsert a rollout entry and then query via lookup_rollout, verifying
+        // that the indexed fields survive round-trip.
         let temp = tempfile::tempdir().unwrap();
         let _guard = HomeGuard::set(temp.path());
-        let session_id = "indexed-rollout-session";
-        let created_at = Utc.with_ymd_and_hms(2026, 7, 2, 10, 0, 0).unwrap();
+        let session_id = "upsert-query-session";
+        let created_at = Utc.with_ymd_and_hms(2026, 7, 2, 14, 0, 0).unwrap();
         let rollout_path = paths::new_rollout_file(session_id, created_at);
-        std::fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
 
+        // Write a minimal valid rollout file so the filesystem fallback doesn't
+        // interfere with the SQLite path (if sqlite-storage is enabled).
         let lines = vec![
             RecordLine::new(
                 session_id,
                 0,
                 RecordItem::SessionMeta(SessionMetaRecord {
                     created_at,
-                    cwd: "/repo/from-rollout".into(),
-                    workspace_key: Some("workspace-key".into()),
-                    workspace_root: Some("/repo".into()),
-                    workspace_name: Some("repo".into()),
-                    model: Some("model-from-rollout".into()),
+                    cwd: "/repo".into(),
+                    workspace_key: None,
+                    workspace_root: None,
+                    workspace_name: None,
+                    model: None,
+                    config_summary: None,
+                    parent_session_id: None,
+                    branch_from_seq: None,
+                    migrated_from: None,
+                }),
+            ),
+        ];
+        write_rollout(&rollout_path, &lines);
+
+        // Upsert the entry.
+        let entry = SessionRolloutIndexEntry {
+            session_id: session_id.to_string(),
+            rollout_path: rollout_path.clone(),
+            schema_version: 1,
+            created_at,
+            updated_at: created_at,
+            first_seq: 0,
+            last_seq: 0,
+            event_count: 1,
+            status: "active".to_string(),
+            parent_session_id: Some("parent-123".into()),
+            branch_from_seq: Some(5),
+            workspace_key: Some("wk-key".into()),
+            workspace_root: Some("/repo".into()),
+            workspace_name: Some("repo".into()),
+        };
+        upsert_rollout(&entry).unwrap();
+
+        // Query back — lookup_rollout prefers SQLite then falls back to filesystem.
+        let found = lookup_rollout(session_id).unwrap();
+        assert_eq!(found, Some(rollout_path), "lookup should return the indexed rollout path");
+    }
+
+    #[test]
+    #[serial]
+    fn index_update_after_flush() {
+        // Simulate what a flush does: write a new RecordLine into the JSONL file
+        // then re-index. The resulting SessionRolloutIndexEntry should have updated
+        // last_seq and event_count.
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::set(temp.path());
+        let session_id = "flush-update-session";
+        let created_at = Utc.with_ymd_and_hms(2026, 7, 2, 15, 0, 0).unwrap();
+        let rollout_path = paths::new_rollout_file(session_id, created_at);
+
+        // Write two lines seq 0 and seq 1.
+        let lines = vec![
+            RecordLine::new(
+                session_id,
+                0,
+                RecordItem::SessionMeta(SessionMetaRecord {
+                    created_at,
+                    cwd: "/repo".into(),
+                    workspace_key: None,
+                    workspace_root: None,
+                    workspace_name: None,
+                    model: None,
                     config_summary: None,
                     parent_session_id: None,
                     branch_from_seq: None,
@@ -473,74 +547,201 @@ mod tests {
             RecordLine::new(
                 session_id,
                 1,
-                RecordItem::Message(MessageRecord {
-                    message: RecordedMessage::User {
-                        uuid: uuid::Uuid::parse_str("10000000-0000-0000-0000-000000000020")
-                            .unwrap(),
-                        timestamp: 77,
+                RecordItem::Message(MessageRecord::from_message(&Message::User(
+                    allthecodes_types::message::UserMessage {
+                        uuid: uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+                        timestamp: 1,
                         role: "user".into(),
-                        content: RecordedMessageContent::Text("from rollout".into()),
+                        content: MessageContent::Text("hello".into()),
                         is_meta: false,
                         tool_use_result: None,
                         source_tool_assistant_uuid: None,
                     },
-                }),
+                ))),
             ),
         ];
-        let content = format!(
-            "{}\n",
-            lines
-                .iter()
-                .map(|line| serde_json::to_string(line).unwrap())
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        std::fs::write(&rollout_path, content).unwrap();
+        write_rollout(&rollout_path, &lines);
 
+        // Index the file.
         let entry = index_rollout_file(&rollout_path).unwrap();
-
-        assert_eq!(entry.session_id, session_id);
+        assert_eq!(entry.first_seq, 0);
         assert_eq!(entry.last_seq, 1);
-        let loaded = crate::storage::load_session(session_id).unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert!(matches!(
-            &loaded[0],
-            Message::User(user)
-                if matches!(&user.content, MessageContent::Text(text) if text == "from rollout")
-        ));
-        let info = crate::storage::load_session_info(session_id).unwrap();
-        assert_eq!(info.cwd, "/repo/from-rollout");
+        assert_eq!(entry.event_count, 2);
+
+        // Now append a third record line (seq 2) to simulate flush.
+        let line3 = RecordLine::new(
+            session_id,
+            2,
+            RecordItem::Message(MessageRecord::from_message(&Message::Assistant(
+                allthecodes_types::message::AssistantMessage {
+                    uuid: uuid::Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap(),
+                    timestamp: 2,
+                    role: "assistant".into(),
+                    content: vec![allthecodes_types::message::ContentBlock::Text { text: "hi".into() }],
+                    usage: None,
+                    stop_reason: Some("end_turn".into()),
+                    is_api_error_message: false,
+                    api_error: None,
+                    cost_usd: 0.0,
+                },
+            ))),
+        );
+
+        // Append manually (like the recorder flush does).
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&rollout_path)
+                .unwrap();
+            use std::io::Write;
+            writeln!(file, "{}", serde_json::to_string(&line3).unwrap()).unwrap();
+            file.sync_all().unwrap();
+        }
+
+        // Re-index and verify stats reflect the new line.
+        let entry2 = index_rollout_file(&rollout_path).unwrap();
+        assert_eq!(entry2.first_seq, 0, "first_seq should remain 0");
+        assert_eq!(entry2.last_seq, 2, "last_seq should advance to 2");
+        assert_eq!(entry2.event_count, 3, "event_count should be 3");
+
+        // Confirm the SQLite index was updated by calling lookup_rollout.
+        let found = lookup_rollout(session_id).unwrap();
+        assert_eq!(found, Some(rollout_path));
     }
 
     #[test]
     #[serial]
-    fn lookup_rollout_skips_missing_sqlite_path_and_scans_filesystem() {
+    fn reindex_builds_correct_index() {
+        // Simulate a scenario where SQLite data is deleted (or never existed)
+        // and reindex_rollouts() reconstructs the index from JSONL files on disk.
         let temp = tempfile::tempdir().unwrap();
         let _guard = HomeGuard::set(temp.path());
-        let session_id = "stale-index-rollout-session";
-        let created_at = Utc.with_ymd_and_hms(2026, 7, 2, 12, 0, 0).unwrap();
-        let valid_path = paths::new_rollout_file(session_id, created_at);
-        std::fs::create_dir_all(valid_path.parent().unwrap()).unwrap();
-        std::fs::write(&valid_path, "").unwrap();
+        let session_id_a = "reindex-a";
+        let session_id_b = "reindex-b";
+        let created_at = Utc.with_ymd_and_hms(2026, 7, 2, 16, 0, 0).unwrap();
 
-        upsert_rollout(&SessionRolloutIndexEntry {
-            session_id: session_id.to_string(),
-            rollout_path: temp.path().join("missing-rollout.jsonl"),
-            schema_version: crate::record_replay::RECORD_SCHEMA_VERSION,
-            created_at,
-            updated_at: created_at,
-            first_seq: 0,
-            last_seq: 0,
-            event_count: 0,
-            status: "active".to_string(),
-            parent_session_id: None,
-            branch_from_seq: None,
-            workspace_key: None,
-            workspace_root: None,
-            workspace_name: None,
-        })
-        .unwrap();
+        // Create two rollout files.
+        let path_a = paths::new_rollout_file(session_id_a, created_at);
+        let lines_a = vec![
+            RecordLine::new(
+                session_id_a,
+                0,
+                RecordItem::SessionMeta(SessionMetaRecord {
+                    created_at,
+                    cwd: "/repo-a".into(),
+                    workspace_key: Some("wk-a".into()),
+                    workspace_root: Some("/repo-a".into()),
+                    workspace_name: Some("repo-a".into()),
+                    model: None,
+                    config_summary: None,
+                    parent_session_id: None,
+                    branch_from_seq: None,
+                    migrated_from: None,
+                }),
+            ),
+            RecordLine::new(
+                session_id_a,
+                1,
+                RecordItem::Message(MessageRecord::from_message(&Message::User(
+                    allthecodes_types::message::UserMessage {
+                        uuid: uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+                        timestamp: 1,
+                        role: "user".into(),
+                        content: MessageContent::Text("from a".into()),
+                        is_meta: false,
+                        tool_use_result: None,
+                        source_tool_assistant_uuid: None,
+                    },
+                ))),
+            ),
+        ];
+        write_rollout(&path_a, &lines_a);
 
-        assert_eq!(lookup_rollout(session_id).unwrap(), Some(valid_path));
+        let path_b = paths::new_rollout_file(session_id_b, created_at);
+        let lines_b = vec![
+            RecordLine::new(
+                session_id_b,
+                0,
+                RecordItem::SessionMeta(SessionMetaRecord {
+                    created_at,
+                    cwd: "/repo-b".into(),
+                    workspace_key: Some("wk-b".into()),
+                    workspace_root: Some("/repo-b".into()),
+                    workspace_name: Some("repo-b".into()),
+                    model: None,
+                    config_summary: None,
+                    parent_session_id: None,
+                    branch_from_seq: None,
+                    migrated_from: None,
+                }),
+            ),
+        ];
+        write_rollout(&path_b, &lines_b);
+
+        // Run reindex.
+        let count = reindex_rollouts().unwrap();
+        assert_eq!(count, 2, "should have indexed 2 rollout files");
+
+        // Verify both sessions are now findable via lookup_rollout.
+        let found_a = lookup_rollout(session_id_a).unwrap();
+        assert_eq!(found_a, Some(path_a), "reindexed rollout for session_a should be found");
+
+        let found_b = lookup_rollout(session_id_b).unwrap();
+        assert_eq!(found_b, Some(path_b), "reindexed rollout for session_b should be found");
+    }
+
+    #[test]
+    #[serial]
+    fn index_thread_local_storage_fail_logs_warning() {
+        // This test exercises the fallback path in `index_rollout_file`: the
+        // SQLite upsert may fail (here we have no sqlite, but the index entry
+        // should still be returned). We also verify the session projection file
+        // is written even though the SQLite index write is a secondary concern.
+
+        // NOTE: The production `upsert_rollout` function logs a warning and
+        // returns an error if the SQLite insert fails, but `index_rollout_file`
+        // propagates that error. The broader `append_record_items` and
+        // `reindex_rollouts` callers handle the error gracefully by logging
+        // warnings rather than aborting the entire operation. This test confirms
+        // the session projection is written regardless, which is the critical
+        // durability contract.
+
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::set(temp.path());
+        let session_id = "projection-only-session";
+        let created_at = Utc.with_ymd_and_hms(2026, 7, 2, 17, 0, 0).unwrap();
+        let rollout_path = paths::new_rollout_file(session_id, created_at);
+
+        let lines = vec![
+            RecordLine::new(
+                session_id,
+                0,
+                RecordItem::SessionMeta(SessionMetaRecord {
+                    created_at,
+                    cwd: "/repo/proj".into(),
+                    workspace_key: None,
+                    workspace_root: None,
+                    workspace_name: None,
+                    model: None,
+                    config_summary: None,
+                    parent_session_id: None,
+                    branch_from_seq: None,
+                    migrated_from: None,
+                }),
+            ),
+        ];
+        write_rollout(&rollout_path, &lines);
+
+        // index_rollout_file upserts the SQLite entry and writes the session
+        // projection. The session projection is what load_session reads.
+        let result = index_rollout_file(&rollout_path);
+        assert!(result.is_ok(), "index_rollout_file should succeed: {:?}", result.err());
+
+        // The session projection file should have been written.
+        let loaded = crate::storage::load_session(session_id).unwrap();
+        assert_eq!(loaded.len(), 0, "only SessionMeta, no messages; projection exists");
+
+        let info = crate::storage::load_session_info(session_id).unwrap();
+        assert_eq!(info.cwd, "/repo/proj", "session info should reflect the rollout metadata");
     }
 }

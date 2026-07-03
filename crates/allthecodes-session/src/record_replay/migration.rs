@@ -510,6 +510,210 @@ mod tests {
 
     #[test]
     #[serial]
+    fn migrate_legacy_message_falls_back_to_legacy_message_type() {
+        // When serializable_to_record_item encounters an unknown msg_type, it
+        // must produce RecordItem::LegacyMessage rather than failing.
+        let sm = SerializableMessage {
+            msg_type: "unknown_message_type".into(),
+            uuid: "10000000-0000-0000-0000-000000000099".into(),
+            timestamp: 99,
+            data: serde_json::json!({"some_arbitrary_field": "value"}),
+        };
+
+        let item = serializable_to_record_item(&sm);
+
+        match &item {
+            RecordItem::LegacyMessage(legacy) => {
+                assert_eq!(legacy.msg_type, "unknown_message_type");
+                assert_eq!(legacy.uuid, "10000000-0000-0000-0000-000000000099");
+                assert_eq!(legacy.timestamp, 99);
+                assert_eq!(
+                    legacy.data.get("some_arbitrary_field"),
+                    Some(&serde_json::Value::String("value".into()))
+                );
+            }
+            other => panic!(
+                "Expected RecordItem::LegacyMessage for unknown msg_type, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn migrate_partial_message_creates_legacy_message_record() {
+        // A message that is structurally malformed for its known msg_type
+        // should still be preserved as a LegacyMessage record instead of
+        // panicking or silently skipping. The current implementation handles
+        // corrupt data for known types by producing empty/default typed records
+        // (no panic), but the plan intends this to eventually fall through to
+        // LegacyMessage. This test verifies the non-crash guarantee and
+        // documents the current behavior.
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        // Build a session where one message has missing required fields
+        // (no "content" for a "user" message).
+        let file = storage::SessionFile {
+            session_id: "partial-msg-1".into(),
+            created_at: 1_700_000_000,
+            last_modified: 1_700_000_000,
+            cwd: "/repo".into(),
+            custom_title: None,
+            chat_mode_override: None,
+            messages: vec![
+                // Valid user message
+                SerializableMessage {
+                    msg_type: "user".into(),
+                    uuid: "10000000-0000-0000-0000-000000000001".into(),
+                    timestamp: 1,
+                    data: serde_json::json!({
+                        "content": "hello",
+                        "is_meta": false,
+                    }),
+                },
+                // User message with empty data (partial/corrupt)
+                SerializableMessage {
+                    msg_type: "user".into(),
+                    uuid: "10000000-0000-0000-0000-000000000002".into(),
+                    timestamp: 2,
+                    data: serde_json::json!({}),
+                },
+                // Unknown msg_type (should produce LegacyMessage)
+                SerializableMessage {
+                    msg_type: "proprietary_ext".into(),
+                    uuid: "10000000-0000-0000-0000-000000000003".into(),
+                    timestamp: 3,
+                    data: serde_json::json!({"vendor_blob": [1, 2, 3]}),
+                },
+            ],
+        };
+        std::fs::create_dir_all(storage::get_session_dir()).unwrap();
+        let json = serde_json::to_string_pretty(&file).unwrap();
+        std::fs::write(storage::get_session_file("partial-msg-1"), json).unwrap();
+
+        // Migration must not panic
+        let rollout_path = migrate_legacy_session("partial-msg-1").unwrap();
+        assert!(rollout_path.exists());
+
+        let result = crate::record_replay::reader::read_rollout_file(&rollout_path).unwrap();
+        // SessionMeta (seq 0) + 3 messages (seq 1,2,3) + Snapshot (seq 4) = 5 lines
+        assert_eq!(result.lines.len(), 5);
+
+        // seq 1: valid user message -> typed Message (user)
+        assert_eq!(result.lines[1].seq, 1);
+        assert!(matches!(
+            &result.lines[1].item,
+            RecordItem::Message(MessageRecord {
+                message: RecordedMessage::User { .. },
+            })
+        ));
+
+        // seq 2: partial user message -> current code produces typed Message
+        // with empty content (no crash)
+        assert_eq!(result.lines[2].seq, 2);
+        assert!(matches!(
+            &result.lines[2].item,
+            RecordItem::Message(MessageRecord {
+                message: RecordedMessage::User { .. },
+            })
+        ));
+
+        // seq 3: unknown msg_type -> LegacyMessage
+        assert_eq!(result.lines[3].seq, 3);
+        assert!(matches!(
+            &result.lines[3].item,
+            RecordItem::LegacyMessage(LegacyMessageRecord {
+                msg_type,
+                ..
+            }) if msg_type == "proprietary_ext"
+        ));
+
+        // seq 4: Snapshot
+        assert_eq!(result.lines[4].seq, 4);
+        assert!(matches!(
+            &result.lines[4].item,
+            RecordItem::Snapshot(_)
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn migrate_legacy_session_creates_rollout_with_migration_metadata() {
+        // Verify that the SessionMeta line in the synthetic rollout contains
+        // "migrated_from" and that the final line is a Snapshot.
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        let file = storage::SessionFile {
+            session_id: "meta-check-1".into(),
+            created_at: 1_700_000_000,
+            last_modified: 1_700_000_000,
+            cwd: "/workspace".into(),
+            custom_title: None,
+            chat_mode_override: None,
+            messages: vec![
+                SerializableMessage {
+                    msg_type: "user".into(),
+                    uuid: "10000000-0000-0000-0000-000000000001".into(),
+                    timestamp: 1,
+                    data: serde_json::json!({
+                        "content": "hi",
+                        "is_meta": false,
+                    }),
+                },
+                SerializableMessage {
+                    msg_type: "assistant".into(),
+                    uuid: "10000000-0000-0000-0000-000000000002".into(),
+                    timestamp: 2,
+                    data: serde_json::json!({
+                        "content": [{"type": "text", "text": "hello"}],
+                        "stop_reason": "end_turn",
+                        "cost_usd": 0.0,
+                    }),
+                },
+            ],
+        };
+        std::fs::create_dir_all(storage::get_session_dir()).unwrap();
+        std::fs::write(
+            storage::get_session_file("meta-check-1"),
+            serde_json::to_string_pretty(&file).unwrap(),
+        )
+        .unwrap();
+
+        let rollout_path = migrate_legacy_session("meta-check-1").unwrap();
+        assert!(rollout_path.exists());
+
+        let content = std::fs::read_to_string(&rollout_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        // First line (SessionMeta) must contain "migrated_from"
+        assert!(
+            lines[0].contains("migrated_from"),
+            "SessionMeta line should contain migrated_from: {}",
+            lines[0]
+        );
+
+        // Confirm "migrated_from" value is "legacy_json"
+        let first_line: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("first line should be valid JSON");
+        assert_eq!(
+            first_line["item"]["migrated_from"],
+            "legacy_json",
+            "SessionMeta item should have migrated_from set to legacy_json"
+        );
+
+        // Last line must be a Snapshot
+        let last_line: serde_json::Value =
+            serde_json::from_str(lines.last().unwrap()).expect("last line should be valid JSON");
+        assert_eq!(
+            last_line["item"]["type"],
+            "snapshot",
+            "Last line item type should be snapshot"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn migrate_legacy_session_keeps_original_file() {
         let temp = tempdir().unwrap();
         let _g = HomeGuard::set(temp.path());
