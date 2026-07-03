@@ -31,10 +31,31 @@ allthecodes --acp --cwd /path/to/project
 | `$/cancel_request` | ✅ (request-level cancellation) |
 | `available_commands_update` | ✅ (sent after session/new, session/load, session/resume) |
 | `config_option_update` | ✅ (model, mode, thought_level options) |
-| Permission bridge | ✅ (maps `PermissionRequestPayload` to `session/request_permission`) |
-| `session/request_permission` client request | ✅ (via `RequestPermissionRequest`) |
+| Permission bridge | ⚠️ partial: request/response mapping exists, runtime callback/request dispatch is not wired yet |
+| `session/request_permission` client request | ⚠️ partial: schema mapping exists, JSON-RPC client request lifecycle is not wired yet |
 
 ## Intentionally Unadvertised Capabilities
+
+## Review Fix Log
+
+2026-07-03:
+
+- Fixed `session/update` stdout frames so ACP updates are emitted as JSON-RPC notifications with `method: "session/update"` and `params`, instead of bare update payloads.
+- Fixed JSON-RPC request parsing to preserve `id: null` as a request id, and to execute notifications contained in JSON-RPC batches.
+- Fixed `session/delete` dispatch so it is not accepted while the delete capability is not advertised; the handler now serializes the schema `DeleteSessionResponse` shape.
+- Fixed `session/new` to reject non-empty ACP `mcpServers` while per-session MCP connection support remains unimplemented.
+- Fixed `session/cancel` handling to mark the active turn as cancelled and report final idle state with `stopReason: "cancelled"` when cancellation wins.
+- Fixed `session/set_config_option` to reject unknown config ids and invalid `mode` / `thought_level` values instead of silently accepting them.
+- Fixed `file://` prompt resource conversion so absolute file links become `@/absolute/path`, not `@//absolute/path`.
+- Fixed the ACP root engine factory to reuse startup-discovered tools, the resolved AppState template, model, and CLI overrides for each per-session `QueryEngine`.
+- Fixed `auth/login` / `auth/logout` runtime handlers so they return the handler result, and broadened auth-method detection beyond Codex OAuth environment state.
+
+Still open after this pass:
+
+- Full permission bridge runtime wiring is not complete: ACP client requests, response routing, disconnect denial, and `requires_action` transitions still need integration tests.
+- `session/load` still needs full conversation replay rather than placeholder state updates.
+- `session/list` still needs workspace filtering, cursor serialization, and complete `_meta` mapping.
+- Tool-call and thinking/plan update mapping is still incomplete and should not be treated as full ACP parity.
 
 | Capability | Reason |
 |-----------|--------|
