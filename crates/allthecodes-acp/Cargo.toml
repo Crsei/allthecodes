@@ -28,3 +28,7 @@ allthecodes-session.workspace = true
 allthecodes-tool-display.workspace = true
 allthecodes-types.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+serial_test = { workspace = true }
+tempfile = { workspace = true }

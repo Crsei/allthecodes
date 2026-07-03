@@ -187,6 +187,7 @@ impl RuntimeHarness {
 }
 
 /// Check if a JSON value is a session/update notification.
+#[allow(dead_code)]
 pub fn is_session_update(value: &serde_json::Value) -> bool {
     value
         .get("method")

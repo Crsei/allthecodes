@@ -179,6 +179,8 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "serial_test",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tracing",

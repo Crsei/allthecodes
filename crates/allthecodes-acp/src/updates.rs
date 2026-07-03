@@ -4,13 +4,14 @@
 //! that the ACP client can consume.
 
 use agent_client_protocol_schema::v2::{
-    AgentMessage, AgentThought, ContentChunk, ContentBlock, IdleStateUpdate,
-    MessageId, RunningStateUpdate, SessionUpdate, StateUpdate, StopReason,
-    UsageUpdate, UserMessage,
+    AgentMessage, AgentThought, ContentBlock, ContentChunk, IdleStateUpdate, MessageId,
+    RunningStateUpdate, SessionUpdate, StateUpdate, StopReason, TextContent, ToolCallStatus,
+    ToolCallUpdate, UsageUpdate, UserMessage,
 };
-use allthecodes_types::sdk::{
-    SdkMessage, ResultSubtype,
+use allthecodes_types::message::{
+    ContentBlock as InternalContentBlock, Message, MessageContent, SystemSubtype, ToolResultContent,
 };
+use allthecodes_types::sdk::{ResultSubtype, SdkMessage};
 
 /// Message counter for generating deterministic message IDs.
 #[derive(Debug, Default, Clone)]
@@ -52,9 +53,7 @@ pub fn sdk_message_to_updates(
         SdkMessage::StreamEvent(event) => {
             vec![map_stream_event(event, counter)]
         }
-        SdkMessage::Result(result) => {
-            sdk_result_to_updates(result, None)
-        }
+        SdkMessage::Result(result) => sdk_result_to_updates(result, None),
         SdkMessage::SystemInit(_) => {
             vec![]
         }
@@ -83,6 +82,181 @@ pub fn sdk_message_to_updates(
                 counter.next_thought_message_id(),
             ))]
         }
+    }
+}
+
+/// Convert a loaded transcript message into deterministic ACP replay updates.
+pub fn loaded_message_to_updates(
+    msg: &Message,
+    index: usize,
+    cwd: &std::path::Path,
+) -> Vec<SessionUpdate> {
+    match msg {
+        Message::User(user) if !user.is_meta => {
+            let content = message_content_to_acp_blocks(&user.content);
+            if content.is_empty() {
+                Vec::new()
+            } else {
+                vec![SessionUpdate::UserMessage(
+                    UserMessage::new(MessageId::new(format!("loaded-user-{index}")))
+                        .content(content),
+                )]
+            }
+        }
+        Message::User(_) => Vec::new(),
+        Message::Assistant(assistant) => {
+            let mut updates = Vec::new();
+            let mut agent_content = Vec::new();
+            let mut thought_content = Vec::new();
+
+            for block in &assistant.content {
+                match block {
+                    InternalContentBlock::Text { text } => {
+                        agent_content.push(ContentBlock::Text(TextContent::new(text.clone())));
+                    }
+                    InternalContentBlock::Thinking { thinking, .. } => {
+                        thought_content
+                            .push(ContentBlock::Text(TextContent::new(thinking.clone())));
+                    }
+                    InternalContentBlock::RedactedThinking { data } => {
+                        thought_content.push(ContentBlock::Text(TextContent::new(data.clone())));
+                    }
+                    InternalContentBlock::ToolUse { id, name, input }
+                    | InternalContentBlock::ServerToolUse { id, name, input } => {
+                        updates.push(SessionUpdate::ToolCallUpdate(
+                            crate::tool_calls::build_tool_call_update(
+                                format!("loaded-tool-{id}"),
+                                name,
+                                input,
+                                cwd,
+                            ),
+                        ));
+                    }
+                    InternalContentBlock::ToolResult {
+                        tool_use_id,
+                        content: _,
+                        is_error,
+                    } => {
+                        let status = if *is_error {
+                            ToolCallStatus::Failed
+                        } else {
+                            ToolCallStatus::Completed
+                        };
+                        updates.push(SessionUpdate::ToolCallUpdate(
+                            ToolCallUpdate::new(format!("loaded-tool-{tool_use_id}"))
+                                .status(status),
+                        ));
+                    }
+                    InternalContentBlock::ConnectorText { connector_text, .. } => {
+                        agent_content
+                            .push(ContentBlock::Text(TextContent::new(connector_text.clone())));
+                    }
+                    InternalContentBlock::Image { .. } => {}
+                }
+            }
+
+            if !agent_content.is_empty() {
+                updates.insert(
+                    0,
+                    SessionUpdate::AgentMessage(
+                        AgentMessage::new(MessageId::new(format!("loaded-agent-{index}")))
+                            .content(agent_content),
+                    ),
+                );
+            }
+            if !thought_content.is_empty() {
+                updates.push(SessionUpdate::AgentThought(
+                    AgentThought::new(MessageId::new(format!("loaded-thought-{index}")))
+                        .content(thought_content),
+                ));
+            }
+
+            updates
+        }
+        Message::System(system) => {
+            let kind = match system.subtype {
+                SystemSubtype::CompactBoundary { .. }
+                | SystemSubtype::MicrocompactBoundary { .. } => Some("compact_boundary"),
+                SystemSubtype::ApiError { .. } => Some("api_retry"),
+                SystemSubtype::LocalCommand { .. }
+                | SystemSubtype::Informational { .. }
+                | SystemSubtype::Warning => Some("system"),
+            };
+            let Some(kind) = kind else {
+                return Vec::new();
+            };
+            let mut meta = serde_json::Map::new();
+            meta.insert("kind".into(), serde_json::Value::String(kind.into()));
+            vec![SessionUpdate::AgentThought(
+                AgentThought::new(MessageId::new(format!("loaded-thought-{index}")))
+                    .content(vec![ContentBlock::Text(TextContent::new(
+                        system.content.clone(),
+                    ))])
+                    .meta(meta),
+            )]
+        }
+        Message::Progress(progress) => {
+            let text = progress
+                .data
+                .get("text")
+                .and_then(|value| value.as_str())
+                .or_else(|| {
+                    progress
+                        .data
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                })
+                .unwrap_or_default();
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new(format!("loaded-tool-{}", progress.tool_use_id))
+                        .status(ToolCallStatus::InProgress),
+                )]
+            }
+        }
+        Message::Attachment(_) => Vec::new(),
+    }
+}
+
+fn message_content_to_acp_blocks(content: &MessageContent) -> Vec<ContentBlock> {
+    match content {
+        MessageContent::Text(text) if !text.is_empty() => {
+            vec![ContentBlock::Text(TextContent::new(text.clone()))]
+        }
+        MessageContent::Text(_) => Vec::new(),
+        MessageContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(internal_content_to_acp_text)
+            .collect(),
+    }
+}
+
+fn internal_content_to_acp_text(block: &InternalContentBlock) -> Option<ContentBlock> {
+    match block {
+        InternalContentBlock::Text { text } if !text.is_empty() => {
+            Some(ContentBlock::Text(TextContent::new(text.clone())))
+        }
+        InternalContentBlock::ToolResult { content, .. } => {
+            let text = tool_result_text(content);
+            (!text.is_empty()).then(|| ContentBlock::Text(TextContent::new(text)))
+        }
+        _ => None,
+    }
+}
+
+fn tool_result_text(content: &ToolResultContent) -> String {
+    match content {
+        ToolResultContent::Text(text) => text.clone(),
+        ToolResultContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                InternalContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 
@@ -151,9 +325,7 @@ fn map_stream_event(
         allthecodes_types::message::StreamEvent::MessageStart { .. } => {
             SessionUpdate::StateUpdate(StateUpdate::Running(RunningStateUpdate::new()))
         }
-        _ => {
-            SessionUpdate::AgentThought(AgentThought::new(counter.next_thought_message_id()))
-        }
+        _ => SessionUpdate::AgentThought(AgentThought::new(counter.next_thought_message_id())),
     }
 }
 

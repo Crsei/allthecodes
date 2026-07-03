@@ -290,7 +290,7 @@ pub async fn dispatch_request(
                     Err(v2::Error::method_not_found()),
                 ));
             }
-            let result = handle_session_delete(params, session_manager).await;
+            let result = handle_session_delete(params, session_manager, sink).await;
             Some(DispatchOutcome::Response(result))
         }
         _ => Some(DispatchOutcome::Response(Err(v2::Error::method_not_found(
@@ -558,23 +558,29 @@ async fn handle_session_method(
             AcpSessionManager::validate_cwd(&cwd)
                 .map_err(|e| v2::Error::invalid_params().data(e))?;
 
+            let additional = req.additional_directories.clone();
+            AcpSessionManager::validate_additional_dirs(&additional)
+                .map_err(|e| v2::Error::invalid_params().data(e))?;
+            if !req.mcp_servers.is_empty() {
+                return Err(v2::Error::invalid_params()
+                    .data("ACP MCP server connections are not yet supported"));
+            }
+
             let resumed =
                 allthecodes_session::resume::resume_session_detail(&req.session_id.0.to_string())
                     .map_err(|_| {
                     v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
                 })?;
+            let replay_messages = resumed.messages.clone();
 
             let sid = req.session_id;
             let session = session_manager
-                .create_session(sid.clone(), cwd, Vec::new(), Some(resumed.messages))
+                .create_session(sid.clone(), cwd.clone(), additional, Some(resumed.messages))
                 .await
                 .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
 
-            // Replay the full visible conversation via session/update
-            // In practice this would replay each UserReplay and Assistant message
-            // For now we send a minimal replay indicator
-            send_session_update(sink, sid.clone(), crate::updates::state_running_update());
-            send_session_update(sink, sid.clone(), crate::updates::state_idle_update(None));
+            crate::session::replay_loaded_messages(sid.clone(), &replay_messages, &cwd, sink)
+                .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
 
             let config_entries = crate::config_options::build_config_options(&session);
             let config_options: Vec<v2::SessionConfigOption> = config_entries
@@ -647,32 +653,7 @@ async fn handle_session_method(
                 None
             };
 
-            let _cwd = req
-                .as_ref()
-                .and_then(|r| r.cwd.as_ref())
-                .map(std::path::PathBuf::from);
-            let limit = 100;
-
-            let sessions = allthecodes_session::storage::list_sessions_page(limit, None)
-                .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
-
-            let acp_sessions: Vec<v2::SessionInfo> = sessions
-                .sessions
-                .into_iter()
-                .map(|s| {
-                    let dt_str = chrono::DateTime::from_timestamp(s.last_modified, 0)
-                        .map(|dt| dt.to_rfc3339())
-                        .unwrap_or_default();
-                    v2::SessionInfo::new(
-                        v2::SessionId::new(s.session_id),
-                        std::path::PathBuf::from(""),
-                    )
-                    .title(s.title)
-                    .updated_at(Some(dt_str))
-                })
-                .collect();
-
-            serde_json::to_value(v2::ListSessionsResponse::new(acp_sessions))
+            serde_json::to_value(crate::session::list_sessions(req.as_ref())?)
                 .map_err(|e| v2::Error::internal_error().data(format!("serialization error: {e}")))
         }
         "session/close" => {
@@ -688,7 +669,7 @@ async fn handle_session_method(
                     v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
                 })?;
 
-            crate::session::close_session(&session, session_manager).await;
+            crate::session::close_session(&session, session_manager, sink).await;
 
             serde_json::to_value(v2::CloseSessionResponse::new())
                 .map_err(|e| v2::Error::internal_error().data(format!("serialization error: {e}")))
@@ -704,6 +685,7 @@ async fn handle_session_method(
 async fn handle_session_delete(
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
+    sink: &AcpSink,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
     let req: v2::DeleteSessionRequest = serde_json::from_str(raw.get()).map_err(|e| {
@@ -714,7 +696,7 @@ async fn handle_session_delete(
 
     // If session is active in memory, close it first
     if let Some(session) = session_manager.get_session(&sid_str).await {
-        crate::session::close_session(&session, session_manager).await;
+        crate::session::close_session(&session, session_manager, sink).await;
     }
 
     // Archive the session in storage (delete is an archive operation)
