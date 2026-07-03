@@ -10,5 +10,5 @@ pub(crate) mod startup_context;
 pub(crate) mod tool_catalog;
 
 pub(crate) use mode_router::ModeRouter;
-pub(crate) use runtime_composition::{RuntimeComposition, RuntimeReady};
+pub(crate) use runtime_composition::RuntimeComposition;
 pub(crate) use startup_context::StartupContext;
