@@ -76,6 +76,8 @@ pub mod user_tool_result_message;
 
 #[path = "messages/render/mod.rs"]
 mod render;
+#[path = "messages/view_model.rs"]
+pub mod view_model;
 #[path = "messages/wrap.rs"]
 mod wrap;
 
@@ -87,6 +89,7 @@ pub(super) use render::{
     message_primary_reference, render_renderable_message_for_layout, CopyTextMode,
     MessageRenderContext, MessageRenderOptions,
 };
+pub(crate) use view_model::MessageListViewModel;
 
 #[cfg(test)]
 mod tests {

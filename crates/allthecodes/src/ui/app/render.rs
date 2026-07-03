@@ -12,7 +12,9 @@ use crate::ui::bottom_pane::BottomPaneHeights;
 use crate::ui::command_palette::CommandPalette;
 use crate::ui::command_surface::CommandSurface;
 use crate::ui::history_search_dialog::HistorySearchDialog;
-use crate::ui::messages::render_messages;
+use crate::ui::messages::{
+    render_messages, MessageListViewModel, MessageRenderContext, MessageRenderOptions,
+};
 use crate::ui::notifications::in_app::{NotificationPriority, NotificationTone};
 use crate::ui::overlays::{render_prompt_adjacent_dialog_lines, CenteredOverlayFrame};
 use crate::ui::panel_layout::PanelSizePreset;
@@ -26,6 +28,9 @@ use crate::ui::welcome;
 /// eat the messages pane.
 const STATUS_LINE_MAX_LINES: usize = 3;
 const MESSAGE_BOTTOM_GAP_HEIGHT: u16 = 1;
+
+const _: fn(&domain::ConversationStore, MessageRenderOptions) -> MessageRenderContext =
+    domain::build_message_render_context;
 
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {
@@ -123,19 +128,22 @@ impl App {
         let content_height = if self.show_welcome {
             welcome::welcome_height_for(size.width).min(max_content_height)
         } else {
-            let message_render_context = domain::build_message_render_context(
-                &self.conversation,
-                super::super::messages::MessageRenderOptions {
+            let (selected, selected_expanded) = self.conversation.render_context_inputs();
+            let message_vm = MessageListViewModel::build(
+                self.conversation.messages(),
+                selected,
+                selected_expanded,
+                MessageRenderOptions {
                     verbose: self.verbose,
                     is_transcript_mode: false,
-                    show_all_in_transcript: false,
                     thinking_animation_frame: self.thinking_animation_frame(),
+                    ..MessageRenderOptions::default()
                 },
             );
             self.conversation.ensure_vscroll_up_to_date(
                 size.width,
                 &self.theme,
-                &message_render_context,
+                message_vm.render_context(),
             );
             self.conversation
                 .vscroll()
@@ -167,19 +175,22 @@ impl App {
             );
         } else {
             // Messages (virtual scroll)
-            let message_render_context = domain::build_message_render_context(
-                &self.conversation,
-                super::super::messages::MessageRenderOptions {
+            let (selected, selected_expanded) = self.conversation.render_context_inputs();
+            let message_vm = MessageListViewModel::build(
+                self.conversation.messages(),
+                selected,
+                selected_expanded,
+                MessageRenderOptions {
                     verbose: self.verbose,
                     is_transcript_mode: false,
-                    show_all_in_transcript: false,
                     thinking_animation_frame: self.thinking_animation_frame(),
+                    ..MessageRenderOptions::default()
                 },
             );
             self.conversation.ensure_vscroll_up_to_date(
                 message_area.width,
                 &self.theme,
-                &message_render_context,
+                message_vm.render_context(),
             );
             let mut total = self.conversation.vscroll().total_visual_lines();
             let (message_body_area, scrollbar_area) =
@@ -188,7 +199,7 @@ impl App {
                 self.conversation.ensure_vscroll_up_to_date(
                     message_body_area.width,
                     &self.theme,
-                    &message_render_context,
+                    message_vm.render_context(),
                 );
                 total = self.conversation.vscroll().total_visual_lines();
             }
@@ -205,7 +216,7 @@ impl App {
                 self.is_streaming,
                 self.conversation.scroll_offset(),
                 self.conversation.vscroll(),
-                &message_render_context,
+                message_vm.render_context(),
             );
             if let Some(scrollbar_area) = scrollbar_area {
                 self.render_layout.session_scrollbar = Some(super::SessionScrollbarState {
@@ -531,19 +542,23 @@ impl App {
         // Ensure the virtual-scroll cache matches the body width. Sharing
         // `vscroll` with prompt mode is fine because both invalidate on
         // width change.
-        let message_render_context = domain::build_message_render_context(
-            &self.conversation,
-            super::super::messages::MessageRenderOptions {
+        let (selected, selected_expanded) = self.conversation.render_context_inputs();
+        let message_vm = MessageListViewModel::build(
+            self.conversation.messages(),
+            selected,
+            selected_expanded,
+            MessageRenderOptions {
                 verbose: self.verbose,
                 is_transcript_mode: true,
                 show_all_in_transcript: true,
                 thinking_animation_frame: None,
+                ..MessageRenderOptions::default()
             },
         );
         self.conversation.ensure_vscroll_up_to_date(
             body_area.width,
             &self.theme,
-            &message_render_context,
+            message_vm.render_context(),
         );
         let mut total = self.conversation.vscroll().total_visual_lines();
         let (message_body_area, scrollbar_area) = split_session_scrollbar_area(body_area, total);
@@ -551,7 +566,7 @@ impl App {
             self.conversation.ensure_vscroll_up_to_date(
                 message_body_area.width,
                 &self.theme,
-                &message_render_context,
+                message_vm.render_context(),
             );
             total = self.conversation.vscroll().total_visual_lines();
         }
@@ -568,7 +583,7 @@ impl App {
             self.is_streaming,
             self.transcript_state.scroll_offset,
             self.conversation.vscroll(),
-            &message_render_context,
+            message_vm.render_context(),
         );
         if let Some(scrollbar_area) = scrollbar_area {
             self.render_layout.session_scrollbar = Some(super::SessionScrollbarState {

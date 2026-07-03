@@ -108,6 +108,14 @@ impl MessageRenderContext {
         &self.renderable_messages
     }
 
+    pub(crate) fn selected_message(&self) -> Option<usize> {
+        self.selected_message
+    }
+
+    pub(crate) fn selected_expanded(&self) -> bool {
+        self.selected_expanded
+    }
+
     pub(crate) fn tool_use(&self, tool_use_id: &str) -> Option<&ToolUseRenderRecord> {
         self.lookups.tool_uses.get(tool_use_id)
     }
