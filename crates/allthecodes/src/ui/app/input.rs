@@ -19,7 +19,7 @@ use crate::ui::slack_channel_completion::SlackChannelCompletionProvider;
 use crate::ui::transcript::ViewMode;
 use crate::ui::vim::VimAction;
 
-use super::overlays::ActiveOverlay;
+use super::overlays::{ActiveOverlay, OverlayOutcome};
 use super::{current_unix_secs, App, AppAction, MouseFocus};
 
 /// Tracks the state of an active completion session.
@@ -139,16 +139,8 @@ impl App {
             return self.handle_workspace_trust_key(key);
         }
 
-        match self.overlays.active_overlay() {
-            Some(ActiveOverlay::BypassPermissions) => {
-                return self.handle_bypass_permissions_key(key);
-            }
-            Some(ActiveOverlay::Question) => return self.handle_question_key(key),
-            Some(ActiveOverlay::Permission) => return self.handle_permission_key(key),
-            Some(ActiveOverlay::AgentTree) => return self.handle_agent_tree_key(key),
-            Some(ActiveOverlay::HistorySearch) => return self.handle_history_search_key(key),
-            Some(ActiveOverlay::CommandSurface) => return self.handle_command_surface_key(key),
-            None => {}
+        if let Some(action) = self.handle_active_overlay_key(key).into_app_action() {
+            return action;
         }
 
         if self.conversation.selection().is_some() {
@@ -470,6 +462,19 @@ impl App {
         ));
         self.dirty = true;
         true
+    }
+
+    fn handle_active_overlay_key(&mut self, key: KeyEvent) -> OverlayOutcome {
+        let action = match self.overlays.active_overlay() {
+            Some(ActiveOverlay::BypassPermissions) => self.handle_bypass_permissions_key(key),
+            Some(ActiveOverlay::Question) => self.handle_question_key(key),
+            Some(ActiveOverlay::Permission) => self.handle_permission_key(key),
+            Some(ActiveOverlay::AgentTree) => self.handle_agent_tree_key(key),
+            Some(ActiveOverlay::HistorySearch) => self.handle_history_search_key(key),
+            Some(ActiveOverlay::CommandSurface) => self.handle_command_surface_key(key),
+            None => return OverlayOutcome::Inactive,
+        };
+        OverlayOutcome::Handled(action)
     }
 
     fn handle_bypass_permissions_key(&mut self, key: KeyEvent) -> AppAction {

@@ -3,6 +3,7 @@ use crate::ui::history_search_dialog::HistorySearchDialog;
 use crate::ui::permissions::{BypassPermissionsModeDialog, PermissionDialog, QuestionDialog};
 
 use super::agent_tree_dialog::AgentTreeDialog;
+use super::AppAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActiveOverlay {
@@ -12,6 +13,21 @@ pub(super) enum ActiveOverlay {
     AgentTree,
     HistorySearch,
     CommandSurface,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum OverlayOutcome {
+    Inactive,
+    Handled(AppAction),
+}
+
+impl OverlayOutcome {
+    pub(super) fn into_app_action(self) -> Option<AppAction> {
+        match self {
+            Self::Inactive => None,
+            Self::Handled(action) => Some(action),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -59,8 +75,9 @@ impl OverlayState {
 #[cfg(test)]
 impl OverlayState {
     fn set_command_surface_for_test(&mut self) {
-        self.command_surface =
-            Some(CommandSurface::Tasks(crate::ui::command_surface::TasksSurface::new()));
+        self.command_surface = Some(CommandSurface::Tasks(
+            crate::ui::command_surface::TasksSurface::new(),
+        ));
     }
 
     fn set_permission_for_test(&mut self) {

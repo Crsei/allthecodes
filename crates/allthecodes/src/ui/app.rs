@@ -808,8 +808,7 @@ impl App {
             }
             AppEvent::Backend { message } => {
                 let message = message.as_ref();
-                if let Some(CommandSurface::Tasks(surface)) =
-                    self.overlays.command_surface.as_mut()
+                if let Some(CommandSurface::Tasks(surface)) = self.overlays.command_surface.as_mut()
                 {
                     if backend_message_updates_tasks(message) {
                         surface.handle_event(message);
