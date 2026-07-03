@@ -1,5 +1,6 @@
 use crate::ui::app::agent_navigation::{AgentNavigationState, AgentThreadEntry};
 use crate::ui::command_surface::{TaskSurfaceItem, TasksSurface};
+#[cfg(test)]
 use crate::ui::tasks::TaskStatus;
 use allthecodes_ipc_protocol::BackendMessage;
 
@@ -55,6 +56,7 @@ impl RuntimeViewState {
         self.rebuild_task_items();
     }
 
+    #[cfg(test)]
     pub(super) fn tasks(&self) -> Vec<TaskStatus> {
         self.task_items
             .iter()

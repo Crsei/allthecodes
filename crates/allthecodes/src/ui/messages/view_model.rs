@@ -6,6 +6,7 @@ use crate::ui::messages::render::{
 
 #[derive(Debug, Clone)]
 pub(crate) struct MessageListViewModel {
+    #[cfg(test)]
     source_len: usize,
     render_context: MessageRenderContext,
 }
@@ -18,6 +19,7 @@ impl MessageListViewModel {
         options: MessageRenderOptions,
     ) -> Self {
         Self {
+            #[cfg(test)]
             source_len: messages.len(),
             render_context: build_message_render_context_with_options(
                 messages,
@@ -28,6 +30,7 @@ impl MessageListViewModel {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn source_len(&self) -> usize {
         self.source_len
     }
