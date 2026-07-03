@@ -6,15 +6,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::{domain, App};
+use super::App;
 use crate::ui::agents::agents_menu::AgentsMenuState;
 use crate::ui::bottom_pane::BottomPaneHeights;
 use crate::ui::command_palette::CommandPalette;
 use crate::ui::command_surface::CommandSurface;
 use crate::ui::history_search_dialog::HistorySearchDialog;
-use crate::ui::messages::{
-    render_messages, MessageListViewModel, MessageRenderContext, MessageRenderOptions,
-};
+use crate::ui::messages::{render_messages, MessageListViewModel, MessageRenderOptions};
 use crate::ui::notifications::in_app::{NotificationPriority, NotificationTone};
 use crate::ui::overlays::{render_prompt_adjacent_dialog_lines, CenteredOverlayFrame};
 use crate::ui::panel_layout::PanelSizePreset;
@@ -28,9 +26,6 @@ use crate::ui::welcome;
 /// eat the messages pane.
 const STATUS_LINE_MAX_LINES: usize = 3;
 const MESSAGE_BOTTOM_GAP_HEIGHT: u16 = 1;
-
-const _: fn(&domain::ConversationStore, MessageRenderOptions) -> MessageRenderContext =
-    domain::build_message_render_context;
 
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {

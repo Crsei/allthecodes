@@ -85,9 +85,8 @@ mod wrap;
 pub(super) use render::build_message_render_context;
 pub use render::render_messages;
 pub(super) use render::{
-    build_message_render_context_with_options, message_copy_text, message_copy_text_with_mode,
-    message_primary_reference, render_renderable_message_for_layout, CopyTextMode,
-    MessageRenderContext, MessageRenderOptions,
+    message_copy_text, message_copy_text_with_mode, message_primary_reference,
+    render_renderable_message_for_layout, CopyTextMode, MessageRenderContext, MessageRenderOptions,
 };
 pub(crate) use view_model::MessageListViewModel;
 

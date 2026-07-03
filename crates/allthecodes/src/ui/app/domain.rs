@@ -4,7 +4,7 @@ use allthecodes_types::message::Message;
 use ratatui::layout::Rect;
 
 use crate::ui::history_search_dialog::HistorySearchEntry;
-use crate::ui::messages::{MessageRenderContext, MessageRenderOptions};
+use crate::ui::messages::MessageRenderContext;
 use crate::ui::theme::Theme;
 use crate::ui::virtual_scroll::VirtualScroll;
 
@@ -174,19 +174,6 @@ pub(super) struct RenderLayoutStore {
     pub(super) session_scrollbar_dragging: bool,
     pub(super) message_area: Option<Rect>,
     pub(super) prompt_area: Option<Rect>,
-}
-
-pub(super) fn build_message_render_context(
-    conversation: &ConversationStore,
-    options: MessageRenderOptions,
-) -> MessageRenderContext {
-    let (selected_message, selected_expanded) = conversation.render_context_inputs();
-    crate::ui::messages::build_message_render_context_with_options(
-        conversation.messages(),
-        selected_message,
-        selected_expanded,
-        options,
-    )
 }
 
 #[cfg(test)]
