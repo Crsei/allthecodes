@@ -14,10 +14,7 @@ use crate::engine_factory::AcpEngineFactory;
 use crate::jsonrpc::{self, InboundBatchEntry, InboundMessage};
 use crate::session::AcpSessionManager;
 use crate::transport::{spawn_sink_writer, AcpSink, AcpStdioReader};
-use crate::updates::{
-    sdk_message_to_updates, sdk_result_to_updates, state_idle_update, state_running_update,
-    MessageCounter,
-};
+use crate::updates::{state_idle_update, state_running_update, AcpUpdateMapper};
 
 type PendingRequests = Arc<tokio::sync::Mutex<HashMap<String, oneshot::Sender<()>>>>;
 
@@ -837,10 +834,10 @@ async fn handle_session_prompt(
             return;
         }
 
-        let mut counter = MessageCounter::default();
         let sink = sink_clone;
         let session = session_clone;
         let _session_mgr = session_manager_clone;
+        let mut mapper = AcpUpdateMapper::new(sid.clone(), session.cwd.clone());
 
         // Send state running before polling
         send_session_update(&sink, sid.clone(), state_running_update());
@@ -863,12 +860,12 @@ async fn handle_session_prompt(
                         .unwrap_or(false)
                 };
                 if turn_cancelled || session.engine.abort_reason().is_some() {
-                    sdk_result_to_updates(result, Some(v2::StopReason::Cancelled))
+                    mapper.map_result(result, Some(v2::StopReason::Cancelled))
                 } else {
-                    sdk_result_to_updates(result, None)
+                    mapper.map_result(result, None)
                 }
             } else {
-                sdk_message_to_updates(&sdk_msg, &mut counter)
+                mapper.map_message(&sdk_msg)
             };
             for update in updates {
                 send_session_update(&sink, sid.clone(), update);
