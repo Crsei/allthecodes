@@ -46,7 +46,7 @@ impl AcpCapabilities {
         Self {
             session: true,
             session_prompt: true,
-            session_delete: false,
+            session_delete: true,
             session_mcp: false,
             auth: true,
         }
@@ -496,7 +496,14 @@ async fn handle_initialize(
     let mut agent_caps = v2::AgentCapabilities::default();
 
     if capabilities.session {
-        let session_caps = v2::SessionCapabilities::default();
+        let mut session_caps = v2::SessionCapabilities::new()
+            .load(v2::SessionLoadCapabilities::new())
+            .list(v2::SessionListCapabilities::new())
+            .resume(v2::SessionResumeCapabilities::new())
+            .close(v2::SessionCloseCapabilities::new());
+        if capabilities.session_delete {
+            session_caps = session_caps.delete(v2::SessionDeleteCapabilities::new());
+        }
         agent_caps = agent_caps.session(Some(session_caps));
     }
 
@@ -567,10 +574,8 @@ async fn handle_session_method(
             let additional = req.additional_directories.clone();
             AcpSessionManager::validate_additional_dirs(&additional)
                 .map_err(|e| v2::Error::invalid_params().data(e))?;
-            if !req.mcp_servers.is_empty() {
-                return Err(v2::Error::invalid_params()
-                    .data("ACP MCP server connections are not yet supported"));
-            }
+            crate::mcp::reject_session_mcp_servers(&req.mcp_servers)
+                .map_err(|e| v2::Error::invalid_params().data(e))?;
 
             let sid =
                 agent_client_protocol_schema::v2::SessionId::new(uuid::Uuid::new_v4().to_string());
@@ -614,10 +619,8 @@ async fn handle_session_method(
             let additional = req.additional_directories.clone();
             AcpSessionManager::validate_additional_dirs(&additional)
                 .map_err(|e| v2::Error::invalid_params().data(e))?;
-            if !req.mcp_servers.is_empty() {
-                return Err(v2::Error::invalid_params()
-                    .data("ACP MCP server connections are not yet supported"));
-            }
+            crate::mcp::reject_session_mcp_servers(&req.mcp_servers)
+                .map_err(|e| v2::Error::invalid_params().data(e))?;
 
             let resumed =
                 allthecodes_session::resume::resume_session_detail(&req.session_id.0.to_string())
@@ -749,15 +752,13 @@ async fn handle_session_delete(
         v2::Error::invalid_params().data(format!("invalid session/delete params: {e}"))
     })?;
 
-    let sid_str = req.session_id.0.to_string();
-
-    // If session is active in memory, close it first
-    if let Some(session) = session_manager.get_session(&sid_str).await {
-        crate::session::close_session(&session, session_manager, permission_manager, sink).await;
-    }
-
-    // Archive the session in storage (delete is an archive operation)
-    let _ = allthecodes_session::storage::archive_session(&sid_str);
+    crate::session::delete_session(
+        &req.session_id.0.to_string(),
+        session_manager,
+        permission_manager,
+        sink,
+    )
+    .await?;
 
     serde_json::to_value(v2::DeleteSessionResponse::new())
         .map_err(|e| v2::Error::internal_error().data(e.to_string()))

@@ -211,6 +211,30 @@ pub async fn close_session(
         .await;
 }
 
+/// Delete a session by closing any active instance and archiving persisted state.
+pub async fn delete_session(
+    session_id: &str,
+    session_manager: &AcpSessionManager,
+    permission_manager: &AcpPermissionManager,
+    sink: &AcpSink,
+) -> Result<(), v2::Error> {
+    if let Some(session) = session_manager.get_session(session_id).await {
+        close_session(&session, session_manager, permission_manager, sink).await;
+    }
+
+    let source_file_existed = allthecodes_session::storage::get_session_file(session_id).exists();
+    match allthecodes_session::storage::archive_session(session_id) {
+        Ok(()) => Ok(()),
+        Err(error) if !source_file_existed && archive_error_is_missing(&error) => Ok(()),
+        Err(error) => Err(v2::Error::internal_error().data(error.to_string())),
+    }
+}
+
+fn archive_error_is_missing(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    text.contains("does not exist") || text.contains("No such file")
+}
+
 fn send_session_update(sink: &AcpSink, session_id: v2::SessionId, update: v2::SessionUpdate) {
     let notification = v2::UpdateSessionNotification::new(session_id, update);
     sink.send(jsonrpc::build_agent_notification(

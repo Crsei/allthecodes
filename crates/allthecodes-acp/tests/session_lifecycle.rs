@@ -9,7 +9,7 @@ use allthecodes_acp::session::AcpTurnHandle;
 use allthecodes_acp::AcpEngineParams;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::QueryEngineConfig;
-use allthecodes_session::storage::save_session;
+use allthecodes_session::storage::{get_archived_session_file, get_session_file, save_session};
 use allthecodes_types::message::{
     AssistantMessage, ContentBlock, Message, MessageContent, UserMessage,
 };
@@ -432,5 +432,170 @@ async fn close_waits_for_cancelled_idle_before_removal() {
             .await
             .is_none(),
         "session should be removed after close"
+    );
+}
+
+async fn send_delete(harness: &mut RuntimeHarness, session_id: &str) -> serde_json::Value {
+    let (response, _pre_response) = harness
+        .send_request_and_capture(
+            "session/delete",
+            Some(serde_json::json!({
+                "sessionId": session_id,
+            })),
+        )
+        .await;
+    response.expect("session/delete should write a response")
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_existing_session_archives_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let _home = EnvGuard::set("ALLTHECODES_HOME", &data_home);
+
+    save_session(
+        "delete-existing-session",
+        &[user_message("delete me", 100)],
+        project.to_str().unwrap(),
+    )
+    .unwrap();
+    assert!(get_session_file("delete-existing-session").exists());
+
+    let mut harness = RuntimeHarness::new_with_factory(project, Arc::new(TestEngineFactory));
+    let response = send_delete(&mut harness, "delete-existing-session").await;
+
+    assert!(
+        response.get("error").is_none(),
+        "session/delete should succeed: {response:?}"
+    );
+    assert!(!get_session_file("delete-existing-session").exists());
+    assert!(get_archived_session_file("delete-existing-session").exists());
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_nonexistent_session_succeeds() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let _home = EnvGuard::set("ALLTHECODES_HOME", &data_home);
+
+    let mut harness = RuntimeHarness::new_with_factory(project, Arc::new(TestEngineFactory));
+    let response = send_delete(&mut harness, "missing-delete-session").await;
+
+    assert!(
+        response.get("error").is_none(),
+        "deleting a missing session should be idempotent: {response:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_active_session_closes_first() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let _home = EnvGuard::set("ALLTHECODES_HOME", &data_home);
+
+    let mut harness =
+        RuntimeHarness::new_with_factory(project.clone(), Arc::new(TestEngineFactory));
+    let (new_response, _pre_response) = harness
+        .send_request_and_capture(
+            "session/new",
+            Some(serde_json::json!({
+                "cwd": project,
+                "additionalDirectories": [],
+                "mcpServers": {},
+            })),
+        )
+        .await;
+    let session_id = new_response
+        .as_ref()
+        .and_then(|value| value.pointer("/result/sessionId"))
+        .and_then(|value| value.as_str())
+        .expect("session/new response should include sessionId")
+        .to_string();
+    let session = harness
+        .session_manager
+        .get_session(&session_id)
+        .await
+        .expect("session should exist");
+    *session.active_turn.lock().await = Some(AcpTurnHandle {
+        cancel_requested: false,
+    });
+
+    let (response, pre_response) = harness
+        .send_request_and_capture(
+            "session/delete",
+            Some(serde_json::json!({
+                "sessionId": session_id,
+            })),
+        )
+        .await;
+    let response = response.expect("session/delete should write a response");
+
+    assert!(
+        response.get("error").is_none(),
+        "session/delete should close active session first: {response:?}"
+    );
+    assert!(
+        harness
+            .session_manager
+            .get_session(&session_id)
+            .await
+            .is_none(),
+        "active session should be removed after delete"
+    );
+    let cancelled_idle = pre_response.iter().any(|message| {
+        update_payload(message).is_some_and(|update| {
+            update.get("sessionUpdate").and_then(|value| value.as_str()) == Some("state_update")
+                && update.get("state").and_then(|value| value.as_str()) == Some("idle")
+                && update.get("stopReason").and_then(|value| value.as_str()) == Some("cancelled")
+        })
+    });
+    assert!(
+        cancelled_idle,
+        "delete should emit cancelled idle while closing active session: {pre_response:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn deleted_session_no_longer_lists() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let _home = EnvGuard::set("ALLTHECODES_HOME", &data_home);
+
+    save_session(
+        "delete-list-removed",
+        &[user_message("removed", 100)],
+        project.to_str().unwrap(),
+    )
+    .unwrap();
+    save_session(
+        "delete-list-kept",
+        &[user_message("kept", 100)],
+        project.to_str().unwrap(),
+    )
+    .unwrap();
+
+    let mut harness = RuntimeHarness::new_with_factory(project, Arc::new(TestEngineFactory));
+    let delete_response = send_delete(&mut harness, "delete-list-removed").await;
+    assert!(
+        delete_response.get("error").is_none(),
+        "session/delete should succeed: {delete_response:?}"
+    );
+
+    let list_response = send_list(&mut harness, None).await;
+    assert_eq!(
+        result_session_ids(&list_response),
+        vec!["delete-list-kept".to_string()]
     );
 }

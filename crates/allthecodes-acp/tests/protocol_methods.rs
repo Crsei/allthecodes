@@ -203,6 +203,18 @@ fn auth_methods(response: &serde_json::Value) -> Vec<serde_json::Value> {
         .unwrap_or_default()
 }
 
+async fn initialize_response() -> serde_json::Value {
+    let _env = isolated_auth_env();
+    let mut harness = RuntimeHarness::new_with_factory(
+        std::env::current_dir().unwrap(),
+        Arc::new(TestEngineFactory),
+    );
+    let (response, _pre_response) = harness
+        .send_request_and_capture("initialize", Some(initialize_params()))
+        .await;
+    response.expect("initialize should write a response")
+}
+
 /// Test: sending `$/cancel_request` for a prompt request id before
 /// the prompt's engine task starts should cancel the prompt and
 /// return `RequestCancelled` rather than starting engine execution.
@@ -372,4 +384,55 @@ async fn auth_logout_is_idempotent() {
             "auth/logout should be idempotent: {response:?}"
         );
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn capability_initialize_advertises_session_delete_after_delete_tests_pass() {
+    let response = initialize_response().await;
+
+    assert!(
+        response
+            .pointer("/result/capabilities/session/delete")
+            .is_some(),
+        "session.delete should be advertised after delete behavior is verified: {response:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn capability_initialize_omits_session_mcp_until_enabled() {
+    let response = initialize_response().await;
+
+    assert!(
+        response
+            .pointer("/result/capabilities/session/mcp")
+            .is_none(),
+        "session.mcp must remain unadvertised: {response:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn capability_initialize_omits_prompt_multimodal_until_enabled() {
+    let response = initialize_response().await;
+
+    assert!(
+        response
+            .pointer("/result/capabilities/session/prompt/image")
+            .is_none(),
+        "prompt.image must remain unadvertised: {response:?}"
+    );
+    assert!(
+        response
+            .pointer("/result/capabilities/session/prompt/audio")
+            .is_none(),
+        "prompt.audio must remain unadvertised: {response:?}"
+    );
+    assert!(
+        response
+            .pointer("/result/capabilities/session/prompt/embeddedContext")
+            .is_none(),
+        "prompt.embeddedContext must remain unadvertised: {response:?}"
+    );
 }
