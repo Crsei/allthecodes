@@ -67,7 +67,11 @@ mod tests {
         assert!(!update.available_commands.is_empty());
         // All commands should start with "/"
         for cmd in &update.available_commands {
-            assert!(cmd.name.starts_with('/'), "command '{}' should start with /", cmd.name);
+            assert!(
+                cmd.name.starts_with('/'),
+                "command '{}' should start with /",
+                cmd.name
+            );
         }
     }
 
@@ -79,8 +83,11 @@ mod tests {
         // Verify hidden commands are filtered out
         for cmd in &update.available_commands {
             let bare_name = cmd.name.trim_start_matches('/');
-            assert!(!is_hidden_command(bare_name),
-                "hidden command '{}' was advertised", bare_name);
+            assert!(
+                !is_hidden_command(bare_name),
+                "hidden command '{}' was advertised",
+                bare_name
+            );
         }
     }
 }

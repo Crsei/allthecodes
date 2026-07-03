@@ -36,31 +36,39 @@ pub fn convert_prompt_blocks(blocks: &[ContentBlock]) -> Result<String, Error> {
                                 let path_str = path.to_string_lossy().to_string();
                                 parts.push(format!("@{}", path_str));
                             } else {
-                                parts.push(format!("[resource_link: {} {}]", resource_link.name, uri_str));
+                                parts.push(format!(
+                                    "[resource_link: {} {}]",
+                                    resource_link.name, uri_str
+                                ));
                             }
                         }
                         _ => {
-                            parts.push(format!("[resource_link: {} {}]", resource_link.name, uri_str));
+                            parts.push(format!(
+                                "[resource_link: {} {}]",
+                                resource_link.name, uri_str
+                            ));
                         }
                     }
                 } else {
-                    parts.push(format!("[resource_link: {} {}]", resource_link.name, uri_str));
+                    parts.push(format!(
+                        "[resource_link: {} {}]",
+                        resource_link.name, uri_str
+                    ));
                 }
             }
             ContentBlock::Image(_) => {
-                return Err(Error::invalid_params().data(
-                    "image content blocks are not yet supported"
-                ));
+                return Err(
+                    Error::invalid_params().data("image content blocks are not yet supported")
+                );
             }
             ContentBlock::Audio(_) => {
-                return Err(Error::invalid_params().data(
-                    "audio content blocks are not yet supported"
-                ));
+                return Err(
+                    Error::invalid_params().data("audio content blocks are not yet supported")
+                );
             }
             ContentBlock::Resource(_) => {
-                return Err(Error::invalid_params().data(
-                    "embedded resource content blocks are not yet supported"
-                ));
+                return Err(Error::invalid_params()
+                    .data("embedded resource content blocks are not yet supported"));
             }
             _ => {
                 continue;
@@ -83,34 +91,31 @@ mod tests {
 
     #[test]
     fn text_prompt_preserves_lines() {
-        let blocks = vec![
-            ContentBlock::Text(TextContent::new("Hello world")),
-        ];
+        let blocks = vec![ContentBlock::Text(TextContent::new("Hello world"))];
         let result = convert_prompt_blocks(&blocks).unwrap();
         assert_eq!(result, "Hello world");
     }
 
     #[test]
     fn resource_link_file_uri_maps_to_at_path() {
-        let blocks = vec![
-            ContentBlock::ResourceLink(
-                agent_client_protocol_schema::v2::ResourceLink::new(
-                    "file", "file:///home/user/file.txt",
-                ),
+        let blocks = vec![ContentBlock::ResourceLink(
+            agent_client_protocol_schema::v2::ResourceLink::new(
+                "file",
+                "file:///home/user/file.txt",
             ),
-        ];
+        )];
         let result = convert_prompt_blocks(&blocks).unwrap();
         assert_eq!(result, "@/home/user/file.txt");
     }
 
     #[test]
     fn unsupported_image_is_invalid_params() {
-        let blocks = vec![
-            ContentBlock::Image(agent_client_protocol_schema::v2::ImageContent::new(
+        let blocks = vec![ContentBlock::Image(
+            agent_client_protocol_schema::v2::ImageContent::new(
                 "AAAA".to_string(),
                 "image/png".to_string(),
-            )),
-        ];
+            ),
+        )];
         let result = convert_prompt_blocks(&blocks);
         assert!(result.is_err());
     }
