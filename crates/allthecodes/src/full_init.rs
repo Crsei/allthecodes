@@ -344,6 +344,7 @@ pub(crate) mod acp_runtime_bridge {
     use std::sync::Arc;
 
     use allthecodes_engine::lifecycle::QueryEngine;
+    use allthecodes_engine::runtime_services::RuntimeServices;
     use allthecodes_engine::types::config::QueryEngineConfig;
     use allthecodes_engine::types::tool::Tools;
 
@@ -355,6 +356,7 @@ pub(crate) mod acp_runtime_bridge {
         pub(crate) tools: Tools,
         pub(crate) app_state_template: allthecodes_engine::types::app_state::AppState,
         pub(crate) merged_config: allthecodes_config::settings::EffectiveSettings,
+        pub(crate) runtime_services: Arc<RuntimeServices>,
         pub(crate) cli_overrides: AcpCliOverrides,
     }
 
@@ -390,6 +392,7 @@ pub(crate) mod acp_runtime_bridge {
             model: inputs.model.clone(),
             tools: inputs.tools.clone(),
             app_state_template: inputs.app_state_template.clone(),
+            runtime_services: inputs.runtime_services.clone(),
             cli_overrides: inputs.cli_overrides.clone(),
         };
 
@@ -416,6 +419,7 @@ pub(crate) mod acp_runtime_bridge {
         model: String,
         tools: Tools,
         app_state_template: allthecodes_engine::types::app_state::AppState,
+        runtime_services: Arc<RuntimeServices>,
         cli_overrides: AcpCliOverrides,
     }
 
@@ -449,11 +453,7 @@ pub(crate) mod acp_runtime_bridge {
                 agent_context: None,
             };
 
-            let mut engine = QueryEngine::new(config);
-            engine.set_hook_runner(Arc::new(allthecodes_tools::hooks::ShellHookRunner::new()));
-            engine.set_command_dispatcher(Arc::new(
-                allthecodes_commands::DefaultCommandDispatcher::for_full_registry(),
-            ));
+            let engine = QueryEngine::new_with_services(config, self.runtime_services.clone());
 
             if let Some(ref session_id) = params.session_id {
                 engine.set_current_session_id(

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use allthecodes_config::settings;
 use allthecodes_engine::lifecycle::QueryEngine;
+use allthecodes_engine::runtime_services::RuntimeServices;
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_engine::types::tool::Tools;
 
@@ -28,6 +29,7 @@ pub(crate) struct RuntimeReady {
     pub(crate) tools: Tools,
     pub(crate) app_state: AppState,
     pub(crate) merged_config: settings::EffectiveSettings,
+    pub(crate) runtime_services: Arc<RuntimeServices>,
     pub(crate) engine: Arc<QueryEngine>,
 }
 

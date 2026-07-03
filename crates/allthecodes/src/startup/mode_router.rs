@@ -111,6 +111,7 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
                     tools: runtime.tools.clone(),
                     app_state_template: runtime.app_state.clone(),
                     merged_config: runtime.merged_config.clone(),
+                    runtime_services: runtime.runtime_services.clone(),
                     cli_overrides: crate::full_init::acp_runtime_bridge::AcpCliOverrides::from_cli(
                         cli,
                     ),

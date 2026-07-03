@@ -180,7 +180,7 @@ impl EngineFactory {
         };
 
         let engine = {
-            let mut e = QueryEngine::new_with_services(engine_config, runtime_services);
+            let mut e = QueryEngine::new_with_services(engine_config, runtime_services.clone());
 
             if let Some(ref client) = model.detected_client {
                 let auto_mode_policy = Arc::new(
@@ -312,6 +312,7 @@ impl EngineFactory {
             tools,
             app_state,
             merged_config,
+            runtime_services,
             engine,
         })
     }
