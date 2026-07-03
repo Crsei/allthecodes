@@ -10,13 +10,13 @@ use agent_client_protocol_schema::v2;
 use agent_client_protocol_schema::rpc::RequestId;
 use tokio::sync::mpsc;
 
-use crate::jsonrpc::{self, InboundBatchEntry, InboundMessage};
-use crate::transport::{AcpStdioReader, AcpSink, spawn_sink_writer};
-use crate::session::AcpSessionManager;
 use crate::engine_factory::AcpEngineFactory;
+use crate::jsonrpc::{self, InboundBatchEntry, InboundMessage};
+use crate::session::AcpSessionManager;
+use crate::transport::{spawn_sink_writer, AcpSink, AcpStdioReader};
 use crate::updates::{
-    sdk_message_to_updates, sdk_result_to_updates, MessageCounter, state_running_update,
-    state_idle_update,
+    sdk_message_to_updates, sdk_result_to_updates, state_idle_update, state_running_update,
+    MessageCounter,
 };
 
 /// Configuration passed into the runtime.
@@ -150,7 +150,7 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
 
 /// Dispatch a single request to the appropriate handler.
 #[allow(clippy::too_many_arguments)]
-async fn dispatch_request(
+pub async fn dispatch_request(
     method: &str,
     params: Option<&serde_json::value::RawValue>,
     _id: &RequestId,
