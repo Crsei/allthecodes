@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use agent_client_protocol_schema::rpc::{
-    JsonRpcBatch, JsonRpcMessage, Notification, RequestId, Response,
+    JsonRpcBatch, JsonRpcMessage, Notification, Request, RequestId, Response,
 };
 use agent_client_protocol_schema::v2;
 use serde_json::value::RawValue;
@@ -26,6 +26,12 @@ pub enum InboundMessage {
         method: Arc<str>,
         params: Option<Box<RawValue>>,
     },
+    /// A response to an agent-originated request.
+    Response {
+        id: RequestId,
+        result: Option<serde_json::Value>,
+        error: Option<serde_json::Value>,
+    },
     /// A non-empty batch containing requests and/or notifications.
     Batch(Vec<InboundBatchEntry>),
 }
@@ -43,6 +49,12 @@ pub enum InboundBatchEntry {
     Notification {
         method: Arc<str>,
         params: Option<Box<RawValue>>,
+    },
+    /// A response within a batch.
+    Response {
+        id: RequestId,
+        result: Option<serde_json::Value>,
+        error: Option<serde_json::Value>,
     },
 }
 
@@ -87,6 +99,9 @@ pub fn parse_frame(raw: &str) -> Result<Option<InboundMessage>, v2::Error> {
                 InboundBatchEntry::Notification { method, params } => {
                     Ok(Some(InboundMessage::Notification { method, params }))
                 }
+                InboundBatchEntry::Response { id, result, error } => {
+                    Ok(Some(InboundMessage::Response { id, result, error }))
+                }
             }
         }
         _ => {
@@ -108,13 +123,29 @@ fn parse_single_value(value: &serde_json::Value) -> Result<InboundBatchEntry, v2
         }
     }
 
+    let has_id = obj.get("id").is_some();
+    let has_result = obj.get("result").is_some();
+    let has_error = obj.get("error").is_some();
+
+    if has_result || has_error {
+        if has_result && has_error {
+            return Err(
+                v2::Error::invalid_request().data("response cannot contain both result and error")
+            );
+        }
+        let id = parse_request_id(obj.get("id"))?;
+        return Ok(InboundBatchEntry::Response {
+            id,
+            result: obj.get("result").cloned(),
+            error: obj.get("error").cloned(),
+        });
+    }
+
     let method = obj
         .get("method")
         .and_then(|v| v.as_str())
         .map(|s| Arc::<str>::from(s.to_string()))
         .ok_or_else(|| v2::Error::invalid_request().data("missing 'method' field"))?;
-
-    let has_id = obj.get("id").is_some();
 
     let params = obj.get("params").and_then(parse_params_raw);
 
@@ -188,6 +219,18 @@ pub fn build_agent_notification(notification: v2::AgentNotification) -> serde_js
     build_notification(&method, &notification)
 }
 
+/// Build an ACP agent-to-client JSON-RPC request.
+pub fn build_agent_request(id: &RequestId, request: v2::AgentRequest) -> serde_json::Value {
+    let method = request.method().to_string();
+    let request = Request {
+        id: id.clone(),
+        method: Arc::from(method),
+        params: Some(serde_json::to_value(request).unwrap_or_default()),
+    };
+    let msg = JsonRpcMessage::wrap(request);
+    serde_json::to_value(msg).unwrap_or_default()
+}
+
 /// Build a JSON-RPC batch response containing responses for requests that
 /// require a response.
 pub fn build_batch_response(
@@ -229,6 +272,9 @@ pub fn build_batch_response(
             }
             InboundBatchEntry::Notification { .. } => {
                 // Notifications do not get responses.
+            }
+            InboundBatchEntry::Response { .. } => {
+                // Responses do not get responses.
             }
         }
     }

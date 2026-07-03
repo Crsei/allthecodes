@@ -8,16 +8,16 @@ use std::sync::Arc;
 
 use agent_client_protocol_schema::rpc::RequestId;
 use agent_client_protocol_schema::v2;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::engine_factory::AcpEngineFactory;
 use crate::jsonrpc::{self, InboundBatchEntry, InboundMessage};
+use crate::permissions::AcpPermissionManager;
 use crate::session::AcpSessionManager;
 use crate::transport::{spawn_sink_writer, AcpSink, AcpStdioReader};
-use crate::updates::{
-    sdk_message_to_updates, sdk_result_to_updates, state_idle_update, state_running_update,
-    MessageCounter,
-};
+use crate::updates::{state_idle_update, state_running_update, AcpUpdateMapper};
+
+type PendingRequests = Arc<tokio::sync::Mutex<HashMap<String, oneshot::Sender<()>>>>;
 
 /// Configuration passed into the runtime.
 pub struct RuntimeContext {
@@ -46,10 +46,87 @@ impl AcpCapabilities {
         Self {
             session: true,
             session_prompt: true,
-            session_delete: false,
+            session_delete: true,
             session_mcp: false,
             auth: true,
         }
+    }
+}
+
+/// Result of dispatching a JSON-RPC request.
+pub enum DispatchOutcome {
+    Response(Result<serde_json::Value, v2::Error>),
+    ResponseThenStart(PendingPromptStart),
+}
+
+/// Accepted prompt turn that must not start streaming until its response is sent.
+pub struct PendingPromptStart {
+    response: Result<serde_json::Value, v2::Error>,
+    start_tx: oneshot::Sender<()>,
+    session: Arc<crate::session::AcpSession>,
+}
+
+impl PendingPromptStart {
+    fn new(
+        response: serde_json::Value,
+        start_tx: oneshot::Sender<()>,
+        session: Arc<crate::session::AcpSession>,
+    ) -> Self {
+        Self {
+            response: Ok(response),
+            start_tx,
+            session,
+        }
+    }
+
+    async fn cancel_before_start(self) -> Result<serde_json::Value, v2::Error> {
+        {
+            let mut turn = self.session.active_turn.lock().await;
+            *turn = None;
+        }
+        drop(self.start_tx);
+        Err(v2::Error::request_cancelled())
+    }
+}
+
+fn request_id_key(id: &RequestId) -> String {
+    format!("{id:?}")
+}
+
+fn cancel_requested(cancel_rx: &mut oneshot::Receiver<()>) -> bool {
+    matches!(cancel_rx.try_recv(), Ok(()))
+}
+
+async fn resolve_dispatch_outcome(
+    outcome: DispatchOutcome,
+    cancel_rx: &mut oneshot::Receiver<()>,
+) -> (
+    Result<serde_json::Value, v2::Error>,
+    Option<oneshot::Sender<()>>,
+) {
+    match outcome {
+        DispatchOutcome::Response(result) => (result, None),
+        DispatchOutcome::ResponseThenStart(pending) => {
+            if cancel_requested(cancel_rx) {
+                (pending.cancel_before_start().await, None)
+            } else {
+                (pending.response, Some(pending.start_tx))
+            }
+        }
+    }
+}
+
+/// Send a request response and release any deferred prompt start after enqueueing it.
+pub async fn send_dispatch_outcome(
+    id: &RequestId,
+    outcome: DispatchOutcome,
+    sink: &AcpSink,
+    cancel_rx: &mut oneshot::Receiver<()>,
+) {
+    let (result, start_tx) = resolve_dispatch_outcome(outcome, cancel_rx).await;
+    sink.send(jsonrpc::build_response(id, result));
+    if let Some(start_tx) = start_tx {
+        let _ = start_tx.send(());
     }
 }
 
@@ -61,15 +138,14 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
 
     let engine_factory = ctx.engine_factory.clone();
     let session_manager = Arc::new(AcpSessionManager::new(engine_factory));
+    let permission_manager = Arc::new(AcpPermissionManager::new());
 
     let capabilities = AcpCapabilities::baseline();
 
     let mut reader = AcpStdioReader::new();
 
     // Track in-flight request ids for $/cancel_request support
-    let pending_requests: Arc<
-        tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
-    > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let pending_requests: PendingRequests = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     loop {
         let line = match reader.read_line().await {
@@ -89,40 +165,41 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
 
         match msg {
             InboundMessage::Request { id, method, params } => {
-                let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+                let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
                 {
-                    let id_str = format!("{id:?}");
-                    pending_requests.lock().await.insert(id_str, cancel_tx);
+                    pending_requests
+                        .lock()
+                        .await
+                        .insert(request_id_key(&id), cancel_tx);
                 }
 
-                let result = dispatch_request(
+                let outcome = dispatch_request(
                     &method,
                     params.as_deref(),
                     &id,
                     &capabilities,
                     &session_manager,
+                    &permission_manager,
                     &sink,
                     &ctx,
-                    cancel_rx,
                 )
                 .await;
 
-                // Clean up pending registration
-                {
-                    let id_str = format!("{id:?}");
-                    pending_requests.lock().await.remove(&id_str);
+                if let Some(outcome) = outcome {
+                    send_dispatch_outcome(&id, outcome, &sink, &mut cancel_rx).await;
                 }
 
-                if let Some(result) = result {
-                    let resp = jsonrpc::build_response(&id, result);
-                    sink.send(resp);
-                }
+                pending_requests.lock().await.remove(&request_id_key(&id));
+            }
+            InboundMessage::Response { id, result, error } => {
+                handle_response(id, result, error, &permission_manager).await;
             }
             InboundMessage::Notification { method, params } => {
                 handle_notification(
                     &method,
                     params.as_deref(),
                     &session_manager,
+                    &permission_manager,
                     &sink,
                     &pending_requests,
                 )
@@ -133,6 +210,7 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
                     entries,
                     &capabilities,
                     &session_manager,
+                    &permission_manager,
                     &sink,
                     &ctx,
                     &pending_requests,
@@ -142,74 +220,116 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
         }
     }
 
-    // Graceful shutdown: cancel all pending permissions
-    // (sessions are cleaned up when the process exits)
+    permission_manager.cancel_all_sessions().await;
 
     Ok(())
 }
 
 /// Dispatch a single request to the appropriate handler.
 #[allow(clippy::too_many_arguments)]
-async fn dispatch_request(
+pub async fn dispatch_request(
     method: &str,
     params: Option<&serde_json::value::RawValue>,
     _id: &RequestId,
     capabilities: &AcpCapabilities,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
     sink: &AcpSink,
     ctx: &RuntimeContext,
-    cancel_rx: tokio::sync::oneshot::Receiver<()>,
-) -> Option<Result<serde_json::Value, v2::Error>> {
+) -> Option<DispatchOutcome> {
     match method {
         "initialize" => {
             let result = handle_initialize(params, capabilities, ctx).await;
-            Some(result)
+            Some(DispatchOutcome::Response(result))
         }
         "auth/login" => {
             if !capabilities.auth {
-                return Some(Err(v2::Error::method_not_found()));
+                return Some(DispatchOutcome::Response(
+                    Err(v2::Error::method_not_found()),
+                ));
             }
             let result = handle_auth_login(params).await;
-            Some(result)
+            Some(DispatchOutcome::Response(result))
         }
         "auth/logout" => {
             if !capabilities.auth {
-                return Some(Err(v2::Error::method_not_found()));
+                return Some(DispatchOutcome::Response(
+                    Err(v2::Error::method_not_found()),
+                ));
             }
             let result = handle_auth_logout().await;
-            Some(result)
+            Some(DispatchOutcome::Response(result))
         }
         "session/new" | "session/load" | "session/resume" | "session/list" | "session/close" => {
             if !capabilities.session {
-                return Some(Err(v2::Error::method_not_found()));
+                return Some(DispatchOutcome::Response(
+                    Err(v2::Error::method_not_found()),
+                ));
             }
-            let result = handle_session_method(method, params, session_manager, sink, ctx).await;
-            Some(result)
+            let result = handle_session_method(
+                method,
+                params,
+                session_manager,
+                permission_manager,
+                sink,
+                ctx,
+            )
+            .await;
+            Some(DispatchOutcome::Response(result))
         }
         "session/set_config_option" => {
             if !capabilities.session {
-                return Some(Err(v2::Error::method_not_found()));
+                return Some(DispatchOutcome::Response(
+                    Err(v2::Error::method_not_found()),
+                ));
             }
-            let result = handle_set_config_option(params, session_manager).await;
-            Some(result)
+            let result = handle_set_config_option(params, session_manager, sink).await;
+            Some(DispatchOutcome::Response(result))
         }
         "session/prompt" => {
             if !capabilities.session || !capabilities.session_prompt {
-                return Some(Err(v2::Error::method_not_found()));
+                return Some(DispatchOutcome::Response(
+                    Err(v2::Error::method_not_found()),
+                ));
             }
-            let result = handle_session_prompt(params, session_manager, sink, ctx, cancel_rx).await;
-            Some(result)
+            match handle_session_prompt(params, session_manager, sink, ctx).await {
+                Ok(pending) => Some(DispatchOutcome::ResponseThenStart(pending)),
+                Err(err) => Some(DispatchOutcome::Response(Err(err))),
+            }
         }
         "session/delete" => {
             if !capabilities.session || !capabilities.session_delete {
-                return Some(Err(v2::Error::method_not_found()));
+                return Some(DispatchOutcome::Response(
+                    Err(v2::Error::method_not_found()),
+                ));
             }
-            let result = handle_session_delete(params, session_manager).await;
-            Some(result)
+            let result =
+                handle_session_delete(params, session_manager, permission_manager, sink).await;
+            Some(DispatchOutcome::Response(result))
         }
-        _ => Some(Err(
-            v2::Error::method_not_found().data(format!("unknown method: {method}"))
-        )),
+        _ => Some(DispatchOutcome::Response(Err(v2::Error::method_not_found(
+        )
+        .data(format!("unknown method: {method}"))))),
+    }
+}
+
+/// Handle a JSON-RPC response to an ACP agent-originated client request.
+pub async fn handle_response(
+    id: RequestId,
+    result: Option<serde_json::Value>,
+    error: Option<serde_json::Value>,
+    permission_manager: &Arc<AcpPermissionManager>,
+) {
+    if error.is_some() {
+        let _ = permission_manager.cancel_request_id(&id).await;
+        return;
+    }
+    if let Some(result) = result {
+        let _ = permission_manager
+            .resolve_client_response(&id, result)
+            .await;
+    } else {
+        let _ = permission_manager.cancel_request_id(&id).await;
     }
 }
 
@@ -218,8 +338,9 @@ async fn handle_notification(
     method: &str,
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
     _sink: &AcpSink,
-    pending_requests: &Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>,
+    pending_requests: &PendingRequests,
 ) {
     match method {
         "$/cancel_request" => {
@@ -227,10 +348,13 @@ async fn handle_notification(
             if let Some(raw) = params {
                 if let Ok(notif) = serde_json::from_str::<v2::CancelRequestNotification>(raw.get())
                 {
-                    let id_str = format!("{:?}", notif.request_id);
+                    let id_str = request_id_key(&notif.request_id);
                     if let Some(cancel_tx) = pending_requests.lock().await.remove(&id_str) {
                         let _ = cancel_tx.send(());
                     }
+                    let _ = permission_manager
+                        .cancel_request_id(&notif.request_id)
+                        .await;
                 }
             }
         }
@@ -245,6 +369,7 @@ async fn handle_notification(
                             turn.cancel_requested = true;
                         }
                         session.engine.abort();
+                        permission_manager.cancel_all(&sid).await;
                         tracing::info!(session_id = %sid, "acp session/cancel: engine aborted");
                     }
                 }
@@ -260,43 +385,86 @@ async fn handle_batch(
     entries: Vec<InboundBatchEntry>,
     capabilities: &AcpCapabilities,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
     sink: &AcpSink,
     ctx: &RuntimeContext,
-    pending_requests: &Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>,
+    pending_requests: &PendingRequests,
 ) {
-    let mut results = Vec::new();
+    struct PendingBatchOutcome {
+        id_key: String,
+        outcome: DispatchOutcome,
+        cancel_rx: oneshot::Receiver<()>,
+    }
+
+    let mut pending_outcomes = Vec::new();
     for entry in &entries {
         match entry {
             InboundBatchEntry::Request { id, method, params } => {
-                let result = dispatch_request(
+                let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+                let id_key = request_id_key(id);
+                pending_requests
+                    .lock()
+                    .await
+                    .insert(id_key.clone(), cancel_tx);
+
+                let outcome = dispatch_request(
                     method,
                     params.as_deref(),
                     id,
                     capabilities,
                     session_manager,
+                    permission_manager,
                     sink,
                     ctx,
-                    // Share one dead cancel receiver for batch items
-                    tokio::sync::oneshot::channel::<()>().1,
                 )
                 .await;
-                results.push(result.unwrap_or(Err(v2::Error::internal_error())));
+                pending_outcomes.push(PendingBatchOutcome {
+                    id_key,
+                    outcome: outcome
+                        .unwrap_or(DispatchOutcome::Response(Err(v2::Error::internal_error()))),
+                    cancel_rx,
+                });
             }
             InboundBatchEntry::Notification { method, params } => {
                 handle_notification(
                     method,
                     params.as_deref(),
                     session_manager,
+                    permission_manager,
                     sink,
                     pending_requests,
+                )
+                .await;
+            }
+            InboundBatchEntry::Response { id, result, error } => {
+                handle_response(
+                    id.clone(),
+                    result.clone(),
+                    error.clone(),
+                    permission_manager,
                 )
                 .await;
             }
         }
     }
 
+    let mut results = Vec::new();
+    let mut start_txs = Vec::new();
+    for mut pending in pending_outcomes {
+        pending_requests.lock().await.remove(&pending.id_key);
+        let (result, start_tx) =
+            resolve_dispatch_outcome(pending.outcome, &mut pending.cancel_rx).await;
+        results.push(result);
+        if let Some(start_tx) = start_tx {
+            start_txs.push(start_tx);
+        }
+    }
+
     if let Some(batch_resp) = jsonrpc::build_batch_response(&entries, results) {
         sink.send(batch_resp);
+        for start_tx in start_txs {
+            let _ = start_tx.send(());
+        }
     }
 }
 
@@ -314,7 +482,7 @@ fn send_session_update(sink: &AcpSink, session_id: v2::SessionId, update: v2::Se
 async fn handle_initialize(
     params: Option<&serde_json::value::RawValue>,
     capabilities: &AcpCapabilities,
-    _ctx: &RuntimeContext,
+    ctx: &RuntimeContext,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
     let req: v2::InitializeRequest = serde_json::from_str(raw.get())
@@ -328,7 +496,14 @@ async fn handle_initialize(
     let mut agent_caps = v2::AgentCapabilities::default();
 
     if capabilities.session {
-        let session_caps = v2::SessionCapabilities::default();
+        let mut session_caps = v2::SessionCapabilities::new()
+            .load(v2::SessionLoadCapabilities::new())
+            .list(v2::SessionListCapabilities::new())
+            .resume(v2::SessionResumeCapabilities::new())
+            .close(v2::SessionCloseCapabilities::new());
+        if capabilities.session_delete {
+            session_caps = session_caps.delete(v2::SessionDeleteCapabilities::new());
+        }
         agent_caps = agent_caps.session(Some(session_caps));
     }
 
@@ -336,7 +511,7 @@ async fn handle_initialize(
         agent_caps = agent_caps.auth(Some(v2::AgentAuthCapabilities::default()));
     }
 
-    let auth_methods = crate::auth::build_auth_methods();
+    let auth_methods = crate::auth::resolve_acp_auth_methods(&ctx.merged_config);
 
     let response = v2::InitializeResponse::new(
         agent_client_protocol_schema::ProtocolVersion::V2,
@@ -381,6 +556,7 @@ async fn handle_session_method(
     method: &str,
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
     sink: &AcpSink,
     _ctx: &RuntimeContext,
 ) -> Result<serde_json::Value, v2::Error> {
@@ -398,10 +574,8 @@ async fn handle_session_method(
             let additional = req.additional_directories.clone();
             AcpSessionManager::validate_additional_dirs(&additional)
                 .map_err(|e| v2::Error::invalid_params().data(e))?;
-            if !req.mcp_servers.is_empty() {
-                return Err(v2::Error::invalid_params()
-                    .data("ACP MCP server connections are not yet supported"));
-            }
+            crate::mcp::reject_session_mcp_servers(&req.mcp_servers)
+                .map_err(|e| v2::Error::invalid_params().data(e))?;
 
             let sid =
                 agent_client_protocol_schema::v2::SessionId::new(uuid::Uuid::new_v4().to_string());
@@ -410,12 +584,13 @@ async fn handle_session_method(
                 .create_session(sid.clone(), cwd, additional, None)
                 .await
                 .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
+            crate::permissions::install_permission_callbacks(
+                &session,
+                sink.clone(),
+                permission_manager.clone(),
+            );
 
-            let config_entries = crate::config_options::build_config_options(&session);
-            let config_options: Vec<v2::SessionConfigOption> = config_entries
-                .into_iter()
-                .map(|e| e.config_option)
-                .collect();
+            let config_options = crate::config_options::build_session_config_options(&session);
 
             let resp = v2::NewSessionResponse::new(sid.clone()).config_options(config_options);
 
@@ -441,29 +616,34 @@ async fn handle_session_method(
             AcpSessionManager::validate_cwd(&cwd)
                 .map_err(|e| v2::Error::invalid_params().data(e))?;
 
+            let additional = req.additional_directories.clone();
+            AcpSessionManager::validate_additional_dirs(&additional)
+                .map_err(|e| v2::Error::invalid_params().data(e))?;
+            crate::mcp::reject_session_mcp_servers(&req.mcp_servers)
+                .map_err(|e| v2::Error::invalid_params().data(e))?;
+
             let resumed =
                 allthecodes_session::resume::resume_session_detail(&req.session_id.0.to_string())
                     .map_err(|_| {
                     v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
                 })?;
+            let replay_messages = resumed.messages.clone();
 
             let sid = req.session_id;
             let session = session_manager
-                .create_session(sid.clone(), cwd, Vec::new(), Some(resumed.messages))
+                .create_session(sid.clone(), cwd.clone(), additional, Some(resumed.messages))
                 .await
                 .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
+            crate::permissions::install_permission_callbacks(
+                &session,
+                sink.clone(),
+                permission_manager.clone(),
+            );
 
-            // Replay the full visible conversation via session/update
-            // In practice this would replay each UserReplay and Assistant message
-            // For now we send a minimal replay indicator
-            send_session_update(sink, sid.clone(), crate::updates::state_running_update());
-            send_session_update(sink, sid.clone(), crate::updates::state_idle_update(None));
+            crate::session::replay_loaded_messages(sid.clone(), &replay_messages, &cwd, sink)
+                .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
 
-            let config_entries = crate::config_options::build_config_options(&session);
-            let config_options: Vec<v2::SessionConfigOption> = config_entries
-                .into_iter()
-                .map(|e| e.config_option)
-                .collect();
+            let config_options = crate::config_options::build_session_config_options(&session);
 
             let resp = v2::LoadSessionResponse::new().config_options(config_options);
 
@@ -500,12 +680,13 @@ async fn handle_session_method(
                 .create_session(sid.clone(), cwd, Vec::new(), Some(resumed.messages))
                 .await
                 .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
+            crate::permissions::install_permission_callbacks(
+                &session,
+                sink.clone(),
+                permission_manager.clone(),
+            );
 
-            let config_entries = crate::config_options::build_config_options(&session);
-            let config_options: Vec<v2::SessionConfigOption> = config_entries
-                .into_iter()
-                .map(|e| e.config_option)
-                .collect();
+            let config_options = crate::config_options::build_session_config_options(&session);
 
             let resp = v2::ResumeSessionResponse::new().config_options(config_options);
 
@@ -530,32 +711,7 @@ async fn handle_session_method(
                 None
             };
 
-            let _cwd = req
-                .as_ref()
-                .and_then(|r| r.cwd.as_ref())
-                .map(std::path::PathBuf::from);
-            let limit = 100;
-
-            let sessions = allthecodes_session::storage::list_sessions_page(limit, None)
-                .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
-
-            let acp_sessions: Vec<v2::SessionInfo> = sessions
-                .sessions
-                .into_iter()
-                .map(|s| {
-                    let dt_str = chrono::DateTime::from_timestamp(s.last_modified, 0)
-                        .map(|dt| dt.to_rfc3339())
-                        .unwrap_or_default();
-                    v2::SessionInfo::new(
-                        v2::SessionId::new(s.session_id),
-                        std::path::PathBuf::from(""),
-                    )
-                    .title(s.title)
-                    .updated_at(Some(dt_str))
-                })
-                .collect();
-
-            serde_json::to_value(v2::ListSessionsResponse::new(acp_sessions))
+            serde_json::to_value(crate::session::list_sessions(req.as_ref())?)
                 .map_err(|e| v2::Error::internal_error().data(format!("serialization error: {e}")))
         }
         "session/close" => {
@@ -571,7 +727,8 @@ async fn handle_session_method(
                     v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
                 })?;
 
-            crate::session::close_session(&session, session_manager).await;
+            crate::session::close_session(&session, session_manager, permission_manager, sink)
+                .await;
 
             serde_json::to_value(v2::CloseSessionResponse::new())
                 .map_err(|e| v2::Error::internal_error().data(format!("serialization error: {e}")))
@@ -587,21 +744,21 @@ async fn handle_session_method(
 async fn handle_session_delete(
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
+    sink: &AcpSink,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
     let req: v2::DeleteSessionRequest = serde_json::from_str(raw.get()).map_err(|e| {
         v2::Error::invalid_params().data(format!("invalid session/delete params: {e}"))
     })?;
 
-    let sid_str = req.session_id.0.to_string();
-
-    // If session is active in memory, close it first
-    if let Some(session) = session_manager.get_session(&sid_str).await {
-        crate::session::close_session(&session, session_manager).await;
-    }
-
-    // Archive the session in storage (delete is an archive operation)
-    let _ = allthecodes_session::storage::archive_session(&sid_str);
+    crate::session::delete_session(
+        &req.session_id.0.to_string(),
+        session_manager,
+        permission_manager,
+        sink,
+    )
+    .await?;
 
     serde_json::to_value(v2::DeleteSessionResponse::new())
         .map_err(|e| v2::Error::internal_error().data(e.to_string()))
@@ -614,6 +771,7 @@ async fn handle_session_delete(
 async fn handle_set_config_option(
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
+    sink: &AcpSink,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
     let req: v2::SetSessionConfigOptionRequest = serde_json::from_str(raw.get()).map_err(|e| {
@@ -628,57 +786,12 @@ async fn handle_set_config_option(
     let config_id = req.config_id.0.to_string();
     let value = req.value.0.to_string();
 
-    match config_id.as_str() {
-        "model" => {
-            if value.trim().is_empty() {
-                return Err(v2::Error::invalid_params().data("model value cannot be empty"));
-            }
-        }
-        "thought_level" => {
-            if !matches!(value.as_str(), "low" | "medium" | "high") {
-                return Err(v2::Error::invalid_params()
-                    .data(format!("invalid thought_level value: {value}")));
-            }
-        }
-        "mode" => {
-            if !matches!(value.as_str(), "default" | "auto" | "bypass") {
-                return Err(
-                    v2::Error::invalid_params().data(format!("invalid mode value: {value}"))
-                );
-            }
-        }
-        _ => {
-            return Err(
-                v2::Error::invalid_params().data(format!("unknown config option: {config_id}"))
-            );
-        }
-    }
-
-    // Update the session engine AppState based on config_id
-    session.engine.update_app_state(|state| {
-        match config_id.as_str() {
-            "model" => {
-                state.main_loop_model = value.clone();
-            }
-            "thought_level" => {
-                state.effort_value = Some(value.clone());
-            }
-            "mode" => {
-                // Mode changes update permission context
-                let new_mode = value.clone();
-                state.tool_permission_context.mode =
-                    allthecodes_types::permissions::PermissionMode::parse(&new_mode);
-            }
-            _ => unreachable!("config_id was validated above"),
-        }
-    });
-
-    // Build the updated config options list for the response
-    let config_entries = crate::config_options::build_config_options(&session);
-    let config_options: Vec<v2::SessionConfigOption> = config_entries
-        .into_iter()
-        .map(|e| e.config_option)
-        .collect();
+    let config_options = crate::config_options::apply_config_option(&session, &config_id, &value)?;
+    send_session_update(
+        sink,
+        req.session_id.clone(),
+        v2::SessionUpdate::ConfigOptionUpdate(v2::ConfigOptionUpdate::new(config_options.clone())),
+    );
 
     let resp = v2::SetSessionConfigOptionResponse::new(config_options);
 
@@ -695,8 +808,7 @@ async fn handle_session_prompt(
     session_manager: &Arc<AcpSessionManager>,
     sink: &AcpSink,
     _ctx: &RuntimeContext,
-    cancel_rx: tokio::sync::oneshot::Receiver<()>,
-) -> Result<serde_json::Value, v2::Error> {
+) -> Result<PendingPromptStart, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
     let req: v2::PromptRequest = serde_json::from_str(raw.get()).map_err(|e| {
         v2::Error::invalid_params().data(format!("invalid session/prompt params: {e}"))
@@ -722,82 +834,95 @@ async fn handle_session_prompt(
     let prompt = crate::content::convert_prompt_blocks(&req.prompt)
         .map_err(|e| v2::Error::invalid_params().data(e.to_string()))?;
 
-    // Return prompt response immediately (the turn task sends updates asynchronously)
-    let _prompt_response = serde_json::to_value(v2::PromptResponse::new())
+    let prompt_response = serde_json::to_value(v2::PromptResponse::new())
         .map_err(|e| v2::Error::internal_error().data(format!("serialization error: {e}")))?;
 
-    // Spawn a background task to stream the engine response
+    // Spawn a background task, but keep it paused until the ACK is enqueued.
+    let (start_tx, start_rx) = oneshot::channel::<()>();
     let sink_clone = sink.clone();
     let session_clone = session.clone();
     let session_manager_clone = session_manager.clone();
     let sid = req.session_id.clone();
-    let cancel_rx_shared = Arc::new(tokio::sync::Mutex::new(Some(cancel_rx)));
 
     tokio::spawn(async move {
-        let mut counter = MessageCounter::default();
+        if start_rx.await.is_err() {
+            let mut turn = session_clone.active_turn.lock().await;
+            *turn = None;
+            return;
+        }
+
         let sink = sink_clone;
         let session = session_clone;
         let _session_mgr = session_manager_clone;
+        let mapper = Arc::new(tokio::sync::Mutex::new(AcpUpdateMapper::new(
+            sid.clone(),
+            session.cwd.clone(),
+        )));
+        {
+            let progress_mapper = mapper.clone();
+            let progress_sink = sink.clone();
+            let progress_sid = sid.clone();
+            session.engine.set_tool_progress_callback(Arc::new(
+                move |progress: allthecodes_engine::types::tool::ToolProgress| {
+                    let mapper = progress_mapper.clone();
+                    let sink = progress_sink.clone();
+                    let sid = progress_sid.clone();
+                    tokio::spawn(async move {
+                        let text = crate::permissions::tool_progress_text(&progress.data);
+                        let update = {
+                            let mut mapper = mapper.lock().await;
+                            mapper.map_tool_progress(&progress.tool_use_id, &text)
+                        };
+                        if let Some(update) = update {
+                            send_session_update(&sink, sid, update);
+                        }
+                    });
+                },
+            ));
+        }
 
         // Send state running before polling
         send_session_update(&sink, sid.clone(), state_running_update());
 
-        // Check for early cancellation
-        let mut cancelled = false;
-        {
-            let mut rx_lock = cancel_rx_shared.lock().await;
-            if let Some(rx) = rx_lock.as_mut() {
-                if rx.try_recv().is_ok() {
-                    cancelled = true;
-                }
-            }
-        }
-
-        let stream = if !cancelled {
-            session.engine.reset_abort();
-            Some(session.engine.submit_message_with_overrides(
-                &prompt,
-                allthecodes_engine::types::config::QuerySource::Sdk,
-                allthecodes_engine::types::config::SubmitMessageOverrides::default(),
-            ))
-        } else {
-            None
-        };
+        session.engine.reset_abort();
+        let mut stream = session.engine.submit_message_with_overrides(
+            &prompt,
+            allthecodes_engine::types::config::QuerySource::Sdk,
+            crate::config_options::submit_overrides_for_session(&session),
+        );
 
         let mut terminal_idle_sent = false;
-        if let Some(mut stream) = stream {
-            while let Some(sdk_msg) = futures::StreamExt::next(&mut stream).await {
-                // Check cancellation on each message
-                {
-                    let mut rx_lock = cancel_rx_shared.lock().await;
-                    if let Some(rx) = rx_lock.as_mut() {
-                        if rx.try_recv().is_ok() {
-                            cancelled = true;
-                            session.engine.abort();
-                            if let Some(ref mut turn) = *session.active_turn.lock().await {
-                                turn.cancel_requested = true;
-                            }
-                        }
-                    }
-                }
-
-                let updates = if let allthecodes_types::sdk::SdkMessage::Result(result) = &sdk_msg {
-                    terminal_idle_sent = true;
-                    if cancelled || session.engine.abort_reason().is_some() {
-                        sdk_result_to_updates(result, Some(v2::StopReason::Cancelled))
-                    } else {
-                        sdk_result_to_updates(result, None)
-                    }
-                } else {
-                    sdk_message_to_updates(&sdk_msg, &mut counter)
+        while let Some(sdk_msg) = futures::StreamExt::next(&mut stream).await {
+            let updates = if let allthecodes_types::sdk::SdkMessage::Result(result) = &sdk_msg {
+                terminal_idle_sent = true;
+                let turn_cancelled = {
+                    let turn = session.active_turn.lock().await;
+                    turn.as_ref()
+                        .map(|handle| handle.cancel_requested)
+                        .unwrap_or(false)
                 };
-                for update in updates {
-                    send_session_update(&sink, sid.clone(), update);
+                let mut mapper = mapper.lock().await;
+                if turn_cancelled || session.engine.abort_reason().is_some() {
+                    mapper.map_result(result, Some(v2::StopReason::Cancelled))
+                } else {
+                    mapper.map_result(result, None)
                 }
+            } else {
+                let mut mapper = mapper.lock().await;
+                mapper.map_message(&sdk_msg)
+            };
+            for update in updates {
+                send_session_update(&sink, sid.clone(), update);
             }
         }
 
-        if cancelled && !terminal_idle_sent {
+        let turn_cancelled = {
+            let turn = session.active_turn.lock().await;
+            turn.as_ref()
+                .map(|handle| handle.cancel_requested)
+                .unwrap_or(false)
+        };
+        if turn_cancelled && !terminal_idle_sent {
             // Send cancelled idle state
             send_session_update(
                 &sink,
@@ -811,7 +936,5 @@ async fn handle_session_prompt(
         *turn = None;
     });
 
-    // Return the prompt response immediately
-    Ok(serde_json::to_value(v2::PromptResponse::new())
-        .map_err(|e| v2::Error::internal_error().data(e.to_string()))?)
+    Ok(PendingPromptStart::new(prompt_response, start_tx, session))
 }

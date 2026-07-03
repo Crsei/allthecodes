@@ -8,73 +8,73 @@ allthecodes --acp --cwd /path/to/project
 
 ## Protocol
 
-- JSON-RPC 2.0 over newline-delimited stdin/stdout
-- stdout contains only valid JSON-RPC frames
-- All diagnostics go to stderr
+- JSON-RPC 2.0 over newline-delimited stdin/stdout.
+- stdout contains only valid JSON-RPC frames.
+- Diagnostics go to stderr.
+- Wire contract uses `agent-client-protocol-schema = "=1.2.0"` with ACP v2.
 
-## Supported Capabilities
+## Verified Supported Methods
 
-| Capability | Status |
-|-----------|--------|
-| `initialize` | ✅ |
-| `auth/login`, `auth/logout` | ✅ (agent-managed, `allthecodes-login` method) |
-| `session/new` | ✅ |
-| `session/load` | ✅ (replay via `session/update`) |
-| `session/resume` | ✅ (no replay) |
-| `session/list` | ✅ |
-| `session/close` | ✅ |
-| `session/prompt` | ✅ (text + resource link content) |
-| `session/cancel` (notification) | ✅ |
-| `session/delete` | ✅ (archives via `allthecodes_session::storage::archive_session`) |
-| `session/set_config_option` | ✅ (model, mode, thought_level) |
-| `session/update` notifications | ✅ (streaming agent messages, thoughts, tool calls, state, usage) |
-| `$/cancel_request` | ✅ (request-level cancellation) |
-| `available_commands_update` | ✅ (sent after session/new, session/load, session/resume) |
-| `config_option_update` | ✅ (model, mode, thought_level options) |
-| Permission bridge | ⚠️ partial: request/response mapping exists, runtime callback/request dispatch is not wired yet |
-| `session/request_permission` client request | ⚠️ partial: schema mapping exists, JSON-RPC client request lifecycle is not wired yet |
+Verified on 2026-07-03 in `.worktrees/acp-adapter`:
+
+| Method or update | Verified behavior |
+| --- | --- |
+| `initialize` | Protocol version validation, auth method negotiation, and capability serialization. |
+| `auth/login` | Returns agent-managed allthecodes login instructions in `_meta.instructions`. |
+| `auth/logout` | Idempotent logout response. |
+| `session/new` | Absolute cwd validation, additional directory validation, config option return, available command notification, and rejection of non-empty `mcpServers`. |
+| `session/load` | Loads persisted sessions and replays visible transcript content before the response. |
+| `session/resume` | Resumes persisted sessions through the normal session factory and sends command updates. |
+| `session/list` | Supports global and workspace-filtered listing, cursor serialization, cwd mapping, and `_meta` fields. |
+| `session/close` | Cancels active turns, waits boundedly for cancelled idle, flushes the recorder, and removes the session. |
+| `session/delete` | Closes active sessions first, archives persisted sessions, treats missing ids as success, filters archived sessions from lists, and is advertised. |
+| `session/prompt` | Supports text and file/resource-link prompt blocks, sends `PromptResponse` before updates, applies per-session config overrides, and maps runtime updates. |
+| `session/cancel` | Aborts active turns and emits final idle state with `stopReason: "cancelled"`. |
+| `session/set_config_option` | Validates model, mode, and thought-level choices, sends `config_option_update`, and applies prompt overrides. |
+| `$/cancel_request` | Cancels pending prompt ACKs and pending permission requests. |
+| `session/request_permission` client request | Round-trips engine permission callbacks through ACP client requests, including cancellation and disconnect denial. |
+| `session/update` notifications | Covers state, usage, text chunks, thinking, tool calls, tool progress, plan updates, tombstones, retries, summaries, available commands, and config option updates. |
+| Binary stdio smoke | `cargo test -p allthecodes --test acp_stdio_smoke` verifies `allthecodes --acp` emits only JSON-RPC frames on stdout for initialize/new/close. |
+
+Focused verification run during the review-fix pass:
+
+```bash
+cargo test -p allthecodes-acp
+cargo test -p allthecodes-acp --test prompt_updates prompt_acks_before_first_update
+cargo test -p allthecodes-acp --test protocol_methods cancel_request_cancels_pending_prompt_before_ack
+cargo test -p allthecodes-acp --test config_options
+cargo test -p allthecodes-acp --test protocol_methods auth
+cargo test -p allthecodes-acp --test protocol_methods capability
+cargo test -p allthecodes-acp --test session_lifecycle delete
+cargo test -p allthecodes-acp --test prompt_updates cancel_sends_idle_cancelled
+cargo test -p allthecodes --test acp_stdio_smoke
+cargo check -p allthecodes-acp
+cargo check --workspace
+cargo build --workspace --release
+```
 
 ## Intentionally Unadvertised Capabilities
 
-## Review Fix Log
+These capabilities are out of scope for this branch and must remain absent from `initialize` until separate method paths and tests exist:
 
-2026-07-03:
+| Capability | Current behavior |
+| --- | --- |
+| `session.prompt.image` | Image content blocks are rejected with `InvalidParams`. |
+| `session.prompt.audio` | Audio content blocks are rejected with `InvalidParams`. |
+| `session.prompt.embeddedContext` | Embedded resource/context blocks are rejected with `InvalidParams`. |
+| `session.mcp.*` | Per-session MCP is unadvertised; `session/new` and `session/load` reject non-empty `mcpServers`. |
 
-- Fixed `session/update` stdout frames so ACP updates are emitted as JSON-RPC notifications with `method: "session/update"` and `params`, instead of bare update payloads.
-- Fixed JSON-RPC request parsing to preserve `id: null` as a request id, and to execute notifications contained in JSON-RPC batches.
-- Fixed `session/delete` dispatch so it is not accepted while the delete capability is not advertised; the handler now serializes the schema `DeleteSessionResponse` shape.
-- Fixed `session/new` to reject non-empty ACP `mcpServers` while per-session MCP connection support remains unimplemented.
-- Fixed `session/cancel` handling to mark the active turn as cancelled and report final idle state with `stopReason: "cancelled"` when cancellation wins.
-- Fixed `session/set_config_option` to reject unknown config ids and invalid `mode` / `thought_level` values instead of silently accepting them.
-- Fixed `file://` prompt resource conversion so absolute file links become `@/absolute/path`, not `@//absolute/path`.
-- Fixed the ACP root engine factory to reuse startup-discovered tools, the resolved AppState template, model, and CLI overrides for each per-session `QueryEngine`.
-- Fixed `auth/login` / `auth/logout` runtime handlers so they return the handler result, and broadened auth-method detection beyond Codex OAuth environment state.
+## Known Remaining Limitations
 
-Still open after this pass:
-
-- Full permission bridge runtime wiring is not complete: ACP client requests, response routing, disconnect denial, and `requires_action` transitions still need integration tests.
-- `session/load` still needs full conversation replay rather than placeholder state updates.
-- `session/list` still needs workspace filtering, cursor serialization, and complete `_meta` mapping.
-- Tool-call and thinking/plan update mapping is still incomplete and should not be treated as full ACP parity.
-
-| Capability | Reason |
-|-----------|--------|
-| `session/prompt.image` | Image content blocks rejected |
-| `session/prompt.audio` | Audio content blocks rejected |
-| `session/prompt.embeddedContext` | Embedded resource blocks rejected |
-| `session.mcp` | Stub only; per-session MCP not yet wired |
-| `session.delete` capability flag | Not yet advertised in capability negotiation |
+- The real-model binary smoke exists as `acp_stdio_real_model_prompt_smoke` and uses the normal allthecodes config, auth, model, and provider path. It is ignored by default because it requires usable credentials, provider access, and network. On this machine, explicit runs against the current `backend=codex` config timed out after 300 seconds after only `available_commands_update` and `state_update: running`; no model content or idle frame arrived.
+- `session.prompt.image`, `session.prompt.audio`, `session.prompt.embeddedContext`, and `session.mcp.*` remain separate feature work, not partial support.
+- ACP mode uses the Rust backend/TUI-era runtime only. It does not alter legacy `--headless` JSONL IPC behavior.
 
 ## Client Expectations
 
-- Protocol version must be `2` (v1 rejected with `InvalidParams`)
-- Sessions require an absolute, existing `cwd`
-- Additional directories must be absolute and exist
-- `session/new` returns `sessionId`, `configOptions`, and sends `available_commands_update`
-- Prompt content: `Text` and `ResourceLink` (file:// → @/path) are supported
-- Image/Audio blocks return `InvalidParams`
-- Turn cancellation: send `session/cancel` notification with `sessionId`
-- Request cancellation: send `$/cancel_request` notification with `requestId`
-- `session/close` aborts active turns and flushes recorder
-- `session/delete` closes active sessions and archives them
-- Config options: `model`, `thought_level`, `mode`
+- Protocol version must be `2`; v1 is rejected with `InvalidParams`.
+- Sessions require an absolute, existing `cwd`.
+- Additional directories must be absolute and exist.
+- Prompt content supports text and `file://` resource links (`file://` becomes `@/path`).
+- Request cancellation uses `$/cancel_request` with `requestId`; active turn cancellation uses `session/cancel` with `sessionId`.
+- Config options currently exposed are `model`, `thought_level`, and `mode`.
