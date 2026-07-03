@@ -1474,12 +1474,8 @@ mod tests {
     fn test_storage_load_session_fixture_roundtrip() {
         let temp = tempdir().unwrap();
         let _g = HomeGuard::set(temp.path());
-        write_fixture_session(
-            "fixture-rt",
-            phase0_legacy_serializable_messages(),
-            "/proj",
-        )
-        .unwrap();
+        write_fixture_session("fixture-rt", phase0_legacy_serializable_messages(), "/proj")
+            .unwrap();
 
         let loaded = load_session("fixture-rt").unwrap();
         assert_eq!(loaded.len(), 4);
@@ -1499,7 +1495,10 @@ mod tests {
         let reparsed: SessionFile = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed.messages.len(), 4);
         assert!(reparsed.messages.iter().any(|sm| sm.msg_type == "user"));
-        assert!(reparsed.messages.iter().any(|sm| sm.msg_type == "assistant"));
+        assert!(reparsed
+            .messages
+            .iter()
+            .any(|sm| sm.msg_type == "assistant"));
         assert!(reparsed.messages.iter().any(|sm| sm.msg_type == "system"));
     }
 
@@ -1522,7 +1521,9 @@ mod tests {
         // Same assertions as legacy baseline: user, assistant (with tool_use),
         // tool_result user, system all survive; progress and attachment dropped.
         assert!(resumed.iter().any(|msg| matches!(msg, Message::User(_))));
-        assert!(resumed.iter().any(|msg| matches!(msg, Message::Assistant(_))));
+        assert!(resumed
+            .iter()
+            .any(|msg| matches!(msg, Message::Assistant(_))));
         assert!(resumed.iter().any(|msg| matches!(msg, Message::System(_))));
         // Tool messages survived
         assert!(resumed.iter().any(|msg| {
@@ -1542,8 +1543,12 @@ mod tests {
             )
         }));
         // Progress and attachment dropped
-        assert!(!resumed.iter().any(|msg| matches!(msg, Message::Progress(_))));
-        assert!(!resumed.iter().any(|msg| matches!(msg, Message::Attachment(_))));
+        assert!(!resumed
+            .iter()
+            .any(|msg| matches!(msg, Message::Progress(_))));
+        assert!(!resumed
+            .iter()
+            .any(|msg| matches!(msg, Message::Attachment(_))));
     }
 
     /// SQLite projection: when a session with all message types is saved via

@@ -10,8 +10,8 @@
 //! after the response is received.
 
 use agent_client_protocol_schema::v2::{
-    PermissionOption, PermissionOptionId, PermissionOptionKind,
-    RequestPermissionOutcome, RequestPermissionRequest, ToolCallUpdate,
+    PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,
+    RequestPermissionRequest, ToolCallUpdate,
 };
 use tokio::sync::RwLock;
 
@@ -119,9 +119,7 @@ pub fn build_permission_request(
 }
 
 /// Map an ACP `RequestPermissionOutcome` to an allthecodes `PermissionResponsePayload`.
-pub fn map_permission_outcome(
-    outcome: &RequestPermissionOutcome,
-) -> PermissionResponsePayload {
+pub fn map_permission_outcome(outcome: &RequestPermissionOutcome) -> PermissionResponsePayload {
     match outcome {
         RequestPermissionOutcome::Cancelled => PermissionResponsePayload::deny(),
         RequestPermissionOutcome::Selected(selected) => {
@@ -187,15 +185,20 @@ mod tests {
     fn permission_request_has_required_fields() {
         let session_id = agent_client_protocol_schema::v2::SessionId::new("test-session");
         let acp_options: Vec<PermissionOption> = vec![
-            PermissionOption::new(PermissionOptionId::new("allow_once"), "Allow", PermissionOptionKind::AllowOnce),
-            PermissionOption::new(PermissionOptionId::new("deny_once"), "Deny", PermissionOptionKind::RejectOnce),
+            PermissionOption::new(
+                PermissionOptionId::new("allow_once"),
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            ),
+            PermissionOption::new(
+                PermissionOptionId::new("deny_once"),
+                "Deny",
+                PermissionOptionKind::RejectOnce,
+            ),
         ];
 
-        let req = RequestPermissionRequest::new(
-            session_id,
-            ToolCallUpdate::new("call-1"),
-            acp_options,
-        );
+        let req =
+            RequestPermissionRequest::new(session_id, ToolCallUpdate::new("call-1"), acp_options);
 
         assert_eq!(req.options.len(), 2);
     }

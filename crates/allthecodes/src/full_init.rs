@@ -1437,10 +1437,8 @@ pub(crate) mod acp_runtime_bridge {
         pub(crate) model: String,
         pub(crate) cwd: String,
         pub(crate) tools: Tools,
-        pub(crate) app_state_template:
-            allthecodes_engine::types::app_state::AppState,
-        pub(crate) merged_config:
-            allthecodes_config::settings::EffectiveSettings,
+        pub(crate) app_state_template: allthecodes_engine::types::app_state::AppState,
+        pub(crate) merged_config: allthecodes_config::settings::EffectiveSettings,
         pub(crate) cli_overrides: AcpCliOverrides,
     }
 
@@ -1536,9 +1534,7 @@ pub(crate) mod acp_runtime_bridge {
             };
 
             let mut engine = QueryEngine::new(config);
-            engine.set_hook_runner(Arc::new(
-                allthecodes_tools::hooks::ShellHookRunner::new(),
-            ));
+            engine.set_hook_runner(Arc::new(allthecodes_tools::hooks::ShellHookRunner::new()));
             engine.set_command_dispatcher(Arc::new(
                 allthecodes_commands::DefaultCommandDispatcher::for_full_registry(),
             ));
@@ -1563,8 +1559,7 @@ pub(crate) mod acp_runtime_bridge {
 
             for dir in &params.additional_directories {
                 if dir.is_absolute() && dir.is_dir() {
-                    let canonical = std::fs::canonicalize(dir)
-                        .unwrap_or_else(|_| dir.clone());
+                    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone());
                     engine.update_app_state(|state| {
                         state
                             .tool_permission_context

@@ -67,8 +67,9 @@ pub fn parse_frame(raw: &str) -> Result<Option<InboundMessage>, v2::Error> {
     match &value {
         serde_json::Value::Array(items) => {
             if items.is_empty() {
-                return Err(v2::Error::invalid_request()
-                    .data("empty batch is not allowed by JSON-RPC 2.0"));
+                return Err(
+                    v2::Error::invalid_request().data("empty batch is not allowed by JSON-RPC 2.0")
+                );
             }
             let mut entries = Vec::with_capacity(items.len());
             for item in items {
@@ -172,10 +173,7 @@ pub fn build_response<T: serde::Serialize>(
 }
 
 /// Build a JSON-RPC notification (no response expected).
-pub fn build_notification<T: serde::Serialize>(
-    method: &str,
-    params: &T,
-) -> serde_json::Value {
+pub fn build_notification<T: serde::Serialize>(method: &str, params: &T) -> serde_json::Value {
     let notification = Notification {
         method: Arc::from(method),
         params: Some(serde_json::to_value(params).unwrap_or_default()),
@@ -317,7 +315,10 @@ mod tests {
             InboundMessage::Batch(entries) => {
                 assert_eq!(entries.len(), 2);
                 assert!(matches!(&entries[0], InboundBatchEntry::Request { .. }));
-                assert!(matches!(&entries[1], InboundBatchEntry::Notification { .. }));
+                assert!(matches!(
+                    &entries[1],
+                    InboundBatchEntry::Notification { .. }
+                ));
             }
             _ => panic!("expected batch"),
         }
@@ -328,10 +329,7 @@ mod tests {
         let raw = r#"[]"#;
         let result = parse_frame(raw);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("empty batch"));
+        assert!(result.unwrap_err().to_string().contains("empty batch"));
     }
 
     #[test]
@@ -352,9 +350,7 @@ mod tests {
     fn session_update_notification_is_jsonrpc_enveloped() {
         let update = v2::UpdateSessionNotification::new(
             v2::SessionId::new("sess"),
-            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
-                v2::RunningStateUpdate::new(),
-            )),
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(v2::RunningStateUpdate::new())),
         );
         let value = build_agent_notification(v2::AgentNotification::UpdateSessionNotification(
             Box::new(update),

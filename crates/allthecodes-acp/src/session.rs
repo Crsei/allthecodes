@@ -11,8 +11,8 @@ use std::sync::Arc;
 use allthecodes_engine::lifecycle::QueryEngine;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::AcpEngineParams;
 use crate::engine_factory::AcpEngineFactory;
+use crate::AcpEngineParams;
 
 /// Handle to an active turn within a session.
 #[derive(Debug)]
@@ -49,7 +49,10 @@ pub struct AcpSessionManager {
 impl std::fmt::Debug for AcpSessionManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AcpSessionManager")
-            .field("session_count", &self.sessions.try_read().map(|s| s.len()).unwrap_or(0))
+            .field(
+                "session_count",
+                &self.sessions.try_read().map(|s| s.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -151,10 +154,7 @@ impl AcpSessionManager {
 }
 
 /// Close a session: abort any active turn, flush recorder, remove from map.
-pub async fn close_session(
-    session: &AcpSession,
-    session_manager: &AcpSessionManager,
-) {
+pub async fn close_session(session: &AcpSession, session_manager: &AcpSessionManager) {
     {
         let mut turn = session.active_turn.lock().await;
         if let Some(ref mut handle) = *turn {

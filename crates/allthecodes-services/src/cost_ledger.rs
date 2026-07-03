@@ -1273,10 +1273,7 @@ mod tests {
             summary.unknown_pricing_count, 1,
             "only the absolutely-unknown-model should be unknown"
         );
-        assert_eq!(
-            summary.backfilled_count, 1,
-            "only the backfilled event"
-        );
+        assert_eq!(summary.backfilled_count, 1, "only the backfilled event");
         assert_eq!(summary.by_model.len(), 4, "four distinct model keys");
         // Totals should include everything
         assert_eq!(summary.total_input_tokens, 100 + 50 + 200 + 200);

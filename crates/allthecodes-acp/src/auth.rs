@@ -24,24 +24,18 @@ pub fn build_auth_methods() -> Vec<AuthMethod> {
         return vec![];
     }
 
-    vec![AuthMethod::Agent(AuthMethodAgent::new(
-        "allthecodes-login",
-        "allthecodes login",
-    )
-    .description(Some(
-        "Run allthecodes authentication using existing /login and /login-code flows.".into(),
-    )))]
+    vec![AuthMethod::Agent(
+        AuthMethodAgent::new("allthecodes-login", "allthecodes login").description(Some(
+            "Run allthecodes authentication using existing /login and /login-code flows.".into(),
+        )),
+    )]
 }
 
 /// ACP auth/login handler.
-pub fn handle_login(
-    params: v2::LoginAuthRequest,
-) -> Result<v2::LoginAuthResponse, v2::Error> {
+pub fn handle_login(params: v2::LoginAuthRequest) -> Result<v2::LoginAuthResponse, v2::Error> {
     if params.method_id.to_string() != "allthecodes-login" {
-        return Err(v2::Error::method_not_found().data(format!(
-            "unknown auth method: {}",
-            params.method_id
-        )));
+        return Err(v2::Error::method_not_found()
+            .data(format!("unknown auth method: {}", params.method_id)));
     }
 
     Ok(v2::LoginAuthResponse::new())

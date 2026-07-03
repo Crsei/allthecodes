@@ -43,9 +43,7 @@ fn diagnostic_enabled(item: &RecordItem, config: &RecordReplayConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record_replay::types::{
-        QueryEventRecord, ToolProgressRecord, TurnStartedRecord,
-    };
+    use crate::record_replay::types::{QueryEventRecord, ToolProgressRecord, TurnStartedRecord};
 
     #[test]
     fn canonical_items_persist_by_default() {

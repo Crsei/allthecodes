@@ -418,9 +418,7 @@ mod tests {
     use chrono::TimeZone;
     use serial_test::serial;
 
-    use crate::record_replay::types::{
-        MessageRecord, RecordLine, SessionMetaRecord,
-    };
+    use crate::record_replay::types::{MessageRecord, RecordLine, SessionMetaRecord};
 
     struct HomeGuard {
         previous: Option<String>,
@@ -470,24 +468,22 @@ mod tests {
 
         // Write a minimal valid rollout file so the filesystem fallback doesn't
         // interfere with the SQLite path (if sqlite-storage is enabled).
-        let lines = vec![
-            RecordLine::new(
-                session_id,
-                0,
-                RecordItem::SessionMeta(SessionMetaRecord {
-                    created_at,
-                    cwd: "/repo".into(),
-                    workspace_key: None,
-                    workspace_root: None,
-                    workspace_name: None,
-                    model: None,
-                    config_summary: None,
-                    parent_session_id: None,
-                    branch_from_seq: None,
-                    migrated_from: None,
-                }),
-            ),
-        ];
+        let lines = vec![RecordLine::new(
+            session_id,
+            0,
+            RecordItem::SessionMeta(SessionMetaRecord {
+                created_at,
+                cwd: "/repo".into(),
+                workspace_key: None,
+                workspace_root: None,
+                workspace_name: None,
+                model: None,
+                config_summary: None,
+                parent_session_id: None,
+                branch_from_seq: None,
+                migrated_from: None,
+            }),
+        )];
         write_rollout(&rollout_path, &lines);
 
         // Upsert the entry.
@@ -511,7 +507,11 @@ mod tests {
 
         // Query back — lookup_rollout prefers SQLite then falls back to filesystem.
         let found = lookup_rollout(session_id).unwrap();
-        assert_eq!(found, Some(rollout_path), "lookup should return the indexed rollout path");
+        assert_eq!(
+            found,
+            Some(rollout_path),
+            "lookup should return the indexed rollout path"
+        );
     }
 
     #[test]
@@ -549,7 +549,8 @@ mod tests {
                 1,
                 RecordItem::Message(MessageRecord::from_message(&Message::User(
                     allthecodes_types::message::UserMessage {
-                        uuid: uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+                        uuid: uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+                            .unwrap(),
                         timestamp: 1,
                         role: "user".into(),
                         content: MessageContent::Text("hello".into()),
@@ -577,7 +578,9 @@ mod tests {
                     uuid: uuid::Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap(),
                     timestamp: 2,
                     role: "assistant".into(),
-                    content: vec![allthecodes_types::message::ContentBlock::Text { text: "hi".into() }],
+                    content: vec![allthecodes_types::message::ContentBlock::Text {
+                        text: "hi".into(),
+                    }],
                     usage: None,
                     stop_reason: Some("end_turn".into()),
                     is_api_error_message: false,
@@ -644,7 +647,8 @@ mod tests {
                 1,
                 RecordItem::Message(MessageRecord::from_message(&Message::User(
                     allthecodes_types::message::UserMessage {
-                        uuid: uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+                        uuid: uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+                            .unwrap(),
                         timestamp: 1,
                         role: "user".into(),
                         content: MessageContent::Text("from a".into()),
@@ -658,24 +662,22 @@ mod tests {
         write_rollout(&path_a, &lines_a);
 
         let path_b = paths::new_rollout_file(session_id_b, created_at);
-        let lines_b = vec![
-            RecordLine::new(
-                session_id_b,
-                0,
-                RecordItem::SessionMeta(SessionMetaRecord {
-                    created_at,
-                    cwd: "/repo-b".into(),
-                    workspace_key: Some("wk-b".into()),
-                    workspace_root: Some("/repo-b".into()),
-                    workspace_name: Some("repo-b".into()),
-                    model: None,
-                    config_summary: None,
-                    parent_session_id: None,
-                    branch_from_seq: None,
-                    migrated_from: None,
-                }),
-            ),
-        ];
+        let lines_b = vec![RecordLine::new(
+            session_id_b,
+            0,
+            RecordItem::SessionMeta(SessionMetaRecord {
+                created_at,
+                cwd: "/repo-b".into(),
+                workspace_key: Some("wk-b".into()),
+                workspace_root: Some("/repo-b".into()),
+                workspace_name: Some("repo-b".into()),
+                model: None,
+                config_summary: None,
+                parent_session_id: None,
+                branch_from_seq: None,
+                migrated_from: None,
+            }),
+        )];
         write_rollout(&path_b, &lines_b);
 
         // Run reindex.
@@ -684,10 +686,18 @@ mod tests {
 
         // Verify both sessions are now findable via lookup_rollout.
         let found_a = lookup_rollout(session_id_a).unwrap();
-        assert_eq!(found_a, Some(path_a), "reindexed rollout for session_a should be found");
+        assert_eq!(
+            found_a,
+            Some(path_a),
+            "reindexed rollout for session_a should be found"
+        );
 
         let found_b = lookup_rollout(session_id_b).unwrap();
-        assert_eq!(found_b, Some(path_b), "reindexed rollout for session_b should be found");
+        assert_eq!(
+            found_b,
+            Some(path_b),
+            "reindexed rollout for session_b should be found"
+        );
     }
 
     #[test]
@@ -712,36 +722,45 @@ mod tests {
         let created_at = Utc.with_ymd_and_hms(2026, 7, 2, 17, 0, 0).unwrap();
         let rollout_path = paths::new_rollout_file(session_id, created_at);
 
-        let lines = vec![
-            RecordLine::new(
-                session_id,
-                0,
-                RecordItem::SessionMeta(SessionMetaRecord {
-                    created_at,
-                    cwd: "/repo/proj".into(),
-                    workspace_key: None,
-                    workspace_root: None,
-                    workspace_name: None,
-                    model: None,
-                    config_summary: None,
-                    parent_session_id: None,
-                    branch_from_seq: None,
-                    migrated_from: None,
-                }),
-            ),
-        ];
+        let lines = vec![RecordLine::new(
+            session_id,
+            0,
+            RecordItem::SessionMeta(SessionMetaRecord {
+                created_at,
+                cwd: "/repo/proj".into(),
+                workspace_key: None,
+                workspace_root: None,
+                workspace_name: None,
+                model: None,
+                config_summary: None,
+                parent_session_id: None,
+                branch_from_seq: None,
+                migrated_from: None,
+            }),
+        )];
         write_rollout(&rollout_path, &lines);
 
         // index_rollout_file upserts the SQLite entry and writes the session
         // projection. The session projection is what load_session reads.
         let result = index_rollout_file(&rollout_path);
-        assert!(result.is_ok(), "index_rollout_file should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "index_rollout_file should succeed: {:?}",
+            result.err()
+        );
 
         // The session projection file should have been written.
         let loaded = crate::storage::load_session(session_id).unwrap();
-        assert_eq!(loaded.len(), 0, "only SessionMeta, no messages; projection exists");
+        assert_eq!(
+            loaded.len(),
+            0,
+            "only SessionMeta, no messages; projection exists"
+        );
 
         let info = crate::storage::load_session_info(session_id).unwrap();
-        assert_eq!(info.cwd, "/repo/proj", "session info should reflect the rollout metadata");
+        assert_eq!(
+            info.cwd, "/repo/proj",
+            "session info should reflect the rollout metadata"
+        );
     }
 }

@@ -689,7 +689,9 @@ mod tests {
         let workflow = WorkflowContext::new("test".into(), "general-purpose".into(), 8, &ctx);
 
         // Multi-byte characters (3 bytes each) at the boundary
-        let long: String = (0..MAX_REDUCE_INPUT_CHARS / 2).map(|_| "\u{1F600}").collect();
+        let long: String = (0..MAX_REDUCE_INPUT_CHARS / 2)
+            .map(|_| "\u{1F600}")
+            .collect();
         let truncated = workflow.truncate_context(&long);
         assert!(truncated.ends_with(TRUNCATION_MARKER));
         let prefix_len = truncated.len() - TRUNCATION_MARKER.len();

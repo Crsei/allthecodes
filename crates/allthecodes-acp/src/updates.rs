@@ -4,13 +4,10 @@
 //! that the ACP client can consume.
 
 use agent_client_protocol_schema::v2::{
-    AgentMessage, AgentThought, ContentChunk, ContentBlock, IdleStateUpdate,
-    MessageId, RunningStateUpdate, SessionUpdate, StateUpdate, StopReason,
-    UsageUpdate, UserMessage,
+    AgentMessage, AgentThought, ContentBlock, ContentChunk, IdleStateUpdate, MessageId,
+    RunningStateUpdate, SessionUpdate, StateUpdate, StopReason, UsageUpdate, UserMessage,
 };
-use allthecodes_types::sdk::{
-    SdkMessage, ResultSubtype,
-};
+use allthecodes_types::sdk::{ResultSubtype, SdkMessage};
 
 /// Message counter for generating deterministic message IDs.
 #[derive(Debug, Default, Clone)]
@@ -52,9 +49,7 @@ pub fn sdk_message_to_updates(
         SdkMessage::StreamEvent(event) => {
             vec![map_stream_event(event, counter)]
         }
-        SdkMessage::Result(result) => {
-            sdk_result_to_updates(result, None)
-        }
+        SdkMessage::Result(result) => sdk_result_to_updates(result, None),
         SdkMessage::SystemInit(_) => {
             vec![]
         }
@@ -151,9 +146,7 @@ fn map_stream_event(
         allthecodes_types::message::StreamEvent::MessageStart { .. } => {
             SessionUpdate::StateUpdate(StateUpdate::Running(RunningStateUpdate::new()))
         }
-        _ => {
-            SessionUpdate::AgentThought(AgentThought::new(counter.next_thought_message_id()))
-        }
+        _ => SessionUpdate::AgentThought(AgentThought::new(counter.next_thought_message_id())),
     }
 }
 

@@ -65,11 +65,7 @@ pub fn build_config_options(session: &Arc<AcpSession>) -> Vec<ConfigOptionEntry>
 
     // Mode option
     {
-        let current_mode: String = app_state
-            .tool_permission_context
-            .mode
-            .as_str()
-            .to_string();
+        let current_mode: String = app_state.tool_permission_context.mode.as_str().to_string();
 
         let options: Vec<SessionConfigSelectOption> = vec![
             SessionConfigSelectOption::new("default", "Default"),

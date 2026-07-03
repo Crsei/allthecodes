@@ -544,9 +544,7 @@ fn valid_max_concurrency(value: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::{
-        ToolResult, ToolUseContext, ToolUseOptions, ValidationResult,
-    };
+    use crate::tool::{ToolResult, ToolUseContext, ToolUseOptions, ValidationResult};
     use std::sync::Arc;
 
     // ---------------------------------------------------------------------------
@@ -603,7 +601,8 @@ mod tests {
 
     #[test]
     fn action_serde_default_max_concurrency() {
-        let json = r#"{"name":"test","plan":{"stages":[{"id":"s1","kind":"agent","prompt":"do it"}]}}"#;
+        let json =
+            r#"{"name":"test","plan":{"stages":[{"id":"s1","kind":"agent","prompt":"do it"}]}}"#;
         let deserialized: DynamicWorkflowAction = serde_json::from_str(json).unwrap();
         assert_eq!(deserialized.max_concurrency, 8);
         assert!(deserialized.subagent_type.is_none());
@@ -663,12 +662,7 @@ mod tests {
 
     #[test]
     fn observation_error_formats_tool_result() {
-        let obs = DynamicWorkflowObservation::error(
-            "test".into(),
-            "something broke".into(),
-            1,
-            3,
-        );
+        let obs = DynamicWorkflowObservation::error("test".into(), "something broke".into(), 1, 3);
         let result: ToolResult = obs.into();
         assert!(result.display_preview.unwrap().contains("failed"));
     }
@@ -789,7 +783,10 @@ mod tests {
         let ctx = make_ctx();
         match tool.validate_input(&input, &ctx).await {
             ValidationResult::Error { message, .. } => {
-                assert!(message.contains("requires non-empty items"), "got: {message}");
+                assert!(
+                    message.contains("requires non-empty items"),
+                    "got: {message}"
+                );
             }
             other => panic!("expected Error, got {other:?}"),
         }
@@ -808,6 +805,9 @@ mod tests {
             }
         });
         let ctx = make_ctx();
-        assert!(matches!(tool.validate_input(&input, &ctx).await, ValidationResult::Ok));
+        assert!(matches!(
+            tool.validate_input(&input, &ctx).await,
+            ValidationResult::Ok
+        ));
     }
 }

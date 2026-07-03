@@ -458,7 +458,8 @@ async fn test_abort_during_tool_execution() {
     };
 
     // Use tool_delay so we can set the abort flag while tool is executing.
-    let deps = Arc::new(MockDeps::new(vec![tool_response]).with_tool_delay(Duration::from_millis(150)));
+    let deps =
+        Arc::new(MockDeps::new(vec![tool_response]).with_tool_delay(Duration::from_millis(150)));
 
     let params = QueryParams {
         messages: vec![Message::User(UserMessage {
@@ -484,9 +485,8 @@ async fn test_abort_during_tool_execution() {
 
     // Spawn the query in the background so we can set abort mid-execution.
     let deps_clone = deps.clone();
-    let handle = tokio::spawn(async move {
-        query(params, deps_clone).collect::<Vec<QueryYield>>().await
-    });
+    let handle =
+        tokio::spawn(async move { query(params, deps_clone).collect::<Vec<QueryYield>>().await });
 
     // Wait for tool execution to start (stream completes, tool execution begins).
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -499,13 +499,16 @@ async fn test_abort_during_tool_execution() {
     // The tool execution still happened (MockDeps returns a result), but
     // the abort check after execute_tool_calls prevents tool results
     // from being yielded as User messages.
-    let tool_result_user_messages = items.iter().filter(|item| {
-        matches!(
-            item,
-            QueryYield::Message(Message::User(user))
-                if user.is_meta && user.source_tool_assistant_uuid.is_some()
-        )
-    }).count();
+    let tool_result_user_messages = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                QueryYield::Message(Message::User(user))
+                    if user.is_meta && user.source_tool_assistant_uuid.is_some()
+            )
+        })
+        .count();
     assert_eq!(
         tool_result_user_messages, 0,
         "abort during tool execution must suppress tool result user messages"
@@ -521,7 +524,9 @@ async fn test_abort_during_tool_execution() {
 
 #[tokio::test]
 async fn test_abort_after_streaming() {
-    let deps = Arc::new(MockDeps::new(vec![make_text_response("Partial text before abort")]));
+    let deps = Arc::new(MockDeps::new(vec![make_text_response(
+        "Partial text before abort",
+    )]));
 
     let params = QueryParams {
         messages: vec![Message::User(UserMessage {
@@ -562,7 +567,10 @@ async fn test_abort_after_streaming() {
                 ))
         )
     });
-    assert!(has_assistant, "expected assistant message with partial text");
+    assert!(
+        has_assistant,
+        "expected assistant message with partial text"
+    );
 }
 
 #[tokio::test]

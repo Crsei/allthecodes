@@ -3,14 +3,24 @@
 //! Maps internal allthecodes tool names to ACP ToolKind and builds
 //! ACP ToolCallUpdate objects from engine tool execution data.
 
-use agent_client_protocol_schema::v2::{ToolCallUpdate, ToolCallStatus, ToolKind};
+use agent_client_protocol_schema::v2::{ToolCallStatus, ToolCallUpdate, ToolKind};
 
 /// Classify a tool name into an ACP ToolKind.
 pub fn classify_tool_kind(tool_name: &str) -> ToolKind {
     let lower = tool_name.to_ascii_lowercase();
-    if lower == "read" || lower == "glob" || lower == "grep" || lower == "listfiles" || lower == "filesearch" {
+    if lower == "read"
+        || lower == "glob"
+        || lower == "grep"
+        || lower == "listfiles"
+        || lower == "filesearch"
+    {
         ToolKind::Read
-    } else if lower == "write" || lower == "fileedit" || lower == "filewrite" || lower == "multiedit" || lower == "edit" {
+    } else if lower == "write"
+        || lower == "fileedit"
+        || lower == "filewrite"
+        || lower == "multiedit"
+        || lower == "edit"
+    {
         ToolKind::Edit
     } else if lower == "delete" || lower == "remove" || lower == "filedelete" {
         ToolKind::Delete
@@ -18,7 +28,13 @@ pub fn classify_tool_kind(tool_name: &str) -> ToolKind {
         ToolKind::Move
     } else if lower == "search" || lower == "grepsearch" || lower == "codesearch" {
         ToolKind::Search
-    } else if lower == "bash" || lower == "shell" || lower == "execute" || lower == "process" || lower == "run" || lower == "terminal" {
+    } else if lower == "bash"
+        || lower == "shell"
+        || lower == "execute"
+        || lower == "process"
+        || lower == "run"
+        || lower == "terminal"
+    {
         ToolKind::Execute
     } else if lower == "think" || lower == "plan" || lower == "reason" || lower == "brainstorm" {
         ToolKind::Think
@@ -37,7 +53,8 @@ pub fn extract_tool_locations(
 ) -> Option<Vec<String>> {
     let path_fields = ["path", "file_path", "file", "target", "location"];
 
-    let paths: Vec<String> = path_fields.iter()
+    let paths: Vec<String> = path_fields
+        .iter()
         .filter_map(|field| input.get(*field))
         .filter_map(|v| v.as_str())
         .map(|p| {
@@ -50,7 +67,11 @@ pub fn extract_tool_locations(
         })
         .collect();
 
-    if paths.is_empty() { None } else { Some(paths) }
+    if paths.is_empty() {
+        None
+    } else {
+        Some(paths)
+    }
 }
 
 /// Build an ACP ToolCallUpdate for an in-progress tool call.

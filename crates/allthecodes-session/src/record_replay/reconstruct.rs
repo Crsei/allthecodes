@@ -481,7 +481,8 @@ mod tests {
             RecordLine::new("corrupt-tail", 1, {
                 RecordItem::Message(MessageRecord {
                     message: RecordedMessage::User {
-                        uuid: uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+                        uuid: uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+                            .unwrap(),
                         timestamp: 1,
                         role: "user".into(),
                         content: RecordedMessageContent::Text("hello".into()),

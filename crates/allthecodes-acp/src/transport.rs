@@ -25,7 +25,7 @@ impl AcpStdioReader {
     pub async fn read_line(&mut self) -> Option<String> {
         let mut line = String::new();
         match self.inner.read_line(&mut line).await {
-            Ok(0) => None,  // EOF
+            Ok(0) => None, // EOF
             Ok(_) => Some(line),
             Err(e) => {
                 tracing::warn!(error = %e, "acp stdin read error");

@@ -290,10 +290,7 @@ mod tests {
         match redacted.item {
             RecordItem::PermissionRequest(record) => {
                 let ctx = record.context.unwrap();
-                assert_eq!(
-                    ctx["file_path"],
-                    "/home/user/project/src/main.rs"
-                );
+                assert_eq!(ctx["file_path"], "/home/user/project/src/main.rs");
             }
             other => panic!("unexpected item: {other:?}"),
         }
