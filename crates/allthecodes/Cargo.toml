@@ -165,6 +165,7 @@ allthecodes-web = { workspace = true }
 allthecodes-worktree = { workspace = true }
 allthecodes-gateway = { workspace = true }
 allthecodes-tool-display = { path = "../allthecodes-tool-display" }
+allthecodes-acp = { path = "../allthecodes-acp" }
 allthecodes-server = { workspace = true }
 
 # Daemon

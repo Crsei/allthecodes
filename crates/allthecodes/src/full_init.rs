@@ -896,7 +896,7 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
     crate::dashboard::init_session_id(engine.session_id.as_str());
 
     // Apply the fully-resolved AppState (with hooks, permissions, etc.)
-    engine.update_app_state(|s| *s = app_state);
+    engine.update_app_state(|s| *s = app_state.clone());
 
     // B.8a: Fire SessionStart hook (fire-and-forget)
     {
@@ -922,6 +922,8 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
         let audit_config = AuditConfig::from_env();
         let source_mode = if cli.headless {
             "headless"
+        } else if cli.acp {
+            "acp"
         } else if cli.daemon {
             "daemon"
         } else {
@@ -1034,10 +1036,32 @@ pub(crate) async fn run_full_init(cli: Cli) -> anyhow::Result<ExitCode> {
         return Ok(exit_code);
     }
 
-    // B.11: Enter TUI or headless mode
+    // B.11: Enter TUI, headless, or ACP mode
     if cli.headless {
         let result = allthecodes_ipc::headless::run_headless(
             crate::app_runtime_adapters::headless_config(engine, model),
+        )
+        .await
+        .map(|()| ExitCode::SUCCESS);
+        persist_skill_usage();
+        return result;
+    }
+
+    // ACP mode: runs before TUI/headless routing, exits when stdio closes.
+    if cli.acp {
+        let result = allthecodes_acp::run_stdio(
+            crate::full_init::acp_runtime_bridge::build_acp_runtime_config(
+                crate::full_init::acp_runtime_bridge::AcpBridgeInputs {
+                    model,
+                    cwd: cwd.clone(),
+                    tools: tools.clone(),
+                    app_state_template: app_state.clone(),
+                    merged_config: merged_config.clone(),
+                    cli_overrides: crate::full_init::acp_runtime_bridge::AcpCliOverrides::from_cli(
+                        &cli,
+                    ),
+                },
+            ),
         )
         .await
         .map(|()| ExitCode::SUCCESS);
@@ -1392,5 +1416,171 @@ async fn wait_for_process_shutdown_signal() -> &'static str {
     {
         let _ = tokio::signal::ctrl_c().await;
         "ctrl-c"
+    }
+}
+
+// ============================================================================
+// ACP runtime bridge — creates allthecodes_acp::AcpRuntimeConfig from root-crate
+// initialization artifacts and implements the per-session engine factory.
+// ============================================================================
+
+pub(crate) mod acp_runtime_bridge {
+    use std::sync::Arc;
+
+    use allthecodes_engine::lifecycle::QueryEngine;
+    use allthecodes_engine::types::config::QueryEngineConfig;
+    use allthecodes_engine::types::tool::Tools;
+
+    use crate::cli::Cli;
+
+    pub(crate) struct AcpBridgeInputs {
+        pub(crate) model: String,
+        pub(crate) cwd: String,
+        pub(crate) tools: Tools,
+        pub(crate) app_state_template:
+            allthecodes_engine::types::app_state::AppState,
+        pub(crate) merged_config:
+            allthecodes_config::settings::EffectiveSettings,
+        pub(crate) cli_overrides: AcpCliOverrides,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct AcpCliOverrides {
+        pub(crate) max_turns: Option<usize>,
+        pub(crate) model: Option<String>,
+        pub(crate) system_prompt: Option<String>,
+        pub(crate) append_system_prompt: Option<String>,
+        pub(crate) permission_mode: Option<String>,
+        pub(crate) verbose: bool,
+        pub(crate) no_network: bool,
+    }
+
+    impl AcpCliOverrides {
+        pub(crate) fn from_cli(cli: &Cli) -> Self {
+            Self {
+                max_turns: cli.max_turns,
+                model: cli.model.clone(),
+                system_prompt: cli.system_prompt.clone(),
+                append_system_prompt: cli.append_system_prompt.clone(),
+                permission_mode: cli.permission_mode.clone(),
+                verbose: cli.verbose,
+                no_network: cli.no_network,
+            }
+        }
+    }
+
+    pub(crate) fn build_acp_runtime_config(
+        inputs: AcpBridgeInputs,
+    ) -> allthecodes_acp::AcpRuntimeConfig {
+        let factory = AcpEngineFactoryImpl {
+            model: inputs.model.clone(),
+            tools: inputs.tools.clone(),
+            app_state_template: inputs.app_state_template.clone(),
+            cli_overrides: inputs.cli_overrides.clone(),
+        };
+
+        allthecodes_acp::AcpRuntimeConfig {
+            model: inputs.model,
+            cwd: std::path::PathBuf::from(&inputs.cwd),
+            tools: inputs.tools,
+            app_state_template: inputs.app_state_template,
+            merged_config: inputs.merged_config,
+            cli_overrides: allthecodes_acp::AcpCliOverrides {
+                max_turns: inputs.cli_overrides.max_turns,
+                model: inputs.cli_overrides.model,
+                system_prompt: inputs.cli_overrides.system_prompt,
+                append_system_prompt: inputs.cli_overrides.append_system_prompt,
+                permission_mode: inputs.cli_overrides.permission_mode,
+                verbose: inputs.cli_overrides.verbose,
+                no_network: inputs.cli_overrides.no_network,
+            },
+            engine_factory: Arc::new(factory),
+        }
+    }
+
+    struct AcpEngineFactoryImpl {
+        model: String,
+        tools: Tools,
+        app_state_template: allthecodes_engine::types::app_state::AppState,
+        cli_overrides: AcpCliOverrides,
+    }
+
+    impl allthecodes_acp::AcpEngineFactory for AcpEngineFactoryImpl {
+        fn create_engine(
+            &self,
+            params: allthecodes_acp::AcpEngineParams,
+        ) -> anyhow::Result<Arc<QueryEngine>> {
+            let config = QueryEngineConfig {
+                cwd: params.cwd.to_string_lossy().to_string(),
+                tools: self.tools.clone(),
+                custom_system_prompt: self.cli_overrides.system_prompt.clone(),
+                append_system_prompt: self.cli_overrides.append_system_prompt.clone(),
+                user_specified_model: self.cli_overrides.model.clone(),
+                fallback_model: None,
+                max_turns: self.cli_overrides.max_turns,
+                max_budget_usd: None,
+                task_budget: None,
+                verbose: self.cli_overrides.verbose,
+                initial_messages: params.initial_messages,
+                commands: allthecodes_commands::get_all_commands()
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect(),
+                thinking_config: None,
+                json_schema: None,
+                replay_user_messages: true,
+                persist_session: true,
+                resolved_model: Some(self.model.clone()),
+                auto_save_session: true,
+                agent_context: None,
+            };
+
+            let mut engine = QueryEngine::new(config);
+            engine.set_hook_runner(Arc::new(
+                allthecodes_tools::hooks::ShellHookRunner::new(),
+            ));
+            engine.set_command_dispatcher(Arc::new(
+                allthecodes_commands::DefaultCommandDispatcher::for_full_registry(),
+            ));
+
+            if let Some(ref session_id) = params.session_id {
+                engine.set_current_session_id(
+                    allthecodes_engine::bootstrap::SessionId::from_string(session_id),
+                );
+            }
+
+            let mut app_state = self.app_state_template.clone();
+            app_state.main_loop_model = self
+                .cli_overrides
+                .model
+                .clone()
+                .unwrap_or_else(|| self.model.clone());
+            if let Some(permission_mode) = self.cli_overrides.permission_mode.clone() {
+                app_state.tool_permission_context.mode =
+                    allthecodes_types::permissions::PermissionMode::parse(&permission_mode);
+            }
+            engine.update_app_state(|state| *state = app_state);
+
+            for dir in &params.additional_directories {
+                if dir.is_absolute() && dir.is_dir() {
+                    let canonical = std::fs::canonicalize(dir)
+                        .unwrap_or_else(|_| dir.clone());
+                    engine.update_app_state(|state| {
+                        state
+                            .tool_permission_context
+                            .additional_working_directories
+                            .insert(
+                                format!("acp-additional-{}", canonical.display()),
+                                allthecodes_types::permissions::AdditionalWorkingDirectory {
+                                    path: canonical.to_string_lossy().to_string(),
+                                    read_only: false,
+                                },
+                            );
+                    });
+                }
+            }
+
+            Ok(Arc::new(engine))
+        }
     }
 }
