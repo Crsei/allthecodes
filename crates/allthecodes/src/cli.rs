@@ -79,6 +79,10 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub headless: bool,
 
+    /// Agent Client Protocol mode: JSON-RPC 2.0 over stdio (ACP v2).
+    #[arg(long = "acp", hide = true, conflicts_with_all = ["headless", "print", "web", "daemon"])]
+    pub acp: bool,
+
     /// INTERNAL: export accepted Rust TUI insta snapshots into one review folder.
     #[arg(long = "export-ui-snapshots", value_name = "DIR", hide = true)]
     pub export_ui_snapshots: Option<PathBuf>,

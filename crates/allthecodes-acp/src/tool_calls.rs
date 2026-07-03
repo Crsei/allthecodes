@@ -31,7 +31,7 @@ pub fn classify_tool_kind(tool_name: &str) -> ToolKind {
 
 /// Build a set of tool call locations from tool input.
 pub fn extract_tool_locations(
-    tool_name: &str,
+    _tool_name: &str,
     input: &serde_json::Value,
     cwd: &std::path::Path,
 ) -> Option<Vec<String>> {

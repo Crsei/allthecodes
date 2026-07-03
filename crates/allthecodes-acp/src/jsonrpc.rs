@@ -113,7 +113,7 @@ fn parse_single_value(value: &serde_json::Value) -> Result<InboundBatchEntry, v2
         .map(|s| Arc::<str>::from(s.to_string()))
         .ok_or_else(|| v2::Error::invalid_request().data("missing 'method' field"))?;
 
-    let has_id = obj.get("id").is_some() && !matches!(obj.get("id"), Some(serde_json::Value::Null));
+    let has_id = obj.get("id").is_some();
 
     let params = obj.get("params").and_then(parse_params_raw);
 
@@ -182,6 +182,12 @@ pub fn build_notification<T: serde::Serialize>(
     };
     let msg = JsonRpcMessage::wrap(notification);
     serde_json::to_value(msg).unwrap_or_default()
+}
+
+/// Build an ACP agent-to-client JSON-RPC notification.
+pub fn build_agent_notification(notification: v2::AgentNotification) -> serde_json::Value {
+    let method = notification.method().to_string();
+    build_notification(&method, &notification)
 }
 
 /// Build a JSON-RPC batch response containing responses for requests that
@@ -288,6 +294,19 @@ mod tests {
     }
 
     #[test]
+    fn null_id_is_preserved_as_request_id() {
+        let raw = r#"{"jsonrpc":"2.0","id":null,"method":"initialize"}"#;
+        let result = parse_frame(raw).unwrap().unwrap();
+        match result {
+            InboundMessage::Request { id, method, .. } => {
+                assert_eq!(id, RequestId::Null);
+                assert_eq!(&*method, "initialize");
+            }
+            _ => panic!("expected request"),
+        }
+    }
+
+    #[test]
     fn parse_non_empty_batch() {
         let raw = r#"[
             {"jsonrpc":"2.0","id":1,"method":"initialize"},
@@ -327,5 +346,26 @@ mod tests {
         let value = build_response::<&str>(&RequestId::Number(1), Ok("ok"));
         let json_str = serde_json::to_string(&value).unwrap();
         assert!(!json_str.contains('\n'), "no embedded newlines");
+    }
+
+    #[test]
+    fn session_update_notification_is_jsonrpc_enveloped() {
+        let update = v2::UpdateSessionNotification::new(
+            v2::SessionId::new("sess"),
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
+                v2::RunningStateUpdate::new(),
+            )),
+        );
+        let value = build_agent_notification(v2::AgentNotification::UpdateSessionNotification(
+            Box::new(update),
+        ));
+
+        assert_eq!(value.get("jsonrpc").and_then(|v| v.as_str()), Some("2.0"));
+        assert_eq!(
+            value.get("method").and_then(|v| v.as_str()),
+            Some("session/update")
+        );
+        assert!(value.get("params").is_some());
+        assert!(value.get("sessionId").is_none());
     }
 }

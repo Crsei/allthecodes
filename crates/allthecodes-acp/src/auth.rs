@@ -10,8 +10,15 @@ use agent_client_protocol_schema::v2::{AuthMethod, AuthMethodAgent};
 /// login method when credentials are missing.
 pub fn build_auth_methods() -> Vec<AuthMethod> {
     // Check if we have usable credentials
-    // resolve_auth returns AuthMethod enum, resolve_codex_auth_token returns Option<String>
-    let has_creds = allthecodes_auth::resolve_codex_auth_token().is_some();
+    let has_env_creds = [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "OPENAI_CODEX_AUTH_TOKEN",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some());
+    let has_creds = has_env_creds || allthecodes_auth::resolve_codex_auth_token().is_some();
 
     if has_creds {
         return vec![];

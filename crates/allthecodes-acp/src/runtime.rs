@@ -5,18 +5,19 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use agent_client_protocol_schema::v2;
 use agent_client_protocol_schema::rpc::RequestId;
-use futures::StreamExt;
 use tokio::sync::mpsc;
 
 use crate::jsonrpc::{self, InboundBatchEntry, InboundMessage};
 use crate::transport::{AcpStdioReader, AcpSink, spawn_sink_writer};
 use crate::session::AcpSessionManager;
 use crate::engine_factory::AcpEngineFactory;
-use crate::updates::{sdk_message_to_updates, MessageCounter, state_running_update, state_idle_update};
+use crate::updates::{
+    sdk_message_to_updates, sdk_result_to_updates, MessageCounter, state_running_update,
+    state_idle_update,
+};
 
 /// Configuration passed into the runtime.
 pub struct RuntimeContext {
@@ -64,8 +65,6 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
     let capabilities = AcpCapabilities::baseline();
 
     let mut reader = AcpStdioReader::new();
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
 
     // Track in-flight request ids for $/cancel_request support
     let pending_requests: Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>> =
@@ -130,7 +129,15 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
                 ).await;
             }
             InboundMessage::Batch(entries) => {
-                handle_batch(entries, &capabilities, &session_manager, &sink, &ctx).await;
+                handle_batch(
+                    entries,
+                    &capabilities,
+                    &session_manager,
+                    &sink,
+                    &ctx,
+                    &pending_requests,
+                )
+                .await;
             }
         }
     }
@@ -146,7 +153,7 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
 async fn dispatch_request(
     method: &str,
     params: Option<&serde_json::value::RawValue>,
-    id: &RequestId,
+    _id: &RequestId,
     capabilities: &AcpCapabilities,
     session_manager: &Arc<AcpSessionManager>,
     sink: &AcpSink,
@@ -194,7 +201,7 @@ async fn dispatch_request(
             Some(result)
         }
         "session/delete" => {
-            if !capabilities.session {
+            if !capabilities.session || !capabilities.session_delete {
                 return Some(Err(v2::Error::method_not_found()));
             }
             let result = handle_session_delete(params, session_manager).await;
@@ -211,7 +218,7 @@ async fn handle_notification(
     method: &str,
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
-    sink: &AcpSink,
+    _sink: &AcpSink,
     pending_requests: &Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>,
 ) {
     match method {
@@ -232,6 +239,9 @@ async fn handle_notification(
                 if let Ok(notif) = serde_json::from_str::<v2::CancelSessionNotification>(raw.get()) {
                     let sid = notif.session_id.0.to_string();
                     if let Some(session) = session_manager.get_session(&sid).await {
+                        if let Some(ref mut turn) = *session.active_turn.lock().await {
+                            turn.cancel_requested = true;
+                        }
                         session.engine.abort();
                         tracing::info!(session_id = %sid, "acp session/cancel: engine aborted");
                     }
@@ -250,8 +260,8 @@ async fn handle_batch(
     session_manager: &Arc<AcpSessionManager>,
     sink: &AcpSink,
     ctx: &RuntimeContext,
+    pending_requests: &Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>,
 ) {
-    let (cancel_tx, _cancel_rx) = tokio::sync::oneshot::channel::<()>();
     let mut results = Vec::new();
     for entry in &entries {
         match entry {
@@ -269,8 +279,15 @@ async fn handle_batch(
                 ).await;
                 results.push(result.unwrap_or(Err(v2::Error::internal_error())));
             }
-            InboundBatchEntry::Notification { .. } => {
-                // Notifications in batches are handled inline in batch context
+            InboundBatchEntry::Notification { method, params } => {
+                handle_notification(
+                    method,
+                    params.as_deref(),
+                    session_manager,
+                    sink,
+                    pending_requests,
+                )
+                .await;
             }
         }
     }
@@ -280,6 +297,17 @@ async fn handle_batch(
     }
 }
 
+fn send_session_update(
+    sink: &AcpSink,
+    session_id: v2::SessionId,
+    update: v2::SessionUpdate,
+) {
+    let notification = v2::UpdateSessionNotification::new(session_id, update);
+    sink.send(jsonrpc::build_agent_notification(
+        v2::AgentNotification::UpdateSessionNotification(Box::new(notification)),
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Initialization handler
 // ---------------------------------------------------------------------------
@@ -287,7 +315,7 @@ async fn handle_batch(
 async fn handle_initialize(
     params: Option<&serde_json::value::RawValue>,
     capabilities: &AcpCapabilities,
-    ctx: &RuntimeContext,
+    _ctx: &RuntimeContext,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
     let req: v2::InitializeRequest =
@@ -339,17 +367,17 @@ async fn handle_auth_login(
             v2::Error::invalid_params().data(format!("invalid auth/login params: {e}"))
         })?;
 
-    let _ = crate::auth::handle_login(req)?;
+    let response = crate::auth::handle_login(req)?;
 
-    serde_json::to_value(v2::LoginAuthResponse::new()).map_err(|e| {
+    serde_json::to_value(response).map_err(|e| {
         v2::Error::internal_error().data(format!("serialization error: {e}"))
     })
 }
 
 async fn handle_auth_logout() -> Result<serde_json::Value, v2::Error> {
-    let _ = crate::auth::handle_logout()?;
+    let response = crate::auth::handle_logout()?;
 
-    serde_json::to_value(v2::LogoutAuthResponse::new()).map_err(|e| {
+    serde_json::to_value(response).map_err(|e| {
         v2::Error::internal_error().data(format!("serialization error: {e}"))
     })
 }
@@ -363,7 +391,7 @@ async fn handle_session_method(
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
     sink: &AcpSink,
-    ctx: &RuntimeContext,
+    _ctx: &RuntimeContext,
 ) -> Result<serde_json::Value, v2::Error> {
     match method {
         "session/new" => {
@@ -378,6 +406,10 @@ async fn handle_session_method(
 
             let additional = req.additional_directories.clone();
             AcpSessionManager::validate_additional_dirs(&additional).map_err(|e| v2::Error::invalid_params().data(e))?;
+            if !req.mcp_servers.is_empty() {
+                return Err(v2::Error::invalid_params()
+                    .data("ACP MCP server connections are not yet supported"));
+            }
 
             let sid = agent_client_protocol_schema::v2::SessionId::new(
                 uuid::Uuid::new_v4().to_string(),
@@ -400,13 +432,11 @@ async fn handle_session_method(
 
             // Send available_commands_update after session creation
             if let Some(cmd_update) = crate::commands::build_commands_update() {
-                let update = v2::UpdateSessionNotification::new(
+                send_session_update(
+                    sink,
                     sid.clone(),
                     v2::SessionUpdate::AvailableCommandsUpdate(cmd_update),
                 );
-                if let Ok(val) = serde_json::to_value(update) {
-                    sink.send(val);
-                }
             }
 
             serde_json::to_value(resp).map_err(|e| {
@@ -437,24 +467,8 @@ async fn handle_session_method(
             // Replay the full visible conversation via session/update
             // In practice this would replay each UserReplay and Assistant message
             // For now we send a minimal replay indicator
-            {
-                let update = v2::UpdateSessionNotification::new(
-                    sid.clone(),
-                    crate::updates::state_running_update(),
-                );
-                if let Ok(val) = serde_json::to_value(update) {
-                    sink.send(val);
-                }
-            }
-            {
-                let update = v2::UpdateSessionNotification::new(
-                    sid.clone(),
-                    crate::updates::state_idle_update(None),
-                );
-                if let Ok(val) = serde_json::to_value(update) {
-                    sink.send(val);
-                }
-            }
+            send_session_update(sink, sid.clone(), crate::updates::state_running_update());
+            send_session_update(sink, sid.clone(), crate::updates::state_idle_update(None));
 
             let config_entries = crate::config_options::build_config_options(&session);
             let config_options: Vec<v2::SessionConfigOption> = config_entries.into_iter()
@@ -465,13 +479,11 @@ async fn handle_session_method(
 
             // Send available_commands_update after session load
             if let Some(cmd_update) = crate::commands::build_commands_update() {
-                let update = v2::UpdateSessionNotification::new(
+                send_session_update(
+                    sink,
                     sid.clone(),
                     v2::SessionUpdate::AvailableCommandsUpdate(cmd_update),
                 );
-                if let Ok(val) = serde_json::to_value(update) {
-                    sink.send(val);
-                }
             }
 
             serde_json::to_value(resp).map_err(|e| {
@@ -508,13 +520,11 @@ async fn handle_session_method(
 
             // Send available_commands_update after session resume
             if let Some(cmd_update) = crate::commands::build_commands_update() {
-                let update = v2::UpdateSessionNotification::new(
+                send_session_update(
+                    sink,
                     sid.clone(),
                     v2::SessionUpdate::AvailableCommandsUpdate(cmd_update),
                 );
-                if let Ok(val) = serde_json::to_value(update) {
-                    sink.send(val);
-                }
             }
 
             serde_json::to_value(resp).map_err(|e| {
@@ -523,7 +533,10 @@ async fn handle_session_method(
         }
         "session/list" => {
             let req: Option<v2::ListSessionsRequest> = if let Some(raw) = params {
-                serde_json::from_str(raw.get()).ok()
+                Some(serde_json::from_str(raw.get()).map_err(|e| {
+                    v2::Error::invalid_params()
+                        .data(format!("invalid session/list params: {e}"))
+                })?)
             } else {
                 None
             };
@@ -594,10 +607,8 @@ async fn handle_session_delete(
     // Archive the session in storage (delete is an archive operation)
     let _ = allthecodes_session::storage::archive_session(&sid_str);
 
-    // Delete returns a generic empty response / confirmation
-    serde_json::to_value(serde_json::json!({
-        "sessionId": req.session_id.0.to_string()
-    })).map_err(|e| v2::Error::internal_error().data(e.to_string()))
+    serde_json::to_value(v2::DeleteSessionResponse::new())
+        .map_err(|e| v2::Error::internal_error().data(e.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +632,30 @@ async fn handle_set_config_option(
     let config_id = req.config_id.0.to_string();
     let value = req.value.0.to_string();
 
+    match config_id.as_str() {
+        "model" => {
+            if value.trim().is_empty() {
+                return Err(v2::Error::invalid_params().data("model value cannot be empty"));
+            }
+        }
+        "thought_level" => {
+            if !matches!(value.as_str(), "low" | "medium" | "high") {
+                return Err(v2::Error::invalid_params()
+                    .data(format!("invalid thought_level value: {value}")));
+            }
+        }
+        "mode" => {
+            if !matches!(value.as_str(), "default" | "auto" | "bypass") {
+                return Err(v2::Error::invalid_params()
+                    .data(format!("invalid mode value: {value}")));
+            }
+        }
+        _ => {
+            return Err(v2::Error::invalid_params()
+                .data(format!("unknown config option: {config_id}")));
+        }
+    }
+
     // Update the session engine AppState based on config_id
     session.engine.update_app_state(|state| {
         match config_id.as_str() {
@@ -636,7 +671,7 @@ async fn handle_set_config_option(
                 state.tool_permission_context.mode =
                     allthecodes_types::permissions::PermissionMode::parse(&new_mode);
             }
-            _ => {}
+            _ => unreachable!("config_id was validated above"),
         }
     });
 
@@ -661,7 +696,7 @@ async fn handle_session_prompt(
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
     sink: &AcpSink,
-    ctx: &RuntimeContext,
+    _ctx: &RuntimeContext,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
@@ -708,15 +743,7 @@ async fn handle_session_prompt(
         let _session_mgr = session_manager_clone;
 
         // Send state running before polling
-        {
-            let update = v2::UpdateSessionNotification::new(
-                sid.clone(),
-                state_running_update(),
-            );
-            if let Ok(val) = serde_json::to_value(update) {
-                sink.send(val);
-            }
-        }
+        send_session_update(&sink, sid.clone(), state_running_update());
 
         // Check for early cancellation
         let mut cancelled = false;
@@ -731,14 +758,16 @@ async fn handle_session_prompt(
 
         let stream = if !cancelled {
             session.engine.reset_abort();
-            Some(session.engine.submit_message(
+            Some(session.engine.submit_message_with_overrides(
                 &prompt,
                 allthecodes_engine::types::config::QuerySource::Sdk,
+                allthecodes_engine::types::config::SubmitMessageOverrides::default(),
             ))
         } else {
             None
         };
 
+        let mut terminal_idle_sent = false;
         if let Some(mut stream) = stream {
             while let Some(sdk_msg) = futures::StreamExt::next(&mut stream).await {
                 // Check cancellation on each message
@@ -748,29 +777,36 @@ async fn handle_session_prompt(
                         if rx.try_recv().is_ok() {
                             cancelled = true;
                             session.engine.abort();
+                            if let Some(ref mut turn) = *session.active_turn.lock().await {
+                                turn.cancel_requested = true;
+                            }
                         }
                     }
                 }
 
-                let updates = sdk_message_to_updates(&sdk_msg, &mut counter);
-                for update in updates {
-                    let notif = v2::UpdateSessionNotification::new(sid.clone(), update);
-                    if let Ok(val) = serde_json::to_value(notif) {
-                        sink.send(val);
+                let updates = if let allthecodes_types::sdk::SdkMessage::Result(result) = &sdk_msg {
+                    terminal_idle_sent = true;
+                    if cancelled || session.engine.abort_reason().is_some() {
+                        sdk_result_to_updates(result, Some(v2::StopReason::Cancelled))
+                    } else {
+                        sdk_result_to_updates(result, None)
                     }
+                } else {
+                    sdk_message_to_updates(&sdk_msg, &mut counter)
+                };
+                for update in updates {
+                    send_session_update(&sink, sid.clone(), update);
                 }
             }
-        } else {
+        }
+
+        if cancelled && !terminal_idle_sent {
             // Send cancelled idle state
-            {
-                let notif = v2::UpdateSessionNotification::new(
-                    sid.clone(),
-                    state_idle_update(Some(v2::StopReason::Cancelled)),
-                );
-                if let Ok(val) = serde_json::to_value(notif) {
-                    sink.send(val);
-                }
-            }
+            send_session_update(
+                &sink,
+                sid.clone(),
+                state_idle_update(Some(v2::StopReason::Cancelled)),
+            );
         }
 
         // Clear active turn

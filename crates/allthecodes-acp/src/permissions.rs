@@ -9,14 +9,11 @@
 //! requires_action` before sending the request, and `state_update running`
 //! after the response is received.
 
-use std::sync::Arc;
-
 use agent_client_protocol_schema::v2::{
-    self, PermissionOption, PermissionOptionId, PermissionOptionKind,
+    PermissionOption, PermissionOptionId, PermissionOptionKind,
     RequestPermissionOutcome, RequestPermissionRequest, ToolCallUpdate,
 };
 use tokio::sync::RwLock;
-use tracing::{error, warn};
 
 use crate::session::AcpSession;
 use crate::PermissionRequestPayload;

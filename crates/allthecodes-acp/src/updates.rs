@@ -53,7 +53,7 @@ pub fn sdk_message_to_updates(
             vec![map_stream_event(event, counter)]
         }
         SdkMessage::Result(result) => {
-            map_result(result)
+            sdk_result_to_updates(result, None)
         }
         SdkMessage::SystemInit(_) => {
             vec![]
@@ -157,7 +157,10 @@ fn map_stream_event(
     }
 }
 
-fn map_result(result: &allthecodes_types::sdk::SdkResult) -> Vec<SessionUpdate> {
+pub fn sdk_result_to_updates(
+    result: &allthecodes_types::sdk::SdkResult,
+    forced_stop_reason: Option<StopReason>,
+) -> Vec<SessionUpdate> {
     let mut updates = Vec::new();
 
     let usage = UsageUpdate::new(
@@ -166,12 +169,12 @@ fn map_result(result: &allthecodes_types::sdk::SdkResult) -> Vec<SessionUpdate> 
     );
     updates.push(SessionUpdate::UsageUpdate(usage));
 
-    let stop_reason = match result.subtype {
+    let stop_reason = forced_stop_reason.or_else(|| match result.subtype {
         ResultSubtype::ErrorMaxTurns => Some(StopReason::MaxTurnRequests),
         ResultSubtype::ErrorDuringExecution => Some(StopReason::Refusal),
         _ if result.stop_reason.as_deref() == Some("max_tokens") => Some(StopReason::MaxTokens),
         _ => Some(StopReason::EndTurn),
-    };
+    });
 
     updates.push(SessionUpdate::StateUpdate(StateUpdate::Idle(
         IdleStateUpdate::new().stop_reason(stop_reason),

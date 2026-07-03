@@ -28,8 +28,13 @@ pub fn convert_prompt_blocks(blocks: &[ContentBlock]) -> Result<String, Error> {
                     match uri.scheme() {
                         "file" => {
                             if let Ok(path) = uri.to_file_path() {
+                                if !path.is_absolute() {
+                                    return Err(Error::invalid_params().data(
+                                        "file resource links must resolve to an absolute path",
+                                    ));
+                                }
                                 let path_str = path.to_string_lossy().to_string();
-                                parts.push(format!("@/{}", path_str));
+                                parts.push(format!("@{}", path_str));
                             } else {
                                 parts.push(format!("[resource_link: {} {}]", resource_link.name, uri_str));
                             }
@@ -95,8 +100,7 @@ mod tests {
             ),
         ];
         let result = convert_prompt_blocks(&blocks).unwrap();
-        assert!(result.contains("@/"));
-        assert!(result.contains("/home/user/file.txt"));
+        assert_eq!(result, "@/home/user/file.txt");
     }
 
     #[test]
