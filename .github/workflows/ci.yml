@@ -12,8 +12,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust-clippy:
-    name: rust-clippy
+  rust:
+    name: rust
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -25,12 +25,12 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.91.1
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ci-clippy-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}
+          key: ci-rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}
           cache-targets: true
 
       - name: Install Linux build dependencies
@@ -39,5 +39,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libssl-dev libcap-dev
 
+      - name: Check formatting
+        run: cargo fmt --all --check
+
       - name: Run Clippy
-        run: cargo clippy --workspace --lib --bins
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+      - name: Run tools contract tests
+        run: cargo test -p allthecodes-tools --no-default-features --features contract
+
+      - name: Run tools full feature tests
+        run: cargo test -p allthecodes-tools --features full

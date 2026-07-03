@@ -121,6 +121,11 @@
 
 ### 3. 拆分 query/submit 生命周期
 
+The canonical query loop currently lives in `crates/allthecodes-engine/src/query/`.
+Do not recreate `allthecodes-query` as a parallel implementation. If the query loop is
+extracted again, it must be a single canonical crate depending on typed abstractions,
+with no duplicate engine-internal implementation.
+
 核心文件:
 
 - `crates/allthecodes-engine/src/query/loop_impl.rs:71`

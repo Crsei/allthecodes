@@ -195,7 +195,7 @@ python3 scripts/stage_npm_packages.py \
 | --- | --- |
 | `crates/allthecodes` | CLI、TUI、模式选择和应用入口 |
 | `crates/allthecodes-engine` | QueryEngine、agent runtime 和核心生命周期 |
-| `crates/allthecodes-query` | 流式查询循环 |
+| `crates/allthecodes-engine/src/query/` | canonical 流式查询循环 |
 | `crates/allthecodes-tools` | 工具注册、工具实现和工具策略 |
 | `crates/allthecodes-commands` | Slash command 系统 |
 | `crates/allthecodes-config` | 配置、路径和环境变量管理 |
@@ -207,6 +207,11 @@ python3 scripts/stage_npm_packages.py \
 | `crates/allthecodes-plugins` | 插件发现、安装和运行时接入 |
 | `crates/allthecodes-daemon` | 常驻后台模式和任务运行时 |
 | `crates/allthecodes-web` | Web UI 服务和静态资源入口 |
+
+The canonical query loop currently lives in `crates/allthecodes-engine/src/query/`.
+Do not recreate `allthecodes-query` as a parallel implementation. If the query loop is
+extracted again, it must be a single canonical crate depending on typed abstractions,
+with no duplicate engine-internal implementation.
 
 开发时建议优先运行：
 
