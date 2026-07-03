@@ -283,7 +283,7 @@ pub async fn dispatch_request(
                     Err(v2::Error::method_not_found()),
                 ));
             }
-            let result = handle_set_config_option(params, session_manager).await;
+            let result = handle_set_config_option(params, session_manager, sink).await;
             Some(DispatchOutcome::Response(result))
         }
         "session/prompt" => {
@@ -482,7 +482,7 @@ fn send_session_update(sink: &AcpSink, session_id: v2::SessionId, update: v2::Se
 async fn handle_initialize(
     params: Option<&serde_json::value::RawValue>,
     capabilities: &AcpCapabilities,
-    _ctx: &RuntimeContext,
+    ctx: &RuntimeContext,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
     let req: v2::InitializeRequest = serde_json::from_str(raw.get())
@@ -504,7 +504,7 @@ async fn handle_initialize(
         agent_caps = agent_caps.auth(Some(v2::AgentAuthCapabilities::default()));
     }
 
-    let auth_methods = crate::auth::build_auth_methods();
+    let auth_methods = crate::auth::resolve_acp_auth_methods(&ctx.merged_config);
 
     let response = v2::InitializeResponse::new(
         agent_client_protocol_schema::ProtocolVersion::V2,
@@ -585,11 +585,7 @@ async fn handle_session_method(
                 permission_manager.clone(),
             );
 
-            let config_entries = crate::config_options::build_config_options(&session);
-            let config_options: Vec<v2::SessionConfigOption> = config_entries
-                .into_iter()
-                .map(|e| e.config_option)
-                .collect();
+            let config_options = crate::config_options::build_session_config_options(&session);
 
             let resp = v2::NewSessionResponse::new(sid.clone()).config_options(config_options);
 
@@ -644,11 +640,7 @@ async fn handle_session_method(
             crate::session::replay_loaded_messages(sid.clone(), &replay_messages, &cwd, sink)
                 .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
 
-            let config_entries = crate::config_options::build_config_options(&session);
-            let config_options: Vec<v2::SessionConfigOption> = config_entries
-                .into_iter()
-                .map(|e| e.config_option)
-                .collect();
+            let config_options = crate::config_options::build_session_config_options(&session);
 
             let resp = v2::LoadSessionResponse::new().config_options(config_options);
 
@@ -691,11 +683,7 @@ async fn handle_session_method(
                 permission_manager.clone(),
             );
 
-            let config_entries = crate::config_options::build_config_options(&session);
-            let config_options: Vec<v2::SessionConfigOption> = config_entries
-                .into_iter()
-                .map(|e| e.config_option)
-                .collect();
+            let config_options = crate::config_options::build_session_config_options(&session);
 
             let resp = v2::ResumeSessionResponse::new().config_options(config_options);
 
@@ -782,6 +770,7 @@ async fn handle_session_delete(
 async fn handle_set_config_option(
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
+    sink: &AcpSink,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
     let req: v2::SetSessionConfigOptionRequest = serde_json::from_str(raw.get()).map_err(|e| {
@@ -796,57 +785,12 @@ async fn handle_set_config_option(
     let config_id = req.config_id.0.to_string();
     let value = req.value.0.to_string();
 
-    match config_id.as_str() {
-        "model" => {
-            if value.trim().is_empty() {
-                return Err(v2::Error::invalid_params().data("model value cannot be empty"));
-            }
-        }
-        "thought_level" => {
-            if !matches!(value.as_str(), "low" | "medium" | "high") {
-                return Err(v2::Error::invalid_params()
-                    .data(format!("invalid thought_level value: {value}")));
-            }
-        }
-        "mode" => {
-            if !matches!(value.as_str(), "default" | "auto" | "bypass") {
-                return Err(
-                    v2::Error::invalid_params().data(format!("invalid mode value: {value}"))
-                );
-            }
-        }
-        _ => {
-            return Err(
-                v2::Error::invalid_params().data(format!("unknown config option: {config_id}"))
-            );
-        }
-    }
-
-    // Update the session engine AppState based on config_id
-    session.engine.update_app_state(|state| {
-        match config_id.as_str() {
-            "model" => {
-                state.main_loop_model = value.clone();
-            }
-            "thought_level" => {
-                state.effort_value = Some(value.clone());
-            }
-            "mode" => {
-                // Mode changes update permission context
-                let new_mode = value.clone();
-                state.tool_permission_context.mode =
-                    allthecodes_types::permissions::PermissionMode::parse(&new_mode);
-            }
-            _ => unreachable!("config_id was validated above"),
-        }
-    });
-
-    // Build the updated config options list for the response
-    let config_entries = crate::config_options::build_config_options(&session);
-    let config_options: Vec<v2::SessionConfigOption> = config_entries
-        .into_iter()
-        .map(|e| e.config_option)
-        .collect();
+    let config_options = crate::config_options::apply_config_option(&session, &config_id, &value)?;
+    send_session_update(
+        sink,
+        req.session_id.clone(),
+        v2::SessionUpdate::ConfigOptionUpdate(v2::ConfigOptionUpdate::new(config_options.clone())),
+    );
 
     let resp = v2::SetSessionConfigOptionResponse::new(config_options);
 
@@ -943,7 +887,7 @@ async fn handle_session_prompt(
         let mut stream = session.engine.submit_message_with_overrides(
             &prompt,
             allthecodes_engine::types::config::QuerySource::Sdk,
-            allthecodes_engine::types::config::SubmitMessageOverrides::default(),
+            crate::config_options::submit_overrides_for_session(&session),
         );
 
         let mut terminal_idle_sent = false;

@@ -8,10 +8,13 @@ mod support;
 
 use std::sync::Arc;
 
+use agent_client_protocol_schema::v2;
+use agent_client_protocol_schema::ProtocolVersion;
 use allthecodes_acp::engine_factory::AcpEngineFactory;
 use allthecodes_acp::AcpEngineParams;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::QueryEngineConfig;
+use serial_test::serial;
 
 use support::{is_response, RuntimeHarness};
 
@@ -44,6 +47,160 @@ impl AcpEngineFactory for TestEngineFactory {
         };
         Ok(Arc::new(QueryEngine::new(config)))
     }
+}
+
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn set_str(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+struct AuthEnv {
+    _temp: tempfile::TempDir,
+    _guards: Vec<EnvGuard>,
+}
+
+static TEST_KEYCHAIN: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), Vec<u8>>>,
+> = std::sync::OnceLock::new();
+
+#[derive(Debug)]
+struct TestCredential {
+    service: String,
+    user: String,
+}
+
+impl keyring::credential::CredentialApi for TestCredential {
+    fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
+        TEST_KEYCHAIN
+            .get_or_init(Default::default)
+            .lock()
+            .expect("test keychain poisoned")
+            .insert((self.service.clone(), self.user.clone()), secret.to_vec());
+        Ok(())
+    }
+
+    fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+        TEST_KEYCHAIN
+            .get_or_init(Default::default)
+            .lock()
+            .expect("test keychain poisoned")
+            .get(&(self.service.clone(), self.user.clone()))
+            .cloned()
+            .ok_or(keyring::Error::NoEntry)
+    }
+
+    fn delete_credential(&self) -> keyring::Result<()> {
+        TEST_KEYCHAIN
+            .get_or_init(Default::default)
+            .lock()
+            .expect("test keychain poisoned")
+            .remove(&(self.service.clone(), self.user.clone()))
+            .map(|_| ())
+            .ok_or(keyring::Error::NoEntry)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+struct TestCredentialBuilder;
+
+impl keyring::credential::CredentialBuilderApi for TestCredentialBuilder {
+    fn build(
+        &self,
+        _target: Option<&str>,
+        service: &str,
+        user: &str,
+    ) -> keyring::Result<Box<keyring::Credential>> {
+        Ok(Box::new(TestCredential {
+            service: service.to_string(),
+            user: user.to_string(),
+        }))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn persistence(&self) -> keyring::credential::CredentialPersistence {
+        keyring::credential::CredentialPersistence::ProcessOnly
+    }
+}
+
+fn use_test_keyring() {
+    TEST_KEYCHAIN
+        .get_or_init(Default::default)
+        .lock()
+        .expect("test keychain poisoned")
+        .clear();
+    keyring::set_default_credential_builder(Box::new(TestCredentialBuilder));
+}
+
+fn isolated_auth_env() -> AuthEnv {
+    use_test_keyring();
+    let temp = tempfile::tempdir().unwrap();
+    let data_home = temp.path().join("allthecodes-home");
+    let user_home = temp.path().join("user-home");
+    std::fs::create_dir_all(&data_home).unwrap();
+    std::fs::create_dir_all(&user_home).unwrap();
+
+    AuthEnv {
+        _temp: temp,
+        _guards: vec![
+            EnvGuard::set_path("ALLTHECODES_HOME", &data_home),
+            EnvGuard::set_path("HOME", &user_home),
+            EnvGuard::remove("ANTHROPIC_API_KEY"),
+            EnvGuard::remove("ANTHROPIC_AUTH_TOKEN"),
+            EnvGuard::remove("OPENAI_API_KEY"),
+            EnvGuard::remove("OPENAI_CODEX_AUTH_TOKEN"),
+        ],
+    }
+}
+
+fn initialize_params() -> serde_json::Value {
+    serde_json::to_value(v2::InitializeRequest::new(
+        ProtocolVersion::V2,
+        v2::Implementation::new("test-client", "0.0.0"),
+    ))
+    .unwrap()
+}
+
+fn auth_methods(response: &serde_json::Value) -> Vec<serde_json::Value> {
+    response
+        .pointer("/result/authMethods")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Test: sending `$/cancel_request` for a prompt request id before
@@ -103,4 +260,116 @@ async fn cancel_request_cancels_pending_prompt_before_ack() {
         !messages.iter().any(support::is_session_update),
         "cancelled prompt must not start the engine stream: {messages:?}"
     );
+}
+
+#[tokio::test]
+#[serial]
+async fn initialize_advertises_agent_login_when_unauthenticated() {
+    let _env = isolated_auth_env();
+    let _invalid_key = EnvGuard::set_str("ANTHROPIC_API_KEY", "not-a-valid-key");
+    let mut harness = RuntimeHarness::new_with_factory(
+        std::env::current_dir().unwrap(),
+        Arc::new(TestEngineFactory),
+    );
+
+    let (response, _pre_response) = harness
+        .send_request_and_capture("initialize", Some(initialize_params()))
+        .await;
+    let response = response.expect("initialize should write a response");
+    let methods = auth_methods(&response);
+
+    assert_eq!(methods.len(), 1, "unexpected auth methods: {response:?}");
+    assert_eq!(
+        methods[0].get("type").and_then(|value| value.as_str()),
+        Some("agent")
+    );
+    assert_eq!(
+        methods[0].get("id").and_then(|value| value.as_str()),
+        Some("allthecodes-login")
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn initialize_omits_agent_login_when_authenticated() {
+    let _env = isolated_auth_env();
+    let _token = EnvGuard::set_str("ANTHROPIC_AUTH_TOKEN", "test-auth-token");
+    let mut harness = RuntimeHarness::new_with_factory(
+        std::env::current_dir().unwrap(),
+        Arc::new(TestEngineFactory),
+    );
+
+    let (response, _pre_response) = harness
+        .send_request_and_capture("initialize", Some(initialize_params()))
+        .await;
+    let response = response.expect("initialize should write a response");
+
+    assert_eq!(auth_methods(&response), Vec::<serde_json::Value>::new());
+}
+
+#[tokio::test]
+#[serial]
+async fn auth_login_returns_login_instructions() {
+    let _env = isolated_auth_env();
+    let mut harness = RuntimeHarness::new_with_factory(
+        std::env::current_dir().unwrap(),
+        Arc::new(TestEngineFactory),
+    );
+
+    let params = serde_json::to_value(v2::LoginAuthRequest::new("allthecodes-login")).unwrap();
+    let (response, _pre_response) = harness
+        .send_request_and_capture("auth/login", Some(params))
+        .await;
+    let response = response.expect("auth/login should write a response");
+    let instructions = response
+        .pointer("/result/_meta/instructions")
+        .and_then(|value| value.as_str())
+        .expect("auth/login should return instructions in _meta");
+
+    assert!(instructions.contains("/login"), "{instructions}");
+    assert!(instructions.contains("/login-code"), "{instructions}");
+    assert!(instructions.contains("allthecodes"), "{instructions}");
+}
+
+#[tokio::test]
+#[serial]
+async fn auth_login_rejects_unknown_method() {
+    let _env = isolated_auth_env();
+    let mut harness = RuntimeHarness::new_with_factory(
+        std::env::current_dir().unwrap(),
+        Arc::new(TestEngineFactory),
+    );
+
+    let params = serde_json::to_value(v2::LoginAuthRequest::new("unknown-login")).unwrap();
+    let (response, _pre_response) = harness
+        .send_request_and_capture("auth/login", Some(params))
+        .await;
+    let response = response.expect("auth/login should write a response");
+
+    assert!(
+        response.get("error").is_some(),
+        "unknown method should fail: {response:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn auth_logout_is_idempotent() {
+    let _env = isolated_auth_env();
+    let mut harness = RuntimeHarness::new_with_factory(
+        std::env::current_dir().unwrap(),
+        Arc::new(TestEngineFactory),
+    );
+    let params = serde_json::to_value(v2::LogoutAuthRequest::new()).unwrap();
+
+    for _ in 0..2 {
+        let (response, _pre_response) = harness
+            .send_request_and_capture("auth/logout", Some(params.clone()))
+            .await;
+        let response = response.expect("auth/logout should write a response");
+        assert!(
+            response.get("error").is_none(),
+            "auth/logout should be idempotent: {response:?}"
+        );
+    }
 }
