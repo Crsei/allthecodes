@@ -13,6 +13,8 @@ use crate::ui::list_item::ListItem;
 use crate::ui::search_box::SearchBox;
 use crate::ui::theme::ThemeColors;
 
+type PreviewRenderer<'a, T> = dyn Fn(&T) -> Vec<Line<'static>> + 'a;
+
 /// Which direction the list grows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerDirection {
@@ -64,7 +66,7 @@ pub struct FuzzyPicker<'a, T> {
     /// Called with `(item, is_focused)`.
     pub render_item: &'a dyn Fn(&T, bool) -> String,
     /// Optional preview rendered when an item is focused.
-    pub render_preview: Option<&'a dyn Fn(&T) -> Vec<Line<'static>>>,
+    pub render_preview: Option<&'a PreviewRenderer<'a, T>>,
 }
 
 impl<'a, T> FuzzyPicker<'a, T> {
@@ -304,6 +306,7 @@ mod tests {
         get_theme(&ThemeName::Dark)
     }
 
+    #[allow(clippy::ptr_arg)]
     fn render_fn(item: &String, _is_focused: bool) -> String {
         item.clone()
     }

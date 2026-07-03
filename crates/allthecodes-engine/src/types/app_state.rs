@@ -1,5 +1,6 @@
 use super::tool::{PermissionMode, ToolPermissionContext};
 use std::collections::{HashMap, HashSet};
+use std::convert::TryFrom;
 
 /// Runtime settings projection — moved to `cc-config` in Phase 3 (issue #72).
 ///
@@ -112,28 +113,143 @@ impl Default for AppState {
     }
 }
 
+impl TryFrom<&allthecodes_config::settings::EffectiveSettings> for AppState {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        settings: &allthecodes_config::settings::EffectiveSettings,
+    ) -> Result<Self, Self::Error> {
+        let mode = PermissionMode::parse_configured(settings.permission_mode.as_deref())?;
+        let mut tool_permission_context = ToolPermissionContext {
+            mode,
+            additional_working_directories: settings
+                .permissions
+                .additional_directories
+                .iter()
+                .map(|dir| {
+                    (
+                        dir.clone(),
+                        allthecodes_tools::tool::AdditionalWorkingDirectory {
+                            path: dir.clone(),
+                            read_only: false,
+                        },
+                    )
+                })
+                .collect(),
+            always_allow_rules: rules_by_source("settings", &settings.permissions.allow),
+            always_deny_rules: rules_by_source("settings", &settings.permissions.deny),
+            always_ask_rules: rules_by_source("settings", &settings.permissions.ask),
+            session_allow_rules: HashMap::new(),
+            auto_mode_stripped_always_allow_rules: Vec::new(),
+            auto_mode_stripped_session_allow_rules: Vec::new(),
+            is_bypass_permissions_mode_available: settings
+                .permissions
+                .enable_bypass_mode
+                .unwrap_or(true),
+            is_auto_mode_available: Some(settings.permissions.enable_auto_mode.unwrap_or(true)),
+            pre_plan_mode: None,
+        };
+        let mode = tool_permission_context.mode.clone();
+        allthecodes_permissions::dangerous::set_permission_mode_with_auto_mode_safety(
+            &mut tool_permission_context,
+            mode,
+        );
+
+        let mut app_state = Self {
+            settings: SettingsJson::from_effective(settings, Default::default()),
+            verbose: settings.verbose,
+            main_loop_model: settings
+                .model
+                .clone()
+                .unwrap_or_else(allthecodes_types::models::default_model_id),
+            main_loop_backend: settings
+                .backend
+                .clone()
+                .unwrap_or_else(|| "native".to_string()),
+            advisor_model: settings.advisor_model.clone(),
+            tool_permission_context,
+            thinking_enabled: settings_thinking_enabled(settings),
+            fast_mode: settings.fast_mode.unwrap_or(false),
+            effort_value: settings_effort_value(settings),
+            hooks: settings.hooks.clone(),
+            ..Default::default()
+        };
+        app_state.settings.model = Some(app_state.main_loop_model.clone());
+        app_state.settings.backend = Some(app_state.main_loop_backend.clone());
+        Ok(app_state)
+    }
+}
+
+fn rules_by_source(source: &str, rules: &[String]) -> HashMap<String, Vec<String>> {
+    if rules.is_empty() {
+        HashMap::new()
+    } else {
+        HashMap::from([(source.to_string(), rules.to_vec())])
+    }
+}
+
+fn settings_thinking_enabled(
+    settings: &allthecodes_config::settings::EffectiveSettings,
+) -> Option<bool> {
+    let thinking = settings.thinking.as_ref()?;
+    if let Some(enabled) = thinking.as_bool() {
+        return Some(enabled);
+    }
+    let kind = thinking
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| thinking.as_str())?
+        .trim()
+        .to_ascii_lowercase();
+    match kind.as_str() {
+        "enabled" | "adaptive" => Some(true),
+        "disabled" => Some(false),
+        _ => None,
+    }
+}
+
+fn settings_effort_value(
+    settings: &allthecodes_config::settings::EffectiveSettings,
+) -> Option<String> {
+    settings
+        .output_config
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("effort")
+                .and_then(crate::effort::normalize_output_effort_json)
+        })
+        .or_else(|| settings.effort_level.clone())
+}
+
+impl From<&AppState> for allthecodes_tools::tool::ToolAppState {
+    fn from(state: &AppState) -> Self {
+        Self {
+            settings: state.settings.clone(),
+            verbose: state.verbose,
+            main_loop_model: state.main_loop_model.clone(),
+            main_loop_backend: state.main_loop_backend.clone(),
+            advisor_model: state.advisor_model.clone(),
+            tool_permission_context: state.tool_permission_context.clone(),
+            thinking_enabled: state.thinking_enabled,
+            fast_mode: state.fast_mode,
+            effort_value: state.effort_value.clone(),
+            team_context: state.team_context.clone(),
+            hooks: state.hooks.clone(),
+            plan_workflow: state.plan_workflow.clone(),
+            surfaced_memory_keys: state.surfaced_memory_keys.clone(),
+            kairos_active: state.kairos_active,
+            is_brief_only: state.is_brief_only,
+            is_assistant_mode: state.is_assistant_mode,
+            autonomous_tick_ms: state.autonomous_tick_ms,
+            terminal_focus: state.terminal_focus,
+        }
+    }
+}
+
 impl AppState {
     pub fn to_tool_app_state(&self) -> allthecodes_tools::tool::ToolAppState {
-        allthecodes_tools::tool::ToolAppState {
-            settings: self.settings.clone(),
-            verbose: self.verbose,
-            main_loop_model: self.main_loop_model.clone(),
-            main_loop_backend: self.main_loop_backend.clone(),
-            advisor_model: self.advisor_model.clone(),
-            tool_permission_context: self.tool_permission_context.clone(),
-            thinking_enabled: self.thinking_enabled,
-            fast_mode: self.fast_mode,
-            effort_value: self.effort_value.clone(),
-            team_context: self.team_context.clone(),
-            hooks: self.hooks.clone(),
-            plan_workflow: self.plan_workflow.clone(),
-            surfaced_memory_keys: self.surfaced_memory_keys.clone(),
-            kairos_active: self.kairos_active,
-            is_brief_only: self.is_brief_only,
-            is_assistant_mode: self.is_assistant_mode,
-            autonomous_tick_ms: self.autonomous_tick_ms,
-            terminal_focus: self.terminal_focus,
-        }
+        allthecodes_tools::tool::ToolAppState::from(self)
     }
 
     pub fn apply_tool_app_state(&mut self, state: allthecodes_tools::tool::ToolAppState) {
@@ -155,5 +271,99 @@ impl AppState {
         self.is_assistant_mode = state.is_assistant_mode;
         self.autonomous_tick_ms = state.autonomous_tick_ms;
         self.terminal_focus = state.terminal_focus;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use allthecodes_config::settings::{EffectiveSettings, PermissionsSettings};
+    use allthecodes_tools::tool::ToolAppState;
+    use serde_json::json;
+
+    #[test]
+    fn app_state_projection_effective_settings_project_to_app_and_tool_state() {
+        let effective = EffectiveSettings {
+            model: Some("claude-opus-4-20250514".to_string()),
+            backend: Some("codex".to_string()),
+            permission_mode: Some("auto".to_string()),
+            permissions: PermissionsSettings {
+                default_mode: Some("auto".to_string()),
+                allow: vec!["Bash(cargo test*)".to_string()],
+                ..Default::default()
+            },
+            env: HashMap::from([(
+                "ANTHROPIC_MODEL".to_string(),
+                "claude-opus-4-20250514".to_string(),
+            )]),
+            fast_mode: Some(true),
+            advisor_model: Some("advisor-pro".to_string()),
+            thinking: Some(json!({ "type": "enabled" })),
+            output_config: Some(json!({ "effort": "max" })),
+            hooks: HashMap::from([("PreToolUse".to_string(), json!([]))]),
+            ..Default::default()
+        };
+
+        let app = AppState::try_from(&effective).expect("effective settings project to app state");
+        assert_eq!(app.main_loop_model, "claude-opus-4-20250514");
+        assert_eq!(app.main_loop_backend, "codex");
+        assert_eq!(
+            app.settings.env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("claude-opus-4-20250514")
+        );
+        assert_eq!(app.settings.permission_mode.as_deref(), Some("auto"));
+        assert!(app.fast_mode);
+        assert_eq!(app.advisor_model.as_deref(), Some("advisor-pro"));
+        assert!(app.hooks.contains_key("PreToolUse"));
+
+        let tool = ToolAppState::from(&app);
+        assert_eq!(tool.main_loop_model, app.main_loop_model);
+        assert_eq!(tool.main_loop_backend, app.main_loop_backend);
+        assert_eq!(
+            tool.settings.env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("claude-opus-4-20250514")
+        );
+        assert_eq!(tool.settings.permission_mode.as_deref(), Some("auto"));
+        assert!(tool.fast_mode);
+        assert_eq!(tool.advisor_model.as_deref(), Some("advisor-pro"));
+    }
+
+    #[test]
+    fn app_state_projection_tool_app_state_roundtrip_preserves_mutable_fields() {
+        let mut app = AppState {
+            main_loop_model: "initial-model".to_string(),
+            settings: SettingsJson {
+                language: Some("en-US".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut tool = ToolAppState::from(&app);
+        tool.settings.language = Some("zh-CN".to_string());
+        tool.main_loop_model = "mutated-model".to_string();
+        tool.fast_mode = true;
+        tool.is_brief_only = true;
+        tool.is_assistant_mode = true;
+        tool.autonomous_tick_ms = Some(2500);
+        tool.terminal_focus = false;
+        tool.tool_permission_context.mode = PermissionMode::Plan;
+        tool.surfaced_memory_keys
+            .insert("project:memory-key".to_string());
+
+        app.apply_tool_app_state(tool);
+        let roundtrip = ToolAppState::from(&app);
+
+        assert_eq!(roundtrip.settings.language.as_deref(), Some("zh-CN"));
+        assert_eq!(roundtrip.main_loop_model, "mutated-model");
+        assert!(roundtrip.fast_mode);
+        assert!(roundtrip.is_brief_only);
+        assert!(roundtrip.is_assistant_mode);
+        assert_eq!(roundtrip.autonomous_tick_ms, Some(2500));
+        assert!(!roundtrip.terminal_focus);
+        assert_eq!(roundtrip.tool_permission_context.mode, PermissionMode::Plan);
+        assert!(roundtrip
+            .surfaced_memory_keys
+            .contains("project:memory-key"));
     }
 }

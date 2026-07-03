@@ -243,10 +243,7 @@ pub async fn start_authorization(config: &McpServerConfig) -> Result<McpOAuthSta
             pairs.append_pair("scope", &scopes.join(" "));
         }
         // Use oauth_resource from config, fall back to MCP server URL
-        let resource = oauth
-            .oauth_resource
-            .as_deref()
-            .or_else(|| config.url.as_deref());
+        let resource = oauth.oauth_resource.as_deref().or(config.url.as_deref());
         if let Some(resource) = resource {
             pairs.append_pair("resource", resource);
         }

@@ -1,0 +1,10 @@
+---
+source: crates/allthecodes/src/ui/components/search_box.rs
+assertion_line: 169
+expression: "states.join(\"\\n\")"
+---
+[ / |Filter commands ]
+[ / pl|ugin ]
+[ / plugin ]
+find agent
+[ / a very l

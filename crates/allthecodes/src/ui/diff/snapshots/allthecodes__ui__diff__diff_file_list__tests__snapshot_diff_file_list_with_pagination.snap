@@ -1,0 +1,11 @@
+---
+source: crates/allthecodes/src/ui/diff/diff_file_list.rs
+assertion_line: 149
+expression: "output.join(\"\\n\")"
+---
+... 2 more files
+  README.md                                              Binary file
+  CHANGELOG.md                                           Large file modified
+> old/new/file.rs                                        -4
+  src/utils/render.rs                                    +6 -1 (truncated)
+  docs/guide.md                                          untracked

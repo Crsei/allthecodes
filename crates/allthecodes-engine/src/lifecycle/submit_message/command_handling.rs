@@ -123,7 +123,7 @@ fn apply_command_state(
     ctx: CommandContext,
 ) {
     let mut state = state_ref.write();
-    state.messages = ctx.messages;
+    state.transcript.messages = ctx.messages;
     state.app_state = ctx.app_state;
 }
 
@@ -136,7 +136,7 @@ fn switch_command_session(
 ) {
     {
         let mut state = state_ref.write();
-        state.messages = messages;
+        state.transcript.messages = messages;
         state.app_state = ctx.app_state;
     }
     *active_session_id_ref.write() = session_id.clone();
@@ -165,10 +165,10 @@ fn clear_command_session(
     let new_session_id = crate::bootstrap::SessionId::new();
     {
         let mut state = state_ref.write();
-        state.messages.clear();
-        state.usage = UsageTracking::default();
-        state.permission_denials.clear();
-        state.total_turn_count = 0;
+        state.transcript.messages.clear();
+        state.transcript.usage = UsageTracking::default();
+        state.permissions.denials.clear();
+        state.transcript.total_turn_count = 0;
         state.app_state = ctx.app_state;
     }
     *active_session_id_ref.write() = new_session_id.clone();

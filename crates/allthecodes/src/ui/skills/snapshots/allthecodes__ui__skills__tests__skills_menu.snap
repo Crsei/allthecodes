@@ -1,0 +1,9 @@
+---
+source: crates/allthecodes/src/ui/skills/mod.rs
+assertion_line: 15
+expression: rendered
+---
+Skills (1)
+filter: review
+> code-review        enabled  Review diffs for regressions
+  source: built-in

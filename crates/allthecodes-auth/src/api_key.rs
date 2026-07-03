@@ -123,7 +123,8 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     static KEYRING_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    static TEST_KEYCHAIN: OnceLock<Mutex<HashMap<(String, String), Vec<u8>>>> = OnceLock::new();
+    type TestKeychain = HashMap<(String, String), Vec<u8>>;
+    static TEST_KEYCHAIN: OnceLock<Mutex<TestKeychain>> = OnceLock::new();
 
     #[derive(Debug)]
     struct PersistentTestCredential {

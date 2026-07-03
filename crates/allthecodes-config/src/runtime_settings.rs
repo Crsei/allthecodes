@@ -19,9 +19,288 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use crate::settings::{
-    ModelCapabilitySettings, PermissionsSettings, ProviderProfileSettings, SandboxSettings,
-    SourceMap, SpinnerTipsSettings, StatusLineSettings,
+    EffectiveSettings, ModelCapabilitySettings, PermissionsSettings as SettingsPermissionsSettings,
+    ProviderProfileSettings, SandboxSettings as SettingsSandboxSettings, SourceMap,
+    SpinnerTipsSettings, StatusLineSettings,
 };
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeSettings {
+    pub core: CoreSettings,
+    pub model: ModelSettings,
+    pub permissions: PermissionSettings,
+    pub sandbox: SandboxSettings,
+    pub ui: UiSettings,
+    pub memory: MemorySettings,
+    pub network: NetworkSettings,
+    pub speech: SpeechSettings,
+    pub integrations: IntegrationSettings,
+    pub sources: SourceMap,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CoreSettings {
+    pub backend: Option<String>,
+    pub api_provider: Option<String>,
+    pub active_auth_profile: Option<String>,
+    pub auth_profiles: HashMap<String, ProviderProfileSettings>,
+    pub theme: Option<String>,
+    pub verbose: Option<bool>,
+    pub extra: HashMap<String, Value>,
+    pub system_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModelSettings {
+    pub model: Option<String>,
+    pub thinking: Option<Value>,
+    pub output_config: Option<Value>,
+    pub default_model: Option<String>,
+    pub fallback_model: Option<String>,
+    pub fast_model: Option<String>,
+    pub sota_model: Option<String>,
+    pub mota_model: Option<String>,
+    pub fota_model: Option<String>,
+    pub available_models: Vec<String>,
+    pub model_capabilities: HashMap<String, ModelCapabilitySettings>,
+    pub effort_level: Option<String>,
+    pub model_reasoning_effort: Option<String>,
+    pub fast_mode: Option<bool>,
+    pub fast_mode_per_session_opt_in: Option<bool>,
+    pub context_window: Option<u64>,
+    pub max_messages: Option<u64>,
+    pub auto_title: Option<bool>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub streaming: Option<bool>,
+    pub show_token_usage: Option<bool>,
+    pub show_reasoning_details: Option<bool>,
+    pub markdown_rendering: Option<bool>,
+    pub single_dollar_math: Option<bool>,
+    pub infographic: Option<bool>,
+    pub auto_collapse_reasoning: Option<bool>,
+    pub quick_reply_suggestions: Option<bool>,
+    pub default_tool_selection: Option<String>,
+    pub default_skill_selection: Option<String>,
+    pub sound_effects: Option<bool>,
+    pub auto_compact: Option<bool>,
+    pub compact_threshold: Option<u8>,
+    pub keep_recent_messages: Option<u8>,
+    pub hashline_mode: Option<bool>,
+    pub advisor_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PermissionSettings {
+    pub permission_mode: Option<String>,
+    pub permissions: SettingsPermissionsSettings,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SandboxSettings {
+    pub sandbox: SettingsSandboxSettings,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UiSettings {
+    pub status_line: StatusLineSettings,
+    pub spinner_tips: SpinnerTipsSettings,
+    pub output_style: Option<String>,
+    pub language: Option<String>,
+    pub voice_enabled: Option<bool>,
+    pub editor_mode: Option<String>,
+    pub view_mode: Option<String>,
+    pub terminal_progress_bar_enabled: Option<bool>,
+    pub app_icon: Option<String>,
+    pub auto_start: Option<bool>,
+    pub start_minimized: Option<bool>,
+    pub minimize_to_tray: Option<bool>,
+    pub close_to_tray: Option<bool>,
+    pub quick_chat_hide_on_blur: Option<bool>,
+    pub quick_chat_inject_screen: Option<bool>,
+    pub quick_chat_ambient: Option<bool>,
+    pub auto_approve_tools: Option<bool>,
+    pub analytics_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MemorySettings {
+    pub auto_memory_enabled: Option<bool>,
+    pub memory_auto_retrieve: Option<bool>,
+    pub memory_query_rewriting: Option<bool>,
+    pub memory_max_retrieved: Option<u8>,
+    pub memory_similarity_threshold: Option<u8>,
+    pub memory_auto_summarize: Option<bool>,
+    pub memory_nightly: Option<bool>,
+    pub memory_sleep_time: Option<String>,
+    pub memory_temp_ttl: Option<u32>,
+    pub memory_archive_retention: Option<u32>,
+    pub memory_tool_model: Option<String>,
+    pub memory_embedding_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NetworkSettings {
+    pub env: HashMap<String, String>,
+    pub proxy_enabled: Option<bool>,
+    pub proxy_url: Option<String>,
+    pub prefer_ipv4: Option<bool>,
+    pub request_timeout: Option<u64>,
+    pub retry_attempts: Option<u8>,
+    pub custom_user_agent: Option<String>,
+    pub search_engine: Option<String>,
+    pub web_search_provider: Option<String>,
+    pub web_search_tavily_api_key: Option<String>,
+    pub web_search_brave_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SpeechSettings {
+    pub speech_enabled: Option<bool>,
+    pub speech_active_model: Option<String>,
+    pub speech_language: Option<String>,
+    pub tts_provider: Option<String>,
+    pub tts_api_key: Option<String>,
+    pub tts_voice: Option<String>,
+    pub tts_voice_custom_id: Option<String>,
+    pub tts_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IntegrationSettings {
+    pub teammate_mode: Option<bool>,
+    pub claude_in_chrome_default_enabled: Option<bool>,
+    pub cloud_sync_enabled: Option<bool>,
+    pub cloud_sync_path: Option<String>,
+    pub token_savings_tracking: Option<bool>,
+}
+
+impl RuntimeSettings {
+    pub fn from_effective(effective: &EffectiveSettings, sources: SourceMap) -> Self {
+        Self {
+            core: CoreSettings {
+                backend: effective.backend.clone(),
+                api_provider: effective.api_provider.clone(),
+                active_auth_profile: effective.active_auth_profile.clone(),
+                auth_profiles: effective.auth_profiles.clone(),
+                theme: effective.theme.clone(),
+                verbose: Some(effective.verbose),
+                extra: effective.extra.clone(),
+                system_prompt: effective.system_prompt.clone(),
+            },
+            model: ModelSettings {
+                model: effective.model.clone(),
+                thinking: effective.thinking.clone(),
+                output_config: effective.output_config.clone(),
+                default_model: effective.default_model.clone(),
+                fallback_model: effective.fallback_model.clone(),
+                fast_model: effective.fast_model.clone(),
+                sota_model: effective.sota_model.clone(),
+                mota_model: effective.mota_model.clone(),
+                fota_model: effective.fota_model.clone(),
+                available_models: effective.available_models.clone(),
+                model_capabilities: effective.model_capabilities.clone(),
+                effort_level: effective.effort_level.clone(),
+                model_reasoning_effort: effective.model_reasoning_effort.clone(),
+                fast_mode: effective.fast_mode,
+                fast_mode_per_session_opt_in: effective.fast_mode_per_session_opt_in,
+                context_window: effective.context_window,
+                max_messages: effective.max_messages,
+                auto_title: effective.auto_title,
+                temperature: effective.temperature,
+                max_tokens: effective.max_tokens,
+                streaming: effective.streaming,
+                show_token_usage: effective.show_token_usage,
+                show_reasoning_details: effective.show_reasoning_details,
+                markdown_rendering: effective.markdown_rendering,
+                single_dollar_math: effective.single_dollar_math,
+                infographic: effective.infographic,
+                auto_collapse_reasoning: effective.auto_collapse_reasoning,
+                quick_reply_suggestions: effective.quick_reply_suggestions,
+                default_tool_selection: effective.default_tool_selection.clone(),
+                default_skill_selection: effective.default_skill_selection.clone(),
+                sound_effects: effective.sound_effects,
+                auto_compact: effective.auto_compact,
+                compact_threshold: effective.compact_threshold,
+                keep_recent_messages: effective.keep_recent_messages,
+                hashline_mode: effective.hashline_mode,
+                advisor_model: effective.advisor_model.clone(),
+            },
+            permissions: PermissionSettings {
+                permission_mode: effective.permission_mode.clone(),
+                permissions: effective.permissions.clone(),
+            },
+            sandbox: SandboxSettings {
+                sandbox: effective.sandbox.clone(),
+            },
+            ui: UiSettings {
+                status_line: effective.status_line.clone(),
+                spinner_tips: effective.spinner_tips.clone(),
+                output_style: effective.output_style.clone(),
+                language: effective.language.clone(),
+                voice_enabled: effective.voice_enabled,
+                editor_mode: effective.editor_mode.clone(),
+                view_mode: effective.view_mode.clone(),
+                terminal_progress_bar_enabled: effective.terminal_progress_bar_enabled,
+                app_icon: effective.app_icon.clone(),
+                auto_start: effective.auto_start,
+                start_minimized: effective.start_minimized,
+                minimize_to_tray: effective.minimize_to_tray,
+                close_to_tray: effective.close_to_tray,
+                quick_chat_hide_on_blur: effective.quick_chat_hide_on_blur,
+                quick_chat_inject_screen: effective.quick_chat_inject_screen,
+                quick_chat_ambient: effective.quick_chat_ambient,
+                auto_approve_tools: effective.auto_approve_tools,
+                analytics_enabled: effective.analytics_enabled,
+            },
+            memory: MemorySettings {
+                auto_memory_enabled: effective.auto_memory_enabled,
+                memory_auto_retrieve: effective.memory_auto_retrieve,
+                memory_query_rewriting: effective.memory_query_rewriting,
+                memory_max_retrieved: effective.memory_max_retrieved,
+                memory_similarity_threshold: effective.memory_similarity_threshold,
+                memory_auto_summarize: effective.memory_auto_summarize,
+                memory_nightly: effective.memory_nightly,
+                memory_sleep_time: effective.memory_sleep_time.clone(),
+                memory_temp_ttl: effective.memory_temp_ttl,
+                memory_archive_retention: effective.memory_archive_retention,
+                memory_tool_model: effective.memory_tool_model.clone(),
+                memory_embedding_model: effective.memory_embedding_model.clone(),
+            },
+            network: NetworkSettings {
+                env: effective.env.clone(),
+                proxy_enabled: effective.proxy_enabled,
+                proxy_url: effective.proxy_url.clone(),
+                prefer_ipv4: effective.prefer_ipv4,
+                request_timeout: effective.request_timeout,
+                retry_attempts: effective.retry_attempts,
+                custom_user_agent: effective.custom_user_agent.clone(),
+                search_engine: effective.search_engine.clone(),
+                web_search_provider: effective.web_search_provider.clone(),
+                web_search_tavily_api_key: effective.web_search_tavily_api_key.clone(),
+                web_search_brave_api_key: effective.web_search_brave_api_key.clone(),
+            },
+            speech: SpeechSettings {
+                speech_enabled: effective.speech_enabled,
+                speech_active_model: effective.speech_active_model.clone(),
+                speech_language: effective.speech_language.clone(),
+                tts_provider: effective.tts_provider.clone(),
+                tts_api_key: effective.tts_api_key.clone(),
+                tts_voice: effective.tts_voice.clone(),
+                tts_voice_custom_id: effective.tts_voice_custom_id.clone(),
+                tts_model: effective.tts_model.clone(),
+            },
+            integrations: IntegrationSettings {
+                teammate_mode: effective.teammate_mode,
+                claude_in_chrome_default_enabled: effective.claude_in_chrome_default_enabled,
+                cloud_sync_enabled: effective.cloud_sync_enabled,
+                cloud_sync_path: effective.cloud_sync_path.clone(),
+                token_savings_tracking: effective.token_savings_tracking,
+            },
+            sources,
+        }
+    }
+}
 
 /// Runtime projection of [`crate::settings::EffectiveSettings`] —
 /// start-up merges raw settings into this, `/config set` writes back here,
@@ -37,11 +316,12 @@ pub struct SettingsJson {
     pub theme: Option<String>,
     pub verbose: Option<bool>,
     pub extra: HashMap<String, Value>,
+    pub env: HashMap<String, String>,
 
     // -- Permissions / sandbox -----------------------------------------
     pub permission_mode: Option<String>,
-    pub permissions: PermissionsSettings,
-    pub sandbox: SandboxSettings,
+    pub permissions: SettingsPermissionsSettings,
+    pub sandbox: SettingsSandboxSettings,
 
     // -- UI / UX --------------------------------------------------------
     pub status_line: StatusLineSettings,
@@ -160,6 +440,10 @@ pub struct SettingsJson {
 }
 
 impl SettingsJson {
+    pub fn from_effective(effective: &EffectiveSettings, sources: SourceMap) -> Self {
+        RuntimeSettings::from_effective(effective, sources).into()
+    }
+
     /// Flatten user-facing settings into the map consumed by the web UI.
     /// Sensitive values are intentionally omitted.
     pub fn settings_map(&self) -> HashMap<String, Value> {
@@ -293,6 +577,115 @@ impl SettingsJson {
         insert_opt_ref!("system_prompt", self.system_prompt);
 
         out
+    }
+}
+
+impl From<RuntimeSettings> for SettingsJson {
+    fn from(runtime: RuntimeSettings) -> Self {
+        Self {
+            model: runtime.model.model,
+            backend: runtime.core.backend,
+            api_provider: runtime.core.api_provider,
+            active_auth_profile: runtime.core.active_auth_profile,
+            auth_profiles: runtime.core.auth_profiles,
+            theme: runtime.core.theme,
+            verbose: runtime.core.verbose,
+            extra: runtime.core.extra,
+            env: runtime.network.env,
+            permission_mode: runtime.permissions.permission_mode,
+            permissions: runtime.permissions.permissions,
+            sandbox: runtime.sandbox.sandbox,
+            status_line: runtime.ui.status_line,
+            spinner_tips: runtime.ui.spinner_tips,
+            output_style: runtime.ui.output_style,
+            language: runtime.ui.language,
+            voice_enabled: runtime.ui.voice_enabled,
+            editor_mode: runtime.ui.editor_mode,
+            view_mode: runtime.ui.view_mode,
+            terminal_progress_bar_enabled: runtime.ui.terminal_progress_bar_enabled,
+            app_icon: runtime.ui.app_icon,
+            auto_start: runtime.ui.auto_start,
+            start_minimized: runtime.ui.start_minimized,
+            minimize_to_tray: runtime.ui.minimize_to_tray,
+            close_to_tray: runtime.ui.close_to_tray,
+            quick_chat_hide_on_blur: runtime.ui.quick_chat_hide_on_blur,
+            quick_chat_inject_screen: runtime.ui.quick_chat_inject_screen,
+            quick_chat_ambient: runtime.ui.quick_chat_ambient,
+            auto_approve_tools: runtime.ui.auto_approve_tools,
+            analytics_enabled: runtime.ui.analytics_enabled,
+            thinking: runtime.model.thinking,
+            output_config: runtime.model.output_config,
+            default_model: runtime.model.default_model,
+            fallback_model: runtime.model.fallback_model,
+            fast_model: runtime.model.fast_model,
+            sota_model: runtime.model.sota_model,
+            mota_model: runtime.model.mota_model,
+            fota_model: runtime.model.fota_model,
+            available_models: runtime.model.available_models,
+            model_capabilities: runtime.model.model_capabilities,
+            effort_level: runtime.model.effort_level,
+            model_reasoning_effort: runtime.model.model_reasoning_effort,
+            fast_mode: runtime.model.fast_mode,
+            fast_mode_per_session_opt_in: runtime.model.fast_mode_per_session_opt_in,
+            context_window: runtime.model.context_window,
+            max_messages: runtime.model.max_messages,
+            auto_title: runtime.model.auto_title,
+            temperature: runtime.model.temperature,
+            max_tokens: runtime.model.max_tokens,
+            streaming: runtime.model.streaming,
+            show_token_usage: runtime.model.show_token_usage,
+            show_reasoning_details: runtime.model.show_reasoning_details,
+            markdown_rendering: runtime.model.markdown_rendering,
+            single_dollar_math: runtime.model.single_dollar_math,
+            infographic: runtime.model.infographic,
+            auto_collapse_reasoning: runtime.model.auto_collapse_reasoning,
+            quick_reply_suggestions: runtime.model.quick_reply_suggestions,
+            default_tool_selection: runtime.model.default_tool_selection,
+            default_skill_selection: runtime.model.default_skill_selection,
+            sound_effects: runtime.model.sound_effects,
+            auto_compact: runtime.model.auto_compact,
+            compact_threshold: runtime.model.compact_threshold,
+            keep_recent_messages: runtime.model.keep_recent_messages,
+            hashline_mode: runtime.model.hashline_mode,
+            advisor_model: runtime.model.advisor_model,
+            system_prompt: runtime.core.system_prompt,
+            teammate_mode: runtime.integrations.teammate_mode,
+            claude_in_chrome_default_enabled: runtime.integrations.claude_in_chrome_default_enabled,
+            auto_memory_enabled: runtime.memory.auto_memory_enabled,
+            memory_auto_retrieve: runtime.memory.memory_auto_retrieve,
+            memory_query_rewriting: runtime.memory.memory_query_rewriting,
+            memory_max_retrieved: runtime.memory.memory_max_retrieved,
+            memory_similarity_threshold: runtime.memory.memory_similarity_threshold,
+            memory_auto_summarize: runtime.memory.memory_auto_summarize,
+            memory_nightly: runtime.memory.memory_nightly,
+            memory_sleep_time: runtime.memory.memory_sleep_time,
+            memory_temp_ttl: runtime.memory.memory_temp_ttl,
+            memory_archive_retention: runtime.memory.memory_archive_retention,
+            memory_tool_model: runtime.memory.memory_tool_model,
+            memory_embedding_model: runtime.memory.memory_embedding_model,
+            proxy_enabled: runtime.network.proxy_enabled,
+            proxy_url: runtime.network.proxy_url,
+            prefer_ipv4: runtime.network.prefer_ipv4,
+            request_timeout: runtime.network.request_timeout,
+            retry_attempts: runtime.network.retry_attempts,
+            custom_user_agent: runtime.network.custom_user_agent,
+            speech_enabled: runtime.speech.speech_enabled,
+            speech_active_model: runtime.speech.speech_active_model,
+            speech_language: runtime.speech.speech_language,
+            tts_provider: runtime.speech.tts_provider,
+            tts_api_key: runtime.speech.tts_api_key,
+            tts_voice: runtime.speech.tts_voice,
+            tts_voice_custom_id: runtime.speech.tts_voice_custom_id,
+            tts_model: runtime.speech.tts_model,
+            search_engine: runtime.network.search_engine,
+            web_search_provider: runtime.network.web_search_provider,
+            web_search_tavily_api_key: runtime.network.web_search_tavily_api_key,
+            web_search_brave_api_key: runtime.network.web_search_brave_api_key,
+            cloud_sync_enabled: runtime.integrations.cloud_sync_enabled,
+            cloud_sync_path: runtime.integrations.cloud_sync_path,
+            token_savings_tracking: runtime.integrations.token_savings_tracking,
+            sources: runtime.sources,
+        }
     }
 }
 

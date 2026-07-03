@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::tool::*;
 use allthecodes_sandbox::{policy_from_app_state, NetworkDecision};
@@ -468,11 +468,33 @@ fn extract_text_for_content_type(content_type: &str, body_bytes: &[u8]) -> Strin
         }
         ResponseContentKind::Json => serde_json::from_slice::<Value>(body_bytes)
             .ok()
-            .and_then(|value| serde_json::to_string_pretty(&value).ok())
+            .and_then(|value| pretty_json(&value))
             .unwrap_or_else(|| String::from_utf8_lossy(body_bytes).to_string()),
         ResponseContentKind::Text | ResponseContentKind::Binary => {
             String::from_utf8_lossy(body_bytes).to_string()
         }
+    }
+}
+
+fn pretty_json(value: &Value) -> Option<String> {
+    let canonical = canonical_json_value(value);
+    serde_json::to_string_pretty(&canonical).ok()
+}
+
+fn canonical_json_value(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(canonical_json_value).collect()),
+        Value::Object(object) => {
+            let mut entries = object.iter().collect::<Vec<_>>();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+            let mut sorted = Map::new();
+            for (key, value) in entries {
+                sorted.insert(key.clone(), canonical_json_value(value));
+            }
+            Value::Object(sorted)
+        }
+        _ => value.clone(),
     }
 }
 

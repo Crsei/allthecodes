@@ -11,8 +11,8 @@ pub(super) use std::sync::{Arc, Mutex, OnceLock};
 pub(super) use std::time::Duration;
 
 pub(super) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-pub(super) static TEST_KEYCHAIN: OnceLock<Mutex<HashMap<(String, String), Vec<u8>>>> =
-    OnceLock::new();
+pub(super) type TestKeychain = HashMap<(String, String), Vec<u8>>;
+pub(super) static TEST_KEYCHAIN: OnceLock<Mutex<TestKeychain>> = OnceLock::new();
 pub(super) const ANTHROPIC_MODEL_ENV_KEYS: &[&str] = &[
     "ANTHROPIC_MODEL",
     ANTHROPIC_DEFAULT_SOTA_MODEL_ENV,
@@ -49,10 +49,24 @@ pub(super) fn anthropic_config_custom_url() -> ApiClientConfig {
     }
 }
 
+static TEST_HOME_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
 pub(super) fn save_env(keys: &'static [&'static str]) -> Vec<(&'static str, Option<String>)> {
-    keys.iter()
+    let mut tracked_keys = keys.to_vec();
+    if !tracked_keys.contains(&"ALLTHECODES_HOME") {
+        tracked_keys.push("ALLTHECODES_HOME");
+    }
+    let saved = tracked_keys
+        .iter()
         .map(|key| (*key, std::env::var(key).ok()))
-        .collect()
+        .collect();
+    let test_home = std::env::temp_dir().join(format!(
+        "allthecodes-api-test-home-{}-{}",
+        std::process::id(),
+        TEST_HOME_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::env::set_var("ALLTHECODES_HOME", test_home);
+    saved
 }
 
 pub(super) fn restore_env(saved: Vec<(&'static str, Option<String>)>) {

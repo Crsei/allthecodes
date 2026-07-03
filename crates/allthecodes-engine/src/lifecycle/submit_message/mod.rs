@@ -19,10 +19,8 @@ use crate::codex_exec;
 use crate::input_processing;
 use crate::result;
 use crate::session::record_replay::types::{
-    CompactionBoundaryRecord, CompactionKind, MessageRecord, QueryEventRecord, RecordItem,
-    TurnFinishStatus, TurnFinishedRecord, TurnStartedRecord,
+    MessageRecord, RecordItem, TurnFinishStatus, TurnFinishedRecord, TurnStartedRecord,
 };
-use crate::session::transcript;
 use crate::types::config::{QueryParams, QuerySource, SubmitContextMode, SubmitMessageOverrides};
 use allthecodes_engine::query::loop_impl;
 use allthecodes_types::sdk::*;
@@ -34,13 +32,15 @@ mod command_handling;
 mod memory_recall;
 mod stream_handler;
 mod system_prompt_build;
+mod transaction;
 
 use command_handling::{bash_mode_result_message, handle_parsed_command, skill_args_from_prompt};
 use stream_handler::{
     account_goal_runtime_message, check_budget, prime_goal_runtime_for_session,
-    process_stream_item, StreamAction, StreamContext,
+    process_stream_item, QueryTurnEvent, StreamAction, StreamContext,
 };
 use system_prompt_build::build_submit_system_prompt;
+use transaction::{SubmitTransaction, SubmitTransactionOutcome};
 
 type SessionRecorderSlot =
     Arc<parking_lot::Mutex<Option<crate::session::record_replay::SessionRecorderHandle>>>;
@@ -210,28 +210,6 @@ async fn record_items_best_effort(
     }
 }
 
-async fn record_turn_finished_best_effort(
-    recorder_ref: &SessionRecorderSlot,
-    config: &crate::types::config::QueryEngineConfig,
-    session_id: &SessionId,
-    status: TurnFinishStatus,
-    error: Option<String>,
-) {
-    record_items_best_effort(
-        recorder_ref,
-        config,
-        session_id,
-        vec![RecordItem::TurnFinished(TurnFinishedRecord {
-            status,
-            abort_reason: None,
-            error,
-            usage: None,
-        })],
-        "turn_finished",
-    )
-    .await;
-}
-
 async fn flush_record_best_effort(recorder_ref: &SessionRecorderSlot, session_id: &SessionId) {
     let handle = recorder_ref.lock().clone();
     if let Some(handle) = handle {
@@ -241,47 +219,60 @@ async fn flush_record_best_effort(recorder_ref: &SessionRecorderSlot, session_id
     }
 }
 
-fn record_items_for_query_yield(
-    item: &crate::types::message::QueryYield,
-    backend_name: &str,
-    model_name: &str,
-) -> Vec<RecordItem> {
-    match item {
-        crate::types::message::QueryYield::Message(message) => {
-            let mut items = vec![RecordItem::Message(MessageRecord::from_message(message))];
-            if let crate::types::message::Message::System(system) = message {
-                match &system.subtype {
-                    crate::types::message::SystemSubtype::CompactBoundary { compact_metadata } => {
-                        items.push(RecordItem::CompactionBoundary(CompactionBoundaryRecord {
-                            kind: CompactionKind::Compact,
-                            summary_message_uuid: Some(system.uuid.to_string()),
-                            metadata: compact_metadata
-                                .as_ref()
-                                .and_then(|metadata| serde_json::to_value(metadata).ok()),
-                        }))
-                    }
-                    crate::types::message::SystemSubtype::MicrocompactBoundary {
-                        microcompact_metadata,
-                    } => items.push(RecordItem::CompactionBoundary(CompactionBoundaryRecord {
-                        kind: CompactionKind::Microcompact,
-                        summary_message_uuid: Some(system.uuid.to_string()),
-                        metadata: microcompact_metadata
-                            .as_ref()
-                            .and_then(|metadata| serde_json::to_value(metadata).ok()),
-                    })),
-                    _ => {}
-                }
-            }
-            items
-        }
-        crate::types::message::QueryYield::RequestStart(_) => {
-            vec![RecordItem::QueryEvent(QueryEventRecord::RequestStart {
-                provider: Some(backend_name.to_string()),
-                model: Some(model_name.to_string()),
-            })]
-        }
-        _ => Vec::new(),
+fn turn_finished_item(status: TurnFinishStatus, error: Option<String>) -> RecordItem {
+    RecordItem::TurnFinished(TurnFinishedRecord {
+        status,
+        abort_reason: None,
+        error,
+        usage: None,
+    })
+}
+
+async fn commit_submit_transaction_best_effort(
+    transaction: SubmitTransaction,
+    state_ref: &Arc<parking_lot::RwLock<super::QueryEngineState>>,
+    session_recorder: &SessionRecorderSlot,
+    config: &crate::types::config::QueryEngineConfig,
+    session_id: &SessionId,
+) -> Vec<SdkMessage> {
+    let outcome = transaction.commit(state_ref, session_id, config);
+    commit_submit_transaction_outcome_best_effort(outcome, session_recorder, config, session_id)
+        .await
+}
+
+async fn commit_submit_transaction_outcome_best_effort(
+    outcome: SubmitTransactionOutcome,
+    session_recorder: &SessionRecorderSlot,
+    config: &crate::types::config::QueryEngineConfig,
+    session_id: &SessionId,
+) -> Vec<SdkMessage> {
+    let SubmitTransactionOutcome {
+        emitted_events,
+        terminal_result,
+        record_items,
+        record_context,
+        flush_recorder,
+    } = outcome;
+
+    if !record_items.is_empty() {
+        record_items_best_effort(
+            session_recorder,
+            config,
+            session_id,
+            record_items,
+            record_context.unwrap_or("submit_transaction"),
+        )
+        .await;
     }
+    if flush_recorder {
+        flush_record_best_effort(session_recorder, session_id).await;
+    }
+
+    let mut messages = emitted_events;
+    if let Some(result) = terminal_result {
+        messages.push(SdkMessage::Result(result));
+    }
+    messages
 }
 
 impl QueryEngine {
@@ -318,6 +309,7 @@ impl QueryEngine {
         let overrides = normalize_submit_overrides(overrides);
 
         let state_ref = self.state.clone();
+        let runtime_services = self.runtime_services.clone();
         let active_session_id_ref = self.active_session_id.clone();
         let aborted_ref = self.aborted.clone();
         let active_steer_state = self.active_steer_state.clone();
@@ -338,7 +330,7 @@ impl QueryEngine {
             // Emit submit.received audit event
             {
                 use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
-                let ctx = state_ref.read().audit_ctx.with_submit();
+                let ctx = state_ref.read().runtime.audit_ctx.with_submit();
                 ctx.emit(
                     EventKind::SubmitReceived,
                     Stage::Submit,
@@ -373,26 +365,6 @@ impl QueryEngine {
                                 let reason = output.reason
                                     .or(output.stop_reason)
                                     .unwrap_or_else(|| "Blocked by UserPromptSubmit hook".to_string());
-                                record_items_best_effort(
-                                    &session_recorder,
-                                    &config,
-                                    &session_id,
-                                    vec![
-                                        RecordItem::TurnStarted(TurnStartedRecord {
-                                            user_message_uuid: None,
-                                            input_summary: prompt_summary(&prompt),
-                                        }),
-                                        RecordItem::TurnFinished(TurnFinishedRecord {
-                                            status: TurnFinishStatus::Interrupted,
-                                            abort_reason: Some(reason.clone()),
-                                            error: None,
-                                            usage: None,
-                                        }),
-                                    ],
-                                    "user_prompt_submit_blocked",
-                                )
-                                .await;
-                                flush_record_best_effort(&session_recorder, &session_id).await;
                                 finish_hook_telemetry(hook_span, "blocked");
                                 let telemetry_model = config
                                     .user_specified_model
@@ -405,7 +377,24 @@ impl QueryEngine {
                                     &telemetry_model,
                                     &UsageTracking::default(),
                                 );
-                                yield SdkMessage::Result(SdkResult {
+                                let mut transaction = SubmitTransaction::new();
+                                transaction.record_items(
+                                    "user_prompt_submit_blocked",
+                                    vec![
+                                        RecordItem::TurnStarted(TurnStartedRecord {
+                                            user_message_uuid: None,
+                                            input_summary: prompt_summary(&prompt),
+                                        }),
+                                        RecordItem::TurnFinished(TurnFinishedRecord {
+                                            status: TurnFinishStatus::Interrupted,
+                                            abort_reason: Some(reason.clone()),
+                                            error: None,
+                                            usage: None,
+                                        }),
+                                    ],
+                                );
+                                transaction.flush_recorder_after_commit();
+                                transaction.terminate(SdkResult {
                                     subtype: ResultSubtype::Success,
                                     is_error: false,
                                     duration_ms: submit_turn.duration_ms(),
@@ -421,6 +410,17 @@ impl QueryEngine {
                                     uuid: Uuid::new_v4(),
                                     errors: vec![],
                                 });
+                                for message in commit_submit_transaction_best_effort(
+                                    transaction,
+                                    &state_ref,
+                                    &session_recorder,
+                                    &config,
+                                    &session_id,
+                                )
+                                .await
+                                {
+                                    yield message;
+                                }
                                 return;
                             }
                             finish_hook_telemetry(hook_span, "success");
@@ -438,10 +438,10 @@ impl QueryEngine {
             // ================================================================
 
             // A.1: Clear turn-scoped state
-            state_ref.write().discovered_skill_names.clear();
+            state_ref.write().tools.discovered_skill_names.clear();
 
             // A.2: Process user input (delegate to input_processing module)
-            let current_msgs_snapshot = state_ref.read().messages.clone();
+            let current_msgs_snapshot = state_ref.read().transcript.messages.clone();
             let mut processed = input_processing::process_user_input(
                 &prompt,
                 &current_msgs_snapshot,
@@ -519,22 +519,13 @@ impl QueryEngine {
                 }
             }
 
-            // A.3: Push processed messages into mutable_messages
-            {
-                let mut s = state_ref.write();
-                for m in &processed.messages {
-                    s.messages.push(m.clone());
+            // A.3/A.4: Append and persist processed messages through the submit transaction.
+            if !processed.messages.is_empty() {
+                let mut transaction = SubmitTransaction::new();
+                for message in &processed.messages {
+                    transaction.append_message(message.clone());
+                    transaction.persist(message.clone());
                 }
-            }
-
-            // A.4: Persist user message to transcript (fire-and-forget)
-            if !processed.messages.is_empty() {
-                let _ = transcript::record_transcript(
-                    session_id.as_str(),
-                    &processed.messages,
-                );
-            }
-            if !processed.messages.is_empty() {
                 let mut record_items = vec![RecordItem::TurnStarted(TurnStartedRecord {
                     user_message_uuid: processed
                         .messages
@@ -545,19 +536,26 @@ impl QueryEngine {
                 record_items.extend(processed.messages.iter().map(|message| {
                     RecordItem::Message(MessageRecord::from_message(message))
                 }));
-                record_items_best_effort(
+                transaction.record_items(
+                    "processed_input",
+                    record_items,
+                );
+                for message in commit_submit_transaction_best_effort(
+                    transaction,
+                    &state_ref,
                     &session_recorder,
                     &config,
                     &session_id,
-                    record_items,
-                    "processed_input",
                 )
-                .await;
+                .await
+                {
+                    yield message;
+                }
             }
 
             let (tools_snapshot, model_name, backend_name, app_settings) = {
                 let s = state_ref.read();
-                let tools = s.tools.clone();
+                let tools = s.tools.registry.clone();
                 let model = config
                     .user_specified_model
                     .clone()
@@ -601,7 +599,7 @@ impl QueryEngine {
             let execution_tools_snapshot =
                 allthecodes_tools::registry::dedupe_tools_by_name(execution_tools_snapshot);
             let prompt_tools_snapshot = if query_gates.deferred_tool_loading {
-                let messages = state_ref.read().messages.clone();
+                let messages = state_ref.read().transcript.messages.clone();
                 allthecodes_tools::deferred_tools::filter_tools_for_deferred_request(
                     execution_tools_snapshot.clone(),
                     &messages,
@@ -647,21 +645,20 @@ impl QueryEngine {
                     &model_name,
                     &UsageTracking::default(),
                 );
-                record_turn_finished_best_effort(
-                    &session_recorder,
-                    &config,
-                    &session_id,
-                    if local_command.is_error {
-                        TurnFinishStatus::Errored
-                    } else {
-                        TurnFinishStatus::Completed
-                    },
-                    local_command.is_error.then(|| local_text.clone()),
-                )
-                .await;
-                flush_record_best_effort(&session_recorder, &session_id).await;
-
-                yield SdkMessage::Result(SdkResult {
+                let mut transaction = SubmitTransaction::new();
+                transaction.record_items(
+                    "turn_finished",
+                    vec![turn_finished_item(
+                        if local_command.is_error {
+                            TurnFinishStatus::Errored
+                        } else {
+                            TurnFinishStatus::Completed
+                        },
+                        local_command.is_error.then(|| local_text.clone()),
+                    )],
+                );
+                transaction.flush_recorder_after_commit();
+                transaction.terminate(SdkResult {
                     subtype: if local_command.is_error {
                         ResultSubtype::ErrorDuringExecution
                     } else {
@@ -685,6 +682,17 @@ impl QueryEngine {
                         vec![]
                     },
                 });
+                for message in commit_submit_transaction_best_effort(
+                    transaction,
+                    &state_ref,
+                    &session_recorder,
+                    &config,
+                    &session_id,
+                )
+                .await
+                {
+                    yield message;
+                }
                 return;
             }
 
@@ -701,6 +709,7 @@ impl QueryEngine {
                 &prompt_tools_snapshot,
                 &model_name,
                 &backend_name,
+                &runtime_services,
             )
             .await;
             if let Some(skill_ids) = overrides.skill_ids.as_ref() {
@@ -717,9 +726,9 @@ impl QueryEngine {
             // ================================================================
 
             let current_messages = match overrides.context_mode.unwrap_or(SubmitContextMode::Inherit) {
-                SubmitContextMode::Inherit => state_ref.read().messages.clone(),
+                SubmitContextMode::Inherit => state_ref.read().transcript.messages.clone(),
                 SubmitContextMode::Compact => {
-                    let messages = state_ref.read().messages.clone();
+                    let messages = state_ref.read().transcript.messages.clone();
                     crate::compact::pipeline::try_reactive_compact(messages.clone(), &model_name)
                         .await
                         .map(|result| result.messages)
@@ -745,7 +754,7 @@ impl QueryEngine {
             // Create API client for the selected backend.
             let mut submit_langfuse_trace = None;
             let api_client: Option<Arc<allthecodes_api::api::client::ApiClient>> =
-                allthecodes_api::api::client::ApiClient::from_backend(Some(&backend_name)).map(Arc::new);
+                runtime_services.model_client_factory.client_for_backend(Some(&backend_name));
             if api_client.is_none() {
                 let result = if codex_exec::is_codex_backend(&backend_name) {
                     format!(
@@ -763,17 +772,16 @@ impl QueryEngine {
                     &model_name,
                     &UsageTracking::default(),
                 );
-                record_turn_finished_best_effort(
-                    &session_recorder,
-                    &config,
-                    &session_id,
-                    TurnFinishStatus::Errored,
-                    Some(result.clone()),
-                )
-                .await;
-                flush_record_best_effort(&session_recorder, &session_id).await;
-
-                yield SdkMessage::Result(SdkResult {
+                let mut transaction = SubmitTransaction::new();
+                transaction.record_items(
+                    "turn_finished",
+                    vec![turn_finished_item(
+                        TurnFinishStatus::Errored,
+                        Some(result.clone()),
+                    )],
+                );
+                transaction.flush_recorder_after_commit();
+                transaction.terminate(SdkResult {
                     subtype: ResultSubtype::ErrorDuringExecution,
                     is_error: true,
                     duration_ms: submit_turn.duration_ms(),
@@ -789,6 +797,17 @@ impl QueryEngine {
                     uuid: Uuid::new_v4(),
                     errors: vec![result],
                 });
+                for message in commit_submit_transaction_best_effort(
+                    transaction,
+                    &state_ref,
+                    &session_recorder,
+                    &config,
+                    &session_id,
+                )
+                .await
+                {
+                    yield message;
+                }
                 return;
             }
 
@@ -819,14 +838,15 @@ impl QueryEngine {
             }
 
             // Create deps for the inner query loop
-            let permission_callback = state_ref.read().permission_callback.clone();
-            let permission_event_callback = state_ref.read().permission_event_callback.clone();
-            let bg_agent_tx = state_ref.read().bg_agent_tx.clone();
-            let tool_progress_callback = state_ref.read().tool_progress_callback.clone();
-            let submit_audit_ctx = state_ref.read().audit_ctx.with_submit();
+            let permission_callback = state_ref.read().permissions.permission_callback.clone();
+            let permission_event_callback = state_ref.read().permissions.permission_event_callback.clone();
+            let bg_agent_tx = state_ref.read().runtime.bg_agent_tx.clone();
+            let tool_progress_callback = state_ref.read().runtime.tool_progress_callback.clone();
+            let submit_audit_ctx = state_ref.read().runtime.audit_ctx.with_submit();
             let deps = Arc::new(QueryEngineDeps {
                 aborted: aborted_ref.clone(),
                 state: state_ref.clone(),
+                runtime_services: runtime_services.clone(),
                 cwd: config.cwd.clone(),
                 session_id: session_id.to_string(),
                 query_source: query_source.clone(),
@@ -861,8 +881,9 @@ impl QueryEngine {
             let mut current_request_event: Option<crate::types::message::RequestStartEvent> = None;
 
             while let Some(item) = inner_stream.next().await {
+                let turn_event = QueryTurnEvent::from(item);
                 let record_items =
-                    record_items_for_query_yield(&item, &backend_name, &model_name);
+                    turn_event.record_items(&backend_name, &model_name);
                 if !record_items.is_empty() {
                     record_items_best_effort(
                         &session_recorder,
@@ -873,7 +894,7 @@ impl QueryEngine {
                     )
                     .await;
                 }
-                if let crate::types::message::QueryYield::RequestStart(request_event) = &item {
+                if let QueryTurnEvent::RequestStart(request_event) = &turn_event {
                     current_request_event = Some(request_event.clone());
                 }
 
@@ -892,24 +913,35 @@ impl QueryEngine {
                 };
 
                 let mut terminated = false;
-                for action in process_stream_item(item, &mut stream_ctx) {
+                for action in process_stream_item(turn_event, &mut stream_ctx) {
                     match action {
                         StreamAction::Yield(message) => yield message,
                         StreamAction::Terminate(result) => {
-                            record_turn_finished_best_effort(
+                            let mut transaction = SubmitTransaction::new();
+                            transaction.record_items(
+                                "turn_finished",
+                                vec![turn_finished_item(
+                                    if result.is_error {
+                                        TurnFinishStatus::Errored
+                                    } else {
+                                        TurnFinishStatus::Completed
+                                    },
+                                    result.is_error.then(|| result.result.clone()),
+                                )],
+                            );
+                            transaction.flush_recorder_after_commit();
+                            transaction.terminate(result);
+                            for message in commit_submit_transaction_best_effort(
+                                transaction,
+                                &state_ref,
                                 &session_recorder,
                                 &config,
                                 &session_id,
-                                if result.is_error {
-                                    TurnFinishStatus::Errored
-                                } else {
-                                    TurnFinishStatus::Completed
-                                },
-                                result.is_error.then(|| result.result.clone()),
                             )
-                            .await;
-                            flush_record_best_effort(&session_recorder, &session_id).await;
-                            yield SdkMessage::Result(result);
+                            .await
+                            {
+                                yield message;
+                            }
                             terminated = true;
                             break;
                         }
@@ -921,23 +953,34 @@ impl QueryEngine {
                 }
 
                 if let Some(stop) = check_budget(&mut stream_ctx) {
+                    let mut transaction = SubmitTransaction::new();
                     if let Some(goal_update) = stop.goal_update {
-                        yield goal_update;
+                        transaction.emit(goal_update);
                     }
-                    record_turn_finished_best_effort(
+                    transaction.record_items(
+                        "turn_finished",
+                        vec![turn_finished_item(
+                            if stop.result.is_error {
+                                TurnFinishStatus::Errored
+                            } else {
+                                TurnFinishStatus::Completed
+                            },
+                            stop.result.is_error.then(|| stop.result.result.clone()),
+                        )],
+                    );
+                    transaction.flush_recorder_after_commit();
+                    transaction.terminate(stop.result);
+                    for message in commit_submit_transaction_best_effort(
+                        transaction,
+                        &state_ref,
                         &session_recorder,
                         &config,
                         &session_id,
-                        if stop.result.is_error {
-                            TurnFinishStatus::Errored
-                        } else {
-                            TurnFinishStatus::Completed
-                        },
-                        stop.result.is_error.then(|| stop.result.result.clone()),
                     )
-                    .await;
-                    flush_record_best_effort(&session_recorder, &session_id).await;
-                    yield SdkMessage::Result(stop.result);
+                    .await
+                    {
+                        yield message;
+                    }
                     return;
                 }
             } // end while let Some(item)
@@ -946,7 +989,7 @@ impl QueryEngine {
             // PHASE E: Result Generation
             // ================================================================
 
-            let final_messages = state_ref.read().messages.clone();
+            let final_messages = state_ref.read().transcript.messages.clone();
 
             let terminal_msg =
                 result::find_terminal_message(&final_messages);
@@ -959,7 +1002,7 @@ impl QueryEngine {
 
             let (usage_snap, denials_snap) = {
                 let s = state_ref.read();
-                (s.usage.clone(), s.permission_denials.clone())
+                (s.transcript.usage.clone(), s.permissions.denials.clone())
             };
 
             let subtype = if is_success {
@@ -982,7 +1025,7 @@ impl QueryEngine {
             // Emit submit.completed audit event
             {
                 use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
-                let ctx = state_ref.read().audit_ctx.clone();
+                let ctx = state_ref.read().runtime.audit_ctx.clone();
                 let outcome = if is_success { Outcome::Completed } else { Outcome::Failed };
                 ctx.emit(
                     EventKind::SubmitCompleted,
@@ -1010,27 +1053,25 @@ impl QueryEngine {
             );
             finish_submit_telemetry(&mut telemetry_submit_span, &model_name, &usage_snap);
 
+            let mut transaction = SubmitTransaction::new();
             if let Some(goal_update) =
                 account_goal_runtime_message(session_id.as_str(), &state_ref, None)
             {
-                yield goal_update;
+                transaction.emit(goal_update);
             }
-
-            record_turn_finished_best_effort(
-                &session_recorder,
-                &config,
-                &session_id,
-                if is_success {
-                    TurnFinishStatus::Completed
-                } else {
-                    TurnFinishStatus::Errored
-                },
-                (!is_success).then(|| text_result.clone()),
-            )
-            .await;
-            flush_record_best_effort(&session_recorder, &session_id).await;
-
-            yield SdkMessage::Result(SdkResult {
+            transaction.record_items(
+                "turn_finished",
+                vec![turn_finished_item(
+                    if is_success {
+                        TurnFinishStatus::Completed
+                    } else {
+                        TurnFinishStatus::Errored
+                    },
+                    (!is_success).then(|| text_result.clone()),
+                )],
+            );
+            transaction.flush_recorder_after_commit();
+            transaction.terminate(SdkResult {
                 subtype,
                 is_error: !is_success,
                 duration_ms: submit_turn.duration_ms(),
@@ -1046,6 +1087,17 @@ impl QueryEngine {
                 uuid: Uuid::new_v4(),
                 errors,
             });
+            for message in commit_submit_transaction_best_effort(
+                transaction,
+                &state_ref,
+                &session_recorder,
+                &config,
+                &session_id,
+            )
+            .await
+            {
+                yield message;
+            }
         };
         Box::pin(stream)
     }

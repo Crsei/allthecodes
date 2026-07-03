@@ -54,11 +54,13 @@ impl<'a> ListItem<'a> {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn is_focused(mut self, v: bool) -> Self {
         self.is_focused = v;
         self
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn is_selected(mut self, v: bool) -> Self {
         self.is_selected = v;
         self

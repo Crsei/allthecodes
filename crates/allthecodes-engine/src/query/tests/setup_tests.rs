@@ -148,8 +148,10 @@ async fn query_request_dedupes_visible_tool_names_before_model_call() {
 
 #[tokio::test]
 async fn text_only_model_filters_view_image_from_request_tools() {
-    let mut app_state = AppState::default();
-    app_state.main_loop_model = "text-only".into();
+    let mut app_state = AppState {
+        main_loop_model: "text-only".into(),
+        ..Default::default()
+    };
     app_state.settings.model_capabilities.insert(
         "text-only".into(),
         allthecodes_config::settings::ModelCapabilitySettings {

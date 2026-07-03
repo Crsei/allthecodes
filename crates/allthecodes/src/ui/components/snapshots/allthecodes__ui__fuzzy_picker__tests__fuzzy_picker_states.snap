@@ -1,0 +1,53 @@
+---
+source: crates/allthecodes/src/ui/components/fuzzy_picker.rs
+assertion_line: 350
+expression: "format!(\"## basic\\n{}\\n\\n## match_label\\n{}\\n\\n## preview\\n{}\\n\\n## direction=up\\n{}\\n\\n## empty\\n{}\\n\\n## focused_last\\n{}\",\nrender_text(&basic, dark()), render_text(&with_label, dark()),\nrender_text(&with_preview, dark()), render_text(&direction_up, dark()),\nrender_text(&empty, dark()), render_text(&focused_last, dark()),)"
+---
+## basic
+Select item
+[ / beta| ]
+❯ alpha
+  beta
+  gamma
+↑/↓ navigate · Enter select · Esc cancel
+
+## match_label
+Pick
+[ / |Type to search… ]
+❯ alpha
+  beta
+  gamma
+3 matches
+↑/↓ navigate · Enter select · Esc cancel
+
+## preview
+Pick
+[ / |Type to search… ]
+❯ alpha
+  beta
+  gamma
+────────────────────────────────────────
+  Preview: alpha
+↑/↓ navigate · Enter select · Esc cancel
+
+## direction=up
+Pick (up)
+❯ alpha
+  beta
+  gamma
+[ / |Type to search… ]
+↑/↓ nav · Enter select · Esc cancel
+
+## empty
+No items
+[ / |Type to search… ]
+No results
+↑/↓ navigate · Enter select · Esc cancel
+
+## focused_last
+Pick
+[ / |Type to search… ]
+❯ alpha
+  beta
+  gamma
+↑/↓ navigate · Enter select · Esc cancel

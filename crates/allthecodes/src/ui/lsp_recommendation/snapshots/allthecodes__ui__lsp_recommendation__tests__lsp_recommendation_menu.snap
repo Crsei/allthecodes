@@ -1,0 +1,10 @@
+---
+source: crates/allthecodes/src/ui/lsp_recommendation/mod.rs
+assertion_line: 18
+expression: rendered
+---
+Language servers
+> Rust         rust-analyzer
+  reason: Cargo.toml detected
+  install: rustup component add rust-analyzer
+  TypeScript   typescript-language-server

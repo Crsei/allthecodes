@@ -17,6 +17,7 @@ use super::types::{RecordItem, RecordLine, SessionMetaRecord, RECORD_SCHEMA_VERS
 
 pub const DEFAULT_RECORDER_CHANNEL_CAPACITY: usize = 256;
 
+#[allow(clippy::large_enum_variant)]
 pub enum RecorderOpenMode {
     Create {
         session_id: String,

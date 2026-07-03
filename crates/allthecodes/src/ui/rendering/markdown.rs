@@ -673,11 +673,14 @@ mod tests {
 
     #[test]
     fn cache_key_includes_theme_styles() {
-        let mut red_theme = Theme::default();
-        red_theme.code = ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(255, 0, 0));
-        let mut blue_theme = Theme::default();
-        blue_theme.code =
-            ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(0, 0, 255));
+        let red_theme = Theme {
+            code: ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(255, 0, 0)),
+            ..Default::default()
+        };
+        let blue_theme = Theme {
+            code: ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(0, 0, 255)),
+            ..Default::default()
+        };
 
         let red_lines = markdown_to_lines("`x`", &red_theme);
         let blue_lines = markdown_to_lines("`x`", &blue_theme);

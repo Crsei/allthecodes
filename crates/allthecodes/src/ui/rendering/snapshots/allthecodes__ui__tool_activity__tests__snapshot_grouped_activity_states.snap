@@ -1,0 +1,23 @@
+---
+source: crates/allthecodes/src/ui/rendering/tool_activity.rs
+assertion_line: 412
+expression: "format!(\"## grouped\\n{}\\n\\n## transcript\\n{}\\n\\n## empty\\n{}\",\nrender_grouped_activity(&[running.clone(), failed.clone(), cancelled,\nqueued]), running.transcript_block(), render_grouped_activity(&[]))"
+---
+## grouped
+  ● Bash(command=cargo test -p allthecodes) | [running] | worked for 12.4s | 3/5 [██████    ] | running tests | 18 output lines
+  ● Read(path=src/ui/app.rs) | [failed] | worked for 900ms | error: permission denied
+  ● unknown_tool | [cancelled] | worked for 0ms | user interrupted
+  ● Todo | [queued] | worked for 0ms
+
+## transcript
+tool: bash
+display: Bash(command=cargo test -p allthecodes)
+state: running
+elapsed: 12.4s
+progress: 3/5 [██████    ]
+summary: running tests
+output lines: 18
+output preview: running 18 tests
+
+## empty
+No tool activity

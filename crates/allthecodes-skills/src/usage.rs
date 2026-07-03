@@ -335,6 +335,6 @@ mod tests {
         // (but debounce prevents rapid-fire in the same test)
         tracker.record_invocation("bounded");
         let score = tracker.usage_score("bounded");
-        assert!(score >= 0.0 && score <= 1.0);
+        assert!((0.0..=1.0).contains(&score));
     }
 }

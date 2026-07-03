@@ -1,0 +1,11 @@
+---
+source: crates/allthecodes/src/ui/diff/diff_dialog.rs
+assertion_line: 229
+expression: "lines.join(\"\\n\")"
+---
+Uncommitted changes
+1 file/line changed +3 -1
+
+> src/main.rs                                            +3 -1
+
+Enter view [esc] close

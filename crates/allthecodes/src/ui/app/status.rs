@@ -22,6 +22,7 @@ pub(super) struct SessionUsageSnapshot {
 impl App {
     /// Update the accumulated session usage (tokens + api calls) used by
     /// the scriptable status-line payload.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_session_usage(
         &mut self,
         input_tokens: u64,

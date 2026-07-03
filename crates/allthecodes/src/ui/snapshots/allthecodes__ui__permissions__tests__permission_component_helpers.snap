@@ -1,0 +1,589 @@
+---
+source: crates/allthecodes/src/ui/permissions.rs
+assertion_line: 445
+expression: rendered
+---
+## utils-request
++ Permission required ---------------------------------------------------------------------------------------------------------------------+
+| tool=bash risk=shell command                                                                                                             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        cargo test                                                       |
+|   Context                                Context                        worker=executor                                                  |
+|   Decisions                                                                                                                              |
+|                                          Context                                                                                         |
+|                                                                         cwd: F:/repo                                                     |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow                        allow  run this tool once  scope=this request                    |
+|                                            Deny                         deny  block this tool call  scope=this request                   |
+|                                            Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## utils-options
+  Allow                        allow  run this tool once  scope=this request
+> Deny                         deny  block this tool call  scope=this request
+  Always allow                 always allow  save a reusable allow rule  scope=project
+  Auto Review                  auto review  ask the approval reviewer  scope=this request
+
+## utils-key-values
+Rows
+  tool: bash
+  decision: allow
+
+## utils-bullets
+Notes
+  - first
+  - second
+
+## utils-truncate
+abc...mnop
+
+## utils-normalize
+a|b
+
+## utils-command-preview
+cargo test && cargo fmt
+
+## utils-risk
+destructive filesystem command
+
+## utils-path-action
+edit src/main.rs
+
+## permission-request
++ Permission required ---------------------------------------------------------------------------------------------------------------------+
+| tool=read risk=tool request                                                                                                              |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        src/lib.rs                                                       |
+|   Context                                                                                                                                |
+|   Decisions                              Decisions                                                                                       |
+|                                          > Allow                        allow  run this tool once  scope=this request                    |
+|                                            Deny                         deny  block this tool call  scope=this request                   |
+|                                            Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## permission-prompt
+Allow this action?
+  Allow                        allow  run this tool once  scope=this request
+  Deny                         deny  block this tool call  scope=this request
+> Always allow                 always allow  save a reusable allow rule  scope=project
+  Auto Review                  auto review  ask the approval reviewer  scope=this request
+Enter confirms, Esc denies
+
+## permission-title
+High-risk permission: bash -> cargo test
+
+## permission-explanation
+Why approval is needed: writes project files
+Effects
+  - updates lockfile
+
+## permission-rule-explanation
+Rule: always allow Bash(cargo*) in project scope
+
+## permission-debug
+Permission decision
+  tool: bash
+  matcher: Bash(cargo*)
+  source: project
+  matched rule: allow Bash(cargo*)
+
+## permission-dialog
++ Permission required ---------------------------------------------------------------------------------------------------------------------+
+| tool=bash risk=shell command                                                                                                             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        cargo test                                                       |
+|   Context                                Context                        worker=executor                                                  |
+|   Decisions                                                                                                                              |
+|                                          Context                                                                                         |
+|                                                                         cwd: F:/repo                                                     |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow                        allow  run this tool once  scope=this request                    |
+|                                            Deny                         deny  block this tool call  scope=this request                   |
+|                                            Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+layout width: 80
+
+## fallback
++ Permission required ---------------------------------------------------------------------------------------------------------------------+
+| tool=custom_tool risk=unknown tool behavior                                                                                              |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        run custom action                                                |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         opaque input                                                     |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow                        allow  run this tool once  scope=this request                    |
+|                                            Deny                         deny  block this tool call  scope=this request                   |
+|                                            Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## sandbox
++ Sandbox permission required -------------------------------------------------------------------------------------------------------------+
+| tool=sandbox risk=operation is outside current sandbox policy                                                                            |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        write target                                                     |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         profile: read-only                                               |
+|                                                                         target denied                                                    |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow                        allow  run this tool once  scope=this request                    |
+|                                            Deny                         deny  block this tool call  scope=this request                   |
+|                                            Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## hooks
+hook: PreToolUse
+matcher: Bash(*)
+decision: allow
+notes
+  - matched project hook
+
+## shell-details
+shell: bash
+command: cargo test
+risk: shell command
+
+## shell-options
+> Allow                        allow  run network command once  scope=this request
+  Deny                         deny  do not run command  scope=this request
+  Always allow exact command   always allow  save exact command rule  scope=project
+
+## shell-feedback
+accepted: cargo test
+one-shot
+running now
+
+## worker-badge
+executor: 2 pending permission(s)
+
+## worker-pending
+executor: 1 pending permission(s)
+tool: write
+request: src/lib.rs
+queue position: 1
+
+## ask-choice-state
+  [ ] Inspect logs
+> [x] Ask operator
+  [ ] Abort
+
+## ask-preview-box
+Preview: Question
+Pick one
+
+## ask-preview-question
+Preview: Question
+Which path?
+- src
+- tests
+
+## ask-navigation
+Question 2/3 | Back | Next | Submit
+
+## ask-question-view
+Choose
+  [ ] Inspect logs
+> [x] Ask operator
+  [ ] Abort
+
+## ask-submit
+Ready to submit 2/3 answer(s)
+Enter submit | Esc cancel
+
+## ask-request
++ Need input ------------------------------------------------------------------------------------------------------------------------------+
+| question=2/3 source=tool request                                                                                                         |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Choices                                  Answer                                                                                          |
+| > Answer                                 Need input                                                                                      |
+|   Navigation                               [ ] Inspect logs                                                                              |
+|                                          > [x] Ask operator                                                                              |
+|                                            [ ] Abort                                                                                     |
+|                                                                                                                                          |
+|                                          Navigation                                                                                      |
+|                                          Question 2/3 | Back | Next | Submit                                                             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down choice | Space toggle | Enter next | Esc cancel                                                                                  |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## bash-request
++ Bash command permission -----------------------------------------------------------------------------------------------------------------+
+| tool=bash risk=tool request                                                                                                              |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        cargo test                                                       |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         shell: bash                                                      |
+|                                                                         command: cargo test                                              |
+|                                                                         risk: shell command                                              |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow                        allow  run shell command once  scope=this request                |
+|                                            Deny                         deny  do not run command  scope=this request                     |
+|                                            Always allow exact command   always allow  save exact command rule  scope=project             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## bash-options
+  Allow                        allow  run shell command once  scope=this request
+  Deny                         deny  do not run command  scope=this request
+> Always allow exact command   always allow  save exact command rule  scope=project
+
+## powershell-request
++ PowerShell command permission -----------------------------------------------------------------------------------------------------------+
+| tool=powershell risk=tool request                                                                                                        |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        Get-ChildItem                                                    |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         shell: powershell                                                |
+|                                                                         command: Get-ChildItem                                           |
+|                                                                         risk: shell command                                              |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                            Allow                        allow  run shell command once  scope=this request                |
+|                                          > Deny                         deny  do not run command  scope=this request                     |
+|                                            Always allow exact command   always allow  save exact command rule  scope=project             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## powershell-options
+> Allow                        allow  run shell command once  scope=this request
+  Deny                         deny  do not run command  scope=this request
+  Always allow exact command   always allow  save exact command rule  scope=project
+
+## ide-diff
+IDE diff: true
+editor: code
+inline diff: true
+
+## file-options
+  Allow edit                   allow  permit edit to src/lib.rs  scope=this request
+  Deny edit                    deny  leave file unchanged  scope=this request
+> Always allow path            always allow  save rule for src/lib.rs  scope=project
+
+## file-handler
+allow src/lib.rs (save rule: true)
+
+## file-dialog
++ File permission -------------------------------------------------------------------------------------------------------------------------+
+| tool=file risk=tool request                                                                                                              |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        edit src/lib.rs                                                  |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         diff: +3 -1                                                      |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                            Allow edit                   allow  permit edit to src/lib.rs  scope=this request             |
+|                                          > Deny edit                    deny  leave file unchanged  scope=this request                   |
+|                                            Always allow path            always allow  save rule for src/lib.rs  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## file-write-diff
+write diff: src/lib.rs
+new lines: 3
+replaced lines: 1
+
+## file-write-request
++ File write permission -------------------------------------------------------------------------------------------------------------------+
+| tool=write risk=tool request                                                                                                             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        src/lib.rs                                                       |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         write diff: src/lib.rs                                           |
+|                                                                         new lines: 3                                                     |
+|                                                                         replaced lines: 1                                                |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                            Allow edit                   allow  permit edit to src/lib.rs  scope=this request             |
+|                                          > Deny edit                    deny  leave file unchanged  scope=this request                   |
+|                                            Always allow path            always allow  save rule for src/lib.rs  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## file-edit-request
++ File edit permission --------------------------------------------------------------------------------------------------------------------+
+| tool=edit risk=tool request                                                                                                              |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        src/lib.rs                                                       |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         operation: replace range                                         |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow edit                   allow  permit edit to src/lib.rs  scope=this request             |
+|                                            Deny edit                    deny  leave file unchanged  scope=this request                   |
+|                                            Always allow path            always allow  save rule for src/lib.rs  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## file-edit-request-diff
++ File edit permission --------------------------------------------------------------------------------------------------------------------+
+| tool=edit risk=tool request                                                                                                              |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        src/lib.rs                                                       |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         operation: replace range                                         |
+|                                                                         file: src/lib.rs                                                 |
+|                                                                         summary: Added 2 lines, removed 1 line                           |
+|                                                                         @@ -1,3 +1,4 @@                                                  |
+|                                                                            1    1   fn main() {                                          |
+|                                                                            2      -     old_call();                                      |
+|                                                                                 2 +     new_call();                                      |
+|                                                                                 3 +     extra_call();                                    |
+|                                                                            3    4   }                                                    |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow edit                   allow  permit edit to src/lib.rs  scope=this request             |
+|                                            Deny edit                    deny  leave file unchanged  scope=this request                   |
+|                                            Always allow path            always allow  save rule for src/lib.rs  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## filesystem-request
++ Filesystem permission -------------------------------------------------------------------------------------------------------------------+
+| tool=filesystem risk=filesystem access can modify or disclose local files                                                                |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        read src                                                         |
+|   Context                                                                                                                                |
+|   Decisions                              Decisions                                                                                       |
+|                                            Allow                        allow  run this tool once  scope=this request                    |
+|                                            Deny                         deny  block this tool call  scope=this request                   |
+|                                          > Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## computer-use
++ Computer use approval -------------------------------------------------------------------------------------------------------------------+
+| tool=computer risk=interactive desktop action                                                                                            |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        click                                                            |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         target: browser window                                           |
+|                                                                         screenshot: true                                                 |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow                        allow  run this tool once  scope=this request                    |
+|                                            Deny                         deny  block this tool call  scope=this request                   |
+|                                            Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## enter-plan
+Enter plan mode
+reason: Need design first
+No file edits will be made while planning
+
+## exit-plan
+Exit plan mode
+plan: implement helpers
+verification:
+  - cargo test
+
+## monitor
++ Monitor permission ----------------------------------------------------------------------------------------------------------------------+
+| tool=monitor risk=background observation of process output                                                                               |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        cargo test                                                       |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         duration: 60s                                                    |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                            Allow                        allow  run this tool once  scope=this request                    |
+|                                          > Deny                         deny  block this tool call  scope=this request                   |
+|                                            Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## review-artifact
++ Review artifact permission --------------------------------------------------------------------------------------------------------------+
+| tool=review risk=tool request                                                                                                            |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        docs/report.md                                                   |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         reviewer: reviewer                                               |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow                        allow  run this tool once  scope=this request                    |
+|                                            Deny                         deny  block this tool call  scope=this request                   |
+|                                            Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## sed-edit
++ Sed edit permission ---------------------------------------------------------------------------------------------------------------------+
+| tool=sed risk=tool request                                                                                                               |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        src/lib.rs                                                       |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         pattern: foo                                                     |
+|                                                                         replacement: bar                                                 |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                            Allow edit                   allow  permit edit to src/lib.rs  scope=this request             |
+|                                          > Deny edit                    deny  leave file unchanged  scope=this request                   |
+|                                            Always allow path            always allow  save rule for src/lib.rs  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## notebook-diff
+notebook: analysis.ipynb
+cell: 2
+language: python
+
+## notebook-request
++ Notebook edit permission ----------------------------------------------------------------------------------------------------------------+
+| tool=notebook_edit risk=tool request                                                                                                     |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        analysis.ipynb                                                   |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         notebook: analysis.ipynb                                         |
+|                                                                         cell: 2                                                          |
+|                                                                         language: python                                                 |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                          > Allow edit                   allow  permit edit to analysis.ipynb  scope=this request         |
+|                                            Deny edit                    deny  leave file unchanged  scope=this request                   |
+|                                            Always allow path            always allow  save rule for analysis.ipynb  scope=this request   |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## skill-request
++ Skill permission ------------------------------------------------------------------------------------------------------------------------+
+| tool=skill risk=tool request                                                                                                             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        lint-fix                                                         |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         action: run skill                                                |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                            Allow                        allow  run this tool once  scope=this request                    |
+|                                          > Deny                         deny  block this tool call  scope=this request                   |
+|                                            Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## web-fetch
++ Web fetch permission --------------------------------------------------------------------------------------------------------------------+
+| tool=web_fetch risk=network access                                                                                                       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Decision                                                                                        |
+| > Request                                Request                        https://example.com                                              |
+|   Context                                                                                                                                |
+|   Decisions                              Context                                                                                         |
+|                                                                         method: GET                                                      |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                            Allow                        allow  run this tool once  scope=this request                    |
+|                                            Deny                         deny  block this tool call  scope=this request                   |
+|                                          > Always allow                 always allow  save a reusable allow rule  scope=project          |
+|                                            Auto Review                  auto review  ask the approval reviewer  scope=this request       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## rule-description
+allow Bash(ls*) (project, source: .allthecodes/settings.json)
+
+## rule-input
+pattern: Bash(cargo test*)
+decision: allow
+
+## rule-input-validation
+pattern must be one line
+
+## rule-list
+Permission rules (2)
+  allow Bash(ls*) (project, source: .allthecodes/settings.json)
+> deny Write(src/**) (local settings, source: policy)
+
+## add-rules
+Add permission rules (1)
+rule 1
+  pattern: Bash(cargo test*)
+  decision: allow
+
+## add-workspace
+Add workspace directory
+path: F:/repo
+trusted: true
+
+## remove-workspace
+Remove workspace directory
+path: F:/repo/tmp
+dependent rules: 2
+
+## workspace-tab
+Workspace directories (2)
+> F:/repo (trusted)
+  F:/repo/tmp (untrusted)
+
+## recent-denials
+Recent denials (1)
+- bash matched rm -rf: destructive command

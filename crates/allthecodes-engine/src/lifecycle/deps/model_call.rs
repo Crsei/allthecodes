@@ -224,7 +224,7 @@ impl QueryEngineDeps {
     }
     pub(crate) async fn refresh_tools_impl(&self) -> Result<Tools> {
         let Some(manager) = allthecodes_mcp::runtime::current_manager() else {
-            return Ok(self.state.read().tools.clone());
+            return Ok(self.state.read().tools.registry.clone());
         };
 
         let binding_context = crate::mcp_tool_adapter::mcp_binding_context_for_engine(
@@ -244,8 +244,8 @@ impl QueryEngineDeps {
 
         let refreshed = {
             let mut state = self.state.write();
-            let refreshed = merge_refreshed_mcp_tools(state.tools.clone(), mcp_tools);
-            state.tools = refreshed.clone();
+            let refreshed = merge_refreshed_mcp_tools(state.tools.registry.clone(), mcp_tools);
+            state.set_tools(refreshed.clone());
             refreshed
         };
 

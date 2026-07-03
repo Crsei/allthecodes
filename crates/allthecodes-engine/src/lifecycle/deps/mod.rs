@@ -18,12 +18,14 @@ use allthecodes_types::callbacks::PermissionEventPayload;
 use allthecodes_types::permission_events::{
     HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
+use allthecodes_types::tool_metadata::{ToolMetadata, ToolRisk};
 
 use crate::compact::compaction::build_post_compact_messages_with_boundary;
 use crate::permissions::decision::{
     AutoClassifierDecision, AutoClassifierStage, AutoClassifierVerdict, DenialTracker,
     PermissionDecision, PermissionDecisionReason,
 };
+use crate::runtime_services::RuntimeServices;
 use crate::tool_runtime::execution::{
     find_tool, is_plan_mode_plan_file_write, sandbox_allowed_command_applies, security_validate,
     ToolExecutionResult,
@@ -47,12 +49,17 @@ mod autocompact;
 mod execute;
 mod model_call;
 mod permission;
+mod tool_pipeline;
 pub(crate) use model_call::{model_for_autocompact, tool_execution_result_to_exec_result};
 pub(crate) use permission::{
     auto_classifier_needed, central_permission_decision_for_tool, emit_hook_permission_decision,
     emit_permission_auto_review, emit_permission_decision_debug, hook_error_is_critical,
     permission_denied_message, permission_feedback_message, permission_result_from_decision,
     runtime_permission_decision_label,
+};
+pub(crate) use tool_pipeline::{
+    InputValidationKind, PermissionOverrideStageResult, PipelineStageResult, SanitizedInput,
+    ToolExecutionPipeline, ToolExecutionPlan,
 };
 
 /// Dependency injection bridge: provides the query loop with access to the
@@ -62,6 +69,7 @@ pub(crate) use permission::{
 pub(crate) struct QueryEngineDeps {
     pub(crate) aborted: Arc<AtomicBool>,
     pub(crate) state: Arc<RwLock<QueryEngineState>>,
+    pub(crate) runtime_services: Arc<RuntimeServices>,
     pub(crate) cwd: String,
     pub(crate) session_id: String,
     pub(crate) query_source: QuerySource,
@@ -112,21 +120,9 @@ pub(crate) struct QueryEngineDeps {
     pub(crate) submit_tools: Option<Tools>,
 }
 
-/// Tools that are always allowed in Auto mode without classifier classification.
-const AUTO_MODE_ALLOWLISTED_TOOLS: &[&str] = &[
-    "Read",
-    "Grep",
-    "Glob",
-    "LSP",
-    "Sleep",
-    "TaskCreate",
-    "TaskUpdate",
-    "TaskGet",
-    "TaskList",
-    "Plan",
-    "WebSearch",
-    "WebFetch",
-];
+fn auto_mode_allows_without_classifier(tool_name: &str) -> bool {
+    ToolMetadata::from_tool_name(tool_name).risk <= ToolRisk::Low
+}
 
 impl QueryEngineDeps {
     /// Compute an auto-mode classifier decision if the classifier is configured
@@ -146,14 +142,14 @@ impl QueryEngineDeps {
             if state.app_state.tool_permission_context.mode != PermissionMode::Auto {
                 return None;
             }
-            // Allowlisted tools bypass the classifier entirely in Auto mode.
-            if AUTO_MODE_ALLOWLISTED_TOOLS.contains(&tool_name) {
+            // Low-risk tools bypass the classifier entirely in Auto mode.
+            if auto_mode_allows_without_classifier(tool_name) {
                 return Some(AutoClassifierDecision::allow(
                     "allowlisted-tool",
                     AutoClassifierStage::Fast,
                 ));
             }
-            (self.cwd.clone(), state.messages.clone())
+            (self.cwd.clone(), state.transcript.messages.clone())
         };
 
         fn_ref(
@@ -180,7 +176,7 @@ impl QueryEngineDeps {
         let fn_ref = self.auto_classifier_fn.as_ref()?;
         let (cwd, messages) = {
             let state = self.state.read();
-            (self.cwd.clone(), state.messages.clone())
+            (self.cwd.clone(), state.transcript.messages.clone())
         };
 
         fn_ref(
@@ -270,7 +266,7 @@ impl QueryDeps for QueryEngineDeps {
     fn get_tools(&self) -> Tools {
         self.submit_tools
             .clone()
-            .unwrap_or_else(|| self.state.read().tools.clone())
+            .unwrap_or_else(|| self.state.read().tools.registry.clone())
     }
 
     async fn refresh_tools(&self) -> Result<Tools> {
@@ -328,6 +324,29 @@ impl QueryDeps for QueryEngineDeps {
         use allthecodes_types::agent_channel::AgentIpcEvent;
         if let Some(ref tx) = self.bg_agent_tx {
             let _ = tx.send(AgentIpcEvent::Agent(event));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_mode_allowlist_uses_low_risk_metadata() {
+        for tool_name in [
+            "Read", "Grep", "Glob", "LSP", "Sleep", "TaskList", "WebFetch",
+        ] {
+            assert!(
+                auto_mode_allows_without_classifier(tool_name),
+                "{tool_name} should keep bypassing Auto classifier review"
+            );
+        }
+        for tool_name in ["Bash", "Agent", "Write", "Edit", "AskUserQuestion"] {
+            assert!(
+                !auto_mode_allows_without_classifier(tool_name),
+                "{tool_name} should still require Auto classifier review"
+            );
         }
     }
 }

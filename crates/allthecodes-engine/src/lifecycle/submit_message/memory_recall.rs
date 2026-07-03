@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::runtime_services::ModelClientFactoryService;
 use crate::types::config::QueryEngineConfig;
 use crate::types::message::{AssistantMessage, ContentBlock};
 
@@ -57,6 +58,7 @@ fn deterministic_memory_context(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_model_assisted_memory_context(
     cwd: &str,
     include_auto_memory: bool,
@@ -65,6 +67,7 @@ async fn build_model_assisted_memory_context(
     already_surfaced_memory_keys: &std::collections::HashSet<String>,
     backend_name: &str,
     model_name: &str,
+    model_client_factory: &dyn ModelClientFactoryService,
 ) -> anyhow::Result<Option<(String, Vec<String>)>> {
     let candidates = allthecodes_session::memdir::recall_relevant_memories(
         std::path::Path::new(cwd),
@@ -78,8 +81,7 @@ async fn build_model_assisted_memory_context(
         return Ok(Some((String::new(), Vec::new())));
     }
 
-    let api_client = match allthecodes_api::api::client::ApiClient::from_backend(Some(backend_name))
-    {
+    let api_client = match model_client_factory.client_for_backend(Some(backend_name)) {
         Some(client) => client,
         None => return Ok(None),
     };
@@ -182,6 +184,7 @@ pub(super) async fn resolve_memory_context_override(
     already_surfaced_memory_keys: &std::collections::HashSet<String>,
     backend_name: &str,
     model_name: &str,
+    model_client_factory: &dyn ModelClientFactoryService,
     model_assisted_memory_recall: bool,
     ignore_memory: bool,
 ) -> (Option<String>, Vec<String>) {
@@ -209,6 +212,7 @@ pub(super) async fn resolve_memory_context_override(
         already_surfaced_memory_keys,
         backend_name,
         model_name,
+        model_client_factory,
     )
     .await
     {

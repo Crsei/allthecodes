@@ -70,19 +70,14 @@ pub struct McpOAuthConfig {
 }
 
 /// Runtime scope where an MCP server binding applies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpToolScope {
+    #[default]
     Global,
     Project,
     Session,
     Thread,
-}
-
-impl Default for McpToolScope {
-    fn default() -> Self {
-        Self::Global
-    }
 }
 
 impl McpToolScope {

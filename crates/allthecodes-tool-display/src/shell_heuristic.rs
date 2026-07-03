@@ -25,7 +25,7 @@ pub fn shell_command_operation(command: &str) -> ShellClassification {
         .first()
         .map(|word| word.as_str())
         .unwrap_or("")
-        .trim_start_matches(|c: char| c == '/' || c == '.' || c == '~')
+        .trim_start_matches(['/', '.', '~'])
         .to_string();
 
     let target = extract_first_path_arg(trimmed);
@@ -318,11 +318,11 @@ fn extract_first_path_arg(command: &str) -> Option<String> {
 
 /// Extract the edited file target from commands like `sed -i 's///' file`.
 fn extract_inline_edit_target(command: &str) -> Option<String> {
-    split_shell_words(command)
+    let mut args = split_shell_words(command)
         .into_iter()
         .skip(1)
-        .filter(|arg| !arg.starts_with('-'))
-        .last()
+        .filter(|arg| !arg.starts_with('-'));
+    args.next_back()
 }
 
 /// Extract the subcommand argument (e.g., `cargo build -p foo` → `foo`).

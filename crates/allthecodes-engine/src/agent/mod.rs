@@ -178,6 +178,7 @@ async fn count_worktree_changes(
     Some((changed_files, commits))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_agent_worktree_session_record(
     session_id: &str,
     agent_id: &str,

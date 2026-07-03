@@ -1,0 +1,144 @@
+---
+source: crates/allthecodes/src/ui/command_surface/tests.rs
+assertion_line: 620
+expression: "rendered.join(\"\\n\\n\")"
+---
+-- status --
++ Config ----------------------------------------------------------------------------------------------------------------------------------+
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Sections                                 Status                                                                                          |
+| > Status                                 > Show effective config        model=gpt-5.5; backend=native                                    |
+|   Model                                    Show setting sources         which layer set each key                                         |
+|   Theme                                                                                                                                  |
+|   Usage                                                                                                                                  |
+|   Output                                                                                                                                 |
+|   Language                                                                                                                               |
+|   Thinking                                                                                                                               |
+|   Safety                                                                                                                                 |
+|   Config                                                                                                                                 |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Left/Right section | Up/Down navigate | Enter select | Esc close                                                                         |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+-- model --
++ Config ----------------------------------------------------------------------------------------------------------------------------------+
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Sections                                 Model                                                                                           |
+|   Status                                 Current effort: medium (10240 tokens)                                                           |
+| > Model                                  Model / Filter...                                                                               |
+|   Theme                                    gpt-5.2 (gpt-5.2) - ctx=272k; default effort=medium; search; parallel tools                   |
+|   Usage                                    gpt-5.3-codex (gpt-5.3-codex) - ctx=272k; default effort=medium; search; parallel tools       |
+|   Output                                   GPT-5.3-Codex-Spark (gpt-5.3-codex-spark) - ctx=128k; default effort=high; search; paralle... |
+|   Language                                 gpt-5.4 (gpt-5.4) - ctx=272k; default effort=medium; fast; search; parallel tools             |
+|   Thinking                                 GPT-5.4-Mini (gpt-5.4-mini) - ctx=272k; default effort=medium; search; parallel tools         |
+|   Safety                                 > GPT-5.5 (gpt-5.5) - current; ctx=272k; default effort=medium; fast; search; parallel tools    |
+|   Config                                                                                                                                 |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Type filter | Up/Down navigate | Enter select | Left/Right section | Esc close                                                           |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+-- theme --
++ Config ----------------------------------------------------------------------------------------------------------------------------------+
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Sections                                 Theme                                                                                           |
+|   Status                                 Theme / Filter...                                                                               |
+|   Model                                    Auto - match terminal when supported                                                          |
+| > Theme                                    Dark mode - default ratatui palette                                                           |
+|   Usage                                  > Light mode - light terminal palette; current                                                  |
+|   Output                                   Solarized - low-contrast terminal palette                                                     |
+|   Language                                 Monokai - high-contrast editor palette                                                        |
+|   Thinking                                 Nord - cool low-saturation palette                                                            |
+|   Safety                                                                                                                                 |
+|   Config                                                                                                                                 |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Type filter | Up/Down navigate | Enter select | Left/Right section | Esc close                                                           |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+-- usage --
++ Config ----------------------------------------------------------------------------------------------------------------------------------+
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Sections                                 Usage                                                                                           |
+|   Status                                 > Show session usage           token totals and estimated cost                                  |
+|   Model                                    Show extended usage          per-message token and cost breakdown                             |
+|   Theme                                                                                                                                  |
+| > Usage                                                                                                                                  |
+|   Output                                                                                                                                 |
+|   Language                                                                                                                               |
+|   Thinking                                                                                                                               |
+|   Safety                                                                                                                                 |
+|   Config                                                                                                                                 |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Left/Right section | Up/Down navigate | Enter select | Esc close                                                                         |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+-- output --
++ Config ----------------------------------------------------------------------------------------------------------------------------------+
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Sections                                 Output                                                                                          |
+|   Status                                 > Use default output style     current outputStyle=explanatory                                  |
+|   Model                                    Use explanatory output style current outputStyle=explanatory                                  |
+|   Theme                                    Use learning output style    current outputStyle=explanatory                                  |
+|   Usage                                    Set custom output style      fill prompt with /config set outputStyle                         |
+| > Output                                   Enable vim editor mode       current editorMode=normal                                        |
+|   Language                                 Use normal editor mode       current editorMode=normal                                        |
+|   Thinking                                 Use prompt view              current viewMode=prompt                                          |
+|   Safety                                   Use transcript view          current viewMode=prompt                                          |
+|   Config                                   Use focus view               current viewMode=prompt                                          |
+|                                            Enable spinner tips          enabled=true; intervalMs=10000; customTips=0                     |
+|                                            Disable spinner tips         enabled=true; intervalMs=10000; customTips=0                     |
+|                                            Set spinner tip interval     fill prompt with /config set spinnerTips.intervalMs              |
+|                                            Set custom spinner tips      fill prompt with JSON string array                               |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Left/Right section | Up/Down navigate | Enter select | Esc close                                                                         |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+-- language --
++ Config ----------------------------------------------------------------------------------------------------------------------------------+
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Sections                                 Language                                                                                        |
+|   Status                                 > Set response language        current language=English                                         |
+|   Model                                    Use English                  current language=English                                         |
+|   Theme                                    Use Chinese                  current language=English                                         |
+|   Usage                                                                                                                                  |
+|   Output                                                                                                                                 |
+| > Language                                                                                                                               |
+|   Thinking                                                                                                                               |
+|   Safety                                                                                                                                 |
+|   Config                                                                                                                                 |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Left/Right section | Up/Down navigate | Enter select | Esc close                                                                         |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+-- thinking --
++ Config ----------------------------------------------------------------------------------------------------------------------------------+
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Sections                                 Effort                                                                                          |
+|   Status                                 Effort / Filter...                                                                              |
+|   Model                                    Auto - model default: medium; 10240 tokens                                                    |
+|   Theme                                    Low - supported; 4096 tokens                                                                  |
+|   Usage                                  > Medium - supported; default; 10240 tokens; current                                            |
+|   Output                                   High - supported; 24576 tokens                                                                |
+|   Language                                 Extra high - supported; 32768 tokens                                                          |
+| > Thinking                                                                                                                               |
+|   Safety                                                                                                                                 |
+|   Config                                                                                                                                 |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Type filter | Up/Down navigate | Enter select | Left/Right section | Esc close                                                           |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+-- safety --
++ Config ----------------------------------------------------------------------------------------------------------------------------------+
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Sections                                 Safety                                                                                          |
+|   Status                                 > Review setting sources       managed/user/project/local provenance                            |
+|   Model                                                                                                                                  |
+|   Theme                                                                                                                                  |
+|   Usage                                                                                                                                  |
+|   Output                                                                                                                                 |
+|   Language                                                                                                                               |
+|   Thinking                                                                                                                               |
+| > Safety                                                                                                                                 |
+|   Config                                                                                                                                 |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Left/Right section | Up/Down navigate | Enter select | Esc close                                                                         |
++------------------------------------------------------------------------------------------------------------------------------------------+

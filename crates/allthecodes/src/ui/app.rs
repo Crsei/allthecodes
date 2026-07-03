@@ -1543,9 +1543,7 @@ fn permission_marker_from_operation(
         .filter(|value| !value.is_empty());
 
     if normalized_tool.contains("bash") || normalized_tool.contains("powershell") {
-        return command
-            .or_else(|| target)
-            .map(|value| compact_inline(value, 100));
+        return command.or(target).map(|value| compact_inline(value, 100));
     }
     if normalized_tool.contains("web") || normalized_tool.contains("fetch") {
         return target.map(|value| format!("Fetch {}", compact_inline(value, 90)));

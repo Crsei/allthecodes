@@ -1,0 +1,16 @@
+---
+source: crates/allthecodes/src/ui/components/loading_state.rs
+assertion_line: 178
+expression: "render_snapshot(&states, dark())"
+---
+⠋ Loading sessions
+---
+⠋ Working
+---
+⠋ Loading
+  Please wait...
+---
+⠋ Syncing
+---
+⠋ Deep thought
+  This may take a moment

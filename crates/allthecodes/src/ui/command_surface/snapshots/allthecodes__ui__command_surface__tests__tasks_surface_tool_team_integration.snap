@@ -1,0 +1,30 @@
+---
+source: crates/allthecodes/src/ui/command_surface/tests.rs
+assertion_line: 452
+expression: "rendered.join(\"\\n\\n\")"
+---
+-- tool-selected --
+[2 tasks, 0 pending, 2 running, 0 succeeded, 0 failed, 0 canceled] Enter to view
+
+Background tasks (2)
+> ● cargo test         shell     running   worked for   3.2s [█████     ] running tests
+  ● builder (ui-port)  teammate  running   worked for    0ms [          ] implementing task panel
+Enter details | k/s stop | d delete tool | r refresh | Esc close
+
+  ● cargo test(shell) | [running] | worked for 3.2s | 1/2 [█████     ] | running tests
+  ● builder (ui-port)(teammate) | [running] | worked for 0ms | implementing task panel
+
+o/Right details | Enter show | k/s stop | d delete tool | r refresh | Esc close
+
+-- team-selected --
+[2 tasks, 0 pending, 2 running, 0 succeeded, 0 failed, 0 canceled] Enter to view
+
+Background tasks (2)
+  ● cargo test         shell     running   worked for   3.2s [█████     ] running tests
+> ● builder (ui-port)  teammate  running   worked for    0ms [          ] implementing task panel
+Enter details | k/s stop | d delete tool | r refresh | Esc close
+
+  ● cargo test(shell) | [running] | worked for 3.2s | 1/2 [█████     ] | running tests
+  ● builder (ui-port)(teammate) | [running] | worked for 0ms | implementing task panel
+
+o/Right details | Enter show | k/s stop | d delete tool | r refresh | Esc close

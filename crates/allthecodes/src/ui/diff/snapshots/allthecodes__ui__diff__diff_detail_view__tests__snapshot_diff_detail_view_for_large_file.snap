@@ -1,0 +1,7 @@
+---
+source: crates/allthecodes/src/ui/diff/diff_detail_view.rs
+assertion_line: 119
+expression: "output.join(\"\\n\")"
+---
+large.rs
+Large file - diff exceeds 1 MB limit

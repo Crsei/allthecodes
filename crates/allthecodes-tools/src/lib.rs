@@ -23,6 +23,7 @@ pub mod interaction;
 pub mod media;
 #[cfg(feature = "full")]
 pub mod memory;
+pub mod metadata;
 #[cfg(feature = "full")]
 pub mod network;
 #[cfg(feature = "full")]

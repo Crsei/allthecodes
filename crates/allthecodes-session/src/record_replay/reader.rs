@@ -207,7 +207,7 @@ mod tests {
             item: RecordItem::TurnStarted(crate::record_replay::types::TurnStartedRecord::default()),
         };
 
-        let lines = vec![
+        let lines = [
             serde_json::to_string(&meta).unwrap(),
             serde_json::to_string(&mismatched).unwrap(),
         ];

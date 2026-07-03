@@ -1,0 +1,70 @@
+---
+source: crates/allthecodes/src/ui/hooks/mod.rs
+assertion_line: 89
+expression: rendered
+---
+## config
+Hooks
+> PreToolUse matchers=2 hooks=2
+Read-only. Edit .allthecodes/settings.json or .allthecodes/settings.local.json.
+
+## event
+Select hook event
+1 hooks configured
+Read-only. Edit .allthecodes/settings.json or .allthecodes/settings.local.json.
+Use /hooks open user or /hooks open project to edit a settings layer.
+
+  PreToolUse  (1)  PreToolUse summary
+  PostToolUse       PostToolUse summary
+> PostToolUseFailure       PostToolUseFailure summary
+  PermissionDenied       PermissionDenied summary
+  Notification       Notification summary
+  UserPromptSubmit       UserPromptSubmit summary
+  SessionStart       SessionStart summary
+  Stop       Stop summary
+  StopFailure       StopFailure summary
+  SubagentStart       SubagentStart summary
+  SubagentStop       SubagentStop summary
+  PreCompact       PreCompact summary
+  PostCompact       PostCompact summary
+  SessionEnd       SessionEnd summary
+  PermissionRequest       PermissionRequest summary
+  Setup       Setup summary
+  TeammateIdle       TeammateIdle summary
+  TaskCreated       TaskCreated summary
+  TaskCompleted       TaskCompleted summary
+  Elicitation       Elicitation summary
+  ElicitationResult       ElicitationResult summary
+  ConfigChange       ConfigChange summary
+  InstructionsLoaded       InstructionsLoaded summary
+  WorktreeCreate       WorktreeCreate summary
+  WorktreeRemove       WorktreeRemove summary
+  CwdChanged       CwdChanged summary
+  FileChanged       FileChanged summary
+
+## matcher
+PreToolUse - Matchers
+Input to command is JSON of tool call arguments.
+
+  [Effective] (all)              1 hook
+> [Effective] Bash               2 hooks
+
+## hook
+PreToolUse - Matcher: Bash
+Input to command is JSON of tool call arguments.
+
+  [command] cargo fmt --check                Effective Settings
+> [http   ] https://hooks.example/run        Effective Settings
+
+## view
+Hook details
+Event: PreToolUse
+Matcher: Bash
+Type: command
+Source: Effective settings (merged runtime hooks)
+
+Command:
+  cargo fmt --check
+Status message: Format check
+
+To modify or remove this hook, edit .allthecodes/settings.json or ask Claude.

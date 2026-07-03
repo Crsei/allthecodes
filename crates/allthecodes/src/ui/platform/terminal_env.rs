@@ -50,6 +50,7 @@ impl TerminalEnvConfig {
     /// The TUI runner honors the mouse-capture env flags when deciding
     /// whether to enable crossterm mouse capture.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub const DISABLE_MOUSE_RUNTIME_SUPPORTED: bool = true;
     /// Default scroll speed when no override is set. Exposed publicly
     /// so `/terminal-setup` / tests can surface the same number that
@@ -201,7 +202,6 @@ mod tests {
         assert!(cfg.sync_updates);
         assert!(!cfg.disable_mouse);
         assert_eq!(cfg.scroll_speed, TerminalEnvConfig::DEFAULT_SCROLL_SPEED);
-        assert!(TerminalEnvConfig::DISABLE_MOUSE_RUNTIME_SUPPORTED);
     }
 
     #[test]

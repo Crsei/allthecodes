@@ -508,7 +508,7 @@ async fn test_max_tokens_recovery_escalates_next_request_limit() {
     assert_eq!(params[0].max_output_tokens, None);
     assert_eq!(
         params[1].max_output_tokens,
-        Some(super::super::super::loop_helpers::ESCALATED_MAX_TOKENS)
+        Some(super::super::super::recovery::ESCALATED_MAX_TOKENS)
     );
     assert_eq!(
         deps.collapse_drain_calls.load(Ordering::SeqCst),

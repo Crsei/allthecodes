@@ -226,7 +226,8 @@ mod tests {
     /// Static lock to serialize keyring tests (shared in-memory keychain).
     static KEYRING_LOCK: Mutex<()> = Mutex::new(());
     /// In-memory backing for test keychain entries.
-    static TEST_KEYCHAIN: OnceLock<Mutex<Vec<(String, String, Vec<u8>)>>> = OnceLock::new();
+    type TestKeychainEntries = Vec<(String, String, Vec<u8>)>;
+    static TEST_KEYCHAIN: OnceLock<Mutex<TestKeychainEntries>> = OnceLock::new();
 
     /// A credential that stores data in a static `HashMap` rather than the
     /// real system keychain.

@@ -1,0 +1,8 @@
+---
+source: crates/allthecodes/src/ui/diff/diff_detail_view.rs
+assertion_line: 154
+expression: "output.join(\"\\n\")"
+---
+src/very_long_file_name.rs
++let value = "this added line is
+-let previous = "this removed li

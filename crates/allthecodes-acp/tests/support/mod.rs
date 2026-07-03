@@ -200,9 +200,7 @@ pub fn is_session_update(value: &serde_json::Value) -> bool {
     value
         .get("method")
         .and_then(|v| v.as_str())
-        .map_or(false, |m| {
-            m == "session/update" || m == "notifications/notification"
-        })
+        .is_some_and(|m| m == "session/update" || m == "notifications/notification")
 }
 
 /// Check if a JSON value is a JSON-RPC response (has "id" and either "result" or "error").

@@ -251,7 +251,9 @@ mod tests {
         // base64 characters (alphanumeric + '+' / '/' / '=' / '-' / '_')
         // with no whitespace — triggers looks_like_large_blob.
         let base64ish: String = (0..200)
-            .map(|_i| format!("ABCDEFGHijklmnOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="))
+            .map(|_i| {
+                "ABCDEFGHijklmnOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=".to_string()
+            })
             .collect();
         assert!(base64ish.len() > LARGE_BLOB_CHARS);
 

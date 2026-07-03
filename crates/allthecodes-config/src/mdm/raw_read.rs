@@ -77,8 +77,6 @@ mod tests {
     fn test_managed_settings_exists_returns_false_for_missing() {
         // When no managed settings file exists at the default path, this
         // should return false without panicking.
-        let exists = managed_settings_exists();
-        // We just verify it doesn't panic and returns a boolean.
-        assert!(exists == false || exists == true);
+        let _ = managed_settings_exists();
     }
 }

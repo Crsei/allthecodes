@@ -1,0 +1,76 @@
+---
+source: crates/allthecodes/src/ui/runtime/visual_regression.rs
+assertion_line: 412
+expression: render_interactive_ui_surfaces()
+---
+## permission/bash
+ ┌ Permission Required - Run command? ────────────────────────────────┐
+ │Tool: Bash                                                          │
+ │Kind: Run command                                                   │
+ ││Request                        cargo test -p allthecodes           │
+ ││shell: bash                                                        │
+ ││command: cargo test -p allthecodes                                 │
+ ││risk: shell command                                                │
+ ││Options                                                            │
+ ││                                                                   │
+ │  Allow (y)    Deny (n)    Always exact (a)                         │
+ │                                                                    │
+ │ Tab: tell model what to do differently.                            │
+ └────────────────────────────────────────────────────────────────────┘
+
+## permission/file-edit
+ ┌ Permission Required - Edit file? ──────────────────────────────────┐
+ │Tool: Write                                                         │
+ │Kind: Edit file                                                     │
+ ││Request                        write src/ui/command_palette.rs     │
+ ││diff: no diff supplied                                             │
+ ││IDE diff: true                                                     │
+ ││editor: default                                                    │
+ ││inline diff: true                                                  │
+ ││                                                                   │
+ │  Allow edit (y)    Deny edit (n)    Always allow path (a)          │
+ │                                                                    │
+ │ Tab: tell model what to do differently.                            │
+ └────────────────────────────────────────────────────────────────────┘
+
+## command-palette-picker
+┌ Commands - Edit targets ─────────────────────────────────────────────────────────────────────────┐
+│Commands                          Command details                                                 │
+│/mcp                              MCP server management (list, status, add, e...                  │
+│                                                                                                  │
+│Behavior                                                                                          │
+│  Enter inserts: /mcp                                                                             │
+│  ghost: p                                                                                        │
+│  usage: /mcp <list|status|add|edit|remove|approve|reject|connect|disconnect|reconnect>           │
+│  example: /mcp add ctx7 --command=npx --arg=-y --arg=@upstash/context7-mcp                       │
+│  edit: user: ~/.allthecodes/settings.json | project: ./.allthecodes/settings.json                │
+│        local: ./.allthecodes/settings.local.json                                                 │
+│  target: Ctrl+E pick target                                                                      │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+## markdown
+Heading
+
+Visit docs for the current state.
+
+- first
+- second
+
+## streaming-message
+
+ show me the latest status
+
+
+Progress
+
+Visit docs for details.
+($0.0314) ▌
+
+## diff
+--- diff: +2 -2 lines ---
+   1    1   alpha
+   2      - beta
+   3      - A very long line: cafe deja vu
+        2 + beta updated
+        3 + A very long line: cafe deja vu and more text

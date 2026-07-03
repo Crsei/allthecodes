@@ -66,6 +66,7 @@ impl StreamingState {
 // ---------------------------------------------------------------------------
 
 /// Events sent from engine tasks to the TUI main loop.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum EngineEvent {
     /// An SDK message from the engine stream.
     Sdk(Box<SdkMessage>),

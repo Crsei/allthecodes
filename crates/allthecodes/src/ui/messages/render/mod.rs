@@ -654,8 +654,15 @@ mod tests {
             tool_use_result: Some("ok".to_string()),
             source_tool_assistant_uuid: None,
         });
-        let context =
-            super::build_message_render_context(&[assistant.clone(), result], None, false);
+        let context = super::build_message_render_context_with_options(
+            &[assistant.clone(), result],
+            None,
+            false,
+            super::MessageRenderOptions {
+                verbose: true,
+                ..Default::default()
+            },
+        );
 
         let rendered = lines_to_text(super::render_single_message_with_context(
             &assistant,

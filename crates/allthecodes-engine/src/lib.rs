@@ -26,6 +26,7 @@ pub mod output_style;
 pub mod prompt_sections;
 pub mod query;
 pub mod result;
+pub mod runtime_services;
 pub mod services;
 pub mod skill_tool;
 pub mod status_line;

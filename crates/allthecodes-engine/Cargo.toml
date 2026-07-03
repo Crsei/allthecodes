@@ -2,19 +2,14 @@
 name = "allthecodes-engine"
 version = "0.1.0"
 edition = "2021"
-description = "QueryEngine + query loop + AppState + Tool trait + status-line runner (Phase 6 extraction)."
+description = "QueryEngine, canonical query loop, AppState, Tool trait, and status-line runner."
 
-# Phase 6 is being landed incrementally:
-#
-#   Step 1 (this crate, landed): publish an empty scaffold wired into the
-#   workspace.
-#
-#   Step 2 (in progress): move `src/ui/status_line/` and
-#   `src/types/{tool, app_state, config}.rs` into this crate — these are the
-#   last runtime-free-ish items blocking `ToolUseContext` / `AppState` from
-#   leaving the root crate.
-#
-#   Step 3 (follow-up): move `src/engine/` and `src/query/` into this crate.
+# Query boundary decision:
+# `crates/allthecodes-engine/src/query/` is the only production query loop.
+# The previous independent `allthecodes-query` crate was removed because it
+# duplicated behavior. Future extraction must happen exactly once into a
+# canonical crate, after stable typed boundaries replace direct engine-internal
+# coupling.
 
 [dependencies]
 # Async

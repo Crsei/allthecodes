@@ -243,10 +243,7 @@ fn test_strip_anthropic_cache_fields_recursively() {
         "cache_edits": []
     });
     strip_anthropic_cache_fields(&mut body);
-    assert!(serde_json::to_string(&body)
-        .unwrap()
-        .find("cache_")
-        .is_none());
+    assert!(!serde_json::to_string(&body).unwrap().contains("cache_"));
     assert_eq!(body["messages"][0]["content"][0]["text"], "hello");
 }
 

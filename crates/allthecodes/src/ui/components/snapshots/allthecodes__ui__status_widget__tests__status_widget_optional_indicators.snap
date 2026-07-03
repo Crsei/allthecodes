@@ -1,0 +1,32 @@
+---
+source: crates/allthecodes/src/ui/components/status_widget.rs
+assertion_line: 171
+expression: "format!(\"## all-present\\n{}\\n{}\\n\\n## absent\\n{}\\n{}\",\nall_present.render_line(), all_present.render_details(), absent.render_line(),\nabsent.render_details())"
+---
+## all-present
+claude-sonnet | F:/repo | perm=acceptEdits | sandbox=workspace,no-net | tools=2 | agents=1 | $0.4200 | subsystems=attention | effort=medium | ide=3 lines selected | memory=1.4 GiB/warn | pr=#42 approved | mcp=github/error | remote=attention/warn
+model: claude-sonnet
+cwd: F:/repo
+permission: acceptEdits
+sandbox: workspace,no-net
+running tools: 2
+active agents: 1
+subsystems: attention
+indicators:
+- effort: medium
+- ide: 3 lines selected
+- memory: 1.4 GiB (warn)
+- pr: #42 approved
+- mcp: github (error)
+- remote: attention (warn)
+
+## absent
+claude-sonnet | F:/repo | perm=acceptEdits | sandbox=workspace,no-net | tools=2 | agents=1 | $0.4200 | subsystems=ok
+model: claude-sonnet
+cwd: F:/repo
+permission: acceptEdits
+sandbox: workspace,no-net
+running tools: 2
+active agents: 1
+subsystems: ok
+indicators: none

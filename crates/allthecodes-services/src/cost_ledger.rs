@@ -527,6 +527,7 @@ mod tests {
     use allthecodes_types::models::pricing;
     use uuid::Uuid;
 
+    #[allow(clippy::too_many_arguments)]
     fn make_event(
         model: Option<&str>,
         input: u64,
@@ -1006,7 +1007,7 @@ mod tests {
         assert_eq!(deserialized.usage.cache_creation_input_tokens, 10);
         assert_eq!(deserialized.usage.reasoning_output_tokens, 5);
         assert!((deserialized.cost_usd - 0.0015).abs() < 1e-12);
-        assert!(deserialized.backfilled == false);
+        assert!(!deserialized.backfilled);
     }
 
     #[test]
@@ -1217,7 +1218,7 @@ mod tests {
             "total_tokens() sums input + output + cache_read + cache_create"
         );
 
-        let summary = aggregate_cost_events(&[event.clone()]);
+        let summary = aggregate_cost_events(std::slice::from_ref(&event));
 
         // Reasoning is tracked separately in the summary
         assert_eq!(summary.total_reasoning_output_tokens, 30);

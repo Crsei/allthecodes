@@ -3,9 +3,10 @@ use std::sync::{Arc, LazyLock};
 
 use crate::exec::SleepTool;
 use crate::interaction::{AskUserQuestionTool, SendUserMessageTool, StructuredOutputTool};
+use crate::metadata::ToolMetadata;
 use crate::plan_mode::{EnterPlanModeTool, ExitPlanModeTool};
 use crate::runtime::{BriefTool, ConfigTool, SystemStatusTool, ToolSearchTool};
-use crate::tool::Tools;
+use crate::tool::{Tool, Tools};
 use allthecodes_config::features::{self, Feature, FeatureFlags};
 use parking_lot::RwLock;
 
@@ -71,62 +72,8 @@ pub struct ToolSessionGates {
     pub subagent: bool,
 }
 
-/// Return the allow-list for policies that restrict visible tools.
-pub fn allowed_tool_names(policy: ToolPolicy) -> Option<&'static [&'static str]> {
-    match policy {
-        ToolPolicy::DefaultAgent => None,
-        ToolPolicy::Coordinator => Some(&[
-            "Agent",
-            "Task",
-            "SendMessage",
-            "send_message",
-            "ListAgents",
-            "list_agents",
-            "FollowupTask",
-            "followup_task",
-            "WaitAgent",
-            "wait_agent",
-            "CloseAgent",
-            "close_agent",
-            "TaskList",
-            "TaskStop",
-            "subscribe_pr_activity",
-            "unsubscribe_pr_activity",
-        ]),
-        ToolPolicy::CoordinatorWorker => Some(&[
-            "Glob",
-            "Grep",
-            "Read",
-            "Bash",
-            "Edit",
-            "Write",
-            "TodoWrite",
-            "TaskList",
-            "TaskUpdate",
-            "SendMessage",
-            "send_message",
-        ]),
-        ToolPolicy::InProcessTeammate => Some(&[
-            "Glob",
-            "Grep",
-            "Read",
-            "Bash",
-            "Edit",
-            "Write",
-            "TodoWrite",
-            "TaskList",
-            "TaskUpdate",
-            "TaskOutput",
-            "SendMessage",
-            "send_message",
-        ]),
-    }
-}
-
 pub fn tool_allowed(policy: ToolPolicy, name: &str) -> bool {
-    allowed_tool_names(policy)
-        .map(|allowed| allowed.contains(&name))
-        .unwrap_or(true)
+    metadata_allowed_for_policy(ToolMetadata::from_tool_name(name), policy)
 }
 
 /// Keep the first tool for each name and drop later duplicates.
@@ -176,17 +123,6 @@ const MULTI_AGENT_V2_TOOL_NAMES: &[&str] = &[
     "send_message",
 ];
 
-const NON_INTERACTIVE_HIDDEN_TOOL_NAMES: &[&str] = &["AskUserQuestion"];
-
-const SUBAGENT_RECURSIVE_TOOL_NAMES: &[&str] = &[
-    "Agent",
-    "Task",
-    "TeamSpawn",
-    "spawn_agent",
-    "FollowupTask",
-    "followup_task",
-];
-
 fn tool_enabled_by_feature_gates(name: &str, flags: &FeatureFlags) -> bool {
     if GOAL_TOOL_NAMES.contains(&name) {
         return flags.is_enabled(Feature::GoalTools);
@@ -200,11 +136,12 @@ fn tool_enabled_by_feature_gates(name: &str, flags: &FeatureFlags) -> bool {
     true
 }
 
-fn tool_enabled_by_session_gates(name: &str, gates: ToolSessionGates) -> bool {
-    if gates.non_interactive && NON_INTERACTIVE_HIDDEN_TOOL_NAMES.contains(&name) {
+fn tool_enabled_by_session_gates(tool: &dyn Tool, gates: ToolSessionGates) -> bool {
+    let metadata = tool.metadata();
+    if gates.non_interactive && !metadata.visibility.allow_non_interactive {
         return false;
     }
-    if gates.subagent && SUBAGENT_RECURSIVE_TOOL_NAMES.contains(&name) {
+    if gates.subagent && metadata.capabilities.spawn_agents {
         return false;
     }
     true
@@ -239,7 +176,7 @@ pub fn filter_tools_for_feature_gates_with_flags(tools: Tools, flags: &FeatureFl
 pub fn filter_tools_for_session_gates(tools: Tools, gates: ToolSessionGates) -> Tools {
     tools
         .into_iter()
-        .filter(|tool| tool_enabled_by_session_gates(tool.name(), gates))
+        .filter(|tool| tool_enabled_by_session_gates(tool.as_ref(), gates))
         .collect()
 }
 
@@ -324,6 +261,14 @@ pub fn get_all_tools() -> Tools {
     get_all_tools_with_providers(&installed_tool_registry_providers())
 }
 
+/// Compatibility entry point for process-default runtime service adapters.
+///
+/// New engine construction should pass an explicit tool registry service. This
+/// wrapper keeps remaining legacy callers visibly tied to installed globals.
+pub fn process_default_active_tools() -> Tools {
+    get_all_tools()
+}
+
 /// Get tools for a concrete runtime policy using the supplied providers.
 pub fn get_tools_for_policy_with_providers(
     providers: &ToolRegistryProviders,
@@ -339,19 +284,25 @@ pub fn get_tools_for_policy(policy: ToolPolicy) -> Tools {
 
 /// Filter an existing tool set for a runtime policy.
 pub fn filter_tools_for_policy(tools: Tools, policy: ToolPolicy) -> Tools {
-    let Some(allowed) = allowed_tool_names(policy) else {
-        return tools;
-    };
     tools
         .into_iter()
-        .filter(|tool| allowed.iter().any(|name| *name == tool.name()))
+        .filter(|tool| metadata_allowed_for_policy(tool.metadata(), policy))
         .collect()
+}
+
+fn metadata_allowed_for_policy(metadata: ToolMetadata, policy: ToolPolicy) -> bool {
+    match policy {
+        ToolPolicy::DefaultAgent => true,
+        ToolPolicy::Coordinator => metadata.visibility.coordinator,
+        ToolPolicy::CoordinatorWorker => metadata.visibility.coordinator_worker,
+        ToolPolicy::InProcessTeammate => metadata.visibility.in_process_teammate,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::{Tool, ToolResult, ToolUseContext, ValidationResult};
+    use crate::tool::{ToolResult, ToolUseContext, ValidationResult};
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
@@ -507,5 +458,86 @@ mod tests {
         assert_eq!(tools.len(), 2);
         assert!(Arc::ptr_eq(&tools[0], &first));
         assert!(Arc::ptr_eq(&tools[1], &unique));
+    }
+
+    #[test]
+    fn tool_metadata_drives_session_gates() {
+        assert!(
+            !crate::metadata::ToolMetadata::from_tool_name("AskUserQuestion")
+                .visibility
+                .allow_non_interactive
+        );
+        assert!(
+            crate::metadata::ToolMetadata::from_tool_name("Agent")
+                .capabilities
+                .spawn_agents
+        );
+        assert!(
+            crate::metadata::ToolMetadata::from_tool_name("TeamSpawn")
+                .capabilities
+                .spawn_agents
+        );
+        assert!(
+            crate::metadata::ToolMetadata::from_tool_name("FollowupTask")
+                .capabilities
+                .spawn_agents
+        );
+
+        let tools: Tools = vec![
+            Arc::new(NamedTestTool("AskUserQuestion")),
+            Arc::new(NamedTestTool("Agent")),
+            Arc::new(NamedTestTool("Read")),
+        ];
+        let names = filter_tools_for_session_gates(
+            tools,
+            ToolSessionGates {
+                non_interactive: true,
+                subagent: true,
+            },
+        )
+        .into_iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["Read".to_string()]);
+    }
+
+    #[test]
+    fn tool_metadata_drives_policy_filters() {
+        let tools: Tools = vec![
+            Arc::new(NamedTestTool("Agent")),
+            Arc::new(NamedTestTool("Bash")),
+            Arc::new(NamedTestTool("Read")),
+            Arc::new(NamedTestTool("TaskOutput")),
+            Arc::new(NamedTestTool("TaskStop")),
+        ];
+
+        let coordinator = filter_tools_for_policy(tools.clone(), ToolPolicy::Coordinator)
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            coordinator,
+            vec!["Agent".to_string(), "TaskStop".to_string()]
+        );
+
+        let worker = filter_tools_for_policy(tools.clone(), ToolPolicy::CoordinatorWorker)
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(worker, vec!["Bash".to_string(), "Read".to_string()]);
+
+        let teammate = filter_tools_for_policy(tools, ToolPolicy::InProcessTeammate)
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            teammate,
+            vec![
+                "Bash".to_string(),
+                "Read".to_string(),
+                "TaskOutput".to_string()
+            ]
+        );
     }
 }

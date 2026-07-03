@@ -1,0 +1,136 @@
+---
+source: crates/allthecodes/src/ui/messages.rs
+assertion_line: 327
+expression: rendered
+---
+## advisor
+Advisor[gpt] Prompt: Plan next steps
+Advisory: No issues
+
+## assistant-redacted-thinking
+Assistant thinking was redacted by policy
+
+## assistant-text
+Hello
+
+## assistant-thinking
+Assistant thinking: I will inspect the files
+
+## assistant-tool-use
+  ● Read(path=src/main.rs)
+
+## attachment
+Attachment: log -> appended
+
+## collapsed-read-search
+Read notes.txt: 3 lines (collapsed)
+
+## compact-boundary
+Context compacted: before=120 after=80
+
+## file-edit-updated
+Added 2 lines, removed 1 line
+file: src/lib.rs
+summary: Added 2 lines, removed 1 line
+@@ -1,3 +1,4 @@
+   1    1   fn main() {
+   2      -     old_call();
+        2 +     new_call();
+        3 +     extra_call();
+   3    4   }
+
+## file-edit-condensed
+Added 2 lines, removed 1 line
+
+## file-edit-rejected
+File edit rejected: src/lib.rs
+reason: needs review
+
+## file-edit-canceled
+File edit canceled: src/lib.rs
+
+## grouped-tool-use
+Grouped tool uses:
+  ● Read | [queued] | worked for 0ms
+  ● Edit | [queued] | worked for 0ms
+
+## highlighted-thinking
+[THINKING] cache warmup
+
+## hook-progress
+Hook [PostToolUse] running
+
+## null-rendering-attachments
+Skipped attachments: filtered
+
+## plan-approval
+Plan 'refactor ui' approved
+
+## rate-limit
+Rate limit hit on messages; retry in 250ms
+
+## shutdown
+Session shutting down: user requested
+
+## system-api-error
+API error 429: rate limit exceeded
+
+## system-text
+System(note): Context switch
+
+## task-assignment
+Task 'build' assigned to alice
+
+## team-mem-collapsed
+Team memory for team-a collapsed (4 entries)
+
+## team-mem-saved
+Team memory saved to /tmp/team.md
+
+## user-agent-notification
+Notification: Agent connected
+
+## user-bash-input
+> ls -la
+
+## user-bash-output
+ls -la -> README.md
+
+## user-bash-output-collapsed
+$ cargo test
+two
+three
+four
+five
+six
++1 lines (12.4s) 2.0KB
+
+## user-channel
+Channel default: status ok
+
+## user-command
+Command (/repo): build
+
+## user-image
+Image: /tmp/a.png (png)
+
+## user-local-output
+Local command [0]: echo hi -> hi
+
+## user-memory-input
+Memory input: prompt=value
+
+## user-plan
+User plan: run tests
+
+## user-prompt
+Prompt: Continue
+
+## user-resource-update
+Resource update: memory +1GB
+
+## user-teammate
+Teammate charlie: online
+
+## user-text
+Hello world

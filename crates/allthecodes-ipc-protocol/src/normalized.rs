@@ -103,6 +103,7 @@ pub enum ToolEvent {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum PermissionEvent {
     PermissionRequest {
         tool_use_id: String,

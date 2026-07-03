@@ -1,0 +1,74 @@
+---
+source: crates/allthecodes/src/ui/tasks/mod.rs
+assertion_line: 138
+expression: rendered
+---
+## row
+> ● cargo test         shell     running   worked for  12.4s [██████    ] running tests
+
+## status
+[3 tasks, 0 pending, 1 running, 1 succeeded, 1 failed, 0 canceled] Enter to view
+
+## dialog
+Background tasks (3)
+  ● cargo test         shell     running   worked for  12.4s [██████    ] running tests
+> ● remote deploy      remote    failed    worked for    0ms [          ] connection lost
+  ● review worker      agent     succeeded worked for    0ms [          ] reported findings
+Enter details | k/s stop | d delete tool | r refresh | Esc close
+
+## shell-progress
+$ cargo test
+state: running
+elapsed: 12.4s
+progress: [████████████        ] 3/5 steps (60%)
+summary: running tests
+recent output (2 retained):
+  running 12 tests
+  test ui::tasks ... ok
+
+## shell-detail
+● cargo test [shell] running worked for 12.4s
+Output:
+  running 12 tests
+  test ui::tasks ... ok
+
+## remote-progress
+remote: remote deploy
+state: failed
+connection lost
+
+## remote-detail
+● remote deploy [remote] failed worked for 0ms
+summary: connection lost
+session log:
+  ssh exited with 255
+
+## async-agent
+● review worker [agent] succeeded worked for 0ms
+agent result: reported findings
+  no blocking issues
+
+## in-process
+● review worker [agent] succeeded worked for 0ms
+teammate: builder
+reported findings
+
+## monitor-mcp
+● remote deploy [remote] failed worked for 0ms
+server: docs
+ssh exited with 255
+
+## dream
+● review worker [agent] succeeded worked for 0ms
+dream summary: reported findings
+
+## workflow
+Workflow: ui-port
+- cargo test         running   running tests
+- remote deploy      failed    connection lost
+- review worker      succeeded reported findings
+
+## activity
+  ● cargo test(shell) | [running] | worked for 12.4s | 3/5 [██████    ] | running tests | 2 output lines
+  ● remote deploy(remote) | [failed] | worked for 0ms | error: connection lost | 1 output lines
+  ● review worker(agent) | [succeeded] | worked for 0ms | reported findings | 1 output lines

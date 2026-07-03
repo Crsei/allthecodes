@@ -1,0 +1,110 @@
+---
+source: crates/allthecodes/src/ui/agents/mod.rs
+assertion_line: 271
+expression: rendered
+---
+## menu
+Agents
+> All agents         2
+  Built-in           1
+  Plugin             0
+  Project            1
+
+## list
+Agents
+  Create new agent
+Project:
+> reviewer - MOTA - project memory
+Built-in:
+  general-purpose - default
+
+## detail
+./.allthecodes/agents/reviewer.md
+
+Description
+  Use when code changes need a focused review before commit.
+
+Tools            Read, Grep, Bash
+Model            MOTA
+Permission mode  ask
+Memory           project
+Hooks            PreToolUse
+Skills           code-review, security-review
+Color            blue
+
+System prompt
+  Review the assigned diff, identify correctness risks, and report
+  concise findings.
+
+## editor
+Source: Project
+> Open in editor
+  Edit tools
+  Edit model
+  Edit color
+
+## file-summary
+path: ./.allthecodes/agents/reviewer.md
+source: Project
+tools: Read, Grep, Bash
+memory: project
+
+## markdown
+---
+name: reviewer
+description: "Use when code changes need a focused review before commit."
+tools: Read, Grep, Bash
+model: MOTA
+color: blue
+memory: project
+permission_mode: ask
+---
+
+Review the assigned diff, identify correctness risks, and report concise findings.
+
+
+## color
+  Automatic color
+  Red
+  Orange
+  Yellow
+  Green
+  Cyan
+  Blue
+> Purple
+  Pink
+preview: @reviewer (purple)
+
+## model
+Model determines the agent's reasoning capabilities and speed.
+> custom-model-id Current model (custom ID)
+  MOTA         Balanced capability and speed
+  SOTA         Highest capability work
+  FOTA         Fast lightweight work
+
+## tools
+2 of 8 tools selected
+Read-only tools (1/4)
+> [x] Read               Read can inspect context
+  [ ] Grep               Grep can inspect context
+  [ ] Glob               Glob can inspect context
+  [ ] WebFetch           WebFetch can inspect context
+Edit tools (0/2)
+  [ ] Edit               Edit can modify files
+  [ ] Write              Write can modify files
+Execution tools (1/1)
+  [x] Bash               Bash can run commands
+MCP tools (0/1)
+  [ ] mcp__server__tool  mcp__server__tool is provided by MCP
+
+## footer
+Up/Down navigate | Enter select | Esc back | n new | e edit | Space toggle
+
+## validation
+status: valid
+
+## save
+agent: reviewer
+tools: Read, Grep
+model: SOTA
+color: green

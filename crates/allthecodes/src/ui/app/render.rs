@@ -548,7 +548,6 @@ impl App {
                 is_transcript_mode: true,
                 show_all_in_transcript: true,
                 thinking_animation_frame: None,
-                ..MessageRenderOptions::default()
             },
         );
         self.conversation.ensure_vscroll_up_to_date(
@@ -979,6 +978,7 @@ fn render_history_search_overlay(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_agent_tree_overlay(
     dialog: &mut super::agent_tree_dialog::AgentTreeDialog,
     state: &super::agent_navigation::AgentNavigationState,

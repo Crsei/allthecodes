@@ -1301,6 +1301,75 @@ fn raw_settings_preserve_thinking_and_output_config_effort() {
 }
 
 #[test]
+fn settings_projection_domainizes_runtime_settings() {
+    let mut sources = SourceMap::new();
+    sources.insert("model".to_string(), SettingsSource::Project);
+    sources.insert("backend".to_string(), SettingsSource::User);
+    sources.insert("env".to_string(), SettingsSource::Local);
+
+    let effective = EffectiveSettings {
+        model: Some("claude-opus-4-20250514".to_string()),
+        backend: Some("codex".to_string()),
+        permission_mode: Some("auto".to_string()),
+        permissions: PermissionsSettings {
+            default_mode: Some("auto".to_string()),
+            allow: vec!["Bash(cargo test*)".to_string()],
+            ..Default::default()
+        },
+        env: HashMap::from([(
+            "ANTHROPIC_MODEL".to_string(),
+            "claude-opus-4-20250514".to_string(),
+        )]),
+        language: Some("zh-CN".to_string()),
+        auto_memory_enabled: Some(true),
+        web_search_provider: Some("tavily".to_string()),
+        speech_enabled: Some(true),
+        claude_in_chrome_default_enabled: Some(true),
+        ..Default::default()
+    };
+
+    let runtime =
+        crate::runtime_settings::RuntimeSettings::from_effective(&effective, sources.clone());
+
+    assert_eq!(
+        runtime.model.model.as_deref(),
+        Some("claude-opus-4-20250514")
+    );
+    assert_eq!(runtime.core.backend.as_deref(), Some("codex"));
+    assert_eq!(runtime.permissions.permission_mode.as_deref(), Some("auto"));
+    assert_eq!(
+        runtime
+            .network
+            .env
+            .get("ANTHROPIC_MODEL")
+            .map(String::as_str),
+        Some("claude-opus-4-20250514")
+    );
+    assert_eq!(runtime.ui.language.as_deref(), Some("zh-CN"));
+    assert_eq!(runtime.memory.auto_memory_enabled, Some(true));
+    assert_eq!(
+        runtime.network.web_search_provider.as_deref(),
+        Some("tavily")
+    );
+    assert_eq!(runtime.speech.speech_enabled, Some(true));
+    assert_eq!(
+        runtime.integrations.claude_in_chrome_default_enabled,
+        Some(true)
+    );
+    assert_eq!(runtime.sources, sources);
+
+    let settings = crate::runtime_settings::SettingsJson::from(runtime);
+    assert_eq!(settings.model.as_deref(), Some("claude-opus-4-20250514"));
+    assert_eq!(settings.backend.as_deref(), Some("codex"));
+    assert_eq!(settings.permission_mode.as_deref(), Some("auto"));
+    assert_eq!(
+        settings.env.get("ANTHROPIC_MODEL").map(String::as_str),
+        Some("claude-opus-4-20250514")
+    );
+    assert_eq!(settings.sources, sources);
+}
+
+#[test]
 fn schema_has_known_keys() {
     let s = settings_schema();
     let props = s

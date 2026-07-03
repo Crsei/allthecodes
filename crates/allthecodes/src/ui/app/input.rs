@@ -100,6 +100,7 @@ impl Default for CompletionState {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod completion_state_tests {
     use super::*;
     use crate::ui::completions::CompletionKind;

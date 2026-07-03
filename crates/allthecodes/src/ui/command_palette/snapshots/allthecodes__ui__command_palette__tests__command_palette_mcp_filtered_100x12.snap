@@ -1,0 +1,16 @@
+---
+source: crates/allthecodes/src/ui/command_palette/tests.rs
+expression: "render_palette_snapshot(\"/mcp\", &cwd, 100, 12, &[])"
+---
+"┌ Commands ────────────────────────────────────────────────────────────────────────────────────────┐"
+"│Commands                          Command details                                                 │"
+"│/mcp                              MCP server management (list, status, add, e...                  │"
+"│/ide                              Detect, select, or reconnect the IDE MCP br...                  │"
+"│/doctor(diagnostics, diag)        Aggregated diagnostics (install, auth, sett...                  │"
+"│                                                                                                  │"
+"│Behavior                                                                                          │"
+"│  Enter inserts: /mcp                                                                             │"
+"│  ghost: p                                                                                        │"
+"│  usage: /mcp <list|status|add|edit|remove|approve|reject|connect|disconnect|reconnect>           │"
+"│  example: /mcp add ctx7 --command=npx --arg=-y --arg=@upstash/context7-mcp                       │"
+"└──────────────────────────────────────────────────────────────────────────────────────────────────┘"

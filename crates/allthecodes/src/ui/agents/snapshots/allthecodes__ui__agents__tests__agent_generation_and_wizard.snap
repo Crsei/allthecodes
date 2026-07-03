@@ -1,0 +1,120 @@
+---
+source: crates/allthecodes/src/ui/agents/mod.rs
+assertion_line: 334
+expression: rendered
+---
+## draft
+name: review-unsafe-rust
+description: Use when the task is to review unsafe Rust changes.
+tools: Read, Grep
+rationale: Generated from the requested goal and selected tools.
+
+## wizard
+Create new agent
+step: 4/11 Type
+ready: true
+  Location
+  Method
+  Generate
+> Type
+  Prompt
+  Description
+  Tools
+  Model
+  Color
+  Memory
+  Confirm
+
+## location
+Location
+status: complete
+  User     Available across projects
+> Project  Stored in this workspace
+  Local    Workspace-local override
+
+## method
+Method
+status: complete
+> Generate with a goal
+  Enter fields manually
+
+## generate
+Generate
+status: complete
+goal: review unsafe Rust changes
+generated: yes
+
+## type
+Type
+status: complete
+name: review-unsafe-rust
+status: valid
+
+## prompt
+Prompt
+status: complete
+chars: 136
+You are the review-unsafe-rust agent. Stay inside the assigned
+scope, report blockers clearly, and produce concise
+implementation notes.
+
+## description
+Description
+status: complete
+Use when the task is to review unsafe Rust changes.
+
+## tools
+Tools
+status: complete
+2 of 8 tools selected
+Read-only tools (2/4)
+Edit tools (0/2)
+Execution tools (0/1)
+MCP tools (0/1)
+
+## model
+Model
+status: complete
+Model determines the agent's reasoning capabilities and speed.
+> MOTA         Balanced capability and speed
+  SOTA         Highest capability work
+  FOTA         Fast lightweight work
+
+## color
+Color
+status: complete
+  Automatic color
+  Red
+  Orange
+  Yellow
+  Green
+  Cyan
+  Blue
+> Purple
+  Pink
+preview: @review-unsafe-rust (purple)
+
+## memory
+Memory
+status: complete
+  No memory
+> Project memory
+  User memory
+  Local memory
+
+## confirm
+Confirm
+status: complete
+name: review-unsafe-rust
+source: Project
+markdown:
+---
+name: review-unsafe-rust
+description: "Use when the task is to review unsafe Rust changes."
+tools: Read, Grep
+model: MOTA
+color: purple
+memory: project
+---
+
+You are the review-unsafe-rust agent. Stay inside the assigned scope, report blockers clearly, and produce concise implementation notes.

@@ -546,7 +546,9 @@ mod tests {
     #[tokio::test]
     async fn test_partial_compact_from_by_uuid_prefix() {
         let handler = CompactHandler;
-        let anchor = make_user_msg("anchor message");
+        let anchor_uuid_fixture =
+            Uuid::parse_str("abcd0000-0000-0000-0000-000000000001").expect("uuid fixture");
+        let anchor = make_user_msg_with_uuid("anchor message", anchor_uuid_fixture);
         let anchor_uuid = anchor.uuid().to_string();
         let prefix = &anchor_uuid[..8];
         let mut ctx = command_context(vec![

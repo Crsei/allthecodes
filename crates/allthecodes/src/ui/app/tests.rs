@@ -606,8 +606,10 @@ fn opening_tasks_surface_with_empty_live_snapshot_clears_stale_live_items() {
 #[test]
 fn high_priority_notification_preempts_verbose_indicator() {
     let mut app = App::new();
-    let mut state = AppState::default();
-    state.verbose = true;
+    let state = AppState {
+        verbose: true,
+        ..Default::default()
+    };
     app.sync_status_context_from_state(&state);
 
     app.handle_app_event(AppEvent::Notification {

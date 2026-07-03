@@ -15,6 +15,7 @@ pub const IPC_V2_PROTOCOL_VERSION: u16 = 2;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum IpcPayload {
     Hello(ClientHello),
     Ready(ServerReady),

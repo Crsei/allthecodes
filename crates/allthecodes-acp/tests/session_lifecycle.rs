@@ -200,11 +200,11 @@ async fn load_replays_before_response() {
 
     let kinds = update_kinds(&pre_response);
     assert!(
-        kinds.iter().any(|kind| *kind == "user_message"),
+        kinds.contains(&"user_message"),
         "loaded user message should be replayed before response: {pre_response:?}"
     );
     assert!(
-        kinds.iter().any(|kind| *kind == "agent_message"),
+        kinds.contains(&"agent_message"),
         "loaded assistant message should be replayed before response: {pre_response:?}"
     );
     assert!(

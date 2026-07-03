@@ -623,10 +623,10 @@ async fn handle_session_method(
                 .map_err(|e| v2::Error::invalid_params().data(e))?;
 
             let resumed =
-                allthecodes_session::resume::resume_session_detail(&req.session_id.0.to_string())
+                allthecodes_session::resume::resume_session_detail(req.session_id.0.as_ref())
                     .map_err(|_| {
-                    v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
-                })?;
+                        v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
+                    })?;
             let replay_messages = resumed.messages.clone();
 
             let sid = req.session_id;
@@ -670,10 +670,10 @@ async fn handle_session_method(
                 .map_err(|e| v2::Error::invalid_params().data(e))?;
 
             let resumed =
-                allthecodes_session::resume::resume_session_detail(&req.session_id.0.to_string())
+                allthecodes_session::resume::resume_session_detail(req.session_id.0.as_ref())
                     .map_err(|_| {
-                    v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
-                })?;
+                        v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
+                    })?;
 
             let sid = req.session_id;
             let session = session_manager
@@ -721,7 +721,7 @@ async fn handle_session_method(
             })?;
 
             let session = session_manager
-                .get_session(&req.session_id.0.to_string())
+                .get_session(req.session_id.0.as_ref())
                 .await
                 .ok_or_else(|| {
                     v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
@@ -753,7 +753,7 @@ async fn handle_session_delete(
     })?;
 
     crate::session::delete_session(
-        &req.session_id.0.to_string(),
+        req.session_id.0.as_ref(),
         session_manager,
         permission_manager,
         sink,

@@ -1,0 +1,116 @@
+---
+source: crates/allthecodes/src/ui/runtime/visual_regression.rs
+assertion_line: 407
+expression: render_foundation_snapshot()
+---
+## approval
++ Run command? ----------------------------------------------------------------------------------------------------------------------------+
+| risk=shell command                                                                                                                       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Approval                                                                                        |
+| > Request                                Request                        cargo test -p allthecodes                                        |
+|   Decisions                              Default                        deny                                                             |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                            allow once                   allow once                                                       |
+|                                          > always allow                 always allow                                                     |
+|                                            deny                         deny                                                             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## composer
+effect=Queued("/model SOTA")
+composer mode=Busy busy; 1 queued
+>
+
+## bottom-pane
+bottom-pane focus=approval depth=2
++ Run command? ----------------------------------------------------------------------------------------------------------------------------+
+| risk=shell command                                                                                                                       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Request                                  Approval                                                                                        |
+| > Request                                Request                        cargo test -p allthecodes                                        |
+|   Decisions                              Default                        deny                                                             |
+|                                                                                                                                          |
+|                                          Decisions                                                                                       |
+|                                            allow once                   allow once                                                       |
+|                                          > always allow                 always allow                                                     |
+|                                            deny                         deny                                                             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter confirm | Esc deny                                                                                              |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## capability-contract
+permission surface=ApprovalOverlay
+event | command | surface | guarantee
+AssistantDelta | SubmitPrompt | Transcript | streamed text is visible and replayable
+ToolProgress | Abort | ToolActivity | running tools expose compact and detailed status
+PermissionRequest | ApprovalResponse | ApprovalOverlay | missing response defaults to deny
+SubsystemStatus | OpenPanel | FeaturePanel | subsystem health has a visible entry point
+AgentUpdate | SelectItem | SelectionSurface | agent choices remain keyboard reachable
+
+## event-router
+Terminal(Key("Enter")) -> [QueueInput, Redraw]
+Engine(PermissionRequested("bash")) -> [ShowApproval, Redraw]
+OverlayResponse("allow") -> [CloseOverlay, Redraw]
+
+## feature-panels
+MCP       Ready (2)
+Agents    Ready
+Teams     Ready
+LSP       NeedsConfig
+Settings  Ready
+Sandbox   Ready
+Plugins   Ready
+Skills    Ready
+Tasks     Ready
+
+## frame-requester
+before=FrameRequestSnapshot { pending: true, request_count: 2, last_reason: Some(Stream) }
+take=true
+after=FrameRequestSnapshot { pending: false, request_count: 2, last_reason: Some(Stream) }
+
+## history-cells
+> show status
+assistant: All systems visible.
+tool-call bash
+  cargo test passed
+diff src/ui/mod.rs +14 -0
+
+## selection
+Slash commands / p
+> /plugin - manage plugins
+
+## status-widget
+claude-sonnet | F:/repo | perm=ask | sandbox=workspace-write | tools=1 | agents=2 | $0.1234 | subsystems=attention | effort=medium | ide=3 lines selected | memory=1.4 GiB/warn | pr=#42 approved
+model: claude-sonnet
+cwd: F:/repo
+permission: ask
+sandbox: workspace-write
+running tools: 1
+active agents: 2
+subsystems: attention
+indicators:
+- effort: medium
+- ide: 3 lines selected
+- memory: 1.4 GiB (warn)
+- pr: #42 approved
+
+## streaming
+stream complete=false committed=14
+thinking: checking
+tool-delta: bash
+assistant: partial answer
+
+## terminal-policy
+term: xterm-256color
+title: true
+osc52: true
+focus: true
+alt-screen: false
+notifications: terminal-bell
+
+## tool-activity
+  ● Read(path=src/ui/app.rs) | [succeeded] | worked for 12ms | loaded file | 80 output lines
+  ● Bash(command=cargo test) | [running] | worked for 240ms | 1/4 [███       ] | running tests | 14 output lines

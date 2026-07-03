@@ -166,7 +166,7 @@ mod tests {
         for line in &lines {
             if !line.spans.is_empty() {
                 // At least one span should exist
-                assert!(line.spans.len() >= 1);
+                assert!(!line.spans.is_empty());
             }
         }
     }

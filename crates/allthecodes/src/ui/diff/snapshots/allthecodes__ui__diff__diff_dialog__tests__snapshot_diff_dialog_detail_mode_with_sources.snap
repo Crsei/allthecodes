@@ -1,0 +1,13 @@
+---
+source: crates/allthecodes/src/ui/diff/diff_dialog.rs
+assertion_line: 266
+expression: "lines.join(\"\\n\")"
+---
+Diff details (Current)
+2 files/line changed +10 -3
+Sources:  Current *Turn 1
+
+src/lib.rs
+No diff content
+
+[esc] close

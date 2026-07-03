@@ -1,6 +1,8 @@
 /// Core query loop -- the heart of the system.
 ///
 /// Corresponds to TypeScript: query.ts's query() async generator.
+/// This module is the canonical query-loop implementation for now; do not
+/// recreate an `allthecodes-query` crate as a parallel implementation.
 ///
 /// Structure:
 ///   while true {
@@ -46,16 +48,20 @@ use super::goal_runtime::{
     mark_active_goal_paused, mark_active_goal_usage_limited, GoalContinuationScheduler,
 };
 use super::loop_helpers::{
-    backfill_observable_tool_inputs, classify_model_call_failure, execute_tool_calls,
-    handle_max_output_tokens, handle_prompt_too_long, is_stream_progress_event, make_abort_message,
-    make_error_message, make_tool_result_user_message, make_user_message,
-    merge_tool_results_by_tool_use_order, stream_idle_timeout, stream_stall_timeout,
+    backfill_observable_tool_inputs, execute_tool_calls, make_abort_message, make_error_message,
+    make_tool_result_user_message, make_user_message, merge_tool_results_by_tool_use_order,
+    StreamingToolExecutor,
+};
+use super::recovery::{
+    classify_model_call_failure, handle_max_output_tokens, handle_prompt_too_long,
+    is_stream_progress_event, stream_idle_timeout, stream_stall_timeout,
     strip_fallback_signature_blocks, MaxTokensRecovery, ModelCallFailureRecovery,
-    ModelCallFailureStage, PromptRecovery, StreamingToolExecutor,
+    ModelCallFailureStage, PromptRecovery,
 };
 use super::stop_hooks::{self, StopHookResult};
 use super::token_budget::check_token_budget;
 use super::turn_context::{prepare_model_request, QueryRunContext};
+use super::turn_state::QueryTurnState;
 
 #[derive(Clone, Debug, Default)]
 struct RuntimeRecordTurnContext {
@@ -70,9 +76,7 @@ struct RuntimeRecordTurnContext {
 /// The caller (QueryEngine) consumes this stream to drive UI updates and message collection.
 pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item = QueryYield> {
     stream! {
-        // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         // Initialization
-        // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
         let (turn_context, mut state) = QueryRunContext::from_params(params);
         let mut budget_tracker = BudgetTracker::new();
@@ -81,11 +85,10 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
         // Main loop
         'query_loop: loop {
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             // STEP 1: SETUP
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
             let turn_count = state.turn_count;
+            let mut query_turn_state = QueryTurnState::new(turn_count);
             debug!(turn = turn_count, "query loop iteration start");
 
             // Emit query.turn.start audit event
@@ -107,6 +110,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
             if deps.is_aborted() {
                 info!("aborted before API call");
+                query_turn_state.abort();
                 goal_continuation_scheduler.clear();
                 mark_active_goal_paused(&deps, "task aborted by user");
                 yield QueryYield::Message(Message::Assistant(make_abort_message(
@@ -116,9 +120,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                 break;
             }
 
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             // STEP 1b: Inject completed background agent results
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
             let completed_agents = deps.drain_background_results();
             for agent in &completed_agents {
@@ -157,16 +159,12 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                 state.messages.push(steer_msg);
             }
 
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             // STEP 2: CONTEXT -- microcompact + autocompact
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
             let prepared_request =
                 prepare_model_request(&deps, &mut state, &turn_context).await;
 
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             // STEP 3: API CALL -- streaming model call
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
             let tools = prepared_request.tools;
             let call_params = prepared_request.call_params;
@@ -227,6 +225,12 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     );
                 }
                 let model_call_start = std::time::Instant::now();
+                if let Err(error) = query_turn_state.start_streaming() {
+                    yield QueryYield::Message(Message::Assistant(
+                        error.to_terminal_message(turn_count),
+                    ));
+                    break 'query_loop;
+                }
 
                 let stream_result = deps.call_model_streaming(attempt_params.clone()).await;
                 let mut event_stream = match stream_result {
@@ -540,12 +544,11 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                 cumulative_usage.cache_creation_input_tokens += usage.cache_creation_input_tokens;
             }
 
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             // STEP 4: POST-STREAMING -- check abort, pending summary
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
             if deps.is_aborted() {
                 info!("aborted after streaming");
+                query_turn_state.abort();
                 let observable_assistant =
                     backfill_observable_tool_inputs(&assistant_message, &tools).into_owned();
                 yield QueryYield::Message(Message::Assistant(observable_assistant));
@@ -576,11 +579,15 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             yield QueryYield::Message(Message::Assistant(observable_assistant));
             state.messages.push(Message::Assistant(assistant_message.clone()));
 
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             // STEP 5 vs 6: Branch -- tool calls or not
-            // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
             let tool_uses = stop_hooks::extract_tool_uses(&assistant_message);
+            if let Err(error) = query_turn_state.finish_streaming(!tool_uses.is_empty()) {
+                yield QueryYield::Message(Message::Assistant(
+                    error.to_terminal_message(turn_count),
+                ));
+                break 'query_loop;
+            }
             if goal_continuation_scheduler
                 .observe_assistant_response(&assistant_message)
                 .is_some()
@@ -608,7 +615,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     continue;
                 }
 
-                // 鈹€鈹€ TERMINAL CHECK (no tool calls) 鈹€鈹€
+                // TERMINAL CHECK (no tool calls)
 
                 // 5a. max_output_tokens recovery
                 if assistant_message.stop_reason.as_deref() == Some("max_tokens") {
@@ -751,7 +758,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
                 break;
             } else {
-                // 鈹€鈹€ STEP 6: TOOL EXECUTION 鈹€鈹€
+                // STEP 6: TOOL EXECUTION
 
                 let tool_results = if let Some(executor) = streaming_tool_executor {
                     let streamed = executor.finish().await;
@@ -788,6 +795,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
                 if deps.is_aborted() {
                     info!("aborted during tool execution");
+                    query_turn_state.abort();
                     goal_continuation_scheduler.clear();
                     mark_active_goal_paused(&deps, "task aborted by user");
                     break;
@@ -837,7 +845,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     continue;
                 }
 
-                // 鈹€鈹€ STEP 6b: Generate tool use summary 鈹€鈹€
+                // STEP 6b: Generate tool use summary
                 if turn_context.gates.emit_tool_use_summaries {
                     let tool_infos: Vec<ToolInfo> = tool_results
                         .iter()
@@ -877,9 +885,9 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     }
                 }
 
-                // 鈹€鈹€ STEP 7: ATTACHMENTS (placeholder) 鈹€鈹€
+                // STEP 7: ATTACHMENTS (placeholder)
 
-                // 鈹€鈹€ STEP 8: CONTINUE -- refresh tools, check maxTurns 鈹€鈹€
+                // STEP 8: CONTINUE -- refresh tools, check maxTurns
 
                 if tool_results
                     .iter()
@@ -921,6 +929,12 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     }
                 }
 
+                if let Err(error) = query_turn_state.finish_tool_execution() {
+                    yield QueryYield::Message(Message::Assistant(
+                        error.to_terminal_message(turn_count),
+                    ));
+                    break 'query_loop;
+                }
                 state.transition = Some(Continue::NextTurn);
                 state.turn_count += 1;
                 state.stop_hook_active = None;
@@ -1031,7 +1045,7 @@ fn build_execution_record(
         retry_count: turn_context.retry_count,
         model: turn_context.model.clone(),
         fallback_used: turn_context.fallback_used,
-        permission_decision: exec_result.permission_decision.clone(),
+        permission_decision: exec_result.permission_decision,
         duration_ms: exec_result.duration_ms,
         had_error: exec_result.is_error || shell_had_error,
         schema_version: 1,

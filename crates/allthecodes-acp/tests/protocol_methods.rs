@@ -88,9 +88,9 @@ struct AuthEnv {
     _guards: Vec<EnvGuard>,
 }
 
-static TEST_KEYCHAIN: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<(String, String), Vec<u8>>>,
-> = std::sync::OnceLock::new();
+type TestKeychain = std::collections::HashMap<(String, String), Vec<u8>>;
+static TEST_KEYCHAIN: std::sync::OnceLock<std::sync::Mutex<TestKeychain>> =
+    std::sync::OnceLock::new();
 
 #[derive(Debug)]
 struct TestCredential {

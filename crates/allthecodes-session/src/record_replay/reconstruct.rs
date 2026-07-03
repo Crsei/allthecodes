@@ -207,9 +207,7 @@ pub fn reconstruct_messages(lines: &[RecordLine]) -> Vec<Message> {
 
 /// Convert a slice of `RecordedMessage` into typed `Message` values.
 pub fn recorded_messages_to_typed(msgs: &[RecordedMessage]) -> Vec<Message> {
-    msgs.iter()
-        .map(|rm| recorded_message_to_typed(rm))
-        .collect()
+    msgs.iter().map(recorded_message_to_typed).collect()
 }
 
 fn recorded_message_to_typed(rm: &RecordedMessage) -> Message {
@@ -463,7 +461,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("corrupt-tail.jsonl");
 
-        let valid_lines = vec![
+        let valid_lines = [
             RecordLine::new("corrupt-tail", 0, {
                 RecordItem::SessionMeta(SessionMetaRecord {
                     created_at: chrono::Utc::now(),

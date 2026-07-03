@@ -1,7 +1,12 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::command_runtime::{CommandContext, CommandExecutor, CommandResult};
 use crate::lifecycle::*;
+use crate::runtime_services::{
+    CommandDispatcherService, HookRunnerService, ModelClientFactoryService,
+    PermissionMessageResolver, RuntimeServices, ToolRegistryService,
+};
 use crate::types::config::{AgentContext, QueryEngineConfig, QuerySource};
 use crate::types::message::{
     AssistantMessage, ContentBlock, Message, MessageContent, Usage, UserMessage,
@@ -16,8 +21,6 @@ use allthecodes_types::hooks::{
 use allthecodes_types::sdk::*;
 use serde_json::{json, Value};
 use tempfile::tempdir;
-
-use super::types::UsageTrackingExt;
 
 struct EnvGuard {
     key: &'static str,
@@ -139,6 +142,123 @@ impl crate::types::tool::Tool for TestTool {
     async fn prompt(&self) -> String {
         String::new()
     }
+}
+
+struct NamedServiceTool(&'static str);
+
+#[async_trait::async_trait]
+impl crate::types::tool::Tool for NamedServiceTool {
+    fn name(&self) -> &str {
+        self.0
+    }
+
+    async fn description(&self, _input: &serde_json::Value) -> String {
+        format!("{} service tool", self.0)
+    }
+
+    fn input_json_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+        _parent_message: &AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
+    ) -> anyhow::Result<crate::types::tool::ToolResult> {
+        Ok(crate::types::tool::ToolResult::default())
+    }
+
+    async fn prompt(&self) -> String {
+        String::new()
+    }
+}
+
+struct TestRuntimeToolRegistry {
+    tools: crate::types::tool::Tools,
+}
+
+impl ToolRegistryService for TestRuntimeToolRegistry {
+    fn active_tools(&self) -> crate::types::tool::Tools {
+        self.tools.clone()
+    }
+}
+
+struct TestPermissionMessageResolver {
+    message: &'static str,
+}
+
+impl PermissionMessageResolver for TestPermissionMessageResolver {
+    fn resolve_permission_message(&self, _tool_name: &str) -> Option<String> {
+        Some(self.message.to_string())
+    }
+}
+
+struct TestNoPermissionMessageResolver;
+
+impl PermissionMessageResolver for TestNoPermissionMessageResolver {
+    fn resolve_permission_message(&self, _tool_name: &str) -> Option<String> {
+        None
+    }
+}
+
+struct TestHookRunnerService;
+
+impl HookRunnerService for TestHookRunnerService {
+    fn hook_runner(&self) -> Arc<dyn HookRunner> {
+        Arc::new(allthecodes_types::hooks::NoopHookRunner::new())
+    }
+}
+
+struct TestCommandDispatcherService;
+
+impl CommandDispatcherService for TestCommandDispatcherService {
+    fn command_dispatcher(&self) -> Arc<dyn allthecodes_types::commands::CommandDispatcher> {
+        Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new())
+    }
+}
+
+struct TestModelClientFactoryService;
+
+impl ModelClientFactoryService for TestModelClientFactoryService {
+    fn client_for_backend(
+        &self,
+        _backend_name: Option<&str>,
+    ) -> Option<Arc<allthecodes_api::api::client::ApiClient>> {
+        None
+    }
+}
+
+fn test_runtime_services(
+    tool_name: &'static str,
+    permission_message: &'static str,
+) -> Arc<RuntimeServices> {
+    Arc::new(RuntimeServices {
+        tool_registry: Arc::new(TestRuntimeToolRegistry {
+            tools: vec![Arc::new(NamedServiceTool(tool_name))],
+        }),
+        permission_message_resolver: Arc::new(TestPermissionMessageResolver {
+            message: permission_message,
+        }),
+        hook_runner: Arc::new(TestHookRunnerService),
+        command_dispatcher: Arc::new(TestCommandDispatcherService),
+        model_client_factory: Arc::new(TestModelClientFactoryService),
+    })
+}
+
+fn test_runtime_services_without_permission_message(
+    tool_name: &'static str,
+) -> Arc<RuntimeServices> {
+    Arc::new(RuntimeServices {
+        tool_registry: Arc::new(TestRuntimeToolRegistry {
+            tools: vec![Arc::new(NamedServiceTool(tool_name))],
+        }),
+        permission_message_resolver: Arc::new(TestNoPermissionMessageResolver),
+        hook_runner: Arc::new(TestHookRunnerService),
+        command_dispatcher: Arc::new(TestCommandDispatcherService),
+        model_client_factory: Arc::new(TestModelClientFactoryService),
+    })
 }
 
 struct DeferredTargetTool {
@@ -405,6 +525,182 @@ impl HookRunner for RecordingToolHookRunner {
     }
 }
 
+#[derive(Clone, Copy)]
+enum BaselinePermission {
+    Allow,
+    Ask,
+    Deny,
+}
+
+struct ToolExecutionBaselineTool {
+    calls: Arc<AtomicUsize>,
+    seen_inputs: Arc<parking_lot::Mutex<Vec<Value>>>,
+    permission: BaselinePermission,
+    validation_error: Option<&'static str>,
+    call_error: Option<&'static str>,
+}
+
+#[async_trait::async_trait]
+impl crate::types::tool::Tool for ToolExecutionBaselineTool {
+    fn name(&self) -> &str {
+        "ToolExecutionBaseline"
+    }
+
+    async fn description(&self, _input: &Value) -> String {
+        "tool execution baseline tool".to_string()
+    }
+
+    fn input_json_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    async fn validate_input(
+        &self,
+        _input: &Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+    ) -> crate::types::tool::ValidationResult {
+        match self.validation_error {
+            Some(message) => crate::types::tool::ValidationResult::Error {
+                message: message.to_string(),
+                error_code: 1,
+            },
+            None => crate::types::tool::ValidationResult::Ok,
+        }
+    }
+
+    async fn check_permissions(
+        &self,
+        input: &Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+    ) -> PermissionResult {
+        match self.permission {
+            BaselinePermission::Allow => PermissionResult::Allow {
+                updated_input: input.clone(),
+            },
+            BaselinePermission::Ask => PermissionResult::Ask {
+                message: "Allow ToolExecutionBaseline?".to_string(),
+            },
+            BaselinePermission::Deny => PermissionResult::Deny {
+                message: "baseline denied".to_string(),
+            },
+        }
+    }
+
+    async fn call(
+        &self,
+        input: Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+        _parent_message: &AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
+    ) -> anyhow::Result<ToolResult> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.seen_inputs.lock().push(input.clone());
+        if let Some(message) = self.call_error {
+            anyhow::bail!(message);
+        }
+        Ok(ToolResult {
+            data: json!({ "input": input }),
+            ..Default::default()
+        })
+    }
+
+    async fn prompt(&self) -> String {
+        String::new()
+    }
+}
+
+#[derive(Default)]
+struct ToolExecutionBaselineHookRunner {
+    updated_input: Option<Value>,
+    pre_override: Option<PermissionOverride>,
+    post_error: Option<&'static str>,
+    post_critical: bool,
+    failure_error: Option<&'static str>,
+    failure_critical: bool,
+    failure_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl HookRunner for ToolExecutionBaselineHookRunner {
+    fn load_hook_configs(&self, _hooks_value: &HooksMap, event_name: &str) -> Vec<HookEventConfig> {
+        match event_name {
+            "PreToolUse" if self.updated_input.is_some() || self.pre_override.is_some() => {
+                vec![HookEventConfig {
+                    matcher: Some("*".to_string()),
+                    critical: false,
+                    hooks: vec![],
+                }]
+            }
+            "PostToolUse" if self.post_error.is_some() => vec![HookEventConfig {
+                matcher: Some("*".to_string()),
+                critical: self.post_critical,
+                hooks: vec![],
+            }],
+            "PostToolUseFailure" if self.failure_error.is_some() => vec![HookEventConfig {
+                matcher: Some("*".to_string()),
+                critical: self.failure_critical,
+                hooks: vec![],
+            }],
+            _ => vec![],
+        }
+    }
+
+    async fn run_pre_tool_hooks(
+        &self,
+        _tool_name: &str,
+        _input: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PreToolHookResult> {
+        Ok(PreToolHookResult::Continue {
+            updated_input: self.updated_input.clone(),
+            permission_override: self.pre_override.clone(),
+        })
+    }
+
+    async fn run_post_tool_hooks(
+        &self,
+        _tool_name: &str,
+        _input: &Value,
+        _tool_result_data: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PostToolHookResult> {
+        if let Some(message) = self.post_error {
+            anyhow::bail!(message);
+        }
+        Ok(PostToolHookResult::Continue)
+    }
+
+    async fn run_post_tool_failure_hooks(
+        &self,
+        _tool_name: &str,
+        _input: &Value,
+        _error: &str,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<()> {
+        self.failure_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(message) = self.failure_error {
+            anyhow::bail!(message);
+        }
+        Ok(())
+    }
+
+    async fn run_event_hooks(
+        &self,
+        _event_name: &str,
+        _payload: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<HookOutput> {
+        Ok(HookOutput::default())
+    }
+
+    async fn run_stop_hooks(
+        &self,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PostToolHookResult> {
+        Ok(PostToolHookResult::Continue)
+    }
+}
+
 fn make_config() -> QueryEngineConfig {
     QueryEngineConfig {
         cwd: "/tmp".to_string(),
@@ -433,6 +729,63 @@ fn permission_callback(decision: &'static str) -> PermissionCallback {
     Arc::new(move |_| Box::pin(async move { PermissionResponsePayload::decision(decision) }))
 }
 
+async fn execute_tool_execution_baseline(
+    tool: Arc<ToolExecutionBaselineTool>,
+    hook_runner: Arc<dyn HookRunner>,
+    configure_permissions: impl FnOnce(&mut allthecodes_types::permissions::ToolPermissionContext),
+    audit_ctx: crate::observability::AuditContext,
+) -> crate::query::deps::ToolExecResult {
+    let tools: crate::types::tool::Tools = vec![tool];
+    let mut config = make_config();
+    config.tools = tools.clone();
+    let engine = QueryEngine::new(config);
+    {
+        let mut state = engine.state.write();
+        configure_permissions(&mut state.app_state.tool_permission_context);
+    }
+    let deps = super::deps::QueryEngineDeps {
+        aborted: engine.aborted.clone(),
+        state: engine.state.clone(),
+        runtime_services: engine.runtime_services.clone(),
+        cwd: "/tmp".to_string(),
+        session_id: "tool-execution-baseline".to_string(),
+        query_source: crate::types::config::QuerySource::ReplMainThread,
+        audit_ctx,
+        langfuse_trace: None,
+        api_client: None,
+        session_recorder: engine.session_recorder.clone(),
+        agent_context: None,
+        permission_callback: None,
+        bg_agent_tx: None,
+        permission_event_callback: None,
+        tool_progress_callback: None,
+        pending_bg_results: engine.pending_bg_results.clone(),
+        active_steer_state: engine.active_steer_state.clone(),
+        hook_runner,
+        command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
+        auto_classifier_fn: None,
+        submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
+        submit_tools: None,
+    };
+    let Message::Assistant(parent) = assistant_message("tool execution parent") else {
+        unreachable!("assistant_message returns an assistant message");
+    };
+
+    deps.execute_tool_impl(
+        crate::query::deps::ToolExecRequest {
+            tool_use_id: "tool-execution-call".to_string(),
+            tool_name: "ToolExecutionBaseline".to_string(),
+            input: json!({"value": "original"}),
+            langfuse_batch_span: None,
+        },
+        &tools,
+        &parent,
+        None,
+    )
+    .await
+    .expect("execute tool execution baseline")
+}
+
 fn make_lifecycle_deps(
     engine: &QueryEngine,
     hook_runner: Arc<dyn HookRunner>,
@@ -441,6 +794,7 @@ fn make_lifecycle_deps(
     super::deps::QueryEngineDeps {
         aborted: engine.aborted.clone(),
         state: engine.state.clone(),
+        runtime_services: engine.runtime_services.clone(),
         cwd: "/tmp".to_string(),
         session_id: "permission-matrix".to_string(),
         query_source: crate::types::config::QuerySource::ReplMainThread,
@@ -508,6 +862,405 @@ fn test_query_engine_creation() {
     assert!(engine.usage().total_cost_usd == 0.0);
     assert!(!engine.session_id.as_str().is_empty());
     assert_eq!(engine.current_session_id(), engine.session_id);
+}
+
+#[tokio::test]
+async fn tool_execution_preserves_pre_hook_modified_input() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: None,
+    });
+    let hook_runner = Arc::new(ToolExecutionBaselineHookRunner {
+        updated_input: Some(json!({"value": "from-hook"})),
+        ..Default::default()
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        hook_runner,
+        |ctx| ctx.grant_session_allow("ToolExecutionBaseline"),
+        crate::observability::AuditContext::noop("tool-execution-baseline"),
+    )
+    .await;
+
+    assert!(!result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(result.effective_input, json!({"value": "from-hook"}));
+    assert_eq!(
+        seen_inputs.lock().as_slice(),
+        &[json!({"value": "from-hook"})]
+    );
+    assert_eq!(result.result.data["input"], json!({"value": "from-hook"}));
+}
+
+#[tokio::test]
+async fn tool_execution_denied_permission_does_not_call_tool() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Deny,
+        validation_error: None,
+        call_error: None,
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        Arc::new(ToolExecutionBaselineHookRunner::default()),
+        |_| {},
+        crate::observability::AuditContext::noop("tool-execution-baseline"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(seen_inputs.lock().is_empty());
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("baseline denied")));
+}
+
+#[tokio::test]
+async fn tool_execution_records_audit_after_success() {
+    let audit_dir = tempdir().unwrap();
+    let session_id = "tool-execution-audit";
+    let sink = crate::observability::AuditSink::init(
+        session_id,
+        audit_dir.path().to_path_buf(),
+        &crate::observability::SessionMeta {
+            session_id: session_id.to_string(),
+            started_at: chrono::Utc::now(),
+            cwd: "/tmp".to_string(),
+            version: "test".to_string(),
+            platform: "test".to_string(),
+            source: "test".to_string(),
+        },
+        crate::observability::AuditConfig {
+            enabled: true,
+            stream_deltas: false,
+            redaction: crate::observability::sink::RedactionMode::Off,
+        },
+    )
+    .expect("audit sink");
+    let audit_ctx = crate::observability::AuditContext::new(session_id, "test", sink);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: None,
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        Arc::new(ToolExecutionBaselineHookRunner::default()),
+        |ctx| ctx.mode = PermissionMode::Bypass,
+        audit_ctx.clone(),
+    )
+    .await;
+    audit_ctx.flush();
+
+    assert!(!result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let events = std::fs::read_to_string(audit_dir.path().join("events.ndjson")).unwrap();
+    let event_kinds = events
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()["kind"].clone())
+        .collect::<Vec<_>>();
+    assert!(event_kinds.contains(&json!("tool_start")));
+    assert!(event_kinds.contains(&json!("tool_finish")));
+}
+
+#[test]
+fn tool_execution_plan_carries_stage_state() {
+    let mut plan = super::deps::ToolExecutionPlan::new(
+        json!({"value": "planned"}),
+        AgentRuntimePermissionDecision::AllowedByPolicy,
+    );
+
+    assert_eq!(plan.effective_input, json!({"value": "planned"}));
+    assert_eq!(
+        plan.permission_decision,
+        AgentRuntimePermissionDecision::AllowedByPolicy
+    );
+    assert!(plan.accepted_permission_feedback.is_none());
+
+    plan.accepted_permission_feedback = Some("keep going".to_string());
+    assert_eq!(
+        plan.accepted_permission_feedback.as_deref(),
+        Some("keep going")
+    );
+}
+
+#[tokio::test]
+async fn tool_execution_validation_failure_does_not_call_tool() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Allow,
+        validation_error: Some("bad input"),
+        call_error: None,
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        Arc::new(ToolExecutionBaselineHookRunner::default()),
+        |ctx| ctx.mode = PermissionMode::Bypass,
+        crate::observability::AuditContext::noop("tool-execution-validation"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(seen_inputs.lock().is_empty());
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Input validation error: bad input")));
+}
+
+#[tokio::test]
+async fn tool_execution_pre_hook_deny_does_not_call_tool() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: None,
+    });
+    let hook_runner = Arc::new(ToolExecutionBaselineHookRunner {
+        pre_override: Some(PermissionOverride::Deny {
+            reason: "blocked before call".to_string(),
+        }),
+        ..Default::default()
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        hook_runner,
+        |ctx| ctx.grant_session_allow("ToolExecutionBaseline"),
+        crate::observability::AuditContext::noop("tool-execution-pre-hook-deny"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(seen_inputs.lock().is_empty());
+    assert_eq!(
+        result.permission_decision,
+        Some(AgentRuntimePermissionDecision::DeniedByHook)
+    );
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("blocked before call")));
+}
+
+#[tokio::test]
+async fn tool_execution_interactive_prompt_without_callback_denies() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Ask,
+        validation_error: None,
+        call_error: None,
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        Arc::new(ToolExecutionBaselineHookRunner::default()),
+        |_| {},
+        crate::observability::AuditContext::noop("tool-execution-interactive-timeout"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(seen_inputs.lock().is_empty());
+    assert_eq!(
+        result.permission_decision,
+        Some(AgentRuntimePermissionDecision::DeniedByPolicy)
+    );
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Permission required")));
+}
+
+#[tokio::test]
+async fn tool_execution_interactive_timeout_decision_denies() {
+    let result = execute_permission_matrix_case(
+        MatrixToolPermission::Ask,
+        |_| {},
+        Arc::new(PermissionMatrixHookRunner::default()),
+        Some(permission_callback("timeout")),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(
+        result.permission_decision,
+        Some(AgentRuntimePermissionDecision::DeniedByUser)
+    );
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Permission denied by user")));
+}
+
+#[tokio::test]
+async fn tool_execution_tool_error_runs_failure_hook() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let failure_calls = Arc::new(AtomicUsize::new(0));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: Some("tool boom"),
+    });
+    let hook_runner = Arc::new(ToolExecutionBaselineHookRunner {
+        failure_error: Some("optional failure hook boom"),
+        failure_calls: failure_calls.clone(),
+        ..Default::default()
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        hook_runner,
+        |ctx| ctx.mode = PermissionMode::Bypass,
+        crate::observability::AuditContext::noop("tool-execution-tool-error"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(failure_calls.load(Ordering::SeqCst), 1);
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Error: tool boom")));
+}
+
+#[tokio::test]
+async fn tool_execution_critical_post_hook_error_fails_after_success() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: None,
+    });
+    let hook_runner = Arc::new(ToolExecutionBaselineHookRunner {
+        post_error: Some("post hook boom"),
+        post_critical: true,
+        ..Default::default()
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        hook_runner,
+        |ctx| ctx.mode = PermissionMode::Bypass,
+        crate::observability::AuditContext::noop("tool-execution-post-hook"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Critical post-tool hook failed: post hook boom")));
+}
+
+#[test]
+fn runtime_services_tool_registry_is_per_engine() {
+    let engine_a =
+        QueryEngine::new_with_services(make_config(), test_runtime_services("ServiceToolA", "A"));
+    let engine_b =
+        QueryEngine::new_with_services(make_config(), test_runtime_services("ServiceToolB", "B"));
+
+    assert_eq!(engine_a.tool_names(), vec!["ServiceToolA".to_string()]);
+    assert_eq!(engine_b.tool_names(), vec!["ServiceToolB".to_string()]);
+}
+
+#[test]
+fn runtime_services_permission_resolver_is_per_engine() {
+    let engine_a =
+        QueryEngine::new_with_services(make_config(), test_runtime_services("ToolA", "message A"));
+    let engine_b =
+        QueryEngine::new_with_services(make_config(), test_runtime_services("ToolB", "message B"));
+
+    let decision_a = super::deps::central_permission_decision_for_tool(
+        "AnyTool",
+        &Value::Null,
+        &engine_a.app_state(),
+        None,
+        None,
+        None,
+        &engine_a.runtime_services,
+    );
+    let decision_b = super::deps::central_permission_decision_for_tool(
+        "AnyTool",
+        &Value::Null,
+        &engine_b.app_state(),
+        None,
+        None,
+        None,
+        &engine_b.runtime_services,
+    );
+
+    assert_eq!(decision_a.message.as_deref(), Some("message A"));
+    assert_eq!(decision_b.message.as_deref(), Some("message B"));
+}
+
+#[test]
+fn runtime_services_permission_resolver_none_does_not_fall_back_to_process_callbacks() {
+    allthecodes_permissions::decision::set_cu_message_callback(|tool_name| {
+        (tool_name == "GlobalLeakTool").then(|| "process-global message".to_string())
+    });
+
+    let engine = QueryEngine::new_with_services(
+        make_config(),
+        test_runtime_services_without_permission_message("GlobalLeakTool"),
+    );
+
+    let decision = super::deps::central_permission_decision_for_tool(
+        "GlobalLeakTool",
+        &Value::Null,
+        &engine.app_state(),
+        None,
+        None,
+        None,
+        &engine.runtime_services,
+    );
+
+    assert_eq!(
+        decision.message.as_deref(),
+        Some("Allow tool 'GlobalLeakTool'?")
+    );
 }
 
 #[tokio::test]
@@ -662,6 +1415,7 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
     let deps = super::deps::QueryEngineDeps {
         aborted: engine.aborted.clone(),
         state: engine.state.clone(),
+        runtime_services: engine.runtime_services.clone(),
         cwd: "/tmp".to_string(),
         session_id: "canonical-deferred".to_string(),
         query_source: crate::types::config::QuerySource::ReplMainThread,
@@ -892,7 +1646,13 @@ fn test_query_engine_abort_pauses_active_goal() {
         stored.status_reason.as_deref(),
         Some("task aborted by user")
     );
-    assert!(engine.state.read().goal_runtime.active_goal_id.is_none());
+    assert!(engine
+        .state
+        .read()
+        .runtime
+        .goal_runtime
+        .active_goal_id
+        .is_none());
 }
 
 #[test]
@@ -938,6 +1698,81 @@ fn test_query_engine_permission_denial() {
 }
 
 #[test]
+fn engine_shared_state_appends_messages_through_transcript_state() {
+    let engine = QueryEngine::new(make_config());
+    let message = Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 1,
+        role: "user".into(),
+        content: MessageContent::Text("hello".to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    });
+
+    engine.state.write().append_message(message.clone());
+
+    let state = engine.state.read();
+    assert_eq!(state.transcript.messages.len(), 1);
+    assert_eq!(state.transcript.messages[0].uuid(), message.uuid());
+}
+
+#[test]
+fn engine_shared_state_updates_usage_through_transcript_state() {
+    let engine = QueryEngine::new(make_config());
+    let usage = Usage {
+        input_tokens: 10,
+        output_tokens: 4,
+        reasoning_output_tokens: 3,
+        cache_read_input_tokens: 2,
+        cache_creation_input_tokens: 1,
+    };
+
+    engine.state.write().update_usage(&usage, 0.25);
+
+    let state = engine.state.read();
+    assert_eq!(state.transcript.usage.total_input_tokens, 10);
+    assert_eq!(state.transcript.usage.total_output_tokens, 4);
+    assert_eq!(state.transcript.usage.total_reasoning_output_tokens, 3);
+    assert_eq!(state.transcript.usage.total_cache_read_tokens, 2);
+    assert_eq!(state.transcript.usage.total_cache_creation_tokens, 1);
+    assert_eq!(state.transcript.usage.api_call_count, 1);
+    assert_eq!(state.transcript.usage.total_cost_usd, 0.25);
+}
+
+#[test]
+fn engine_shared_state_tracks_permission_denials_through_permission_state() {
+    let engine = QueryEngine::new(make_config());
+    let denial = PermissionDenial {
+        tool_name: "Bash".to_string(),
+        tool_use_id: "tu_denied".to_string(),
+        reason: "user denied".to_string(),
+        timestamp: 42,
+    };
+
+    engine
+        .state
+        .write()
+        .record_permission_denial(denial.clone());
+
+    let state = engine.state.read();
+    assert_eq!(state.permissions.denials.len(), 1);
+    assert_eq!(state.permissions.denials[0].tool_use_id, denial.tool_use_id);
+}
+
+#[test]
+fn engine_shared_state_replaces_tools_through_tool_runtime_state() {
+    let engine = QueryEngine::new(make_config());
+    let tools = vec![Arc::new(TestTool) as Arc<dyn crate::types::tool::Tool>];
+
+    engine.state.write().set_tools(tools);
+
+    let state = engine.state.read();
+    assert_eq!(state.tools.registry.len(), 1);
+    assert_eq!(state.tools.registry[0].name(), "TestTool");
+}
+
+#[test]
 fn test_usage_tracking() {
     let mut usage = UsageTracking::default();
     let api_usage = Usage {
@@ -947,7 +1782,7 @@ fn test_usage_tracking() {
         cache_read_input_tokens: 10,
         cache_creation_input_tokens: 5,
     };
-    usage.add_usage(&api_usage, 0.001);
+    usage = usage.with_added_usage(&api_usage, 0.001);
     assert_eq!(usage.total_input_tokens, 100);
     assert_eq!(usage.total_output_tokens, 50);
     assert_eq!(usage.total_cache_read_tokens, 10);
@@ -956,7 +1791,7 @@ fn test_usage_tracking() {
     assert_eq!(usage.api_call_count, 1);
 
     // Second call accumulates
-    usage.add_usage(&api_usage, 0.002);
+    usage = usage.with_added_usage(&api_usage, 0.002);
     assert_eq!(usage.total_input_tokens, 200);
     assert_eq!(usage.api_call_count, 2);
 }
@@ -969,6 +1804,7 @@ fn test_discovered_skill_names() {
     engine
         .state
         .write()
+        .tools
         .discovered_skill_names
         .insert("test_skill".to_string());
     assert_eq!(engine.discovered_skill_names().len(), 1);
@@ -1003,7 +1839,12 @@ fn test_try_extract_session_memory_uses_structured_insight() {
 
     engine.try_extract_session_memory();
 
-    let entries = engine.state.read().session_memory.get_memory_context(1);
+    let entries = engine
+        .state
+        .read()
+        .runtime
+        .session_memory
+        .get_memory_context(1);
     assert_eq!(entries.len(), 1);
     assert!(entries[0]
         .content
@@ -1019,7 +1860,7 @@ fn test_try_extract_session_memory_uses_structured_insight() {
 #[test]
 fn test_set_tools() {
     let engine = QueryEngine::new(make_config());
-    assert_eq!(engine.state.read().tools.len(), 0);
+    assert_eq!(engine.state.read().tools.registry.len(), 0);
 
     engine.set_tools(vec![Arc::new(TestTool)]);
     assert_eq!(engine.tool_names(), vec!["TestTool".to_string()]);

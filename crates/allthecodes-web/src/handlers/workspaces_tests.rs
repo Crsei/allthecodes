@@ -54,7 +54,7 @@ async fn workspace_archive_skips_active_and_archives_inactive_sessions() {
     allthecodes_session::storage::save_session(inactive_id, &[], project.path().to_str().unwrap())
         .expect("seed inactive session");
     allthecodes_session::storage::save_session(
-        &state.engine().current_session_id().to_string(),
+        state.engine().current_session_id().as_ref(),
         &[],
         project.path().to_str().unwrap(),
     )
@@ -78,7 +78,7 @@ async fn workspace_archive_skips_active_and_archives_inactive_sessions() {
     assert!(!allthecodes_session::storage::get_session_file(inactive_id).exists());
     assert!(allthecodes_session::storage::get_archived_session_file(inactive_id).exists());
     assert!(allthecodes_session::storage::get_session_file(
-        &state.engine().current_session_id().to_string()
+        state.engine().current_session_id().as_ref()
     )
     .exists());
 }

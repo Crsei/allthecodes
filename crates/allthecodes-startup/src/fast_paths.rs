@@ -259,11 +259,11 @@ mod tests {
     #[test]
     #[serial]
     fn fast_path_missing_mcp_settings_remains_empty() {
-        let cc_rust_home = TempDir::new().expect("cc_rust_home tempdir");
+        let allthecodes_home = TempDir::new().expect("allthecodes_home tempdir");
         let cwd = TempDir::new().expect("cwd tempdir");
         let _home = EnvGuard::set(
-            "CC_RUST_HOME",
-            cc_rust_home.path().to_str().expect("utf8 tempdir"),
+            "ALLTHECODES_HOME",
+            allthecodes_home.path().to_str().expect("utf8 tempdir"),
         );
 
         let configs =
@@ -274,14 +274,14 @@ mod tests {
     #[test]
     #[serial]
     fn fast_path_existing_invalid_mcp_settings_returns_diagnostic() {
-        let cc_rust_home = TempDir::new().expect("cc_rust_home tempdir");
+        let allthecodes_home = TempDir::new().expect("allthecodes_home tempdir");
         let cwd = TempDir::new().expect("cwd tempdir");
         let _home = EnvGuard::set(
-            "CC_RUST_HOME",
-            cc_rust_home.path().to_str().expect("utf8 tempdir"),
+            "ALLTHECODES_HOME",
+            allthecodes_home.path().to_str().expect("utf8 tempdir"),
         );
 
-        std::fs::write(cc_rust_home.path().join("settings.json"), "{not-json")
+        std::fs::write(allthecodes_home.path().join("settings.json"), "{not-json")
             .expect("write malformed settings");
 
         let err = discover_mcp_servers_for_fast_path(cwd.path())
