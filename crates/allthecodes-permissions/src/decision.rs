@@ -300,9 +300,10 @@ fn descriptive_permission_message(
     tool_name: &str,
     resolver: Option<PermissionMessageResolverRef<'_>>,
 ) -> Option<String> {
-    resolver
-        .and_then(|resolver| resolver(tool_name))
-        .or_else(|| process_descriptive_permission_message(tool_name))
+    match resolver {
+        Some(resolver) => resolver(tool_name),
+        None => process_descriptive_permission_message(tool_name),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,8 +404,8 @@ pub fn has_permissions_to_use_tool_with_hook_and_auto_classifier(
 }
 
 /// Like [`has_permissions_to_use_tool_with_hook_and_auto_classifier`] but uses
-/// an explicit descriptive permission message resolver before falling back to
-/// process-wide compatibility callbacks.
+/// an explicit descriptive permission message resolver, or process-wide
+/// compatibility callbacks when no explicit resolver is provided.
 pub fn has_permissions_to_use_tool_with_hook_auto_classifier_and_message_resolver(
     tool_name: &str,
     input: &Value,

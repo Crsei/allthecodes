@@ -196,6 +196,14 @@ impl PermissionMessageResolver for TestPermissionMessageResolver {
     }
 }
 
+struct TestNoPermissionMessageResolver;
+
+impl PermissionMessageResolver for TestNoPermissionMessageResolver {
+    fn resolve_permission_message(&self, _tool_name: &str) -> Option<String> {
+        None
+    }
+}
+
 struct TestHookRunnerService;
 
 impl HookRunnerService for TestHookRunnerService {
@@ -234,6 +242,20 @@ fn test_runtime_services(
         permission_message_resolver: Arc::new(TestPermissionMessageResolver {
             message: permission_message,
         }),
+        hook_runner: Arc::new(TestHookRunnerService),
+        command_dispatcher: Arc::new(TestCommandDispatcherService),
+        model_client_factory: Arc::new(TestModelClientFactoryService),
+    })
+}
+
+fn test_runtime_services_without_permission_message(
+    tool_name: &'static str,
+) -> Arc<RuntimeServices> {
+    Arc::new(RuntimeServices {
+        tool_registry: Arc::new(TestRuntimeToolRegistry {
+            tools: vec![Arc::new(NamedServiceTool(tool_name))],
+        }),
+        permission_message_resolver: Arc::new(TestNoPermissionMessageResolver),
         hook_runner: Arc::new(TestHookRunnerService),
         command_dispatcher: Arc::new(TestCommandDispatcherService),
         model_client_factory: Arc::new(TestModelClientFactoryService),
@@ -649,6 +671,33 @@ fn runtime_services_permission_resolver_is_per_engine() {
 
     assert_eq!(decision_a.message.as_deref(), Some("message A"));
     assert_eq!(decision_b.message.as_deref(), Some("message B"));
+}
+
+#[test]
+fn runtime_services_permission_resolver_none_does_not_fall_back_to_process_callbacks() {
+    allthecodes_permissions::decision::set_cu_message_callback(|tool_name| {
+        (tool_name == "GlobalLeakTool").then(|| "process-global message".to_string())
+    });
+
+    let engine = QueryEngine::new_with_services(
+        make_config(),
+        test_runtime_services_without_permission_message("GlobalLeakTool"),
+    );
+
+    let decision = super::deps::central_permission_decision_for_tool(
+        "GlobalLeakTool",
+        &Value::Null,
+        &engine.app_state(),
+        None,
+        None,
+        None,
+        &engine.runtime_services,
+    );
+
+    assert_eq!(
+        decision.message.as_deref(),
+        Some("Allow tool 'GlobalLeakTool'?")
+    );
 }
 
 #[tokio::test]
