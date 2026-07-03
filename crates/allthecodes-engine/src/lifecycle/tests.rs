@@ -21,8 +21,6 @@ use allthecodes_types::sdk::*;
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
-use super::types::UsageTrackingExt;
-
 struct EnvGuard {
     key: &'static str,
     previous: Option<String>,
@@ -1083,7 +1081,13 @@ fn test_query_engine_abort_pauses_active_goal() {
         stored.status_reason.as_deref(),
         Some("task aborted by user")
     );
-    assert!(engine.state.read().goal_runtime.active_goal_id.is_none());
+    assert!(engine
+        .state
+        .read()
+        .runtime
+        .goal_runtime
+        .active_goal_id
+        .is_none());
 }
 
 #[test]
@@ -1129,6 +1133,81 @@ fn test_query_engine_permission_denial() {
 }
 
 #[test]
+fn engine_shared_state_appends_messages_through_transcript_state() {
+    let engine = QueryEngine::new(make_config());
+    let message = Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 1,
+        role: "user".into(),
+        content: MessageContent::Text("hello".to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    });
+
+    engine.state.write().append_message(message.clone());
+
+    let state = engine.state.read();
+    assert_eq!(state.transcript.messages.len(), 1);
+    assert_eq!(state.transcript.messages[0].uuid(), message.uuid());
+}
+
+#[test]
+fn engine_shared_state_updates_usage_through_transcript_state() {
+    let engine = QueryEngine::new(make_config());
+    let usage = Usage {
+        input_tokens: 10,
+        output_tokens: 4,
+        reasoning_output_tokens: 3,
+        cache_read_input_tokens: 2,
+        cache_creation_input_tokens: 1,
+    };
+
+    engine.state.write().update_usage(&usage, 0.25);
+
+    let state = engine.state.read();
+    assert_eq!(state.transcript.usage.total_input_tokens, 10);
+    assert_eq!(state.transcript.usage.total_output_tokens, 4);
+    assert_eq!(state.transcript.usage.total_reasoning_output_tokens, 3);
+    assert_eq!(state.transcript.usage.total_cache_read_tokens, 2);
+    assert_eq!(state.transcript.usage.total_cache_creation_tokens, 1);
+    assert_eq!(state.transcript.usage.api_call_count, 1);
+    assert_eq!(state.transcript.usage.total_cost_usd, 0.25);
+}
+
+#[test]
+fn engine_shared_state_tracks_permission_denials_through_permission_state() {
+    let engine = QueryEngine::new(make_config());
+    let denial = PermissionDenial {
+        tool_name: "Bash".to_string(),
+        tool_use_id: "tu_denied".to_string(),
+        reason: "user denied".to_string(),
+        timestamp: 42,
+    };
+
+    engine
+        .state
+        .write()
+        .record_permission_denial(denial.clone());
+
+    let state = engine.state.read();
+    assert_eq!(state.permissions.denials.len(), 1);
+    assert_eq!(state.permissions.denials[0].tool_use_id, denial.tool_use_id);
+}
+
+#[test]
+fn engine_shared_state_replaces_tools_through_tool_runtime_state() {
+    let engine = QueryEngine::new(make_config());
+    let tools = vec![Arc::new(TestTool) as Arc<dyn crate::types::tool::Tool>];
+
+    engine.state.write().set_tools(tools);
+
+    let state = engine.state.read();
+    assert_eq!(state.tools.registry.len(), 1);
+    assert_eq!(state.tools.registry[0].name(), "TestTool");
+}
+
+#[test]
 fn test_usage_tracking() {
     let mut usage = UsageTracking::default();
     let api_usage = Usage {
@@ -1138,7 +1217,7 @@ fn test_usage_tracking() {
         cache_read_input_tokens: 10,
         cache_creation_input_tokens: 5,
     };
-    usage.add_usage(&api_usage, 0.001);
+    usage = usage.with_added_usage(&api_usage, 0.001);
     assert_eq!(usage.total_input_tokens, 100);
     assert_eq!(usage.total_output_tokens, 50);
     assert_eq!(usage.total_cache_read_tokens, 10);
@@ -1147,7 +1226,7 @@ fn test_usage_tracking() {
     assert_eq!(usage.api_call_count, 1);
 
     // Second call accumulates
-    usage.add_usage(&api_usage, 0.002);
+    usage = usage.with_added_usage(&api_usage, 0.002);
     assert_eq!(usage.total_input_tokens, 200);
     assert_eq!(usage.api_call_count, 2);
 }
@@ -1160,6 +1239,7 @@ fn test_discovered_skill_names() {
     engine
         .state
         .write()
+        .tools
         .discovered_skill_names
         .insert("test_skill".to_string());
     assert_eq!(engine.discovered_skill_names().len(), 1);
@@ -1194,7 +1274,12 @@ fn test_try_extract_session_memory_uses_structured_insight() {
 
     engine.try_extract_session_memory();
 
-    let entries = engine.state.read().session_memory.get_memory_context(1);
+    let entries = engine
+        .state
+        .read()
+        .runtime
+        .session_memory
+        .get_memory_context(1);
     assert_eq!(entries.len(), 1);
     assert!(entries[0]
         .content
@@ -1210,7 +1295,7 @@ fn test_try_extract_session_memory_uses_structured_insight() {
 #[test]
 fn test_set_tools() {
     let engine = QueryEngine::new(make_config());
-    assert_eq!(engine.state.read().tools.len(), 0);
+    assert_eq!(engine.state.read().tools.registry.len(), 0);
 
     engine.set_tools(vec![Arc::new(TestTool)]);
     assert_eq!(engine.tool_names(), vec!["TestTool".to_string()]);

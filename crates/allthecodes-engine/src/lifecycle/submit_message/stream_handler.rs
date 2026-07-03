@@ -11,7 +11,7 @@ use crate::types::message::{
     Attachment, Message, MessageContent, QueryYield, StreamEvent, SystemSubtype, Usage,
 };
 
-use super::super::types::{AbortReason, UsageTrackingExt};
+use super::super::types::AbortReason;
 use super::super::QueryEngineState;
 use super::{finish_submit_telemetry, SubmitTelemetrySpan, SubmitTurnState};
 
@@ -72,18 +72,16 @@ fn handle_assistant_message(
 
     {
         let mut state = ctx.state_ref.write();
-        state
-            .messages
-            .push(Message::Assistant(assistant_msg.clone()));
+        state.append_message(Message::Assistant(assistant_msg.clone()));
         if let Some(ref msg_usage) = assistant_msg.usage {
-            state.usage.add_usage(msg_usage, assistant_msg.cost_usd);
+            state.update_usage(msg_usage, assistant_msg.cost_usd);
         }
     }
 
     // Emit a durable cost event for completed model API calls.
     if let Some(ref usage) = assistant_msg.usage {
         use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
-        let mut audit_ctx = ctx.state_ref.read().audit_ctx.clone();
+        let mut audit_ctx = ctx.state_ref.read().runtime.audit_ctx.clone();
         if let Some(request_event) = ctx.request_event {
             audit_ctx.submit_id = request_event.submit_id.clone();
             audit_ctx.turn_id = request_event.turn_id.clone();
@@ -167,7 +165,7 @@ fn handle_assistant_message(
     );
 
     if ctx.config.auto_save_session {
-        let all_msgs = ctx.state_ref.read().messages.clone();
+        let all_msgs = ctx.state_ref.read().transcript.messages.clone();
         let _ = crate::session::storage::save_session(
             ctx.session_id.as_str(),
             &all_msgs,
@@ -193,7 +191,7 @@ pub(super) fn account_goal_runtime_message(
     let goal = match allthecodes_tools::goals::load_goal_for_session(session_id) {
         Ok(Some(goal)) => goal,
         Ok(None) => {
-            state_ref.write().goal_runtime.clear_active();
+            state_ref.write().runtime.goal_runtime.clear_active();
             return None;
         }
         Err(error) => {
@@ -203,21 +201,29 @@ pub(super) fn account_goal_runtime_message(
     };
 
     if !allthecodes_tools::goals::goal_is_active(&goal) {
-        state_ref.write().goal_runtime.clear_for_goal(&goal.goal_id);
+        state_ref
+            .write()
+            .runtime
+            .goal_runtime
+            .clear_for_goal(&goal.goal_id);
         return None;
     }
 
     let now = Instant::now();
     let (token_delta, seconds_delta) = {
         let mut state = state_ref.write();
-        let usage = state.usage.clone();
+        let usage = state.transcript.usage.clone();
         if let Some(token_delta) = explicit_token_delta {
-            state
-                .goal_runtime
-                .account_explicit_token_delta(&goal.goal_id, &usage, token_delta, now)
+            state.runtime.goal_runtime.account_explicit_token_delta(
+                &goal.goal_id,
+                &usage,
+                token_delta,
+                now,
+            )
         } else {
             let (token_delta, seconds_delta) =
                 state
+                    .runtime
                     .goal_runtime
                     .account_delta(&goal.goal_id, &usage, now)?;
             (token_delta, seconds_delta)
@@ -237,7 +243,7 @@ pub(super) fn account_goal_runtime_message(
     ) {
         Ok(Some(goal)) => goal_runtime_update_message(session_id, state_ref, goal),
         Ok(None) => {
-            state_ref.write().goal_runtime.clear_active();
+            state_ref.write().runtime.goal_runtime.clear_active();
             None
         }
         Err(error) => {
@@ -265,20 +271,28 @@ fn goal_runtime_update_message(
     match goal.status {
         GoalStatus::BudgetLimited => {
             let mut state = state_ref.write();
-            state.goal_runtime.clear_for_goal(&goal.goal_id);
+            state.runtime.goal_runtime.clear_for_goal(&goal.goal_id);
             if state
+                .runtime
                 .goal_runtime
                 .budget_warning_already_sent(&goal.goal_id)
             {
                 None
             } else {
-                state.goal_runtime.mark_budget_warning_sent(&goal.goal_id);
+                state
+                    .runtime
+                    .goal_runtime
+                    .mark_budget_warning_sent(&goal.goal_id);
                 Some(goal_updated_message(session_id, "budget_limited", goal))
             }
         }
         GoalStatus::Active => Some(goal_updated_message(session_id, "runtime_updated", goal)),
         _ => {
-            state_ref.write().goal_runtime.clear_for_goal(&goal.goal_id);
+            state_ref
+                .write()
+                .runtime
+                .goal_runtime
+                .clear_for_goal(&goal.goal_id);
             Some(goal_updated_message(
                 session_id,
                 goal_status_event(&goal.status),
@@ -294,17 +308,22 @@ pub(super) fn prime_goal_runtime_for_session(
 ) {
     match allthecodes_tools::goals::load_goal_for_session(session_id) {
         Ok(Some(goal)) if allthecodes_tools::goals::goal_is_active(&goal) => {
-            let usage = state_ref.read().usage.clone();
-            state_ref
-                .write()
-                .goal_runtime
-                .prime_active_goal(&goal.goal_id, &usage, Instant::now());
+            let usage = state_ref.read().transcript.usage.clone();
+            state_ref.write().runtime.goal_runtime.prime_active_goal(
+                &goal.goal_id,
+                &usage,
+                Instant::now(),
+            );
         }
         Ok(Some(goal)) => {
-            state_ref.write().goal_runtime.clear_for_goal(&goal.goal_id);
+            state_ref
+                .write()
+                .runtime
+                .goal_runtime
+                .clear_for_goal(&goal.goal_id);
         }
         Ok(None) => {
-            state_ref.write().goal_runtime.clear_active();
+            state_ref.write().runtime.goal_runtime.clear_active();
         }
         Err(error) => {
             warn!(%error, "failed to prime goal runtime accounting");
@@ -344,8 +363,8 @@ fn handle_user_message(
 
     {
         let mut state = ctx.state_ref.write();
-        state.total_turn_count += 1;
-        state.messages.push(Message::User(user_msg.clone()));
+        state.transcript.total_turn_count += 1;
+        state.append_message(Message::User(user_msg.clone()));
     }
 
     let mut actions = Vec::new();
@@ -380,6 +399,7 @@ fn handle_progress_message(
 ) -> Vec<StreamAction> {
     ctx.state_ref
         .write()
+        .transcript
         .messages
         .push(Message::Progress(progress_msg.clone()));
 
@@ -396,6 +416,7 @@ fn handle_system_message(
         SystemSubtype::CompactBoundary { compact_metadata } => {
             ctx.state_ref
                 .write()
+                .transcript
                 .messages
                 .push(Message::System(system_msg.clone()));
             let internal_metadata_hidden = compact_metadata
@@ -422,6 +443,7 @@ fn handle_system_message(
         } => {
             ctx.state_ref
                 .write()
+                .transcript
                 .messages
                 .push(Message::System(system_msg.clone()));
 
@@ -440,6 +462,7 @@ fn handle_system_message(
         _ => {
             ctx.state_ref
                 .write()
+                .transcript
                 .messages
                 .push(Message::System(system_msg));
             Vec::new()
@@ -453,6 +476,7 @@ fn handle_attachment_message(
 ) -> Vec<StreamAction> {
     ctx.state_ref
         .write()
+        .transcript
         .messages
         .push(Message::Attachment(attachment_msg.clone()));
 
@@ -464,7 +488,10 @@ fn handle_attachment_message(
             let result_text = format!("Reached maximum of {} turns", max_turns);
             let (usage_snap, denials_snap) = {
                 let state = ctx.state_ref.read();
-                (state.usage.clone(), state.permission_denials.clone())
+                (
+                    state.transcript.usage.clone(),
+                    state.permissions.denials.clone(),
+                )
             };
             crate::services::langfuse::end_trace(
                 ctx.submit_langfuse_trace.take(),
@@ -518,13 +545,14 @@ fn handle_attachment_message(
         Attachment::SkillDiscovery { skills } => {
             let mut state = ctx.state_ref.write();
             for skill in skills {
-                state.discovered_skill_names.insert(skill.clone());
+                state.tools.discovered_skill_names.insert(skill.clone());
             }
             Vec::new()
         }
         Attachment::NestedMemory { path, .. } => {
             ctx.state_ref
                 .write()
+                .tools
                 .loaded_nested_memory_paths
                 .insert(path.clone());
             Vec::new()
@@ -574,7 +602,7 @@ fn handle_tombstone(
     );
     {
         let mut state = ctx.state_ref.write();
-        state.messages.retain(|message| {
+        state.transcript.messages.retain(|message| {
             !matches!(
                 message,
                 Message::Assistant(assistant) if assistant.uuid == tombstone.message.uuid
@@ -589,7 +617,7 @@ fn handle_tombstone(
     }));
 
     if ctx.config.auto_save_session {
-        let all_msgs = ctx.state_ref.read().messages.clone();
+        let all_msgs = ctx.state_ref.read().transcript.messages.clone();
         let _ = crate::session::storage::save_session(
             ctx.session_id.as_str(),
             &all_msgs,
@@ -755,8 +783,8 @@ mod tests {
         allthecodes_tools::goals::save_goal_for_session(session_id.as_str(), &goal).unwrap();
         {
             let mut state = engine.state.write();
-            state.usage.total_cost_usd = 2.0;
-            state.goal_runtime.active_goal_id = Some(goal_id);
+            state.transcript.usage.total_cost_usd = 2.0;
+            state.runtime.goal_runtime.active_goal_id = Some(goal_id);
         }
 
         let mut submit_turn = SubmitTurnState::new();
@@ -837,7 +865,7 @@ mod tests {
         assert_eq!(public.post_compact_token_count, 40);
         assert!(public.pre_compact_discovered_tools.is_none());
 
-        let stored = engine.state.read().messages.clone();
+        let stored = engine.state.read().transcript.messages.clone();
         let Some(Message::System(stored_system)) = stored.first() else {
             panic!("expected stored system message");
         };
@@ -856,7 +884,7 @@ mod tests {
 
 pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<BudgetStop> {
     let max_budget = ctx.config.max_budget_usd?;
-    let current_cost = ctx.state_ref.read().usage.total_cost_usd;
+    let current_cost = ctx.state_ref.read().transcript.usage.total_cost_usd;
     if current_cost < max_budget {
         return None;
     }
@@ -867,16 +895,25 @@ pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<BudgetStop> {
         "max budget exceeded"
     );
 
-    ctx.state_ref.write().abort_reason = Some(AbortReason::MaxBudget {
+    ctx.state_ref.write().runtime.abort_reason = Some(AbortReason::MaxBudget {
         spent_usd: current_cost,
         limit_usd: max_budget,
     });
 
     let (usage_snap, denials_snap) = {
         let state = ctx.state_ref.read();
-        (state.usage.clone(), state.permission_denials.clone())
+        (
+            state.transcript.usage.clone(),
+            state.permissions.denials.clone(),
+        )
     };
-    let active_goal_id = ctx.state_ref.read().goal_runtime.active_goal_id.clone();
+    let active_goal_id = ctx
+        .state_ref
+        .read()
+        .runtime
+        .goal_runtime
+        .active_goal_id
+        .clone();
     let goal_update = match allthecodes_tools::goals::mark_goal_usage_limited_for_session(
         ctx.session_id.as_str(),
         active_goal_id.as_deref(),
@@ -885,6 +922,7 @@ pub(super) fn check_budget(ctx: &mut StreamContext<'_>) -> Option<BudgetStop> {
         Ok(Some(goal)) if goal.status == allthecodes_tools::goals::GoalStatus::UsageLimited => {
             ctx.state_ref
                 .write()
+                .runtime
                 .goal_runtime
                 .clear_for_goal(&goal.goal_id);
             Some(goal_updated_message(

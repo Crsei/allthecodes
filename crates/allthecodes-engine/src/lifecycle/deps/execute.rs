@@ -51,7 +51,7 @@ impl QueryEngineDeps {
     }
 
     fn recordable_ask_user_callback(&self) -> Option<crate::types::tool::AskUserCallback> {
-        let callback = self.state.read().ask_user_callback.clone()?;
+        let callback = self.state.read().permissions.ask_user_callback.clone()?;
         let session_recorder = self.session_recorder.clone();
         let session_id = self.session_id.clone();
         Some(Arc::new(
@@ -120,7 +120,7 @@ impl QueryEngineDeps {
             let state = self.state.read();
             let app_state = self.get_app_state();
             let capability_filtered = allthecodes_tools::media::filter_tools_for_model_capabilities(
-                state.tools.clone(),
+                state.tools.registry.clone(),
                 &app_state.settings,
                 &app_state.main_loop_model,
             );
@@ -192,7 +192,7 @@ impl QueryEngineDeps {
                 }
                 rx
             },
-            read_file_state: self.state.read().file_state_cache.clone(),
+            read_file_state: self.state.read().tools.file_state_cache.clone(),
             get_app_state: {
                 let state = self.state.clone();
                 let overrides = self.submit_overrides.clone();
@@ -496,6 +496,7 @@ impl QueryEngineDeps {
                             if self
                                 .state
                                 .read()
+                                .permissions
                                 .auto_denial_tracker
                                 .should_fallback_to_interactive()
                             {
@@ -507,7 +508,7 @@ impl QueryEngineDeps {
                                     &app_state,
                                     hook_decision.as_ref(),
                                     None,
-                                    Some(&mut state.auto_denial_tracker),
+                                    Some(&mut state.permissions.auto_denial_tracker),
                                     &self.runtime_services,
                                 );
                             } else if let Some(auto_classifier) = self
@@ -526,7 +527,7 @@ impl QueryEngineDeps {
                                     &app_state,
                                     hook_decision.as_ref(),
                                     Some(&auto_classifier),
-                                    Some(&mut state.auto_denial_tracker),
+                                    Some(&mut state.permissions.auto_denial_tracker),
                                     &self.runtime_services,
                                 );
                             }
@@ -847,7 +848,10 @@ impl QueryEngineDeps {
                                     let review_id = Uuid::new_v4().to_string();
                                     let start_result = {
                                         let mut state = self.state.write();
-                                        state.auto_review_tracker.try_start(&request.tool_use_id)
+                                        state
+                                            .permissions
+                                            .auto_review_tracker
+                                            .try_start(&request.tool_use_id)
                                     };
                                     if let Err(reason) = start_result {
                                         emit_permission_auto_review(
@@ -918,7 +922,7 @@ impl QueryEngineDeps {
                                     let Some(classifier) = classifier else {
                                         {
                                             let mut state = self.state.write();
-                                            state.auto_review_tracker.record_denied();
+                                            state.permissions.auto_review_tracker.record_denied();
                                         }
                                         emit_permission_auto_review(
                                             &ctx,
@@ -966,7 +970,7 @@ impl QueryEngineDeps {
                                     if classifier.unavailable || classifier.transcript_too_long {
                                         {
                                             let mut state = self.state.write();
-                                            state.auto_review_tracker.record_denied();
+                                            state.permissions.auto_review_tracker.record_denied();
                                         }
                                         emit_permission_auto_review(
                                             &ctx,
@@ -1012,7 +1016,10 @@ impl QueryEngineDeps {
                                         AutoClassifierVerdict::Allow => {
                                             {
                                                 let mut state = self.state.write();
-                                                state.auto_review_tracker.record_allowed();
+                                                state
+                                                    .permissions
+                                                    .auto_review_tracker
+                                                    .record_allowed();
                                             }
                                             emit_permission_auto_review(
                                                 &ctx,
@@ -1049,7 +1056,10 @@ impl QueryEngineDeps {
                                         | AutoClassifierVerdict::Ask => {
                                             {
                                                 let mut state = self.state.write();
-                                                state.auto_review_tracker.record_denied();
+                                                state
+                                                    .permissions
+                                                    .auto_review_tracker
+                                                    .record_denied();
                                             }
                                             let reason = if classifier.reason.trim().is_empty() {
                                                 "auto review did not approve this request"

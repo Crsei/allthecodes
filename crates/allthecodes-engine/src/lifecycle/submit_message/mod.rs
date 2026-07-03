@@ -339,7 +339,7 @@ impl QueryEngine {
             // Emit submit.received audit event
             {
                 use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
-                let ctx = state_ref.read().audit_ctx.with_submit();
+                let ctx = state_ref.read().runtime.audit_ctx.with_submit();
                 ctx.emit(
                     EventKind::SubmitReceived,
                     Stage::Submit,
@@ -439,10 +439,10 @@ impl QueryEngine {
             // ================================================================
 
             // A.1: Clear turn-scoped state
-            state_ref.write().discovered_skill_names.clear();
+            state_ref.write().tools.discovered_skill_names.clear();
 
             // A.2: Process user input (delegate to input_processing module)
-            let current_msgs_snapshot = state_ref.read().messages.clone();
+            let current_msgs_snapshot = state_ref.read().transcript.messages.clone();
             let mut processed = input_processing::process_user_input(
                 &prompt,
                 &current_msgs_snapshot,
@@ -524,7 +524,7 @@ impl QueryEngine {
             {
                 let mut s = state_ref.write();
                 for m in &processed.messages {
-                    s.messages.push(m.clone());
+                    s.append_message(m.clone());
                 }
             }
 
@@ -558,7 +558,7 @@ impl QueryEngine {
 
             let (tools_snapshot, model_name, backend_name, app_settings) = {
                 let s = state_ref.read();
-                let tools = s.tools.clone();
+                let tools = s.tools.registry.clone();
                 let model = config
                     .user_specified_model
                     .clone()
@@ -602,7 +602,7 @@ impl QueryEngine {
             let execution_tools_snapshot =
                 allthecodes_tools::registry::dedupe_tools_by_name(execution_tools_snapshot);
             let prompt_tools_snapshot = if query_gates.deferred_tool_loading {
-                let messages = state_ref.read().messages.clone();
+                let messages = state_ref.read().transcript.messages.clone();
                 allthecodes_tools::deferred_tools::filter_tools_for_deferred_request(
                     execution_tools_snapshot.clone(),
                     &messages,
@@ -719,9 +719,9 @@ impl QueryEngine {
             // ================================================================
 
             let current_messages = match overrides.context_mode.unwrap_or(SubmitContextMode::Inherit) {
-                SubmitContextMode::Inherit => state_ref.read().messages.clone(),
+                SubmitContextMode::Inherit => state_ref.read().transcript.messages.clone(),
                 SubmitContextMode::Compact => {
-                    let messages = state_ref.read().messages.clone();
+                    let messages = state_ref.read().transcript.messages.clone();
                     crate::compact::pipeline::try_reactive_compact(messages.clone(), &model_name)
                         .await
                         .map(|result| result.messages)
@@ -821,11 +821,11 @@ impl QueryEngine {
             }
 
             // Create deps for the inner query loop
-            let permission_callback = state_ref.read().permission_callback.clone();
-            let permission_event_callback = state_ref.read().permission_event_callback.clone();
-            let bg_agent_tx = state_ref.read().bg_agent_tx.clone();
-            let tool_progress_callback = state_ref.read().tool_progress_callback.clone();
-            let submit_audit_ctx = state_ref.read().audit_ctx.with_submit();
+            let permission_callback = state_ref.read().permissions.permission_callback.clone();
+            let permission_event_callback = state_ref.read().permissions.permission_event_callback.clone();
+            let bg_agent_tx = state_ref.read().runtime.bg_agent_tx.clone();
+            let tool_progress_callback = state_ref.read().runtime.tool_progress_callback.clone();
+            let submit_audit_ctx = state_ref.read().runtime.audit_ctx.with_submit();
             let deps = Arc::new(QueryEngineDeps {
                 aborted: aborted_ref.clone(),
                 state: state_ref.clone(),
@@ -949,7 +949,7 @@ impl QueryEngine {
             // PHASE E: Result Generation
             // ================================================================
 
-            let final_messages = state_ref.read().messages.clone();
+            let final_messages = state_ref.read().transcript.messages.clone();
 
             let terminal_msg =
                 result::find_terminal_message(&final_messages);
@@ -962,7 +962,7 @@ impl QueryEngine {
 
             let (usage_snap, denials_snap) = {
                 let s = state_ref.read();
-                (s.usage.clone(), s.permission_denials.clone())
+                (s.transcript.usage.clone(), s.permissions.denials.clone())
             };
 
             let subtype = if is_success {
@@ -985,7 +985,7 @@ impl QueryEngine {
             // Emit submit.completed audit event
             {
                 use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
-                let ctx = state_ref.read().audit_ctx.clone();
+                let ctx = state_ref.read().runtime.audit_ctx.clone();
                 let outcome = if is_success { Outcome::Completed } else { Outcome::Failed };
                 ctx.emit(
                     EventKind::SubmitCompleted,

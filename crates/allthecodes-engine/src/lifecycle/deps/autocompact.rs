@@ -161,6 +161,7 @@ impl QueryEngineDeps {
             let session_memory_context = {
                 let state = self.state.read();
                 state
+                    .runtime
                     .session_memory
                     .format_memory_context_for_workspace_excluding_session(
                         5,

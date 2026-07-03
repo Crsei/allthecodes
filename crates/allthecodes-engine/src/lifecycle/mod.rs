@@ -16,11 +16,13 @@
 
 mod deps;
 mod helpers;
+mod state;
 mod submit_message;
 #[cfg(test)]
 mod tests;
 mod types;
 
+pub(crate) use state::{EngineSharedState, QueryEngineState};
 pub use types::AbortReason;
 
 use parking_lot::{Mutex, RwLock};
@@ -63,67 +65,6 @@ pub(crate) type AutoClassifierFn = Arc<
         > + Send
         + Sync,
 >;
-
-// ---------------------------------------------------------------------------
-// QueryEngineState — consolidated mutable session state
-// ---------------------------------------------------------------------------
-
-/// All mutable session state behind a single `Arc<RwLock<_>>`.
-///
-/// Previously each field was an independent `Arc<Mutex<T>>` or `Arc<RwLock<T>>`,
-/// requiring 10 individual clones in `submit_message`. Now there's one lock to
-/// rule them all — simpler to reason about and fewer clones.
-pub(crate) struct QueryEngineState {
-    /// Conversation message history.
-    pub(crate) messages: Vec<Message>,
-    /// Abort reason (if aborted).
-    pub(crate) abort_reason: Option<AbortReason>,
-    /// Accumulated usage across all API calls.
-    pub(crate) usage: UsageTracking,
-    /// Runtime-only session goal accounting state.
-    pub(crate) goal_runtime: types::GoalRuntimeState,
-    /// History of permission denials.
-    pub(crate) permission_denials: Vec<PermissionDenial>,
-    /// Total turn count across all `submit_message` invocations.
-    pub(crate) total_turn_count: usize,
-    /// Application-wide state (shared with deps).
-    pub(crate) app_state: AppState,
-    /// Current tool registry (shared with deps).
-    pub(crate) tools: Tools,
-    /// File snapshots observed by Read/Edit tools, used to reject stale edits.
-    pub(crate) file_state_cache: crate::types::tool::FileStateCache,
-    /// Skills discovered during this session (dedup).
-    pub(crate) discovered_skill_names: HashSet<String>,
-    /// Nested memory paths already loaded (dedup).
-    pub(crate) loaded_nested_memory_paths: HashSet<String>,
-    /// Async callback for interactive permission prompts (set by headless/TUI).
-    pub(crate) permission_callback: Option<crate::types::tool::PermissionCallback>,
-    /// Async callback for AskUserQuestion prompts (set by headless/TUI).
-    pub(crate) ask_user_callback: Option<crate::types::tool::AskUserCallback>,
-    /// Callback for permission-side informational UI events.
-    pub(crate) permission_event_callback: Option<crate::types::tool::PermissionEventCallback>,
-    /// Sender for background agent completion channel.
-    /// Set by headless/TUI mode; cloned into ToolUseContext.
-    pub(crate) bg_agent_tx: Option<allthecodes_types::agent_channel::AgentSender>,
-    /// Callback invoked on every [`ToolProgress`] emitted by a tool.
-    /// Set by headless/TUI mode; read by `QueryEngineDeps::tool_progress_callback`
-    /// and plumbed down to `execute_tool_calls` so tools (notably Bash) can
-    /// surface live output back to the frontend.
-    pub(crate) tool_progress_callback:
-        Option<Arc<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
-    /// If set, the engine is "sleeping" until this instant.
-    /// The proactive tick loop skips ticks while `Instant::now() < sleep_until`.
-    /// Cleared by `wake_up()` on user messages or external events.
-    pub(crate) sleep_until: Option<std::time::Instant>,
-    /// Session memory service for extracting and persisting conversation insights.
-    pub(crate) session_memory: SessionMemoryService,
-    /// Runtime audit context for emitting structured events.
-    pub(crate) audit_ctx: AuditContext,
-    /// Auto-mode classifier denial state for interactive fallback.
-    pub(crate) auto_denial_tracker: crate::permissions::decision::DenialTracker,
-    /// Explicit user-requested auto-review state for circuit breaking.
-    pub(crate) auto_review_tracker: AutoReviewTracker,
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct AutoReviewTracker {
@@ -422,28 +363,36 @@ impl QueryEngine {
             active_session_id: Arc::new(RwLock::new(session_id)),
             config,
             runtime_services: runtime_services.clone(),
-            state: Arc::new(RwLock::new(QueryEngineState {
-                messages: initial_messages,
-                abort_reason: None,
-                usage: UsageTracking::default(),
-                goal_runtime: types::GoalRuntimeState::default(),
-                permission_denials: Vec::new(),
-                total_turn_count: 0,
+            state: Arc::new(RwLock::new(EngineSharedState {
+                transcript: state::TranscriptState {
+                    messages: initial_messages,
+                    usage: UsageTracking::default(),
+                    total_turn_count: 0,
+                },
+                permissions: state::PermissionState {
+                    denials: Vec::new(),
+                    permission_callback: None,
+                    ask_user_callback: None,
+                    permission_event_callback: None,
+                    auto_denial_tracker: crate::permissions::decision::DenialTracker::default(),
+                    auto_review_tracker: AutoReviewTracker::default(),
+                },
+                tools: state::ToolRuntimeState {
+                    registry: tools,
+                    file_state_cache: crate::types::tool::FileStateCache::default(),
+                    discovered_skill_names: HashSet::new(),
+                    loaded_nested_memory_paths: HashSet::new(),
+                },
+                runtime: state::SessionRuntimeState {
+                    abort_reason: None,
+                    goal_runtime: types::GoalRuntimeState::default(),
+                    bg_agent_tx: None,
+                    tool_progress_callback: None,
+                    sleep_until: None,
+                    session_memory,
+                    audit_ctx: AuditContext::noop("pending"),
+                },
                 app_state,
-                tools,
-                file_state_cache: crate::types::tool::FileStateCache::default(),
-                discovered_skill_names: HashSet::new(),
-                loaded_nested_memory_paths: HashSet::new(),
-                permission_callback: None,
-                ask_user_callback: None,
-                permission_event_callback: None,
-                bg_agent_tx: None,
-                tool_progress_callback: None,
-                sleep_until: None,
-                session_memory,
-                audit_ctx: AuditContext::noop("pending"),
-                auto_denial_tracker: crate::permissions::decision::DenialTracker::default(),
-                auto_review_tracker: AutoReviewTracker::default(),
             })),
             aborted: Arc::new(AtomicBool::new(false)),
             pending_bg_results: crate::agent_runtime::PendingBackgroundResults::new(),
@@ -567,7 +516,7 @@ impl QueryEngine {
     /// When a tool requires `Ask` permission, this callback is invoked
     /// to prompt the user via IPC instead of immediately denying.
     pub fn set_permission_callback(&self, cb: crate::types::tool::PermissionCallback) {
-        self.state.write().permission_callback = Some(cb);
+        self.state.write().permissions.permission_callback = Some(cb);
     }
 
     /// Replace the async permission callback and return the previous callback.
@@ -575,31 +524,31 @@ impl QueryEngine {
         &self,
         cb: Option<crate::types::tool::PermissionCallback>,
     ) -> Option<crate::types::tool::PermissionCallback> {
-        std::mem::replace(&mut self.state.write().permission_callback, cb)
+        std::mem::replace(&mut self.state.write().permissions.permission_callback, cb)
     }
 
     /// Remove the permission callback, restoring default behaviour (deny).
     pub fn clear_permission_callback(&self) {
-        self.state.write().permission_callback = None;
+        self.state.write().permissions.permission_callback = None;
     }
 
     /// Set the async AskUserQuestion callback used by headless/TUI mode.
     pub fn set_ask_user_callback(&self, cb: crate::types::tool::AskUserCallback) {
-        self.state.write().ask_user_callback = Some(cb);
+        self.state.write().permissions.ask_user_callback = Some(cb);
     }
 
     /// Remove the AskUserQuestion callback.
     pub fn clear_ask_user_callback(&self) {
-        self.state.write().ask_user_callback = None;
+        self.state.write().permissions.ask_user_callback = None;
     }
 
     pub fn set_permission_event_callback(&self, cb: crate::types::tool::PermissionEventCallback) {
-        self.state.write().permission_event_callback = Some(cb);
+        self.state.write().permissions.permission_event_callback = Some(cb);
     }
 
     /// Set the background agent sender (called by headless/TUI at startup).
     pub fn set_bg_agent_tx(&self, tx: allthecodes_types::agent_channel::AgentSender) {
-        self.state.write().bg_agent_tx = Some(tx);
+        self.state.write().runtime.bg_agent_tx = Some(tx);
     }
 
     /// Install a `ToolProgress` callback.
@@ -612,7 +561,7 @@ impl QueryEngine {
         &self,
         cb: Arc<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>,
     ) {
-        self.state.write().tool_progress_callback = Some(cb);
+        self.state.write().runtime.tool_progress_callback = Some(cb);
     }
 
     // -- Sleep control -------------------------------------------------------
@@ -621,13 +570,14 @@ impl QueryEngine {
     /// The proactive tick loop will skip ticks while `is_sleeping()` returns true.
     pub fn set_sleep_until(&self, until: std::time::Instant) {
         let mut state = self.state.write();
-        state.sleep_until = Some(until);
+        state.runtime.sleep_until = Some(until);
     }
 
     /// Check whether the engine is currently sleeping.
     pub fn is_sleeping(&self) -> bool {
         let state = self.state.read();
         state
+            .runtime
             .sleep_until
             .is_some_and(|t| std::time::Instant::now() < t)
     }
@@ -636,7 +586,7 @@ impl QueryEngine {
     /// Called on user messages, webhooks, or other external events.
     pub fn wake_up(&self) {
         let mut state = self.state.write();
-        state.sleep_until = None;
+        state.runtime.sleep_until = None;
     }
 
     // -- Abort control -------------------------------------------------------
@@ -648,8 +598,8 @@ impl QueryEngine {
         let session_id = self.current_session_id();
         {
             let mut state = self.state.write();
-            state.abort_reason = Some(AbortReason::UserAbort);
-            state.goal_runtime.clear_active();
+            state.runtime.abort_reason = Some(AbortReason::UserAbort);
+            state.runtime.goal_runtime.clear_active();
         }
         if let Err(error) = pause_active_goal_for_abort(session_id.as_str()) {
             warn!(%error, "failed to pause active goal after abort");
@@ -672,7 +622,7 @@ impl QueryEngine {
     /// Reset the abort flag before starting a new `submit_message` call.
     pub fn reset_abort(&self) {
         self.aborted.store(false, Ordering::SeqCst);
-        self.state.write().abort_reason = None;
+        self.state.write().runtime.abort_reason = None;
     }
 
     /// Check whether the engine has been aborted.
@@ -682,14 +632,14 @@ impl QueryEngine {
 
     /// Get the abort reason (if any).
     pub fn abort_reason(&self) -> Option<AbortReason> {
-        self.state.read().abort_reason.clone()
+        self.state.read().runtime.abort_reason.clone()
     }
 
     // -- Accessors -----------------------------------------------------------
 
     /// Get a snapshot of the current message history.
     pub fn messages(&self) -> Vec<Message> {
-        self.state.read().messages.clone()
+        self.state.read().transcript.messages.clone()
     }
 
     /// Get the session id that new turns should use.
@@ -725,10 +675,10 @@ impl QueryEngine {
         let session_id = SessionId::new();
         {
             let mut state = self.state.write();
-            state.messages.clear();
-            state.usage = UsageTracking::default();
-            state.permission_denials.clear();
-            state.total_turn_count = 0;
+            state.transcript.messages.clear();
+            state.transcript.usage = UsageTracking::default();
+            state.permissions.denials.clear();
+            state.transcript.total_turn_count = 0;
         }
         self.set_current_session_id(session_id.clone());
         session_id
@@ -736,27 +686,27 @@ impl QueryEngine {
 
     /// Replace the full conversation history.
     pub fn replace_messages(&self, messages: Vec<Message>) {
-        self.state.write().messages = messages;
+        self.state.write().transcript.messages = messages;
     }
 
     /// Get a snapshot of usage tracking.
     pub fn usage(&self) -> UsageTracking {
-        self.state.read().usage.clone()
+        self.state.read().transcript.usage.clone()
     }
 
     /// Get a snapshot of permission denials.
     pub fn permission_denials(&self) -> Vec<PermissionDenial> {
-        self.state.read().permission_denials.clone()
+        self.state.read().permissions.denials.clone()
     }
 
     /// Record a permission denial.
     pub fn record_permission_denial(&self, denial: PermissionDenial) {
-        self.state.write().permission_denials.push(denial);
+        self.state.write().record_permission_denial(denial);
     }
 
     /// Get the total turn count (across all submit_message calls).
     pub fn total_turn_count(&self) -> usize {
-        self.state.read().total_turn_count
+        self.state.read().transcript.total_turn_count
     }
 
     /// Get a snapshot of the application state.
@@ -787,7 +737,7 @@ impl QueryEngine {
 
     /// Replace the tool registry.
     pub fn set_tools(&self, tools: Tools) {
-        self.state.write().tools = tools;
+        self.state.write().set_tools(tools);
     }
 
     /// Get the names of registered tools (used by web/state API).
@@ -795,6 +745,7 @@ impl QueryEngine {
         self.state
             .read()
             .tools
+            .registry
             .iter()
             .map(|t| t.name().to_string())
             .collect()
@@ -802,80 +753,90 @@ impl QueryEngine {
 
     /// Get a snapshot of the current tool registry.
     pub fn tools_snapshot(&self) -> Tools {
-        self.state.read().tools.clone()
+        self.state.read().tools.registry.clone()
     }
 
     /// Set the audit context (called after AuditSink is initialized).
     pub fn set_audit_context(&self, ctx: AuditContext) {
-        self.state.write().audit_ctx = ctx;
+        self.state.write().runtime.audit_ctx = ctx;
     }
 
     /// Get a clone of the current audit context.
     pub fn audit_context(&self) -> AuditContext {
-        self.state.read().audit_ctx.clone()
+        self.state.read().runtime.audit_ctx.clone()
     }
 
     /// Get discovered skill names from the current turn.
     pub fn discovered_skill_names(&self) -> HashSet<String> {
-        self.state.read().discovered_skill_names.clone()
+        self.state.read().tools.discovered_skill_names.clone()
     }
 
     /// Get loaded nested memory paths.
     pub fn loaded_nested_memory_paths(&self) -> HashSet<String> {
-        self.state.read().loaded_nested_memory_paths.clone()
+        self.state.read().tools.loaded_nested_memory_paths.clone()
     }
 
     /// Check if session memory extraction should be triggered, and if so,
     /// extract a simple insight from the last assistant turn.
     pub fn try_extract_session_memory(&self) {
         let mut state = self.state.write();
-        let msg_count = state.messages.len();
-        if !state.session_memory.should_extract(msg_count) {
+        let msg_count = state.transcript.messages.len();
+        if !state.runtime.session_memory.should_extract(msg_count) {
             return;
         }
 
         // Find the last assistant message content for extraction.
-        let last_assistant = state.messages.iter().rev().find_map(|m| match m {
-            Message::Assistant(a) => {
-                let text: String = a
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if text.is_empty() {
-                    None
-                } else {
-                    Some(text)
-                }
-            }
-            _ => None,
-        });
-
-        let Some(assistant_text) = last_assistant else {
-            return;
-        };
-
-        let last_user = state.messages.iter().rev().find_map(|m| match m {
-            Message::User(u) if !u.is_meta && u.tool_use_result.is_none() => match &u.content {
-                MessageContent::Text(text) => Some(text.clone()),
-                MessageContent::Blocks(blocks) => {
-                    let text = blocks
+        let last_assistant = state
+            .transcript
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                Message::Assistant(a) => {
+                    let text: String = a
+                        .content
                         .iter()
-                        .filter_map(|block| match block {
+                        .filter_map(|b| match b {
                             ContentBlock::Text { text } => Some(text.as_str()),
                             _ => None,
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    (!text.is_empty()).then_some(text)
+                    if text.is_empty() {
+                        None
+                    } else {
+                        Some(text)
+                    }
                 }
-            },
-            _ => None,
-        });
+                _ => None,
+            });
+
+        let Some(assistant_text) = last_assistant else {
+            return;
+        };
+
+        let last_user = state
+            .transcript
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                Message::User(u) if !u.is_meta && u.tool_use_result.is_none() => match &u.content {
+                    MessageContent::Text(text) => Some(text.clone()),
+                    MessageContent::Blocks(blocks) => {
+                        let text = blocks
+                            .iter()
+                            .filter_map(|block| match block {
+                                ContentBlock::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        (!text.is_empty()).then_some(text)
+                    }
+                },
+                _ => None,
+            });
 
         let Some(insight) = extract_session_insight(last_user.as_deref(), &assistant_text) else {
             return;
@@ -890,7 +851,7 @@ impl QueryEngine {
             tags: insight.tags,
         };
 
-        if let Err(e) = state.session_memory.save_entry(entry) {
+        if let Err(e) = state.runtime.session_memory.save_entry(entry) {
             tracing::warn!(error = %e, "failed to save session memory entry");
         }
     }

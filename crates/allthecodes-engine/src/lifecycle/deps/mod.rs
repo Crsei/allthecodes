@@ -144,7 +144,7 @@ impl QueryEngineDeps {
                     AutoClassifierStage::Fast,
                 ));
             }
-            (self.cwd.clone(), state.messages.clone())
+            (self.cwd.clone(), state.transcript.messages.clone())
         };
 
         fn_ref(
@@ -171,7 +171,7 @@ impl QueryEngineDeps {
         let fn_ref = self.auto_classifier_fn.as_ref()?;
         let (cwd, messages) = {
             let state = self.state.read();
-            (self.cwd.clone(), state.messages.clone())
+            (self.cwd.clone(), state.transcript.messages.clone())
         };
 
         fn_ref(
@@ -261,7 +261,7 @@ impl QueryDeps for QueryEngineDeps {
     fn get_tools(&self) -> Tools {
         self.submit_tools
             .clone()
-            .unwrap_or_else(|| self.state.read().tools.clone())
+            .unwrap_or_else(|| self.state.read().tools.registry.clone())
     }
 
     async fn refresh_tools(&self) -> Result<Tools> {

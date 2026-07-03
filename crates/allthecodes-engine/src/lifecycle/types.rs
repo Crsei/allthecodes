@@ -2,23 +2,7 @@
 
 use std::time::Instant;
 
-use crate::types::message::Usage;
 use allthecodes_types::sdk::UsageTracking;
-
-pub(crate) trait UsageTrackingExt {
-    /// Accumulate a single API call's usage.
-    ///
-    /// Also syncs the cost to the global ProcessState for cross-module access.
-    fn add_usage(&mut self, usage: &Usage, cost_usd: f64);
-}
-
-impl UsageTrackingExt for allthecodes_types::sdk::UsageTracking {
-    fn add_usage(&mut self, usage: &Usage, cost_usd: f64) {
-        *self = std::mem::take(self).with_added_usage(usage, cost_usd);
-        // Sync to global ProcessState
-        crate::bootstrap::PROCESS_STATE.write().total_cost_usd += cost_usd;
-    }
-}
 
 fn total_usage_tokens(usage: &UsageTracking) -> u64 {
     usage

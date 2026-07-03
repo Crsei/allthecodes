@@ -54,14 +54,16 @@ pub(super) async fn build_submit_system_prompt(
                 .auto_memory_enabled
                 .unwrap_or(false),
             state
+                .runtime
                 .session_memory
                 .format_memory_context_for_workspace_excluding_session(
                     5,
                     Some(std::path::Path::new(&config.cwd)),
                     Some(session_id.as_str()),
                 ),
-            latest_user_query_text(&state.messages).unwrap_or_else(|| prompt.to_string()),
-            recent_tool_names(&state.messages, 8),
+            latest_user_query_text(&state.transcript.messages)
+                .unwrap_or_else(|| prompt.to_string()),
+            recent_tool_names(&state.transcript.messages, 8),
             state.app_state.surfaced_memory_keys.clone(),
             is_model_assisted_memory_recall_enabled(),
         )
