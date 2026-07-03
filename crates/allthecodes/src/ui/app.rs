@@ -709,7 +709,10 @@ impl App {
     }
 
     /// Open a modal slash-command surface above the normal prompt.
-    pub fn open_command_surface(&mut self, surface: CommandSurface) {
+    pub fn open_command_surface(&mut self, mut surface: CommandSurface) {
+        if let CommandSurface::Tasks(tasks_surface) = &mut surface {
+            tasks_surface.sync_items(self.runtime_view.task_items());
+        }
         self.overlays.command_surface = Some(surface);
         self.command_palette.close();
         self.dirty = true;
@@ -810,13 +813,12 @@ impl App {
             }
             AppEvent::Backend { message } => {
                 let message = message.as_ref();
-                if let Some(CommandSurface::Tasks(surface)) = self.overlays.command_surface.as_mut()
-                {
-                    if backend_message_updates_tasks(message) {
-                        surface.handle_event(message);
-                        self.runtime_view.set_tasks(
-                            surface.items.iter().map(|item| item.task.clone()).collect(),
-                        );
+                if backend_message_updates_tasks(message) {
+                    self.runtime_view.apply_task_event(message);
+                    if let Some(CommandSurface::Tasks(surface)) =
+                        self.overlays.command_surface.as_mut()
+                    {
+                        surface.sync_items(self.runtime_view.task_items());
                         self.dirty = true;
                     }
                 }

@@ -1,11 +1,23 @@
 use crate::ui::app::agent_navigation::{AgentNavigationState, AgentThreadEntry};
+use crate::ui::command_surface::{TaskSurfaceItem, TasksSurface};
 use crate::ui::tasks::TaskStatus;
+use allthecodes_ipc_protocol::BackendMessage;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct RuntimeViewState {
     agent_nav: AgentNavigationState,
     current_agent_thread_id: Option<String>,
-    tasks: Vec<TaskStatus>,
+    task_items: Vec<TaskSurfaceItem>,
+}
+
+impl Default for RuntimeViewState {
+    fn default() -> Self {
+        Self {
+            agent_nav: AgentNavigationState::default(),
+            current_agent_thread_id: None,
+            task_items: TasksSurface::new().items,
+        }
+    }
 }
 
 impl RuntimeViewState {
@@ -29,12 +41,21 @@ impl RuntimeViewState {
         self.current_agent_thread_id.as_ref()
     }
 
-    pub(super) fn tasks(&self) -> &[TaskStatus] {
-        &self.tasks
+    pub(super) fn task_items(&self) -> &[TaskSurfaceItem] {
+        &self.task_items
     }
 
-    pub(super) fn set_tasks(&mut self, tasks: Vec<TaskStatus>) {
-        self.tasks = tasks;
+    pub(super) fn tasks(&self) -> Vec<TaskStatus> {
+        self.task_items
+            .iter()
+            .map(|item| item.task.clone())
+            .collect()
+    }
+
+    pub(super) fn apply_task_event(&mut self, message: &BackendMessage) {
+        let mut surface = TasksSurface::from_items(std::mem::take(&mut self.task_items));
+        surface.handle_event(message);
+        self.task_items = surface.items;
     }
 }
 
@@ -62,11 +83,10 @@ mod tests {
         );
         assert_eq!(state.agent_nav().thread_count(), 1);
 
-        state.set_tasks(vec![TaskStatus::new(
-            "task-1",
-            "cargo test",
-            TaskKind::Shell,
-        )]);
+        state.task_items.push(TaskSurfaceItem {
+            task: TaskStatus::new("task-1", "cargo test", TaskKind::Shell),
+            source: crate::ui::command_surface::TaskSurfaceSource::Tool,
+        });
         assert_eq!(state.tasks().len(), 1);
     }
 }

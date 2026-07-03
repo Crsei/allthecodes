@@ -39,9 +39,24 @@ pub(crate) enum TaskSurfaceSource {
 
 impl TasksSurface {
     pub(crate) fn new() -> Self {
+        Self::from_items(task_surface_items())
+    }
+
+    pub(crate) fn from_items(items: Vec<TaskSurfaceItem>) -> Self {
         Self {
-            items: task_surface_items(),
+            items,
             selected_index: 0,
+        }
+    }
+
+    pub(crate) fn sync_items(&mut self, items: &[TaskSurfaceItem]) {
+        self.items = items.to_vec();
+        if self.items.is_empty() {
+            self.selected_index = 0;
+        } else {
+            self.selected_index = self
+                .selected_index
+                .min(self.items.len().saturating_mul(2) - 1);
         }
     }
 

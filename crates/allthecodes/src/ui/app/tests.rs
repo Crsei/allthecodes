@@ -397,6 +397,42 @@ fn backend_notification_event_is_routed_to_in_app_notification() {
 }
 
 #[test]
+fn task_events_update_runtime_state_before_tasks_surface_opens() {
+    let mut app = App::new();
+
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::ToolProgress {
+            tool_use_id: "tool-1".to_string(),
+            tool: "cargo test".to_string(),
+            output: "running 1 test".to_string(),
+            elapsed_seconds: 2,
+            total_lines: Some(1),
+            total_bytes: None,
+            timeout_ms: None,
+            operation: None,
+        }),
+    });
+
+    assert!(app
+        .runtime_state()
+        .tasks()
+        .iter()
+        .any(|task| task.id == "tool-1" && task.title == "cargo test"));
+
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::new(),
+    ));
+
+    let Some(CommandSurface::Tasks(surface)) = app.overlays.command_surface.as_ref() else {
+        panic!("tasks surface should be open");
+    };
+    assert!(surface.render().contains("cargo test"));
+    let task = &surface.selected_item().expect("selected task").task;
+    assert_eq!(task.id, "tool-1");
+    assert_eq!(task.output_lines, vec!["running 1 test".to_string()]);
+}
+
+#[test]
 fn high_priority_notification_preempts_verbose_indicator() {
     let mut app = App::new();
     let mut state = AppState::default();

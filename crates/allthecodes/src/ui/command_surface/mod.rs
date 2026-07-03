@@ -26,6 +26,7 @@ pub use surfaces::resume::ResumeSurface;
 pub use surfaces::sandbox::SandboxSurface;
 pub use surfaces::skills::SkillsSurface;
 pub use surfaces::tasks::TasksSurface;
+pub(crate) use surfaces::tasks::{TaskSurfaceItem, TaskSurfaceSource};
 pub use surfaces::team::TeamSurface;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
