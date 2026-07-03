@@ -254,8 +254,13 @@ fn write_rollout_lines(path: &std::path::Path, lines: &[RecordLine]) -> Result<(
 }
 
 fn serializable_to_record_item(sm: &SerializableMessage) -> RecordItem {
-    // Try to convert to a typed Message first; fall back to LegacyMessage
-    let uuid = uuid::Uuid::parse_str(&sm.uuid).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    // Try to convert to a typed Message first; fall back to LegacyMessage.
+    // Migration must preserve malformed legacy data instead of fabricating
+    // empty/default typed messages.
+    let uuid = match uuid::Uuid::parse_str(&sm.uuid) {
+        Ok(uuid) => uuid,
+        Err(_) => return legacy_message_record(sm),
+    };
     let ts = sm.timestamp;
 
     match sm.msg_type.as_str() {
@@ -266,11 +271,13 @@ fn serializable_to_record_item(sm: &SerializableMessage) -> RecordItem {
                 }
                 Some(serde_json::Value::Array(blocks)) => {
                     let content_blocks: Vec<ContentBlock> =
-                        serde_json::from_value(serde_json::Value::Array(blocks.clone()))
-                            .unwrap_or_default();
+                        match serde_json::from_value(serde_json::Value::Array(blocks.clone())) {
+                            Ok(blocks) => blocks,
+                            Err(_) => return legacy_message_record(sm),
+                        };
                     crate::record_replay::types::RecordedMessageContent::Blocks(content_blocks)
                 }
-                _ => crate::record_replay::types::RecordedMessageContent::Text(String::new()),
+                _ => return legacy_message_record(sm),
             };
             RecordItem::Message(MessageRecord {
                 message: crate::record_replay::types::RecordedMessage::User {
@@ -289,11 +296,14 @@ fn serializable_to_record_item(sm: &SerializableMessage) -> RecordItem {
             })
         }
         "assistant" => {
-            let content: Vec<ContentBlock> = sm
+            let content: Vec<ContentBlock> = match sm
                 .data
                 .get("content")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default();
+            {
+                Some(content) => content,
+                None => return legacy_message_record(sm),
+            };
             let usage: Option<Usage> = sm
                 .data
                 .get("usage")
@@ -321,12 +331,10 @@ fn serializable_to_record_item(sm: &SerializableMessage) -> RecordItem {
             })
         }
         "system" => {
-            let content = sm
-                .data
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let content = match sm.data.get("content").and_then(|v| v.as_str()) {
+                Some(content) => content.to_string(),
+                None => return legacy_message_record(sm),
+            };
             let subtype = match sm.data.get("subtype").and_then(|v| v.as_str()) {
                 Some("CompactBoundary") => {
                     crate::record_replay::types::RecordedSystemSubtype::CompactBoundary {
@@ -337,14 +345,15 @@ fn serializable_to_record_item(sm: &SerializableMessage) -> RecordItem {
                     }
                 }
                 Some("LocalCommand") => {
-                    crate::record_replay::types::RecordedSystemSubtype::LocalCommand {
-                        content: sm
-                            .data
-                            .get("local_command_content")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    }
+                    let content = match sm
+                        .data
+                        .get("local_command_content")
+                        .and_then(|v| v.as_str())
+                    {
+                        Some(content) => content.to_string(),
+                        None => return legacy_message_record(sm),
+                    };
+                    crate::record_replay::types::RecordedSystemSubtype::LocalCommand { content }
                 }
                 Some("Warning") => crate::record_replay::types::RecordedSystemSubtype::Warning,
                 _ => crate::record_replay::types::RecordedSystemSubtype::Informational {
@@ -361,17 +370,14 @@ fn serializable_to_record_item(sm: &SerializableMessage) -> RecordItem {
             })
         }
         "progress" => {
-            let tool_use_id = sm
-                .data
-                .get("tool_use_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let data = sm
-                .data
-                .get("data")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
+            let tool_use_id = match sm.data.get("tool_use_id").and_then(|v| v.as_str()) {
+                Some(tool_use_id) => tool_use_id.to_string(),
+                None => return legacy_message_record(sm),
+            };
+            let data = match sm.data.get("data").cloned() {
+                Some(data) => data,
+                None => return legacy_message_record(sm),
+            };
             RecordItem::Message(MessageRecord {
                 message: crate::record_replay::types::RecordedMessage::Progress {
                     uuid,
@@ -382,13 +388,14 @@ fn serializable_to_record_item(sm: &SerializableMessage) -> RecordItem {
             })
         }
         "attachment" => {
-            let attachment: Attachment = sm
+            let attachment: Attachment = match sm
                 .data
                 .get("attachment")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or(Attachment::EditedTextFile {
-                    path: String::new(),
-                });
+            {
+                Some(attachment) => attachment,
+                None => return legacy_message_record(sm),
+            };
             RecordItem::Message(MessageRecord {
                 message: crate::record_replay::types::RecordedMessage::Attachment {
                     uuid,
@@ -397,16 +404,17 @@ fn serializable_to_record_item(sm: &SerializableMessage) -> RecordItem {
                 },
             })
         }
-        _ => {
-            // Unknown type — store as LegacyMessage
-            RecordItem::LegacyMessage(LegacyMessageRecord {
-                msg_type: sm.msg_type.clone(),
-                uuid: sm.uuid.clone(),
-                timestamp: ts,
-                data: sm.data.clone(),
-            })
-        }
+        _ => legacy_message_record(sm),
     }
+}
+
+fn legacy_message_record(sm: &SerializableMessage) -> RecordItem {
+    RecordItem::LegacyMessage(LegacyMessageRecord {
+        msg_type: sm.msg_type.clone(),
+        uuid: sm.uuid.clone(),
+        timestamp: sm.timestamp,
+        data: sm.data.clone(),
+    })
 }
 
 use allthecodes_types::message::{Attachment, ContentBlock, Usage};
@@ -532,9 +540,9 @@ mod tests {
                     Some(&serde_json::Value::String("value".into()))
                 );
             }
-            other => panic!(
-                "Expected RecordItem::LegacyMessage for unknown msg_type, got {other:?}"
-            ),
+            other => {
+                panic!("Expected RecordItem::LegacyMessage for unknown msg_type, got {other:?}")
+            }
         }
     }
 
@@ -543,11 +551,7 @@ mod tests {
     fn migrate_partial_message_creates_legacy_message_record() {
         // A message that is structurally malformed for its known msg_type
         // should still be preserved as a LegacyMessage record instead of
-        // panicking or silently skipping. The current implementation handles
-        // corrupt data for known types by producing empty/default typed records
-        // (no panic), but the plan intends this to eventually fall through to
-        // LegacyMessage. This test verifies the non-crash guarantee and
-        // documents the current behavior.
+        // panicking, silently skipping, or fabricating empty/default typed data.
         let temp = tempdir().unwrap();
         let _g = HomeGuard::set(temp.path());
 
@@ -608,14 +612,15 @@ mod tests {
             })
         ));
 
-        // seq 2: partial user message -> current code produces typed Message
-        // with empty content (no crash)
+        // seq 2: partial user message -> LegacyMessage preserving raw data.
         assert_eq!(result.lines[2].seq, 2);
         assert!(matches!(
             &result.lines[2].item,
-            RecordItem::Message(MessageRecord {
-                message: RecordedMessage::User { .. },
-            })
+            RecordItem::LegacyMessage(LegacyMessageRecord {
+                msg_type,
+                data,
+                ..
+            }) if msg_type == "user" && data.as_object().is_some_and(|obj| obj.is_empty())
         ));
 
         // seq 3: unknown msg_type -> LegacyMessage
@@ -630,10 +635,7 @@ mod tests {
 
         // seq 4: Snapshot
         assert_eq!(result.lines[4].seq, 4);
-        assert!(matches!(
-            &result.lines[4].item,
-            RecordItem::Snapshot(_)
-        ));
+        assert!(matches!(&result.lines[4].item, RecordItem::Snapshot(_)));
     }
 
     #[test]
@@ -697,8 +699,7 @@ mod tests {
         let first_line: serde_json::Value =
             serde_json::from_str(lines[0]).expect("first line should be valid JSON");
         assert_eq!(
-            first_line["item"]["migrated_from"],
-            "legacy_json",
+            first_line["item"]["migrated_from"], "legacy_json",
             "SessionMeta item should have migrated_from set to legacy_json"
         );
 
@@ -706,8 +707,7 @@ mod tests {
         let last_line: serde_json::Value =
             serde_json::from_str(lines.last().unwrap()).expect("last line should be valid JSON");
         assert_eq!(
-            last_line["item"]["type"],
-            "snapshot",
+            last_line["item"]["type"], "snapshot",
             "Last line item type should be snapshot"
         );
     }
@@ -726,28 +726,32 @@ mod tests {
             cwd: "/repo".into(),
             custom_title: None,
             chat_mode_override: None,
-            messages: vec![
-                SerializableMessage {
-                    msg_type: "user".into(),
-                    uuid: "10000000-0000-0000-0000-000000000001".into(),
-                    timestamp: 1,
-                    data: serde_json::json!({
-                        "content": "hello",
-                        "is_meta": false,
-                    }),
-                },
-            ],
+            messages: vec![SerializableMessage {
+                msg_type: "user".into(),
+                uuid: "10000000-0000-0000-0000-000000000001".into(),
+                timestamp: 1,
+                data: serde_json::json!({
+                    "content": "hello",
+                    "is_meta": false,
+                }),
+            }],
         };
         std::fs::create_dir_all(storage::get_session_dir()).unwrap();
         let json = serde_json::to_string_pretty(&file).unwrap();
         let legacy_path = storage::get_session_file("legacy-keep-1");
         std::fs::write(&legacy_path, &json).unwrap();
 
-        assert!(legacy_path.exists(), "original JSON should exist before migration");
+        assert!(
+            legacy_path.exists(),
+            "original JSON should exist before migration"
+        );
 
         let rollout_path = migrate_legacy_session("legacy-keep-1").unwrap();
         assert!(rollout_path.exists());
         // The original JSON file must NOT have been deleted
-        assert!(legacy_path.exists(), "original JSON file must still exist after migration");
+        assert!(
+            legacy_path.exists(),
+            "original JSON file must still exist after migration"
+        );
     }
 }

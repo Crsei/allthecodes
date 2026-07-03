@@ -21,10 +21,15 @@ pub async fn exec_prompt_hook(
     _hook_name: &str,
     _hook_event: &str,
     _json_input: &Value,
-    _signal: tokio::sync::watch::Receiver<bool>,
+    signal: tokio::sync::watch::Receiver<bool>,
     _messages: Option<&[Value]>,
 ) -> HookResult {
-    // TODO: Full implementation:
+    if *signal.borrow() {
+        return HookResult::cancelled();
+    }
+
+    // TODO(full-build): Replace this structural stub with the complete
+    // TypeScript `execPromptHook.ts` behavior:
     //
     // 1. Substitute $ARGUMENTS in prompt
     // 2. Build message array (prepend conversation history if provided)
@@ -43,27 +48,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_exec_prompt_hook_stub() {
-        let hook = HookEntry::Prompt {
-            prompt: "Check condition: $ARGUMENTS".into(),
-            timeout: 30,
-            model: None,
-            if_condition: None,
-        };
-
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        let result = exec_prompt_hook(
-            &hook,
-            "test-prompt-hook",
-            "Stop",
-            &serde_json::json!({"input": "test"}),
-            rx,
-            None,
-        )
-        .await;
-
-        assert!(matches!(result.outcome, HookOutcome::Success));
-        drop(tx);
+    #[ignore = "TODO(full-build): implement prompt hook LLM call and hook response schema parsing"]
+    async fn test_exec_prompt_hook_model_call_todo() {
+        todo!(
+            "TODO(full-build): inject a model caller and assert parsing `{{ ok: true }}` from the prompt hook response"
+        );
     }
 
     // CS-002: Schema test for HookEntry::Prompt JSON construction/serde.
@@ -179,7 +168,7 @@ mod tests {
         }
     }
 
-    // CS-002: Verify the stub does not panic — structural panic check.
+    // CS-002: Verify the structural stub does not panic.
     #[tokio::test]
     async fn test_no_structural_panic_in_prompt_stub() {
         let hook = HookEntry::Prompt {
@@ -189,8 +178,8 @@ mod tests {
             if_condition: None,
         };
 
-        let (tx, rx) = tokio::sync::watch::channel(true);
-        let result = exec_prompt_hook(
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let _result = exec_prompt_hook(
             &hook,
             "panic-check",
             "Stop",
@@ -200,13 +189,12 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result.outcome, HookOutcome::Success));
         drop(tx);
     }
 
-    // CS-002: Timeout simulation — hook with cancelled signal returns success (stub, no hang).
+    // CS-002: Cancelled parent/timeout signal should stop prompt hook work.
     #[tokio::test]
-    async fn test_prompt_hook_timeout_does_not_block() {
+    async fn test_prompt_hook_cancelled_signal_returns_cancelled() {
         let hook = HookEntry::Prompt {
             prompt: "quick check $ARGUMENTS".into(),
             timeout: 5,
@@ -226,9 +214,15 @@ mod tests {
         )
         .await;
 
-        // As a stub, still returns success; full impl would respect cancel
-        // but the important thing is it doesn't hang or panic.
-        assert!(matches!(result.outcome, HookOutcome::Success));
+        assert!(matches!(result.outcome, HookOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    #[ignore = "TODO(full-build): prompt hooks must parse blocking model responses"]
+    async fn test_prompt_hook_blocking_response_todo() {
+        todo!(
+            "TODO(full-build): inject queryModelWithoutStreaming equivalent, parse `{{ ok: false, reason }}`, and return HookOutcome::Blocking"
+        );
     }
 
     // CS-002: Hook error handling — error path is never reached in the stub,

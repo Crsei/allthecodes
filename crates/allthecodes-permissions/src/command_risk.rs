@@ -495,6 +495,17 @@ fn check_bash_secret(command: &str, first_word: &str) -> Option<(String, Option<
         }
     }
 
+    // HTTP Authorization headers expose credentials directly in shell history
+    // and terminal logs.
+    if matches!(first_word, "curl" | "/usr/bin/curl" | "/bin/curl")
+        && lower.contains("authorization:")
+    {
+        return Some((
+            "curl Authorization header exposes credentials".into(),
+            Some("secret:curl_authorization_header".into()),
+        ));
+    }
+
     None
 }
 
@@ -588,6 +599,14 @@ fn check_bash_destructive(command: &str, first_word: &str) -> Option<(String, Op
         ));
     }
 
+    // --- Kubernetes resource deletion ---
+    if first_word == "kubectl" && lower.split_whitespace().any(|word| word == "delete") {
+        return Some((
+            "kubectl delete removes cluster resources".into(),
+            Some("destructive:kubectl_delete".into()),
+        ));
+    }
+
     // --- Database destruction ---
     if lower.contains("drop table")
         || lower.contains("drop database")
@@ -672,20 +691,12 @@ fn check_bash_deploy(command: &str, first_word: &str) -> Option<(String, Option<
         ));
     }
 
-    // kubectl apply / delete / rollout
+    // kubectl apply / rollout
     if first_word == "kubectl" {
         if lower.contains("apply") {
             return Some((
                 "kubectl apply deploys to cluster".into(),
                 Some("deploy:kubectl_apply".into()),
-            ));
-        }
-        if lower.contains("delete") {
-            // kubectl delete is also destructive but we classify as destructive
-            // via the higher priority. For completeness, return deploy.
-            return Some((
-                "kubectl delete removes resources".into(),
-                Some("deploy:kubectl_delete".into()),
             ));
         }
         if lower.contains("rollout") {
@@ -1630,21 +1641,17 @@ mod tests {
     // Gap 1: kubectl delete should be Destructive, not Deploy
     // -----------------------------------------------------------------------
     //
-    // NOTE: This test asserts the intended behavior. The production code in
-    // check_bash_destructive still needs a `kubectl delete` entry to move it
-    // from Deploy to Destructive.
+    // NOTE: This test asserts the intended behavior. `kubectl delete` removes
+    // cluster resources and must be classified above deploy-level risk.
 
     #[test]
     fn test_bash_deploy_kubectl_delete_is_destructive() {
         let risk = classify_command_risk("kubectl delete pod foo", ShellKind::Bash);
-        // NOTE: kubectl delete is currently classified as Deploy by check_bash_deploy.
-        // The destructive checker runs after deploy, so kubectl delete hits deploy first.
-        // To make this Destructive, kubectl delete should be added to check_bash_destructive
-        // and removed from check_bash_deploy.
         assert_eq!(
             risk.level,
-            CommandRiskLevel::Deploy,
-            "kubectl delete is currently classified as Deploy (needs destructive override)"
+            CommandRiskLevel::Destructive,
+            "kubectl delete should be Destructive, got {:?}",
+            risk.level
         );
     }
 
@@ -1654,7 +1661,10 @@ mod tests {
 
     #[test]
     fn test_bash_deploy_aws_create() {
-        let risk = classify_command_risk("aws ec2 create-instance --image-id ami-123", ShellKind::Bash);
+        let risk = classify_command_risk(
+            "aws ec2 create-instance --image-id ami-123",
+            ShellKind::Bash,
+        );
         assert_eq!(
             risk.level,
             CommandRiskLevel::Deploy,
@@ -1676,7 +1686,10 @@ mod tests {
 
     #[test]
     fn test_bash_deploy_az_create() {
-        let risk = classify_command_risk("az vm create --name myvm --resource-group rg", ShellKind::Bash);
+        let risk = classify_command_risk(
+            "az vm create --name myvm --resource-group rg",
+            ShellKind::Bash,
+        );
         assert_eq!(
             risk.level,
             CommandRiskLevel::Deploy,
@@ -1748,9 +1761,8 @@ mod tests {
     // Gap 6: curl with secret header (Authorization header with secret pattern)
     // -----------------------------------------------------------------------
     //
-    // NOTE: The secret checker does not currently scan for Authorization HTTP
-    // headers. These tests document the desired behavior. They are expected
-    // to fail until the secret checker is extended.
+    // NOTE: Authorization HTTP headers expose credentials directly in the
+    // shell command and must be classified as Secret.
 
     #[test]
     fn test_bash_secret_curl_with_secret_header() {
@@ -1761,13 +1773,10 @@ mod tests {
         ];
         for cmd in &cases {
             let risk = classify_command_risk(cmd, ShellKind::Bash);
-            // SECRET CHECKER GAP: curl Authorization headers are not yet detected.
-            // The curl commands fall through to Mutate default. This assertion
-            // documents what should happen once detection is added.
             assert_eq!(
                 risk.level,
-                CommandRiskLevel::Mutate,
-                "curl Authorization header not yet detected as Secret; got {:?} for: {}",
+                CommandRiskLevel::Secret,
+                "expected Secret for curl Authorization header, got {:?} for: {}",
                 risk.level,
                 cmd
             );
@@ -1791,11 +1800,9 @@ mod tests {
         for (cmd, expected_level) in &cases {
             let risk = classify_command_risk(cmd, ShellKind::Bash);
             assert_eq!(
-                risk.level,
-                *expected_level,
+                risk.level, *expected_level,
                 "expected level {:?} for: {}",
-                expected_level,
-                cmd
+                expected_level, cmd
             );
             assert_eq!(
                 risk.confidence,

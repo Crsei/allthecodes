@@ -350,13 +350,11 @@ mod tests {
             uuid: Uuid::parse_str("a0000000-0000-0000-0000-000000000003").unwrap(),
             timestamp: 102,
             role: "user".into(),
-            content: MessageContent::Blocks(vec![
-                ContentBlock::ToolResult {
-                    tool_use_id: "tu_roundtrip".into(),
-                    content: ToolResultContent::Text("result data".into()),
-                    is_error: false,
-                },
-            ]),
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_roundtrip".into(),
+                content: ToolResultContent::Text("result data".into()),
+                is_error: false,
+            }]),
             is_meta: false,
             tool_use_result: None,
             source_tool_assistant_uuid: None,
@@ -487,7 +485,11 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Progress and attachment deserialization: known to be dropped
+    // Progress and attachment deserialization: legacy compatibility path.
+    //
+    // TODO(full-build): callers that need full-fidelity replay should use typed
+    // record logs. This legacy SerializableMessage loader still drops progress
+    // and attachment entries when reconstructing chat messages.
     // ------------------------------------------------------------------
 
     #[test]
@@ -573,7 +575,9 @@ mod tests {
         match &messages[0] {
             Message::Assistant(a) => {
                 assert!(a.content.len() == 1);
-                assert!(matches!(&a.content[0], ContentBlock::Text { text } if text == "hello assistant"));
+                assert!(
+                    matches!(&a.content[0], ContentBlock::Text { text } if text == "hello assistant")
+                );
                 assert_eq!(a.stop_reason.as_deref(), Some("end_turn"));
             }
             other => panic!("expected Assistant, got {other:?}"),
@@ -666,7 +670,12 @@ mod tests {
                     MessageContent::Blocks(blocks) => blocks
                         .iter()
                         .filter_map(|b| {
-                            if let ContentBlock::ToolResult { tool_use_id, content, is_error } = b {
+                            if let ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } = b
+                            {
                                 let text = match content {
                                     ToolResultContent::Text(t) => t.as_str(),
                                     _ => "",
@@ -685,10 +694,10 @@ mod tests {
         }
     }
 
-    /// Lock behavior: roundtrip of a full legacy SerializableMessage list that
+    /// Legacy compatibility behavior: roundtrip of a full SerializableMessage list that
     /// contains user, assistant (with tool_use), tool_result user, system,
-    /// progress, and attachment. Progress and attachment are expected to be
-    /// dropped during deserialization; the rest should survive.
+    /// progress, and attachment. This compatibility loader drops progress and
+    /// attachment; typed record logs are responsible for preserving them.
     #[test]
     fn deserialize_legacy_session_with_tool_messages() {
         let sms = vec![
@@ -778,9 +787,11 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_progress() {
+    fn deserialize_progress_legacy_compat_path_drops_entry_todo() {
         // SerializableMessage with type "progress" is dropped by
-        // serializable_to_messages. This test locks that behavior.
+        // serializable_to_messages in the legacy compatibility path.
+        // TODO(full-build): keep full-fidelity progress replay in typed
+        // record logs instead of relying on this loader.
         let sm = sm(
             "progress",
             "f0000000-0000-0000-0000-000000000006",
@@ -799,9 +810,11 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_attachment() {
+    fn deserialize_attachment_legacy_compat_path_drops_entry_todo() {
         // SerializableMessage with type "attachment" is dropped by
-        // serializable_to_messages. This test locks that behavior.
+        // serializable_to_messages in the legacy compatibility path.
+        // TODO(full-build): keep full-fidelity attachment replay in typed
+        // record logs instead of relying on this loader.
         let sm = sm(
             "attachment",
             "f0000000-0000-0000-0000-000000000007",

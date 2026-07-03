@@ -1684,7 +1684,6 @@ fn permission_risk_level(tool_name: &str, input: &serde_json::Value) -> Option<S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
     use crate::types::tool::ToolResult;
     use serde_json::json;
 
@@ -1786,14 +1785,8 @@ mod tests {
 
     #[test]
     fn permission_rule_tool_passthrough_for_unknown() {
-        assert_eq!(
-            canonical_permission_rule_tool("WebSearch"),
-            "WebSearch"
-        );
-        assert_eq!(
-            canonical_permission_rule_tool("Agent"),
-            "Agent"
-        );
+        assert_eq!(canonical_permission_rule_tool("WebSearch"), "WebSearch");
+        assert_eq!(canonical_permission_rule_tool("Agent"), "Agent");
     }
 
     // ------------------------------------------------------------------
@@ -2091,17 +2084,27 @@ mod tests {
         struct NamedTool(&'static str);
         #[async_trait::async_trait]
         impl crate::types::tool::Tool for NamedTool {
-            fn name(&self) -> &str { self.0 }
-            fn input_json_schema(&self) -> serde_json::Value { json!({}) }
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn input_json_schema(&self) -> serde_json::Value {
+                json!({})
+            }
             async fn call(
                 &self,
                 _input: serde_json::Value,
                 _ctx: &crate::types::tool::ToolUseContext,
                 _parent_message: &crate::types::message::AssistantMessage,
                 _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
-            ) -> anyhow::Result<ToolResult> { Ok(ToolResult::default()) }
-            async fn description(&self, _input: &serde_json::Value) -> String { self.0.to_string() }
-            async fn prompt(&self) -> String { String::new() }
+            ) -> anyhow::Result<ToolResult> {
+                Ok(ToolResult::default())
+            }
+            async fn description(&self, _input: &serde_json::Value) -> String {
+                self.0.to_string()
+            }
+            async fn prompt(&self) -> String {
+                String::new()
+            }
         }
 
         let tools: Tools = vec![

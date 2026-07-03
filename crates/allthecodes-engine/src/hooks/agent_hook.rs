@@ -87,9 +87,14 @@ pub async fn exec_agent_hook(
     _hook_name: &str,
     _hook_event: &str,
     _json_input: &serde_json::Value,
-    _signal: tokio::sync::watch::Receiver<bool>,
+    signal: tokio::sync::watch::Receiver<bool>,
 ) -> HookResult {
-    // TODO: Full implementation:
+    if *signal.borrow() {
+        return HookResult::cancelled();
+    }
+
+    // TODO(full-build): Replace this structural stub with the complete
+    // TypeScript `execAgentHook.ts` behavior:
     //
     // 1. Build system prompt with transcript path
     // 2. Create user message with processed prompt ($ARGUMENTS substituted)
@@ -110,27 +115,11 @@ mod tests {
     use allthecodes_types::hooks::HookEntry;
 
     #[tokio::test]
-    async fn test_exec_agent_hook_stub() {
-        let hook = HookEntry::Agent {
-            prompt: "Test prompt $ARGUMENTS".into(),
-            timeout: 60,
-            model: None,
-            if_condition: None,
-        };
-
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        let result = exec_agent_hook(
-            &hook,
-            "test-agent-hook",
-            "Stop",
-            &serde_json::json!({"test": true}),
-            rx,
-        )
-        .await;
-
-        // Stub returns success
-        assert!(matches!(result.outcome, HookOutcome::Success));
-        drop(tx);
+    #[ignore = "TODO(full-build): implement agent hook query loop and structured output parsing"]
+    async fn test_exec_agent_hook_query_loop_todo() {
+        todo!(
+            "TODO(full-build): run the agent query loop and assert parsing structured `{{ ok: true }}` output"
+        );
     }
 
     // CS-002: Schema test — HookResult constructs with correct fields via factory methods.
@@ -171,9 +160,9 @@ mod tests {
         assert_eq!(r.message.unwrap(), serde_json::json!({"msg": "oops"}));
     }
 
-    // CS-002: Verify the stub does not panic — structural panic check.
+    // CS-002: Cancelled parent/timeout signal should stop agent hook work.
     #[tokio::test]
-    async fn test_no_structural_panic_in_agent_stub() {
+    async fn test_agent_hook_cancelled_signal_returns_cancelled() {
         let hook = HookEntry::Agent {
             prompt: "test $ARGUMENTS".into(),
             timeout: 10,
@@ -191,9 +180,16 @@ mod tests {
         )
         .await;
 
-        // Stub should never panic; results are always a valid HookResult.
-        assert!(matches!(result.outcome, HookOutcome::Success));
+        assert!(matches!(result.outcome, HookOutcome::Cancelled));
         drop(tx);
+    }
+
+    #[tokio::test]
+    #[ignore = "TODO(full-build): agent hooks must parse blocking structured output"]
+    async fn test_agent_hook_blocking_response_todo() {
+        todo!(
+            "TODO(full-build): run the agent query loop with StructuredOutputTool output `{{ ok: false, reason }}` and return HookOutcome::Blocking"
+        );
     }
 
     // CS-002: PreToolUse hook can deny (blocking outcome sets prevent_continuation).
