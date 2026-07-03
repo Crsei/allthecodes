@@ -49,12 +49,17 @@ mod autocompact;
 mod execute;
 mod model_call;
 mod permission;
+mod tool_pipeline;
 pub(crate) use model_call::{model_for_autocompact, tool_execution_result_to_exec_result};
 pub(crate) use permission::{
     auto_classifier_needed, central_permission_decision_for_tool, emit_hook_permission_decision,
     emit_permission_auto_review, emit_permission_decision_debug, hook_error_is_critical,
     permission_denied_message, permission_feedback_message, permission_result_from_decision,
     runtime_permission_decision_label,
+};
+pub(crate) use tool_pipeline::{
+    InputValidationKind, PermissionOverrideStageResult, PipelineStageResult, SanitizedInput,
+    ToolExecutionPipeline,
 };
 
 /// Dependency injection bridge: provides the query loop with access to the

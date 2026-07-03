@@ -33,7 +33,7 @@ impl QueryEngineDeps {
         .await;
     }
 
-    async fn record_tool_permission_response(
+    pub(super) async fn record_tool_permission_response(
         &self,
         request_id: &str,
         decision: impl Into<String>,
@@ -107,7 +107,7 @@ impl QueryEngineDeps {
         on_progress: Option<Arc<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolExecResult> {
         use crate::types::tool::PermissionResult;
-        use allthecodes_types::hooks::{PermissionOverride, PostToolHookResult, PreToolHookResult};
+        use allthecodes_types::hooks::PostToolHookResult;
 
         // Hook dispatcher trait object — decouples the engine from the concrete
         // concrete shell-hook runner (see issue #74, full-build parity).
@@ -254,212 +254,50 @@ impl QueryEngineDeps {
         // Pre-tool hooks.
         let execution_started = std::time::Instant::now();
         let mut permission_decision = AgentRuntimePermissionDecision::NotRequired;
-
-        match tool.validate_input(&request.input, &ctx).await {
-            ValidationResult::Ok => {}
-            ValidationResult::Error { message, .. } => {
-                return Ok(tool_exec_result(
-                    &request,
-                    crate::types::tool::ToolResult {
-                        data: serde_json::json!(format!(
-                            "Input validation error: {}. The schema was not sent - please check the tool's input requirements.",
-                            message
-                        )),
-                        new_messages: vec![],
-                        ..Default::default()
-                    },
-                    true,
-                    false,
-                    request.input.clone(),
-                    elapsed_ms(execution_started),
-                    Some(AgentRuntimePermissionDecision::NotRequired),
-                ));
-            }
-        }
-
-        let mut sanitized_input = request.input.clone();
-        if let Some(obj) = sanitized_input.as_object_mut() {
-            obj.remove("_simulatedSedEdit");
-        }
-
-        if let Some(result) = security_validate(
-            &request.tool_use_id,
-            &request.tool_name,
-            &sanitized_input,
-            tool.as_ref(),
+        let pipeline = ToolExecutionPipeline::new(
+            self,
+            &request,
+            tool.clone(),
             &ctx,
+            hooks,
+            &hooks_map,
+            &pre_configs,
             execution_started,
-        ) {
-            return Ok(
-                tool_execution_result_to_exec_result(result).with_runtime_metadata(
-                    sanitized_input.clone(),
-                    elapsed_ms(execution_started),
-                    Some(AgentRuntimePermissionDecision::DeniedByPolicy),
-                ),
-            );
-        }
+        );
 
-        let (mut effective_input, permission_override) = match hooks
-            .run_pre_tool_hooks(&request.tool_name, &sanitized_input, &pre_configs)
+        if let PipelineStageResult::Finish(result) = pipeline
+            .validate_input(&request.input, InputValidationKind::Original)
             .await
         {
-            Ok(PreToolHookResult::Continue {
-                updated_input,
-                permission_override,
-            }) => (
-                updated_input.unwrap_or_else(|| sanitized_input.clone()),
-                permission_override,
-            ),
-            Ok(PreToolHookResult::Stop { message }) => {
-                return Ok(tool_exec_result(
-                    &request,
-                    crate::types::tool::ToolResult {
-                        data: serde_json::json!(format!("Pre-tool hook stopped: {}", message)),
-                        new_messages: vec![],
-                        ..Default::default()
-                    },
-                    true,
-                    false,
-                    sanitized_input.clone(),
-                    elapsed_ms(execution_started),
-                    Some(AgentRuntimePermissionDecision::DeniedByHook),
-                ));
-            }
-            Err(e) => {
-                if hook_error_is_critical(&request.tool_name, &pre_configs) {
-                    tracing::warn!(error = %e, tool = %request.tool_name, "critical pre-tool hook error, blocking tool execution");
-                    return Ok(tool_exec_result(
-                        &request,
-                        crate::types::tool::ToolResult {
-                            data: serde_json::json!(format!(
-                                "Critical pre-tool hook failed: {}",
-                                e
-                            )),
-                            new_messages: vec![],
-                            ..Default::default()
-                        },
-                        true,
-                        false,
-                        sanitized_input.clone(),
-                        elapsed_ms(execution_started),
-                        Some(AgentRuntimePermissionDecision::DeniedByHook),
-                    ));
-                } else {
-                    tracing::warn!(error = %e, "optional pre-tool hook error, continuing");
-                    (sanitized_input.clone(), None)
-                }
-            }
-        };
-
-        if effective_input != sanitized_input {
-            match tool.validate_input(&effective_input, &ctx).await {
-                ValidationResult::Ok => {}
-                ValidationResult::Error { message, .. } => {
-                    return Ok(tool_exec_result(
-                        &request,
-                        crate::types::tool::ToolResult {
-                            data: serde_json::json!(format!(
-                                "Pre-tool hook produced invalid input: {}.",
-                                message
-                            )),
-                            new_messages: vec![],
-                            ..Default::default()
-                        },
-                        true,
-                        false,
-                        effective_input.clone(),
-                        elapsed_ms(execution_started),
-                        Some(AgentRuntimePermissionDecision::DeniedByHook),
-                    ));
-                }
-            }
-
-            if let Some(result) = security_validate(
-                &request.tool_use_id,
-                &request.tool_name,
-                &effective_input,
-                tool.as_ref(),
-                &ctx,
-                execution_started,
-            ) {
-                return Ok(
-                    tool_execution_result_to_exec_result(result).with_runtime_metadata(
-                        effective_input.clone(),
-                        elapsed_ms(execution_started),
-                        Some(AgentRuntimePermissionDecision::DeniedByPolicy),
-                    ),
-                );
-            }
+            return Ok(result);
         }
+
+        let SanitizedInput {
+            value: sanitized_input,
+        } = pipeline.sanitize_input();
+
+        if let PipelineStageResult::Finish(result) = pipeline.security_validate(&sanitized_input) {
+            return Ok(result);
+        }
+
+        let pre_hook = match pipeline.run_pre_hooks(&sanitized_input).await {
+            PipelineStageResult::Continue(pre_hook) => pre_hook,
+            PipelineStageResult::Finish(result) => return Ok(result),
+        };
+        let mut effective_input = pre_hook.effective_input;
 
         // Permission check (tool-local checks first, then central rules/mode).
-        let hook_decision = match permission_override.as_ref() {
-            Some(PermissionOverride::Allow) => {
-                permission_decision = AgentRuntimePermissionDecision::AllowedByHook;
-                tracing::debug!(
-                    tool = %request.tool_name,
-                    "Permission allow requested by hook override"
-                );
-                emit_hook_permission_decision(
-                    &ctx,
-                    "PreToolUse",
-                    "PreToolUse",
-                    "*",
-                    "allow",
-                    vec![format!("tool: {}", request.tool_name)],
-                );
-                Some(crate::permissions::decision::HookPermissionDecision {
-                    allow: true,
-                    source: Some("PreToolUse".to_string()),
-                    ..Default::default()
-                })
-            }
-            Some(PermissionOverride::Deny { .. }) | None => None,
-        };
-
-        if let Some(PermissionOverride::Deny { reason }) = permission_override.as_ref() {
-            permission_decision = AgentRuntimePermissionDecision::DeniedByHook;
-            emit_hook_permission_decision(
-                &ctx,
-                "PreToolUse",
-                "PreToolUse",
-                "*",
-                "deny",
-                vec![reason.clone()],
-            );
-            // Fire PermissionDenied hook
-            let deny_configs = hooks.load_hook_configs(&hooks_map, "PermissionDenied");
-            if !deny_configs.is_empty() {
-                let payload = serde_json::json!({
-                    "tool_name": request.tool_name,
-                    "tool_input": effective_input.clone(),
-                    "reason": format!("Permission denied by hook: {}", reason),
-                });
-                let _ = hooks
-                    .run_event_hooks("PermissionDenied", &payload, &deny_configs)
-                    .await;
-            }
-
-            self.record_tool_permission_response(
-                &request.tool_use_id,
-                "deny",
-                Some(format!("Permission denied by hook: {reason}")),
+        let hook_decision = match pipeline
+            .resolve_permission(
+                pre_hook.permission_override.as_ref(),
+                &effective_input,
+                &mut permission_decision,
             )
-            .await;
-            return Ok(tool_exec_result(
-                &request,
-                crate::types::tool::ToolResult {
-                    data: serde_json::json!(format!("Permission denied by hook: {}", reason)),
-                    new_messages: vec![],
-                    ..Default::default()
-                },
-                true,
-                false,
-                effective_input.clone(),
-                elapsed_ms(execution_started),
-                Some(permission_decision),
-            ));
-        }
+            .await
+        {
+            PermissionOverrideStageResult::Continue(result) => result.hook_decision,
+            PermissionOverrideStageResult::Finish(result) => return Ok(result),
+        };
 
         let mut accepted_permission_feedback: Option<String> = None;
         {
@@ -615,6 +453,10 @@ impl QueryEngineDeps {
                     ));
                 }
                 PermissionResult::Ask { message } => {
+                    if let PipelineStageResult::Finish(result) = pipeline.maybe_prompt_user().await
+                    {
+                        return Ok(result);
+                    }
                     // Emit permission.requested audit event
                     {
                         use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
@@ -1209,6 +1051,9 @@ impl QueryEngineDeps {
 
         // Tool execution with post-hooks.
 
+        if let PipelineStageResult::Finish(result) = pipeline.record_and_audit() {
+            return Ok(result);
+        }
         // Emit tool.start audit event
         let tool_audit_ctx = self.audit_ctx.with_tool_use(&request.tool_use_id);
         let tool_langfuse_span = self.langfuse_trace.as_ref().and_then(|trace| {
@@ -1252,6 +1097,9 @@ impl QueryEngineDeps {
                 }) as Box<dyn Fn(ToolProgress) + Send + Sync>
             });
 
+        if let PipelineStageResult::Finish(result) = pipeline.call_tool().await {
+            return Ok(result);
+        }
         match tool
             .call(
                 effective_input.clone(),
@@ -1295,6 +1143,9 @@ impl QueryEngineDeps {
 
                 // Run post-tool hooks on success
                 let mut hook_stopped_continuation = false;
+                if let PipelineStageResult::Finish(result) = pipeline.run_post_hooks().await {
+                    return Ok(result);
+                }
                 if !post_configs.is_empty() {
                     match hooks
                         .run_post_tool_hooks(
@@ -1475,11 +1326,11 @@ async fn record_replay_items_for_handle(
     }
 }
 
-fn elapsed_ms(started: std::time::Instant) -> Option<u64> {
+pub(super) fn elapsed_ms(started: std::time::Instant) -> Option<u64> {
     Some(started.elapsed().as_millis() as u64)
 }
 
-fn tool_exec_result(
+pub(super) fn tool_exec_result(
     request: &ToolExecRequest,
     result: crate::types::tool::ToolResult,
     is_error: bool,
@@ -1500,7 +1351,7 @@ fn tool_exec_result(
     }
 }
 
-fn permission_denied_exec_result(
+pub(super) fn permission_denied_exec_result(
     request: &ToolExecRequest,
     message: String,
     effective_input: serde_json::Value,

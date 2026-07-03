@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::command_runtime::{CommandContext, CommandExecutor, CommandResult};
@@ -524,6 +525,135 @@ impl HookRunner for RecordingToolHookRunner {
     }
 }
 
+#[derive(Clone, Copy)]
+enum BaselinePermission {
+    Allow,
+    Deny,
+}
+
+struct ToolExecutionBaselineTool {
+    calls: Arc<AtomicUsize>,
+    seen_inputs: Arc<parking_lot::Mutex<Vec<Value>>>,
+    permission: BaselinePermission,
+}
+
+#[async_trait::async_trait]
+impl crate::types::tool::Tool for ToolExecutionBaselineTool {
+    fn name(&self) -> &str {
+        "ToolExecutionBaseline"
+    }
+
+    async fn description(&self, _input: &Value) -> String {
+        "tool execution baseline tool".to_string()
+    }
+
+    fn input_json_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    async fn check_permissions(
+        &self,
+        input: &Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+    ) -> PermissionResult {
+        match self.permission {
+            BaselinePermission::Allow => PermissionResult::Allow {
+                updated_input: input.clone(),
+            },
+            BaselinePermission::Deny => PermissionResult::Deny {
+                message: "baseline denied".to_string(),
+            },
+        }
+    }
+
+    async fn call(
+        &self,
+        input: Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+        _parent_message: &AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
+    ) -> anyhow::Result<ToolResult> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.seen_inputs.lock().push(input.clone());
+        Ok(ToolResult {
+            data: json!({ "input": input }),
+            ..Default::default()
+        })
+    }
+
+    async fn prompt(&self) -> String {
+        String::new()
+    }
+}
+
+#[derive(Default)]
+struct ToolExecutionBaselineHookRunner {
+    updated_input: Option<Value>,
+}
+
+#[async_trait::async_trait]
+impl HookRunner for ToolExecutionBaselineHookRunner {
+    fn load_hook_configs(&self, _hooks_value: &HooksMap, event_name: &str) -> Vec<HookEventConfig> {
+        if event_name == "PreToolUse" && self.updated_input.is_some() {
+            vec![HookEventConfig {
+                matcher: Some("*".to_string()),
+                critical: false,
+                hooks: vec![],
+            }]
+        } else {
+            vec![]
+        }
+    }
+
+    async fn run_pre_tool_hooks(
+        &self,
+        _tool_name: &str,
+        _input: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PreToolHookResult> {
+        Ok(PreToolHookResult::Continue {
+            updated_input: self.updated_input.clone(),
+            permission_override: None,
+        })
+    }
+
+    async fn run_post_tool_hooks(
+        &self,
+        _tool_name: &str,
+        _input: &Value,
+        _tool_result_data: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PostToolHookResult> {
+        Ok(PostToolHookResult::Continue)
+    }
+
+    async fn run_post_tool_failure_hooks(
+        &self,
+        _tool_name: &str,
+        _input: &Value,
+        _error: &str,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn run_event_hooks(
+        &self,
+        _event_name: &str,
+        _payload: &Value,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<HookOutput> {
+        Ok(HookOutput::default())
+    }
+
+    async fn run_stop_hooks(
+        &self,
+        _hook_configs: &[HookEventConfig],
+    ) -> anyhow::Result<PostToolHookResult> {
+        Ok(PostToolHookResult::Continue)
+    }
+}
+
 fn make_config() -> QueryEngineConfig {
     QueryEngineConfig {
         cwd: "/tmp".to_string(),
@@ -550,6 +680,63 @@ fn make_config() -> QueryEngineConfig {
 
 fn permission_callback(decision: &'static str) -> PermissionCallback {
     Arc::new(move |_| Box::pin(async move { PermissionResponsePayload::decision(decision) }))
+}
+
+async fn execute_tool_execution_baseline(
+    tool: Arc<ToolExecutionBaselineTool>,
+    hook_runner: Arc<dyn HookRunner>,
+    configure_permissions: impl FnOnce(&mut allthecodes_types::permissions::ToolPermissionContext),
+    audit_ctx: crate::observability::AuditContext,
+) -> crate::query::deps::ToolExecResult {
+    let tools: crate::types::tool::Tools = vec![tool];
+    let mut config = make_config();
+    config.tools = tools.clone();
+    let engine = QueryEngine::new(config);
+    {
+        let mut state = engine.state.write();
+        configure_permissions(&mut state.app_state.tool_permission_context);
+    }
+    let deps = super::deps::QueryEngineDeps {
+        aborted: engine.aborted.clone(),
+        state: engine.state.clone(),
+        runtime_services: engine.runtime_services.clone(),
+        cwd: "/tmp".to_string(),
+        session_id: "tool-execution-baseline".to_string(),
+        query_source: crate::types::config::QuerySource::ReplMainThread,
+        audit_ctx,
+        langfuse_trace: None,
+        api_client: None,
+        session_recorder: engine.session_recorder.clone(),
+        agent_context: None,
+        permission_callback: None,
+        bg_agent_tx: None,
+        permission_event_callback: None,
+        tool_progress_callback: None,
+        pending_bg_results: engine.pending_bg_results.clone(),
+        active_steer_state: engine.active_steer_state.clone(),
+        hook_runner,
+        command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
+        auto_classifier_fn: None,
+        submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
+        submit_tools: None,
+    };
+    let Message::Assistant(parent) = assistant_message("tool execution parent") else {
+        unreachable!("assistant_message returns an assistant message");
+    };
+
+    deps.execute_tool_impl(
+        crate::query::deps::ToolExecRequest {
+            tool_use_id: "tool-execution-call".to_string(),
+            tool_name: "ToolExecutionBaseline".to_string(),
+            input: json!({"value": "original"}),
+            langfuse_batch_span: None,
+        },
+        &tools,
+        &parent,
+        None,
+    )
+    .await
+    .expect("execute tool execution baseline")
 }
 
 fn make_lifecycle_deps(
@@ -628,6 +815,115 @@ fn test_query_engine_creation() {
     assert!(engine.usage().total_cost_usd == 0.0);
     assert!(!engine.session_id.as_str().is_empty());
     assert_eq!(engine.current_session_id(), engine.session_id);
+}
+
+#[tokio::test]
+async fn tool_execution_preserves_pre_hook_modified_input() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Allow,
+    });
+    let hook_runner = Arc::new(ToolExecutionBaselineHookRunner {
+        updated_input: Some(json!({"value": "from-hook"})),
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        hook_runner,
+        |ctx| ctx.grant_session_allow("ToolExecutionBaseline"),
+        crate::observability::AuditContext::noop("tool-execution-baseline"),
+    )
+    .await;
+
+    assert!(!result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(result.effective_input, json!({"value": "from-hook"}));
+    assert_eq!(
+        seen_inputs.lock().as_slice(),
+        &[json!({"value": "from-hook"})]
+    );
+    assert_eq!(result.result.data["input"], json!({"value": "from-hook"}));
+}
+
+#[tokio::test]
+async fn tool_execution_denied_permission_does_not_call_tool() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Deny,
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        Arc::new(ToolExecutionBaselineHookRunner::default()),
+        |_| {},
+        crate::observability::AuditContext::noop("tool-execution-baseline"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(seen_inputs.lock().is_empty());
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("baseline denied")));
+}
+
+#[tokio::test]
+async fn tool_execution_records_audit_after_success() {
+    let audit_dir = tempdir().unwrap();
+    let session_id = "tool-execution-audit";
+    let sink = crate::observability::AuditSink::init(
+        session_id,
+        audit_dir.path().to_path_buf(),
+        &crate::observability::SessionMeta {
+            session_id: session_id.to_string(),
+            started_at: chrono::Utc::now(),
+            cwd: "/tmp".to_string(),
+            version: "test".to_string(),
+            platform: "test".to_string(),
+            source: "test".to_string(),
+        },
+        crate::observability::AuditConfig {
+            enabled: true,
+            stream_deltas: false,
+            redaction: crate::observability::sink::RedactionMode::Off,
+        },
+    )
+    .expect("audit sink");
+    let audit_ctx = crate::observability::AuditContext::new(session_id, "test", sink);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        permission: BaselinePermission::Allow,
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        Arc::new(ToolExecutionBaselineHookRunner::default()),
+        |ctx| ctx.mode = PermissionMode::Bypass,
+        audit_ctx.clone(),
+    )
+    .await;
+    audit_ctx.flush();
+
+    assert!(!result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let events = std::fs::read_to_string(audit_dir.path().join("events.ndjson")).unwrap();
+    let event_kinds = events
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()["kind"].clone())
+        .collect::<Vec<_>>();
+    assert!(event_kinds.contains(&json!("tool_start")));
+    assert!(event_kinds.contains(&json!("tool_finish")));
 }
 
 #[test]
