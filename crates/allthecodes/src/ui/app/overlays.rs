@@ -6,7 +6,7 @@ use super::agent_tree_dialog::AgentTreeDialog;
 use super::AppAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ActiveOverlay {
+pub(crate) enum ActiveOverlay {
     BypassPermissions,
     Question,
     Permission,

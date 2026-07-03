@@ -54,6 +54,9 @@ use domain::{ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiSt
 use overlays::OverlayState;
 use runtime_state::RuntimeViewState;
 
+#[cfg(test)]
+pub(crate) use overlays::ActiveOverlay;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalStatusSnapshot {
     pub event: String,
@@ -539,6 +542,11 @@ impl App {
     pub fn dismiss_permission_dialog(&mut self) {
         self.overlays.clear_permission();
         self.dirty = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_overlay_for_tests(&self) -> Option<ActiveOverlay> {
+        self.overlays.active_overlay()
     }
 
     pub fn should_quit(&self) -> bool {

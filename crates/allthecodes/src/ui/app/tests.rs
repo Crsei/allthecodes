@@ -301,6 +301,40 @@ fn idle_tab_submits_instead_of_queueing() {
 }
 
 #[test]
+fn app_facade_routes_messages_through_conversation_store() {
+    let mut app = App::new();
+    add_user_message(&mut app, "hello");
+
+    assert_eq!(app.messages().len(), 1);
+    let Message::User(message) = &app.messages()[0] else {
+        panic!("expected user message");
+    };
+    assert!(matches!(
+        &message.content,
+        MessageContent::Text(text) if text == "hello"
+    ));
+}
+
+#[test]
+fn app_overlay_priority_is_stable_for_question_then_permission() {
+    let mut app = App::new();
+    app.show_question_dialog(
+        "q-1",
+        AskUserRequestPayload {
+            question: "Pick one".to_string(),
+            choices: vec!["A".to_string()],
+            allow_free_text: false,
+        },
+    );
+    app.show_permission_dialog("Bash", r#"{"command":"cargo test"}"#, "Run command?");
+
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::Question)
+    );
+}
+
+#[test]
 fn app_owns_queued_prompt_fifo() {
     let mut app = App::new();
 
