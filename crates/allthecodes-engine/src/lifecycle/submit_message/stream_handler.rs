@@ -15,6 +15,26 @@ use super::super::QueryEngineState;
 use super::transaction::SubmitTransaction;
 use super::{finish_submit_telemetry, SubmitTelemetrySpan, SubmitTurnState};
 
+pub(super) enum QueryTurnEvent {
+    Stream(StreamEvent),
+    RequestStart,
+    Message(Message),
+    Tombstone(crate::types::message::TombstoneMessage),
+    ToolUseSummary(crate::types::message::ToolUseSummaryMessage),
+}
+
+impl From<QueryYield> for QueryTurnEvent {
+    fn from(item: QueryYield) -> Self {
+        match item {
+            QueryYield::Stream(event) => Self::Stream(event),
+            QueryYield::RequestStart(_) => Self::RequestStart,
+            QueryYield::Message(message) => Self::Message(message),
+            QueryYield::Tombstone(tombstone) => Self::Tombstone(tombstone),
+            QueryYield::ToolUseSummary(summary) => Self::ToolUseSummary(summary),
+        }
+    }
+}
+
 pub(super) enum StreamAction {
     Yield(SdkMessage),
     Terminate(SdkResult),
@@ -40,25 +60,27 @@ pub(super) struct BudgetStop {
 }
 
 pub(super) fn process_stream_item(
-    item: QueryYield,
+    item: QueryTurnEvent,
     ctx: &mut StreamContext<'_>,
 ) -> Vec<StreamAction> {
     match item {
-        QueryYield::Message(Message::Assistant(assistant_msg)) => {
+        QueryTurnEvent::Message(Message::Assistant(assistant_msg)) => {
             handle_assistant_message(assistant_msg, ctx)
         }
-        QueryYield::Message(Message::User(user_msg)) => handle_user_message(user_msg, ctx),
-        QueryYield::Message(Message::Progress(progress_msg)) => {
+        QueryTurnEvent::Message(Message::User(user_msg)) => handle_user_message(user_msg, ctx),
+        QueryTurnEvent::Message(Message::Progress(progress_msg)) => {
             handle_progress_message(progress_msg, ctx)
         }
-        QueryYield::Message(Message::System(system_msg)) => handle_system_message(system_msg, ctx),
-        QueryYield::Message(Message::Attachment(attachment_msg)) => {
+        QueryTurnEvent::Message(Message::System(system_msg)) => {
+            handle_system_message(system_msg, ctx)
+        }
+        QueryTurnEvent::Message(Message::Attachment(attachment_msg)) => {
             handle_attachment_message(attachment_msg, ctx)
         }
-        QueryYield::Stream(event) => handle_stream_event(event, ctx),
-        QueryYield::RequestStart(_) => handle_request_start(),
-        QueryYield::Tombstone(tombstone) => handle_tombstone(tombstone, ctx),
-        QueryYield::ToolUseSummary(summary_msg) => handle_tool_use_summary(summary_msg, ctx),
+        QueryTurnEvent::Stream(event) => handle_stream_event(event, ctx),
+        QueryTurnEvent::RequestStart => handle_request_start(),
+        QueryTurnEvent::Tombstone(tombstone) => handle_tombstone(tombstone, ctx),
+        QueryTurnEvent::ToolUseSummary(summary_msg) => handle_tool_use_summary(summary_msg, ctx),
     }
 }
 
@@ -162,6 +184,7 @@ fn handle_assistant_message(
 
     let mut actions = transaction
         .commit(ctx.state_ref, ctx.session_id, ctx.config)
+        .into_sdk_messages()
         .into_iter()
         .map(StreamAction::Yield)
         .collect::<Vec<_>>();
@@ -352,9 +375,8 @@ fn handle_user_message(
 ) -> Vec<StreamAction> {
     ctx.submit_turn.turn_count_this_submit += 1;
 
-    ctx.state_ref.write().transcript.total_turn_count += 1;
-
     let mut transaction = SubmitTransaction::new();
+    transaction.increment_turn_count();
     transaction.append_message(Message::User(user_msg.clone()));
     transaction.persist(Message::User(user_msg.clone()));
     if ctx.replay_user_messages {
@@ -380,6 +402,7 @@ fn handle_user_message(
 
     transaction
         .commit(ctx.state_ref, ctx.session_id, ctx.config)
+        .into_sdk_messages()
         .into_iter()
         .map(StreamAction::Yield)
         .collect()
@@ -394,6 +417,7 @@ fn handle_progress_message(
     transaction.persist(Message::Progress(progress_msg));
     transaction
         .commit(ctx.state_ref, ctx.session_id, ctx.config)
+        .into_sdk_messages()
         .into_iter()
         .map(StreamAction::Yield)
         .collect()
@@ -422,6 +446,7 @@ fn handle_system_message(
             }));
             transaction
                 .commit(ctx.state_ref, ctx.session_id, ctx.config)
+                .into_sdk_messages()
                 .into_iter()
                 .map(StreamAction::Yield)
                 .collect()
@@ -448,6 +473,7 @@ fn handle_system_message(
             }));
             transaction
                 .commit(ctx.state_ref, ctx.session_id, ctx.config)
+                .into_sdk_messages()
                 .into_iter()
                 .map(StreamAction::Yield)
                 .collect()
@@ -457,6 +483,7 @@ fn handle_system_message(
             transaction.append_message(Message::System(system_msg));
             transaction
                 .commit(ctx.state_ref, ctx.session_id, ctx.config)
+                .into_sdk_messages()
                 .into_iter()
                 .map(StreamAction::Yield)
                 .collect()
@@ -472,6 +499,7 @@ fn handle_attachment_message(
     transaction.append_message(Message::Attachment(attachment_msg.clone()));
     let appended_events = transaction
         .commit(ctx.state_ref, ctx.session_id, ctx.config)
+        .into_sdk_messages()
         .into_iter()
         .map(StreamAction::Yield)
         .collect::<Vec<_>>();
@@ -600,32 +628,21 @@ fn handle_tombstone(
         assistant_uuid = %tombstone.message.uuid,
         "tombstone received (model fallback retry)"
     );
-    {
-        let mut state = ctx.state_ref.write();
-        state.transcript.messages.retain(|message| {
-            !matches!(
-                message,
-                Message::Assistant(assistant) if assistant.uuid == tombstone.message.uuid
-            )
-        });
-    }
-
-    let action = StreamAction::Yield(SdkMessage::Tombstone(SdkTombstone {
+    let mut transaction = SubmitTransaction::new();
+    transaction.remove_assistant_message(tombstone.message.uuid);
+    transaction.emit(SdkMessage::Tombstone(SdkTombstone {
         message: tombstone.message.clone(),
         session_id: ctx.session_id.to_string(),
         uuid: Uuid::new_v4(),
     }));
+    transaction.save_session_after_commit();
 
-    if ctx.config.auto_save_session {
-        let all_msgs = ctx.state_ref.read().transcript.messages.clone();
-        let _ = crate::session::storage::save_session(
-            ctx.session_id.as_str(),
-            &all_msgs,
-            &ctx.config.cwd,
-        );
-    }
-
-    vec![action]
+    transaction
+        .commit(ctx.state_ref, ctx.session_id, ctx.config)
+        .into_sdk_messages()
+        .into_iter()
+        .map(StreamAction::Yield)
+        .collect()
 }
 
 fn handle_tool_use_summary(
@@ -879,6 +896,23 @@ mod tests {
             stored_metadata.pre_compact_discovered_tools.as_deref(),
             Some(&["VaultHttpFetch".to_string()][..])
         );
+    }
+
+    #[test]
+    fn query_yield_wraps_into_typed_turn_event_before_submit_handling() {
+        let event = QueryTurnEvent::from(QueryYield::RequestStart(Default::default()));
+        assert!(matches!(event, QueryTurnEvent::RequestStart));
+
+        let system = SystemMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1,
+            subtype: SystemSubtype::Informational {
+                level: crate::types::message::InfoLevel::Info,
+            },
+            content: "notice".to_string(),
+        };
+        let event = QueryTurnEvent::from(QueryYield::Message(Message::System(system)));
+        assert!(matches!(event, QueryTurnEvent::Message(Message::System(_))));
     }
 }
 

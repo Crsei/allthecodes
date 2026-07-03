@@ -21,6 +21,30 @@ pub(crate) struct QueryTurnTransitionError {
     pub(crate) attempted: &'static str,
 }
 
+impl QueryTurnTransitionError {
+    pub(crate) fn to_terminal_message(
+        self,
+        turn: usize,
+    ) -> crate::types::message::AssistantMessage {
+        crate::types::message::AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            role: "assistant".to_string(),
+            content: vec![crate::types::message::ContentBlock::Text {
+                text: format!(
+                    "Query turn lifecycle transition failed on turn {turn}: attempted {} from {:?}.",
+                    self.attempted, self.from
+                ),
+            }],
+            usage: None,
+            stop_reason: Some("query_turn_transition_error".to_string()),
+            is_api_error_message: true,
+            api_error: None,
+            cost_usd: 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QueryTurnState {
     turn: usize,
@@ -162,5 +186,27 @@ mod query_turn_state_tests {
             state.abort_point(),
             Some(QueryTurnAbortPoint::ToolExecution)
         );
+    }
+
+    #[test]
+    fn query_turn_transition_error_becomes_terminal_event_message() {
+        let mut state = QueryTurnState::new(7);
+        state.start_streaming().expect("start streaming");
+        state.finish_streaming(true).expect("enter tool execution");
+        let error = state
+            .start_streaming()
+            .expect_err("invalid restart should be rejected");
+
+        let message = error.to_terminal_message(7);
+
+        assert!(message.is_api_error_message);
+        assert_eq!(
+            message.stop_reason.as_deref(),
+            Some("query_turn_transition_error")
+        );
+        assert!(message.content.iter().any(
+            |block| matches!(block, crate::types::message::ContentBlock::Text { text }
+                if text.contains("start_streaming") && text.contains("ToolExecution"))
+        ));
     }
 }

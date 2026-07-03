@@ -226,7 +226,10 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                 }
                 let model_call_start = std::time::Instant::now();
                 if let Err(error) = query_turn_state.start_streaming() {
-                    debug!(?error, "query turn state rejected streaming transition");
+                    yield QueryYield::Message(Message::Assistant(
+                        error.to_terminal_message(turn_count),
+                    ));
+                    break 'query_loop;
                 }
 
                 let stream_result = deps.call_model_streaming(attempt_params.clone()).await;
@@ -580,7 +583,10 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
             let tool_uses = stop_hooks::extract_tool_uses(&assistant_message);
             if let Err(error) = query_turn_state.finish_streaming(!tool_uses.is_empty()) {
-                debug!(?error, "query turn state rejected streaming completion");
+                yield QueryYield::Message(Message::Assistant(
+                    error.to_terminal_message(turn_count),
+                ));
+                break 'query_loop;
             }
             if goal_continuation_scheduler
                 .observe_assistant_response(&assistant_message)
@@ -924,7 +930,10 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                 }
 
                 if let Err(error) = query_turn_state.finish_tool_execution() {
-                    debug!(?error, "query turn state rejected tool completion");
+                    yield QueryYield::Message(Message::Assistant(
+                        error.to_terminal_message(turn_count),
+                    ));
+                    break 'query_loop;
                 }
                 state.transition = Some(Continue::NextTurn);
                 state.turn_count += 1;
