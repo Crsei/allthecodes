@@ -14,6 +14,7 @@ use anyhow::Result;
 use futures::Stream;
 use uuid::Uuid;
 
+use allthecodes_tools::metadata::{ToolMetadata, ToolRisk};
 use allthecodes_types::callbacks::PermissionEventPayload;
 use allthecodes_types::permission_events::{
     HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
@@ -114,21 +115,9 @@ pub(crate) struct QueryEngineDeps {
     pub(crate) submit_tools: Option<Tools>,
 }
 
-/// Tools that are always allowed in Auto mode without classifier classification.
-const AUTO_MODE_ALLOWLISTED_TOOLS: &[&str] = &[
-    "Read",
-    "Grep",
-    "Glob",
-    "LSP",
-    "Sleep",
-    "TaskCreate",
-    "TaskUpdate",
-    "TaskGet",
-    "TaskList",
-    "Plan",
-    "WebSearch",
-    "WebFetch",
-];
+fn auto_mode_allows_without_classifier(tool_name: &str) -> bool {
+    ToolMetadata::from_tool_name(tool_name).risk <= ToolRisk::Low
+}
 
 impl QueryEngineDeps {
     /// Compute an auto-mode classifier decision if the classifier is configured
@@ -148,8 +137,8 @@ impl QueryEngineDeps {
             if state.app_state.tool_permission_context.mode != PermissionMode::Auto {
                 return None;
             }
-            // Allowlisted tools bypass the classifier entirely in Auto mode.
-            if AUTO_MODE_ALLOWLISTED_TOOLS.contains(&tool_name) {
+            // Low-risk tools bypass the classifier entirely in Auto mode.
+            if auto_mode_allows_without_classifier(tool_name) {
                 return Some(AutoClassifierDecision::allow(
                     "allowlisted-tool",
                     AutoClassifierStage::Fast,
@@ -330,6 +319,29 @@ impl QueryDeps for QueryEngineDeps {
         use allthecodes_types::agent_channel::AgentIpcEvent;
         if let Some(ref tx) = self.bg_agent_tx {
             let _ = tx.send(AgentIpcEvent::Agent(event));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_mode_allowlist_uses_low_risk_metadata() {
+        for tool_name in [
+            "Read", "Grep", "Glob", "LSP", "Sleep", "TaskList", "WebFetch",
+        ] {
+            assert!(
+                auto_mode_allows_without_classifier(tool_name),
+                "{tool_name} should keep bypassing Auto classifier review"
+            );
+        }
+        for tool_name in ["Bash", "Agent", "Write", "Edit", "AskUserQuestion"] {
+            assert!(
+                !auto_mode_allows_without_classifier(tool_name),
+                "{tool_name} should still require Auto classifier review"
+            );
         }
     }
 }

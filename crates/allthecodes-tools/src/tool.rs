@@ -8,6 +8,8 @@ use anyhow::Result;
 use parking_lot::RwLock;
 use serde_json::Value;
 
+use crate::metadata::ToolMetadata;
+
 pub use allthecodes_types::callbacks::{
     AskUserCallback, AskUserRequestPayload, PermissionCallback, PermissionEventCallback,
     PermissionEventPayload, PermissionRequestPayload, PermissionResponsePayload, ToolProgress,
@@ -223,6 +225,10 @@ pub struct QueryChainTracking {
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::from_tool_name(self.name())
+    }
 
     async fn description(&self, input: &Value) -> String;
 
