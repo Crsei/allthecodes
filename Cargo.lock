@@ -566,6 +566,7 @@ name = "allthecodes-mcp"
 version = "0.1.0"
 dependencies = [
  "allthecodes-config",
+ "allthecodes-tools",
  "allthecodes-types",
  "anyhow",
  "base64",

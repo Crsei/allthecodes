@@ -2,6 +2,7 @@
 
 pub mod api_dispatcher;
 pub mod api_errors;
+pub(crate) mod api_operation_registry;
 pub mod handler_registry;
 pub mod handlers;
 pub mod ipc_streams;

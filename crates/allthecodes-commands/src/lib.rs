@@ -622,6 +622,39 @@ pub fn command_metadata(commands: &[Command]) -> Vec<CommandMetadata> {
     commands.iter().map(Command::metadata).collect()
 }
 
+pub fn runtime_capability_registry_from_commands(
+    commands: &[CommandMetadata],
+) -> allthecodes_tools::runtime_capability::RuntimeCapabilityRegistry {
+    let mut registry = allthecodes_tools::runtime_capability::RuntimeCapabilityRegistry::new();
+    for metadata in commands {
+        registry.register(runtime_capability_from_command(metadata));
+    }
+    registry
+}
+
+pub fn runtime_capability_from_command(
+    metadata: &CommandMetadata,
+) -> allthecodes_tools::runtime_capability::RuntimeCapability {
+    allthecodes_tools::runtime_capability::RuntimeCapability::builtin_command(
+        slash_command_name(&metadata.name),
+        metadata
+            .aliases
+            .iter()
+            .map(|alias| slash_command_name(alias))
+            .collect(),
+        metadata.description.clone(),
+        is_hidden_command(&metadata.name),
+    )
+}
+
+fn slash_command_name(name: &str) -> String {
+    if name.starts_with('/') {
+        name.to_string()
+    } else {
+        format!("/{name}")
+    }
+}
+
 /// Build the full list of available commands.
 ///
 /// Runtime-dependent commands use provider hooks in [`runtime`] and in their
@@ -1299,5 +1332,33 @@ mod tests {
         assert_eq!(parsed.index, 2);
         assert_eq!(parsed.args, "");
         assert_eq!(dispatcher.command_name(0).as_deref(), Some("init"));
+    }
+
+    #[test]
+    fn command_metadata_projects_into_runtime_capability_registry() {
+        let registry =
+            runtime_capability_registry_from_commands(&command_metadata(&sample_commands()));
+
+        let help = registry.get("/help").expect("help command capability");
+        assert_eq!(
+            help.kind,
+            allthecodes_tools::runtime_capability::RuntimeCapabilityKind::Command
+        );
+        assert_eq!(help.aliases, vec!["/h".to_string(), "/?".to_string()]);
+        assert_eq!(help.description.as_deref(), Some("Show help"));
+        assert_eq!(help.permission_subject.as_deref(), Some("Command(/help)"));
+        assert!(help.discoverable);
+
+        let hidden_registry = runtime_capability_registry_from_commands(&[CommandMetadata {
+            name: "advisor".to_string(),
+            aliases: vec![],
+            description: "Hidden advisor model command".to_string(),
+        }]);
+        let advisor = hidden_registry.get("/advisor").expect("hidden command");
+        assert_eq!(
+            advisor.visibility,
+            allthecodes_tools::runtime_capability::RuntimeCapabilityVisibility::Hidden
+        );
+        assert!(!advisor.discoverable);
     }
 }

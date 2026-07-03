@@ -22,6 +22,7 @@ tokio-util = { workspace = true }
 url = { workspace = true }
 
 allthecodes-config = { workspace = true }
+allthecodes-tools = { workspace = true }
 allthecodes-types = { path = "../allthecodes-types", default-features = false }
 keyring = { workspace = true }
 

@@ -63,7 +63,7 @@ impl App {
             }
             // Export to editor.
             (_, Char('e')) => {
-                let body = transcript::render_markdown_dump(&self.messages);
+                let body = transcript::render_markdown_dump(self.conversation.messages());
                 return AppAction::ExportTranscript(body);
             }
             // Less-style scroll.
@@ -115,7 +115,8 @@ impl App {
     }
 
     pub(super) fn commit_search(&mut self) {
-        let hits = transcript::search_messages(&self.messages, &self.transcript_state.query);
+        let hits =
+            transcript::search_messages(self.conversation.messages(), &self.transcript_state.query);
         self.transcript_state.set_matches(hits);
         self.transcript_state.input_mode = TranscriptInputMode::Normal;
         self.snap_to_current_match();
@@ -126,7 +127,7 @@ impl App {
     /// the rest of the clamp.
     pub(super) fn snap_to_current_match(&mut self) {
         if let Some(SearchMatch { message_index }) = self.transcript_state.current_match() {
-            let line = self.vscroll.visual_offset_of(message_index);
+            let line = self.conversation.vscroll().visual_offset_of(message_index);
             // Bias slightly upward so the line has context above it.
             self.transcript_state.scroll_offset = line.saturating_sub(1);
             self.dirty = true;

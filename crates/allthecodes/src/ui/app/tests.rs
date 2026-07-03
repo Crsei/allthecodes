@@ -209,10 +209,13 @@ fn mouse_click_session_scrollbar_controls_prompt_messages() {
             source_tool_assistant_uuid: None,
         }));
     }
-    app.scroll_offset = 0;
+    app.conversation.set_scroll_offset(0);
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
     terminal.draw(|frame| app.render(frame)).expect("draw");
-    let scrollbar = app.session_scrollbar.expect("session scrollbar");
+    let scrollbar = app
+        .render_layout
+        .session_scrollbar
+        .expect("session scrollbar");
 
     assert_eq!(
         app.handle_mouse_event(MouseEvent {
@@ -226,7 +229,7 @@ fn mouse_click_session_scrollbar_controls_prompt_messages() {
         }),
         AppAction::ScrollDown
     );
-    assert!(app.scroll_offset > 0);
+    assert!(app.conversation.scroll_offset() > 0);
 }
 
 #[test]
@@ -298,6 +301,105 @@ fn idle_tab_submits_instead_of_queueing() {
 }
 
 #[test]
+fn app_facade_routes_messages_through_conversation_store() {
+    let mut app = App::new();
+    add_user_message(&mut app, "hello");
+
+    assert_eq!(app.messages().len(), 1);
+    let Message::User(message) = &app.messages()[0] else {
+        panic!("expected user message");
+    };
+    assert!(matches!(
+        &message.content,
+        MessageContent::Text(text) if text == "hello"
+    ));
+}
+
+#[test]
+fn app_overlay_priority_is_stable_for_question_then_permission() {
+    let mut app = App::new();
+    app.show_question_dialog(
+        "q-1",
+        AskUserRequestPayload {
+            question: "Pick one".to_string(),
+            choices: vec!["A".to_string()],
+            allow_free_text: false,
+        },
+    );
+    app.show_permission_dialog("Bash", r#"{"command":"cargo test"}"#, "Run command?");
+
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::Question)
+    );
+}
+
+#[test]
+fn app_overlay_priority_falls_back_through_all_overlays() {
+    let mut app = App::new();
+    app.set_session_id("session-main".to_string());
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::AgentEvent {
+            event: spawned_agent_event("worker-1", "Builder worker", Some("builder")),
+        }),
+    });
+    app.push_history("previous prompt".to_string());
+    app.open_history_search();
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::from_items(vec![]),
+    ));
+    app.dispatch_bound_action(&Action::new_static("agents:tree"));
+    app.show_permission_dialog("Bash", r#"{"command":"cargo test"}"#, "Run command?");
+    app.show_question_dialog(
+        "q-1",
+        AskUserRequestPayload {
+            question: "Pick one".to_string(),
+            choices: vec!["A".to_string()],
+            allow_free_text: false,
+        },
+    );
+    app.show_bypass_permissions_mode_dialog(false);
+
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::BypassPermissions)
+    );
+
+    app.overlays.bypass_permissions_mode_dialog = None;
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::Question)
+    );
+
+    app.overlays.clear_question();
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::Permission)
+    );
+
+    app.dismiss_permission_dialog();
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::AgentTree)
+    );
+
+    app.overlays.agent_tree_dialog = None;
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::HistorySearch)
+    );
+
+    app.overlays.history_search_dialog = None;
+    assert_eq!(
+        app.active_overlay_for_tests(),
+        Some(ActiveOverlay::CommandSurface)
+    );
+
+    app.overlays.command_surface = None;
+    assert_eq!(app.active_overlay_for_tests(), None);
+}
+
+#[test]
 fn app_owns_queued_prompt_fifo() {
     let mut app = App::new();
 
@@ -307,6 +409,38 @@ fn app_owns_queued_prompt_fifo() {
     assert_eq!(app.pop_next_queued().as_deref(), Some("one"));
     assert_eq!(app.pop_next_queued().as_deref(), Some("two"));
     assert_eq!(app.pop_next_queued(), None);
+}
+
+#[test]
+fn status_payload_reads_domain_stores_directly() {
+    let cwd = tempfile::tempdir().expect("cwd");
+    let cwd_text = cwd.path().display().to_string();
+    let mut app = App::new();
+    app.session_ui.session_id = "store-session".to_string();
+    app.session_ui.model_name = "deepseek-v4-pro".to_string();
+    app.session_ui.backend_name = "native".to_string();
+    app.session_ui.cwd = cwd_text.clone();
+    app.conversation.add_message(Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 0,
+        role: "user".to_string(),
+        content: MessageContent::Text("store message".to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    }));
+
+    let payload = app.build_status_payload();
+
+    assert_eq!(payload.session_id.as_deref(), Some("store-session"));
+    let model = payload.model.expect("model");
+    assert_eq!(model.id, "deepseek-v4-pro");
+    assert_eq!(model.backend.as_deref(), Some("native"));
+    assert_eq!(
+        payload.workspace.expect("workspace").cwd,
+        cwd.path().display().to_string()
+    );
+    assert_eq!(payload.message_count, 1);
 }
 
 #[test]
@@ -362,6 +496,114 @@ fn backend_notification_event_is_routed_to_in_app_notification() {
 }
 
 #[test]
+fn task_events_update_runtime_state_before_tasks_surface_opens() {
+    let mut app = App::new();
+
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::ToolProgress {
+            tool_use_id: "tool-1".to_string(),
+            tool: "cargo test".to_string(),
+            output: "running 1 test".to_string(),
+            elapsed_seconds: 2,
+            total_lines: Some(1),
+            total_bytes: None,
+            timeout_ms: None,
+            operation: None,
+        }),
+    });
+
+    assert!(app
+        .runtime_state()
+        .tasks()
+        .iter()
+        .any(|task| task.id == "tool-1" && task.title == "cargo test"));
+
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::from_items(vec![]),
+    ));
+
+    let Some(CommandSurface::Tasks(surface)) = app.overlays.command_surface.as_ref() else {
+        panic!("tasks surface should be open");
+    };
+    assert!(surface.render().contains("cargo test"));
+    let task = &surface.selected_item().expect("selected task").task;
+    assert_eq!(task.id, "tool-1");
+    assert_eq!(task.output_lines, vec!["running 1 test".to_string()]);
+}
+
+#[test]
+fn opening_tasks_surface_refreshes_runtime_from_live_items() {
+    let mut app = App::new();
+
+    let stale_item = crate::ui::command_surface::TaskSurfaceItem {
+        task: crate::ui::tasks::TaskStatus::new(
+            "stale-tool",
+            "old live task",
+            crate::ui::tasks::TaskKind::Shell,
+        ),
+        source: crate::ui::command_surface::TaskSurfaceSource::Tool,
+    };
+    let live_item = crate::ui::command_surface::TaskSurfaceItem {
+        task: crate::ui::tasks::TaskStatus::new(
+            "live-tool",
+            "fresh live task",
+            crate::ui::tasks::TaskKind::Shell,
+        ),
+        source: crate::ui::command_surface::TaskSurfaceSource::Tool,
+    };
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::from_items(vec![stale_item]),
+    ));
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::from_items(vec![live_item]),
+    ));
+
+    let runtime_tasks = app.runtime_state().tasks();
+    assert_eq!(runtime_tasks.len(), 1);
+    assert_eq!(runtime_tasks[0].id, "live-tool");
+
+    let Some(CommandSurface::Tasks(surface)) = app.overlays.command_surface.as_ref() else {
+        panic!("tasks surface should be open");
+    };
+    let selected = surface.selected_item().expect("selected task");
+    assert_eq!(selected.task.id, "live-tool");
+    assert!(surface.render().contains("fresh live task"));
+}
+
+#[test]
+fn opening_tasks_surface_with_empty_live_snapshot_clears_stale_live_items() {
+    let mut app = App::new();
+
+    let stale_item = crate::ui::command_surface::TaskSurfaceItem {
+        task: crate::ui::tasks::TaskStatus::new(
+            "stale-tool",
+            "old live task",
+            crate::ui::tasks::TaskKind::Shell,
+        ),
+        source: crate::ui::command_surface::TaskSurfaceSource::Tool,
+    };
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::from_items(vec![stale_item]),
+    ));
+    assert!(app
+        .runtime_state()
+        .tasks()
+        .iter()
+        .any(|task| task.id == "stale-tool"));
+
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::from_items(vec![]),
+    ));
+
+    assert!(app.runtime_state().tasks().is_empty());
+    let Some(CommandSurface::Tasks(surface)) = app.overlays.command_surface.as_ref() else {
+        panic!("tasks surface should be open");
+    };
+    assert!(surface.selected_item().is_none());
+    assert!(!surface.render().contains("old live task"));
+}
+
+#[test]
 fn high_priority_notification_preempts_verbose_indicator() {
     let mut app = App::new();
     let mut state = AppState::default();
@@ -399,7 +641,7 @@ fn test_only_app_accessors_drive_state() {
 
     app.show_permission_dialog("bash", "ls", "Run command?");
     app.dismiss_permission_dialog();
-    assert!(app.permission_dialog.is_none());
+    assert!(app.overlays.permission_dialog.is_none());
     let _runner = app.status_line_runner();
 }
 
@@ -450,7 +692,7 @@ fn agent_event_updates_navigation_and_footer_rendering() {
         }),
     });
 
-    assert_eq!(app.agent_nav.thread_count(), 2);
+    assert_eq!(app.runtime_state().agent_nav().thread_count(), 2);
     assert!(app.agent_footer_visible());
     assert_eq!(app.current_agent_thread_id(), "worker-1");
 
@@ -483,13 +725,13 @@ fn agent_tree_dialog_navigation_select_and_close() {
             "worker-2".to_string()
         ]))
     );
-    assert!(app.agent_tree_dialog.is_none());
+    assert!(app.overlays.agent_tree_dialog.is_none());
 
     assert_eq!(
         app.dispatch_bound_action(&Action::new_static("agents:tree")),
         Some(AppAction::None)
     );
-    assert!(app.agent_tree_dialog.is_some());
+    assert!(app.overlays.agent_tree_dialog.is_some());
 
     assert_eq!(send_key(&mut app, KeyCode::Up), AppAction::None);
     assert_eq!(
@@ -497,15 +739,15 @@ fn agent_tree_dialog_navigation_select_and_close() {
         AppAction::AgentThreadSelected("worker-1".to_string())
     );
     assert_eq!(app.current_agent_thread_id(), "worker-1");
-    assert!(app.agent_tree_dialog.is_none());
+    assert!(app.overlays.agent_tree_dialog.is_none());
 
     assert_eq!(
         app.dispatch_bound_action(&Action::new_static("agents:tree")),
         Some(AppAction::None)
     );
-    assert!(app.agent_tree_dialog.is_some());
+    assert!(app.overlays.agent_tree_dialog.is_some());
     assert_eq!(send_key(&mut app, KeyCode::Esc), AppAction::None);
-    assert!(app.agent_tree_dialog.is_none());
+    assert!(app.overlays.agent_tree_dialog.is_none());
 }
 
 #[test]
@@ -536,7 +778,7 @@ fn agent_tree_dialog_renders_above_prompt_input() {
     assert_title_above_prompt_area(
         &content,
         "Agent Threads",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 
@@ -646,7 +888,7 @@ fn slash_opens_command_palette_and_selection_keeps_argument_entry() {
     assert_eq!(app.prompt.input, "/mcp ");
     assert!(!app.command_palette.active());
     assert!(
-        CommandPalette::argument_hint(&app.prompt.input, std::path::Path::new(&app.cwd)).is_some()
+        CommandPalette::argument_hint(&app.prompt.input, std::path::Path::new(app.cwd())).is_some()
     );
 }
 
@@ -813,14 +1055,14 @@ fn workspace_trust_prompt_accepts_persists_and_exits() {
 #[test]
 fn mouse_wheel_scrolls_prompt_messages() {
     let mut app = App::new();
-    app.scroll_offset = 10;
+    app.conversation.set_scroll_offset(10);
     app.dirty = false;
 
     assert_eq!(
         send_mouse(&mut app, MouseEventKind::ScrollUp),
         AppAction::ScrollUp
     );
-    assert_eq!(app.scroll_offset, 9);
+    assert_eq!(app.conversation.scroll_offset(), 9);
     assert!(app.dirty);
 
     app.dirty = false;
@@ -828,7 +1070,7 @@ fn mouse_wheel_scrolls_prompt_messages() {
         send_mouse(&mut app, MouseEventKind::ScrollDown),
         AppAction::ScrollDown
     );
-    assert_eq!(app.scroll_offset, 10);
+    assert_eq!(app.conversation.scroll_offset(), 10);
     assert!(app.dirty);
 }
 
@@ -873,7 +1115,7 @@ fn mouse_wheel_scrolls_transcript_view() {
 #[test]
 fn mouse_wheel_over_prompt_scrolls_messages_not_input_history() {
     let mut app = App::new();
-    app.scroll_offset = 10;
+    app.conversation.set_scroll_offset(10);
     app.push_history("first".to_string());
     app.push_history("second".to_string());
 
@@ -888,28 +1130,28 @@ fn mouse_wheel_over_prompt_scrolls_messages_not_input_history() {
         send_mouse_at(&mut app, MouseEventKind::ScrollUp, 1, 9),
         AppAction::ScrollUp
     );
-    assert_eq!(app.scroll_offset, 9);
+    assert_eq!(app.conversation.scroll_offset(), 9);
     assert!(app.prompt.input.is_empty());
 
     assert_eq!(
         send_mouse_at(&mut app, MouseEventKind::ScrollUp, 1, 9),
         AppAction::ScrollUp
     );
-    assert_eq!(app.scroll_offset, 8);
+    assert_eq!(app.conversation.scroll_offset(), 8);
     assert!(app.prompt.input.is_empty());
 
     assert_eq!(
         send_mouse_at(&mut app, MouseEventKind::ScrollDown, 1, 9),
         AppAction::ScrollDown
     );
-    assert_eq!(app.scroll_offset, 9);
+    assert_eq!(app.conversation.scroll_offset(), 9);
     assert!(app.prompt.input.is_empty());
 }
 
 #[test]
 fn mouse_wheel_over_messages_scrolls_history_after_prompt_focus() {
     let mut app = App::new();
-    app.scroll_offset = 10;
+    app.conversation.set_scroll_offset(10);
 
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
     terminal.draw(|frame| app.render(frame)).expect("draw");
@@ -926,7 +1168,7 @@ fn mouse_wheel_over_messages_scrolls_history_after_prompt_focus() {
         send_mouse_at(&mut app, MouseEventKind::ScrollUp, 1, 1),
         AppAction::ScrollUp
     );
-    assert_eq!(app.scroll_offset, 9);
+    assert_eq!(app.conversation.scroll_offset(), 9);
 }
 
 #[test]
@@ -978,7 +1220,7 @@ fn ctrl_r_opens_history_search_and_escape_closes() {
     assert_title_above_prompt_area(
         &content,
         "History Search",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 
     assert_eq!(send_key(&mut app, KeyCode::Esc), AppAction::None);
@@ -1074,7 +1316,7 @@ fn command_surface_renders_as_overlay() {
     assert_title_above_prompt_area(
         &content,
         "LSP Plugin Recommendation",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 
@@ -1109,7 +1351,7 @@ fn permission_dialog_renders_above_prompt_input() {
     assert_title_above_prompt_area(
         &content,
         "Permission Required",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 
@@ -1133,7 +1375,7 @@ fn question_dialog_renders_above_prompt_input() {
     assert_title_above_prompt_area(
         &content,
         "Need Input",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 
@@ -1150,7 +1392,7 @@ fn bypass_permissions_dialog_renders_above_prompt_input() {
     assert_title_above_prompt_area(
         &content,
         "Bypass Permissions mode",
-        app.prompt_area.expect("prompt area"),
+        app.render_layout.prompt_area.expect("prompt area"),
     );
 }
 

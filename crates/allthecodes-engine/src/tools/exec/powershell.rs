@@ -15,9 +15,10 @@ use allthecodes_engine::types::tool::{
     InterruptBehavior, PermissionResult, Tool, ToolProgress, ToolResult, ToolUseContext,
     ValidationResult,
 };
-use allthecodes_permissions::read_only_shell::is_read_only_powershell_command;
+use allthecodes_permissions::shell_policy::{
+    decide_shell_policy, ShellPolicyKind, ShellPolicyShell,
+};
 use allthecodes_sandbox::{make_runner, policy_from_app_state, preflight_shell_command};
-use allthecodes_shell_command::ReadOnlyResult;
 use allthecodes_tools::exec::powershell as powershell_spec;
 use allthecodes_types::{message::AssistantMessage, ShellExecutionOutput};
 use allthecodes_utils::bash::resolve_timeout;
@@ -96,8 +97,8 @@ impl Tool for PowerShellTool {
     fn is_read_only(&self, input: &Value) -> bool {
         let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
         matches!(
-            is_read_only_powershell_command(command),
-            ReadOnlyResult::ReadOnly
+            decide_shell_policy(command, ShellPolicyShell::PowerShell).kind,
+            ShellPolicyKind::ReadOnly
         )
     }
 

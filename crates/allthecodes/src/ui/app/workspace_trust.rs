@@ -97,7 +97,7 @@ impl App {
     }
 
     pub(super) fn accept_workspace_trust(&mut self) {
-        remember_trusted_workspace(&self.cwd);
+        remember_trusted_workspace(&self.session_ui.cwd);
         self.workspace_trust_pending = false;
         self.dirty = true;
     }

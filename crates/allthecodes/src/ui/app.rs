@@ -2,8 +2,11 @@ pub mod agent_navigation;
 mod agent_tree_dialog;
 pub mod app_event;
 pub mod app_event_sender;
+mod domain;
 mod input;
+mod overlays;
 mod render;
+mod runtime_state;
 pub mod status;
 #[cfg(test)]
 #[path = "app/tests.rs"]
@@ -11,9 +14,8 @@ mod tests;
 mod transcript_mode;
 mod voice;
 mod workspace_trust;
-use std::collections::VecDeque;
 
-use agent_navigation::{AgentNavigationState, AgentThreadEntry, AgentThreadStatus};
+use agent_navigation::{AgentThreadEntry, AgentThreadStatus};
 use agent_tree_dialog::AgentTreeDialog;
 use allthecodes_config::settings::{SpinnerTipsSettings, StatusLineSettings};
 use allthecodes_ipc_protocol::BackendMessage;
@@ -30,7 +32,7 @@ use workspace_trust::is_workspace_trusted;
 
 use super::command_palette::CommandPalette;
 use super::command_surface::{CommandSurface, CommandSurfaceTarget};
-use super::history_search_dialog::{HistorySearchDialog, HistorySearchEntry};
+use super::history_search_dialog::HistorySearchEntry;
 use super::notifications::in_app::{
     InAppNotification, NotificationPriority, NotificationState, NotificationTone,
 };
@@ -47,8 +49,13 @@ use super::terminal_env::TerminalEnvConfig;
 use super::theme::{Theme, ThemeProvider};
 use super::transcript::{TranscriptState, ViewMode};
 use super::vim::VimState;
-use super::virtual_scroll::VirtualScroll;
 use app_event::AppEvent;
+use domain::{ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiStore};
+use overlays::OverlayState;
+use runtime_state::RuntimeViewState;
+
+#[cfg(test)]
+pub(crate) use overlays::ActiveOverlay;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalStatusSnapshot {
@@ -191,26 +198,17 @@ fn notification_from_backend_message(message: &BackendMessage) -> Option<InAppNo
 
 /// Main TUI application state.
 pub struct App {
-    messages: Vec<Message>,
-    selected_message: Option<usize>,
-    selected_message_expanded: bool,
+    conversation: ConversationStore,
     prompt: PromptInput,
-    scroll_offset: usize,
     is_streaming: bool,
-    queued_prompts: VecDeque<String>,
+    prompt_queue: PromptQueueStore,
     spinner_state: SpinnerState,
-    bypass_permissions_mode_dialog: Option<BypassPermissionsModeDialog>,
-    permission_dialog: Option<PermissionDialog>,
-    question_dialog: Option<QuestionDialog>,
+    overlays: OverlayState,
     exit_guard: ExitGuard,
     should_quit: bool,
     design_theme_provider: ThemeProvider,
     theme: Theme,
-    model_name: String,
-    backend_name: String,
-    session_id: String,
-    cwd: String,
-    output_style: Option<String>,
+    session_ui: SessionUiStore,
     verbose: bool,
     permission_mode_label: String,
     sandbox_label: String,
@@ -223,17 +221,12 @@ pub struct App {
     /// Startup trust gate shown before the normal welcome panel.
     workspace_trust_pending: bool,
     workspace_trust_selection: usize,
-    history: Vec<HistorySearchEntry>,
     history_index: Option<usize>,
     saved_input: String,
     command_palette: CommandPalette,
-    command_surface: Option<CommandSurface>,
     pending_command_surface_after_submit: Option<CommandSurfaceTarget>,
-    history_search_dialog: Option<HistorySearchDialog>,
-    agent_nav: AgentNavigationState,
-    agent_tree_dialog: Option<AgentTreeDialog>,
+    runtime_view: RuntimeViewState,
     show_agent_footer: bool,
-    current_agent_thread_id: Option<String>,
 
     // Prompt suggestions
     /// Next-prompt suggestions shown after an assistant turn completes.
@@ -241,15 +234,7 @@ pub struct App {
     notifications: NotificationState,
 
     // Optimizations
-    /// Virtual scroll: per-message height cache + prefix-sum offsets.
-    vscroll: VirtualScroll,
-    /// Last rendered session scrollbar, used for mouse click/drag control.
-    session_scrollbar: Option<SessionScrollbarState>,
-    session_scrollbar_dragging: bool,
-    /// Last rendered chat history area, used to track mouse focus.
-    message_area: Option<Rect>,
-    /// Last rendered prompt input area, used to track mouse focus.
-    prompt_area: Option<Rect>,
+    render_layout: RenderLayoutStore,
     /// Area the user last clicked or scrolled over.
     mouse_focus: MouseFocus,
     /// Dirty flag; when false, the TUI skips `terminal.draw()`.
@@ -314,26 +299,17 @@ impl App {
         let design_theme_provider = ThemeProvider::from_user_settings();
         let theme = design_theme_provider.legacy_theme();
         Self {
-            messages: Vec::new(),
-            selected_message: None,
-            selected_message_expanded: false,
+            conversation: ConversationStore::default(),
             prompt: PromptInput::new(),
-            scroll_offset: 0,
             is_streaming: false,
-            queued_prompts: VecDeque::new(),
+            prompt_queue: PromptQueueStore::default(),
             spinner_state: SpinnerState::new(),
-            bypass_permissions_mode_dialog: None,
-            permission_dialog: None,
-            question_dialog: None,
+            overlays: OverlayState::default(),
             exit_guard: ExitGuard::new(),
             should_quit: false,
             design_theme_provider,
             theme,
-            model_name: String::new(),
-            backend_name: String::new(),
-            session_id: String::new(),
-            cwd: String::new(),
-            output_style: None,
+            session_ui: SessionUiStore::default(),
             verbose: false,
             permission_mode_label: String::new(),
             sandbox_label: String::new(),
@@ -346,22 +322,13 @@ impl App {
             workspace_trust_selection: 0,
             suggestions: None,
             notifications: NotificationState::default(),
-            history: Vec::new(),
             history_index: None,
             saved_input: String::new(),
             command_palette: CommandPalette::new(),
-            command_surface: None,
             pending_command_surface_after_submit: None,
-            history_search_dialog: None,
-            agent_nav: AgentNavigationState::default(),
-            agent_tree_dialog: None,
+            runtime_view: RuntimeViewState::default(),
             show_agent_footer: true,
-            current_agent_thread_id: None,
-            vscroll: VirtualScroll::new(),
-            session_scrollbar: None,
-            session_scrollbar_dragging: false,
-            message_area: None,
-            prompt_area: None,
+            render_layout: RenderLayoutStore::default(),
             mouse_focus: MouseFocus::Messages,
             dirty: true,
             last_render_snapshot: None,
@@ -400,10 +367,10 @@ impl App {
     }
 
     pub fn export_debug_snapshot(&self) -> std::io::Result<std::path::PathBuf> {
-        let cwd = if self.cwd.is_empty() {
+        let cwd = if self.session_ui.cwd.is_empty() {
             std::env::current_dir()?
         } else {
-            std::path::PathBuf::from(&self.cwd)
+            std::path::PathBuf::from(&self.session_ui.cwd)
         };
         let dir = cwd.join("target").join("tui-snapshots");
         std::fs::create_dir_all(&dir)?;
@@ -430,13 +397,14 @@ impl App {
             "exported_at: {}\n",
             chrono::Local::now().to_rfc3339()
         ));
-        body.push_str(&format!("cwd: {}\n", self.cwd));
-        body.push_str(&format!("session_id: {}\n", self.session_id));
-        body.push_str(&format!("model: {}\n", self.model_name));
-        body.push_str(&format!("backend: {}\n", self.backend_name));
+        body.push_str(&format!("cwd: {}\n", self.session_ui.cwd));
+        body.push_str(&format!("session_id: {}\n", self.session_ui.session_id));
+        body.push_str(&format!("model: {}\n", self.session_ui.model_name));
+        body.push_str(&format!("backend: {}\n", self.session_ui.backend_name));
         body.push_str(&format!(
             "command_surface: {}\n",
-            self.command_surface
+            self.overlays
+                .command_surface
                 .as_ref()
                 .map(CommandSurface::title)
                 .unwrap_or("none")
@@ -461,66 +429,41 @@ impl App {
         if self.show_welcome && matches!(msg, Message::User(_) | Message::Assistant(_)) {
             self.show_welcome = false;
         }
-        self.messages.push(msg);
+        self.conversation.add_message(msg);
         self.sync_primary_agent_thread();
-        self.clamp_selected_message();
-        self.vscroll
-            .invalidate_from(self.messages.len().saturating_sub(1));
         self.scroll_to_bottom_deferred();
         self.dirty = true;
     }
 
     pub fn replace_last_message(&mut self, msg: Message) {
-        if let Some(last) = self.messages.last_mut() {
-            *last = msg;
-        } else {
-            self.messages.push(msg);
-        }
+        self.conversation.replace_last_message(msg);
         self.sync_primary_agent_thread();
-        self.clamp_selected_message();
-        self.vscroll
-            .invalidate_from(self.messages.len().saturating_sub(1));
         self.scroll_to_bottom_deferred();
         self.dirty = true;
     }
 
     pub fn remove_last_message(&mut self) {
-        if self.messages.pop().is_some() {
+        if self.conversation.remove_last_message() {
             self.sync_primary_agent_thread();
-            self.clamp_selected_message();
-            self.vscroll.invalidate_from(self.messages.len());
             self.scroll_to_bottom_deferred();
             self.dirty = true;
         }
     }
 
     pub fn messages(&self) -> &[Message] {
-        &self.messages
+        self.conversation.messages()
     }
 
     #[cfg(test)]
     pub fn selected_message(&self) -> Option<usize> {
-        self.selected_message
-    }
-
-    fn clamp_selected_message(&mut self) {
-        if self.messages.is_empty() {
-            self.selected_message = None;
-            self.selected_message_expanded = false;
-        } else if let Some(idx) = self.selected_message {
-            self.selected_message = Some(idx.min(self.messages.len() - 1));
-        }
+        self.conversation.selection()
     }
 
     pub fn clear_messages(&mut self) {
-        self.messages.clear();
-        self.selected_message = None;
-        self.selected_message_expanded = false;
-        self.scroll_offset = 0;
-        self.agent_nav.clear();
-        self.current_agent_thread_id = None;
+        self.conversation.clear();
+        self.runtime_view.agent_nav_mut().clear();
+        self.runtime_view.set_current_agent_thread(None);
         self.sync_primary_agent_thread();
-        self.vscroll.invalidate_all();
         self.dirty = true;
     }
 
@@ -541,18 +484,18 @@ impl App {
 
     #[cfg(test)]
     pub fn show_permission_dialog(&mut self, tool_name: &str, input: &str, message: &str) {
-        self.permission_dialog = Some(PermissionDialog::new(tool_name, input, message));
+        self.overlays.permission_dialog = Some(PermissionDialog::new(tool_name, input, message));
         self.dirty = true;
     }
 
     pub fn show_question_dialog(&mut self, id: impl Into<String>, request: AskUserRequestPayload) {
-        self.question_dialog = Some(QuestionDialog::new(id, request));
+        self.overlays.question_dialog = Some(QuestionDialog::new(id, request));
         self.dirty = true;
     }
 
     pub fn show_permission_request(&mut self, request: PermissionDialogRequest) {
         self.add_permission_marker(&request);
-        self.permission_dialog = Some(if request.tool_use_id.is_empty() {
+        self.overlays.permission_dialog = Some(if request.tool_use_id.is_empty() {
             let input = request.tool_input.to_string();
             PermissionDialog::new(&request.tool_name, &input, &request.message)
         } else {
@@ -576,7 +519,7 @@ impl App {
                 "tool": request.tool_name,
             }),
         });
-        let replace_last = self.messages.last().is_some_and(|message| {
+        let replace_last = self.messages().last().is_some_and(|message| {
             matches!(
                 message,
                 Message::Progress(existing) if existing.tool_use_id == request.tool_use_id
@@ -590,14 +533,20 @@ impl App {
     }
 
     pub fn show_bypass_permissions_mode_dialog(&mut self, disabled: bool) {
-        self.bypass_permissions_mode_dialog = Some(BypassPermissionsModeDialog::new(disabled));
+        self.overlays.bypass_permissions_mode_dialog =
+            Some(BypassPermissionsModeDialog::new(disabled));
         self.dirty = true;
     }
 
     #[cfg(test)]
     pub fn dismiss_permission_dialog(&mut self) {
-        self.permission_dialog = None;
+        self.overlays.clear_permission();
         self.dirty = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_overlay_for_tests(&self) -> Option<ActiveOverlay> {
+        self.overlays.active_overlay()
     }
 
     pub fn should_quit(&self) -> bool {
@@ -614,13 +563,13 @@ impl App {
     }
 
     pub fn queue_prompt(&mut self, text: String) -> usize {
-        self.queued_prompts.push_back(text);
+        let count = self.prompt_queue.queue(text);
         self.dirty = true;
-        self.queued_prompts.len()
+        count
     }
 
     pub fn pop_next_queued(&mut self) -> Option<String> {
-        let next = self.queued_prompts.pop_front();
+        let next = self.prompt_queue.pop_next();
         if next.is_some() {
             self.dirty = true;
         }
@@ -628,7 +577,7 @@ impl App {
     }
 
     pub fn queued_count(&self) -> usize {
-        self.queued_prompts.len()
+        self.prompt_queue.len()
     }
 
     /// Tick the spinner. Called at 16ms interval; spinner frame advances
@@ -651,20 +600,22 @@ impl App {
     }
 
     pub fn set_model_name(&mut self, name: String) {
-        self.model_name = name;
+        self.session_ui.model_name = name;
         self.dirty = true;
     }
 
     pub fn set_backend_name(&mut self, name: String) {
-        self.backend_name = name;
+        self.session_ui.backend_name = name;
         self.dirty = true;
     }
 
     pub fn set_session_id(&mut self, id: String) {
-        let previous_session_id = self.session_id.clone();
-        self.session_id = id;
-        if !previous_session_id.is_empty() && previous_session_id != self.session_id {
-            self.agent_nav.remove(&previous_session_id);
+        let previous_session_id = self.session_ui.session_id.clone();
+        self.session_ui.session_id = id;
+        if !previous_session_id.is_empty() && previous_session_id != self.session_ui.session_id {
+            self.runtime_view
+                .agent_nav_mut()
+                .remove(&previous_session_id);
             self.active_goal = None;
         }
         self.sync_primary_agent_thread();
@@ -672,18 +623,19 @@ impl App {
     }
 
     pub fn set_cwd(&mut self, cwd: String) {
-        self.cwd = cwd;
-        self.workspace_trust_pending = !self.cwd.is_empty() && !is_workspace_trusted(&self.cwd);
+        self.session_ui.cwd = cwd;
+        self.workspace_trust_pending =
+            !self.session_ui.cwd.is_empty() && !is_workspace_trusted(&self.session_ui.cwd);
         self.workspace_trust_selection = 0;
         self.dirty = true;
     }
 
     pub fn cwd(&self) -> &str {
-        &self.cwd
+        &self.session_ui.cwd
     }
 
     pub fn set_output_style(&mut self, output_style: Option<String>) {
-        self.output_style = output_style;
+        self.session_ui.output_style = output_style;
         self.dirty = true;
     }
 
@@ -765,8 +717,12 @@ impl App {
     }
 
     /// Open a modal slash-command surface above the normal prompt.
-    pub fn open_command_surface(&mut self, surface: CommandSurface) {
-        self.command_surface = Some(surface);
+    pub fn open_command_surface(&mut self, mut surface: CommandSurface) {
+        if let CommandSurface::Tasks(tasks_surface) = &mut surface {
+            self.runtime_view.refresh_task_items(&tasks_surface.items);
+            tasks_surface.sync_items(self.runtime_view.task_items());
+        }
+        self.overlays.command_surface = Some(surface);
         self.command_palette.close();
         self.dirty = true;
     }
@@ -781,12 +737,12 @@ impl App {
 
     #[cfg(test)]
     pub fn command_surface_active(&self) -> bool {
-        self.command_surface.is_some()
+        self.overlays.command_surface.is_some()
     }
 
     #[cfg(test)]
     pub fn history_search_active(&self) -> bool {
-        self.history_search_dialog.is_some()
+        self.overlays.history_search_dialog.is_some()
     }
 
     /// Current transcript state exposed read-only so tests can assert
@@ -866,9 +822,12 @@ impl App {
             }
             AppEvent::Backend { message } => {
                 let message = message.as_ref();
-                if let Some(CommandSurface::Tasks(surface)) = self.command_surface.as_mut() {
-                    if backend_message_updates_tasks(message) {
-                        surface.handle_event(message);
+                if backend_message_updates_tasks(message) {
+                    self.runtime_view.apply_task_event(message);
+                    if let Some(CommandSurface::Tasks(surface)) =
+                        self.overlays.command_surface.as_mut()
+                    {
+                        surface.sync_items(self.runtime_view.task_items());
                         self.dirty = true;
                     }
                 }
@@ -907,15 +866,16 @@ impl App {
     }
 
     pub(super) fn agent_footer_visible(&self) -> bool {
-        self.show_agent_footer && self.agent_nav.active_non_primary_count() > 0
+        self.show_agent_footer && self.runtime_view.agent_nav().active_non_primary_count() > 0
     }
 
     pub(super) fn agent_footer_height(&self) -> u16 {
         if !self.agent_footer_visible() {
             return 0;
         }
-        let visible_agents = self.agent_nav.active_non_primary_count().min(3);
-        let overflow_row = usize::from(self.agent_nav.active_non_primary_count() > visible_agents);
+        let active_agents = self.runtime_view.agent_nav().active_non_primary_count();
+        let visible_agents = active_agents.min(3);
+        let overflow_row = usize::from(active_agents > visible_agents);
         (1 + visible_agents + overflow_row) as u16
     }
 
@@ -938,7 +898,7 @@ impl App {
 
         let visible_count = active_agent_ids.len().min(3);
         for (index, agent_id) in active_agent_ids.iter().take(visible_count).enumerate() {
-            let Some(entry) = self.agent_nav.entry(agent_id) else {
+            let Some(entry) = self.runtime_view.agent_nav().entry(agent_id) else {
                 continue;
             };
             let branch = if index + 1 == visible_count {
@@ -946,7 +906,7 @@ impl App {
             } else {
                 "|-"
             };
-            let runtime = self.agent_nav.runtime_info(agent_id);
+            let runtime = self.runtime_view.agent_nav().runtime_info(agent_id);
             let status = runtime
                 .map(|info| info.status.label())
                 .unwrap_or(if entry.is_closed { "closed" } else { "active" });
@@ -980,16 +940,27 @@ impl App {
     }
 
     pub(super) fn active_agent_thread_ids(&self) -> Vec<String> {
-        self.agent_nav.active_non_primary_thread_ids()
+        self.runtime_view
+            .agent_nav()
+            .active_non_primary_thread_ids()
+    }
+
+    fn runtime_state(&self) -> &RuntimeViewState {
+        &self.runtime_view
     }
 
     pub(super) fn current_agent_thread_id(&self) -> &str {
-        self.current_agent_thread_id
-            .as_deref()
-            .filter(|id| self.agent_nav.contains_thread(id))
-            .or_else(|| (!self.session_id.is_empty()).then_some(self.session_id.as_str()))
+        self.runtime_view
+            .current_agent_thread_id()
+            .map(String::as_str)
+            .filter(|id| self.runtime_view.agent_nav().contains_thread(id))
             .or_else(|| {
-                self.agent_nav
+                (!self.session_ui.session_id.is_empty())
+                    .then_some(self.session_ui.session_id.as_str())
+            })
+            .or_else(|| {
+                self.runtime_view
+                    .agent_nav()
                     .ordered_threads()
                     .first()
                     .map(|entry| entry.thread_id.as_str())
@@ -998,11 +969,11 @@ impl App {
     }
 
     pub(super) fn toggle_agent_tree_dialog(&mut self) {
-        if self.agent_tree_dialog.is_some() {
-            self.agent_tree_dialog = None;
-        } else if self.agent_nav.thread_count() > 1 {
-            self.agent_tree_dialog = Some(AgentTreeDialog::from_state(
-                &self.agent_nav,
+        if self.overlays.agent_tree_dialog.is_some() {
+            self.overlays.agent_tree_dialog = None;
+        } else if self.runtime_view.agent_nav().thread_count() > 1 {
+            self.overlays.agent_tree_dialog = Some(AgentTreeDialog::from_state(
+                self.runtime_view.agent_nav(),
                 self.current_agent_thread_id(),
             ));
         }
@@ -1010,11 +981,11 @@ impl App {
     }
 
     fn sync_primary_agent_thread(&mut self) {
-        if self.session_id.is_empty() {
+        if self.session_ui.session_id.is_empty() {
             return;
         }
-        self.agent_nav.upsert(AgentThreadEntry {
-            thread_id: self.session_id.clone(),
+        self.runtime_view.upsert_agent(AgentThreadEntry {
+            thread_id: self.session_ui.session_id.clone(),
             agent_nickname: Some("Primary".to_string()),
             agent_role: Some("main".to_string()),
             is_primary: true,
@@ -1022,11 +993,13 @@ impl App {
         });
 
         if self
-            .current_agent_thread_id
-            .as_deref()
-            .is_none_or(|id| !self.agent_nav.contains_thread(id))
+            .runtime_view
+            .current_agent_thread_id()
+            .map(String::as_str)
+            .is_none_or(|id| !self.runtime_view.agent_nav().contains_thread(id))
         {
-            self.current_agent_thread_id = Some(self.session_id.clone());
+            self.runtime_view
+                .set_current_agent_thread(Some(self.session_ui.session_id.clone()));
         }
     }
 
@@ -1047,19 +1020,20 @@ impl App {
                 agent_type,
                 ..
             } => {
-                self.agent_nav.upsert(AgentThreadEntry {
+                self.runtime_view.upsert_agent(AgentThreadEntry {
                     thread_id: agent_id.clone(),
                     agent_nickname: short_agent_label(description, agent_id),
                     agent_role: agent_type.clone(),
                     is_primary: false,
                     is_closed: false,
                 });
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Running,
                     Some(compact_inline(description, 80)),
                 );
-                self.current_agent_thread_id = Some(agent_id.clone());
+                self.runtime_view
+                    .set_current_agent_thread(Some(agent_id.clone()));
             }
             AgentEvent::Completed {
                 agent_id,
@@ -1068,7 +1042,7 @@ impl App {
                 duration_ms,
                 ..
             } => {
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     if *had_error {
                         AgentThreadStatus::Failed
@@ -1077,8 +1051,10 @@ impl App {
                     },
                     Some(compact_inline(result_preview, 80)),
                 );
-                self.agent_nav.set_duration_ms(agent_id, Some(*duration_ms));
-                self.agent_nav.mark_closed(agent_id);
+                self.runtime_view
+                    .agent_nav_mut()
+                    .set_duration_ms(agent_id, Some(*duration_ms));
+                self.runtime_view.agent_nav_mut().mark_closed(agent_id);
                 self.normalize_current_agent_thread();
             }
             AgentEvent::Error {
@@ -1086,22 +1062,24 @@ impl App {
                 error,
                 duration_ms,
             } => {
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Failed,
                     Some(compact_inline(error, 80)),
                 );
-                self.agent_nav.set_duration_ms(agent_id, Some(*duration_ms));
-                self.agent_nav.mark_closed(agent_id);
+                self.runtime_view
+                    .agent_nav_mut()
+                    .set_duration_ms(agent_id, Some(*duration_ms));
+                self.runtime_view.agent_nav_mut().mark_closed(agent_id);
                 self.normalize_current_agent_thread();
             }
             AgentEvent::Aborted { agent_id } => {
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Canceled,
                     Some("agent aborted".to_string()),
                 );
-                self.agent_nav.mark_closed(agent_id);
+                self.runtime_view.agent_nav_mut().mark_closed(agent_id);
                 self.normalize_current_agent_thread();
             }
             AgentEvent::PermissionQueued {
@@ -1112,29 +1090,34 @@ impl App {
                 queue_position,
                 ..
             } => {
-                if self.agent_nav.contains_thread(agent_id) {
-                    self.current_agent_thread_id = Some(agent_id.clone());
+                if self.runtime_view.agent_nav().contains_thread(agent_id) {
+                    self.runtime_view
+                        .set_current_agent_thread(Some(agent_id.clone()));
                 }
-                self.agent_nav.mark_tool_use(
+                self.runtime_view.agent_nav_mut().mark_tool_use(
                     agent_id,
                     tool_use_id,
                     tool_name,
                     compact_inline(summary, 80),
                 );
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::WaitingPermission,
                     Some(compact_inline(summary, 80)),
                 );
+                let agent_label = self
+                    .runtime_view
+                    .agent_nav()
+                    .entry(agent_id)
+                    .and_then(|entry| entry.agent_nickname.as_deref())
+                    .unwrap_or(agent_id)
+                    .to_string();
                 self.add_notification(
                     InAppNotification::new(
                         "worker-permission",
                         NotificationPriority::Low,
                         render_worker_pending_permission(
-                            self.agent_nav
-                                .entry(agent_id)
-                                .and_then(|entry| entry.agent_nickname.as_deref())
-                                .unwrap_or(agent_id),
+                            &agent_label,
                             tool_name,
                             summary,
                             *queue_position,
@@ -1151,10 +1134,11 @@ impl App {
                 decision,
                 ..
             } => {
-                if self.agent_nav.contains_thread(agent_id) {
-                    self.current_agent_thread_id = Some(agent_id.clone());
+                if self.runtime_view.agent_nav().contains_thread(agent_id) {
+                    self.runtime_view
+                        .set_current_agent_thread(Some(agent_id.clone()));
                 }
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Running,
                     Some(compact_inline(&format!("{tool_name}: {decision}"), 80)),
@@ -1162,30 +1146,32 @@ impl App {
             }
             AgentEvent::TreeSnapshot { roots } => {
                 let current = self.current_agent_thread_id().to_string();
-                self.agent_nav.clear();
+                self.runtime_view.agent_nav_mut().clear();
                 self.sync_primary_agent_thread();
                 for node in roots {
                     self.collect_agent_tree_node(node);
                 }
-                if self.agent_nav.contains_thread(&current) {
-                    self.current_agent_thread_id = Some(current);
+                if self.runtime_view.agent_nav().contains_thread(&current) {
+                    self.runtime_view.set_current_agent_thread(Some(current));
                 }
             }
             AgentEvent::StreamDelta { agent_id, text } => {
-                if self.agent_nav.contains_thread(agent_id) {
-                    self.current_agent_thread_id = Some(agent_id.clone());
+                if self.runtime_view.agent_nav().contains_thread(agent_id) {
+                    self.runtime_view
+                        .set_current_agent_thread(Some(agent_id.clone()));
                 }
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Streaming,
                     Some(compact_inline(text, 80)),
                 );
             }
             AgentEvent::ThinkingDelta { agent_id, thinking } => {
-                if self.agent_nav.contains_thread(agent_id) {
-                    self.current_agent_thread_id = Some(agent_id.clone());
+                if self.runtime_view.agent_nav().contains_thread(agent_id) {
+                    self.runtime_view
+                        .set_current_agent_thread(Some(agent_id.clone()));
                 }
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Thinking,
                     Some(compact_inline(thinking, 80)),
@@ -1197,10 +1183,11 @@ impl App {
                 tool_name,
                 input,
             } => {
-                if self.agent_nav.contains_thread(agent_id) {
-                    self.current_agent_thread_id = Some(agent_id.clone());
+                if self.runtime_view.agent_nav().contains_thread(agent_id) {
+                    self.runtime_view
+                        .set_current_agent_thread(Some(agent_id.clone()));
                 }
-                self.agent_nav.mark_tool_use(
+                self.runtime_view.agent_nav_mut().mark_tool_use(
                     agent_id,
                     tool_use_id,
                     tool_name,
@@ -1213,22 +1200,27 @@ impl App {
                 is_error,
                 ..
             } => {
-                if self.agent_nav.contains_thread(agent_id) {
-                    self.current_agent_thread_id = Some(agent_id.clone());
+                if self.runtime_view.agent_nav().contains_thread(agent_id) {
+                    self.runtime_view
+                        .set_current_agent_thread(Some(agent_id.clone()));
                 }
                 let summary = if *is_error {
                     format!("tool error: {}", compact_inline(output, 72))
                 } else {
                     compact_inline(output, 80)
                 };
-                self.agent_nav
-                    .mark_status(agent_id, AgentThreadStatus::Running, Some(summary));
+                self.runtime_view.agent_nav_mut().mark_status(
+                    agent_id,
+                    AgentThreadStatus::Running,
+                    Some(summary),
+                );
             }
             AgentEvent::OutputBatch {
                 agent_id, output, ..
             } => {
-                if self.agent_nav.contains_thread(agent_id) {
-                    self.current_agent_thread_id = Some(agent_id.clone());
+                if self.runtime_view.agent_nav().contains_thread(agent_id) {
+                    self.runtime_view
+                        .set_current_agent_thread(Some(agent_id.clone()));
                 }
                 if let Some(last_chunk) = output
                     .events
@@ -1236,7 +1228,7 @@ impl App {
                     .rev()
                     .find_map(|event| (!event.chunk.is_empty()).then_some(event.chunk.as_str()))
                 {
-                    self.agent_nav.mark_status(
+                    self.runtime_view.agent_nav_mut().mark_status(
                         agent_id,
                         AgentThreadStatus::Running,
                         Some(compact_inline(last_chunk, 80)),
@@ -1259,38 +1251,38 @@ impl App {
                 role,
                 ..
             } => {
-                self.agent_nav.upsert(AgentThreadEntry {
+                self.runtime_view.upsert_agent(AgentThreadEntry {
                     thread_id: agent_id.clone(),
                     agent_nickname: Some(agent_name.clone()),
                     agent_role: role.clone(),
                     is_primary: false,
                     is_closed: false,
                 });
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Running,
                     Some(format!("{agent_name} joined {team_name}")),
                 );
             }
             TeamEvent::MemberLeft { agent_id, .. } => {
-                self.agent_nav.mark_status(
+                self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Closed,
                     Some("teammate left".to_string()),
                 );
-                self.agent_nav.mark_closed(agent_id);
+                self.runtime_view.agent_nav_mut().mark_closed(agent_id);
                 self.normalize_current_agent_thread();
             }
             TeamEvent::StatusSnapshot { members, .. } => {
                 for member in members {
-                    self.agent_nav.upsert(AgentThreadEntry {
+                    self.runtime_view.upsert_agent(AgentThreadEntry {
                         thread_id: member.agent_id.clone(),
                         agent_nickname: Some(member.agent_name.clone()),
                         agent_role: member.role.clone(),
                         is_primary: false,
                         is_closed: !member.is_active,
                     });
-                    self.agent_nav.mark_status(
+                    self.runtime_view.agent_nav_mut().mark_status(
                         &member.agent_id,
                         if member.is_active {
                             AgentThreadStatus::Running
@@ -1302,10 +1294,11 @@ impl App {
                 }
             }
             TeamEvent::MessageRouted { from, to, .. } => {
-                if self.agent_nav.contains_thread(from) {
-                    self.current_agent_thread_id = Some(from.clone());
-                } else if self.agent_nav.contains_thread(to) {
-                    self.current_agent_thread_id = Some(to.clone());
+                if self.runtime_view.agent_nav().contains_thread(from) {
+                    self.runtime_view
+                        .set_current_agent_thread(Some(from.clone()));
+                } else if self.runtime_view.agent_nav().contains_thread(to) {
+                    self.runtime_view.set_current_agent_thread(Some(to.clone()));
                 }
             }
         }
@@ -1314,34 +1307,43 @@ impl App {
 
     fn normalize_current_agent_thread(&mut self) {
         let current_is_active = self
-            .current_agent_thread_id
-            .as_deref()
-            .and_then(|id| self.agent_nav.entry(id))
+            .runtime_view
+            .current_agent_thread_id()
+            .map(String::as_str)
+            .and_then(|id| self.runtime_view.agent_nav().entry(id))
             .is_some_and(|entry| !entry.is_closed);
         if current_is_active {
             return;
         }
-        if !self.session_id.is_empty() && self.agent_nav.contains_thread(&self.session_id) {
-            self.current_agent_thread_id = Some(self.session_id.clone());
+        if !self.session_ui.session_id.is_empty()
+            && self
+                .runtime_view
+                .agent_nav()
+                .contains_thread(&self.session_ui.session_id)
+        {
+            self.runtime_view
+                .set_current_agent_thread(Some(self.session_ui.session_id.clone()));
             return;
         }
-        self.current_agent_thread_id = self
-            .agent_nav
+        let current = self
+            .runtime_view
+            .agent_nav()
             .ordered_threads()
             .into_iter()
             .find(|entry| !entry.is_closed)
             .map(|entry| entry.thread_id.clone());
+        self.runtime_view.set_current_agent_thread(current);
     }
 
     fn collect_agent_tree_node(&mut self, node: &allthecodes_types::agent_types::AgentNode) {
-        self.agent_nav.upsert(AgentThreadEntry {
+        self.runtime_view.upsert_agent(AgentThreadEntry {
             thread_id: node.agent_id.clone(),
             agent_nickname: short_agent_label(&node.description, &node.agent_id),
             agent_role: node.agent_type.clone(),
             is_primary: false,
             is_closed: !agent_state_is_active(&node.state),
         });
-        self.agent_nav.mark_status(
+        self.runtime_view.agent_nav_mut().mark_status(
             &node.agent_id,
             agent_status_from_tree_state(&node.state, node.had_error),
             Some(compact_inline(
@@ -1349,7 +1351,8 @@ impl App {
                 80,
             )),
         );
-        self.agent_nav
+        self.runtime_view
+            .agent_nav_mut()
             .set_duration_ms(&node.agent_id, node.duration_ms);
         for child in &node.children {
             self.collect_agent_tree_node(child);
@@ -1365,8 +1368,8 @@ impl App {
         duration_ms: u64,
     ) {
         self.sync_primary_agent_thread();
-        if !self.agent_nav.contains_thread(agent_id) {
-            self.agent_nav.upsert(AgentThreadEntry {
+        if !self.runtime_view.agent_nav().contains_thread(agent_id) {
+            self.runtime_view.upsert_agent(AgentThreadEntry {
                 thread_id: agent_id.to_string(),
                 agent_nickname: short_agent_label(description, agent_id),
                 agent_role: Some("agent".to_string()),
@@ -1374,7 +1377,7 @@ impl App {
                 is_closed: false,
             });
         }
-        self.agent_nav.mark_status(
+        self.runtime_view.agent_nav_mut().mark_status(
             agent_id,
             if had_error {
                 AgentThreadStatus::Failed
@@ -1383,8 +1386,10 @@ impl App {
             },
             Some(compact_inline(result_preview, 80)),
         );
-        self.agent_nav.set_duration_ms(agent_id, Some(duration_ms));
-        self.agent_nav.mark_closed(agent_id);
+        self.runtime_view
+            .agent_nav_mut()
+            .set_duration_ms(agent_id, Some(duration_ms));
+        self.runtime_view.agent_nav_mut().mark_closed(agent_id);
         self.normalize_current_agent_thread();
         self.dirty = true;
     }
@@ -1395,7 +1400,7 @@ impl App {
         let Some(primary_thread) = primary_thread else {
             return;
         };
-        self.agent_nav.mark_tool_use(
+        self.runtime_view.agent_nav_mut().mark_tool_use(
             &primary_thread,
             tool_use_id,
             tool,
@@ -1405,10 +1410,16 @@ impl App {
     }
 
     fn current_primary_thread_id(&self) -> Option<&str> {
-        if !self.session_id.is_empty() && self.agent_nav.contains_thread(&self.session_id) {
-            return Some(self.session_id.as_str());
+        if !self.session_ui.session_id.is_empty()
+            && self
+                .runtime_view
+                .agent_nav()
+                .contains_thread(&self.session_ui.session_id)
+        {
+            return Some(self.session_ui.session_id.as_str());
         }
-        self.agent_nav
+        self.runtime_view
+            .agent_nav()
             .ordered_threads()
             .into_iter()
             .find(|entry| entry.is_primary)
@@ -1444,8 +1455,15 @@ impl App {
     }
 
     pub fn push_history(&mut self, text: String) {
-        if self.history.last().map(|entry| entry.display.as_str()) != Some(text.as_str()) {
-            self.history
+        if self
+            .session_ui
+            .history
+            .last()
+            .map(|entry| entry.display.as_str())
+            != Some(text.as_str())
+        {
+            self.session_ui
+                .history
                 .push(HistorySearchEntry::new(text, current_unix_secs()));
         }
         self.history_index = None;
@@ -1460,13 +1478,14 @@ impl App {
     pub fn seed_persistent_history(&mut self, entries: Vec<HistorySearchEntry>) {
         for entry in entries.into_iter().rev() {
             if self
+                .session_ui
                 .history
                 .iter()
                 .any(|existing| existing.display == entry.display)
             {
                 continue;
             }
-            self.history.push(entry);
+            self.session_ui.history.push(entry);
         }
         self.history_index = None;
         self.dirty = true;
@@ -1474,7 +1493,7 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn history_len(&self) -> usize {
-        self.history.len()
+        self.session_ui.history.len()
     }
 
     // Event handling

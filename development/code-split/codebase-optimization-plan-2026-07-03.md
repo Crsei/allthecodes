@@ -4,6 +4,7 @@
 > 覆盖范围: 当前 `allthecodes` worktree
 > 输入来源: 4 个只读 subagent 分区审计 + 本地粗复杂度扫描
 > 当前阶段: Full Build。不得再以 Lite 缩减为理由保留行为缺口。
+> 最新进展: 2026-07-03 Phase 4 Rust TUI 状态解耦已落地并验证。
 
 ---
 
@@ -531,6 +532,14 @@
 - TUI render/input 状态可以局部测试。
 - 权限、任务、agent nav 只有一个 runtime store。
 
+执行结果（2026-07-03）:
+
+- 已新增 `ConversationStore`、`PromptQueueStore`、`SessionUiStore`、`RenderLayoutStore`，`App` 继续作为 facade 暴露原有 TUI runner 接口。
+- 已新增 `OverlayState` / `OverlayOutcome`，overlay render/input/focus 使用同一优先级来源；guardrail 覆盖 `BypassPermissions > Question > Permission > AgentTree > HistorySearch > CommandSurface`。
+- 已新增 `MessageListViewModel` 并让主 render 路径通过 `MessageRenderContext` projection 消费消息状态；final cleanup 已移除旧 render-context helper anchor。
+- 已新增 `RuntimeViewState`，agent navigation、当前 agent thread、live task snapshot 和 backend task events 由同一 runtime view state 合并输出；`/tasks` 打开时会刷新 live snapshot 并保留 backend-only task events。
+- 验证证据: `cargo fmt --all -- --check`、`cargo test -p allthecodes ui::app`、`cargo check --workspace`、`cargo build --workspace --release` 均在最终提交后通过且无新增 warning。旧 snapshot baseline 问题未在本阶段改动，仍受 `**/snapshots/` ignore 影响。
+
 ---
 
 ## 禁止事项
@@ -559,8 +568,7 @@
 | CS-009 | Record-replay truth source | P1 | todo | 收敛多真相源 |
 | CS-010 | Runtime capability registry | P1 | todo | command/tool/MCP/deferred 统一 |
 | CS-011 | FS capability service | P1 | todo | 写入路径统一授权 |
-| CS-012 | TUI domain stores | P1 | todo | App 状态拆分 |
-| CS-013 | Overlay dispatcher | P1 | todo | render/input/focus 同源 |
-| CS-014 | Message view-model | P1 | todo | render 不做数据变形 |
+| CS-012 | TUI domain stores | P1 | done | App 状态拆分 |
+| CS-013 | Overlay dispatcher | P1 | done | render/input/focus 同源 |
+| CS-014 | Message view-model | P1 | done | render 不做数据变形 |
 | CS-015 | Agent/MCP typed surface state | P2 | todo | 删除魔法索引与硬编码 step |
-

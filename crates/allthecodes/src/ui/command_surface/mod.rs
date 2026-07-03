@@ -25,6 +25,9 @@ pub use surfaces::remote::RemoteSurface;
 pub use surfaces::resume::ResumeSurface;
 pub use surfaces::sandbox::SandboxSurface;
 pub use surfaces::skills::SkillsSurface;
+pub(crate) use surfaces::tasks::TaskSurfaceItem;
+#[cfg(test)]
+pub(crate) use surfaces::tasks::TaskSurfaceSource;
 pub use surfaces::tasks::TasksSurface;
 pub use surfaces::team::TeamSurface;
 

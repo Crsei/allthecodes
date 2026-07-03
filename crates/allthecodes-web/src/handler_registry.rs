@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use allthecodes_protocol::{ApiError as ProtocolApiError, ApiMethod, ALL_ENDPOINTS, API_METADATA};
+use allthecodes_protocol::{ApiError as ProtocolApiError, ApiMethod, ALL_ENDPOINTS};
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
@@ -10,6 +10,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 use tracing::error;
 
+use crate::api_operation_registry::api_operation_registry;
 use crate::handlers;
 use crate::state::WebState;
 use crate::ws;
@@ -859,6 +860,8 @@ pub fn register_protocol_routes(
 
 pub async fn protocol_routes_handler() -> Json<Vec<ProtocolRouteInfo>> {
     let registry = all_api_handlers();
+    let api_registry = api_operation_registry();
+    debug_assert_eq!(api_registry.len(), ALL_ENDPOINTS.len());
     let registered: HashSet<ApiMethod> = registry
         .entries()
         .iter()
@@ -873,16 +876,28 @@ pub async fn protocol_routes_handler() -> Json<Vec<ProtocolRouteInfo>> {
     Json(
         ALL_ENDPOINTS
             .iter()
-            .map(|endpoint| ProtocolRouteInfo {
-                operation: format!("{:?}", endpoint.operation),
-                http_method: endpoint.http_method,
-                path: endpoint.path,
-                v2_path: versioned_api_path(endpoint.path),
-                registered: registered.contains(&endpoint.operation),
-                unimplemented: unimplemented.contains(&endpoint.operation),
-                experimental: experimental_reason(endpoint.operation),
-                any_method: endpoint.http_method == "ANY",
-                websocket: endpoint.http_method == "ANY" || endpoint.path.ends_with("/ws"),
+            .map(|endpoint| {
+                let descriptor = api_registry.get(endpoint.operation);
+                ProtocolRouteInfo {
+                    operation: descriptor
+                        .map(|descriptor| format!("{:?}", descriptor.operation))
+                        .unwrap_or_else(|| format!("{:?}", endpoint.operation)),
+                    http_method: endpoint.http_method,
+                    path: endpoint.path,
+                    v2_path: versioned_api_path(endpoint.path),
+                    registered: registered.contains(&endpoint.operation),
+                    unimplemented: unimplemented.contains(&endpoint.operation),
+                    experimental: descriptor
+                        .and_then(|descriptor| descriptor.metadata.experimental),
+                    transport_kind: descriptor
+                        .map(|descriptor| format!("{:?}", descriptor.transport_kind))
+                        .unwrap_or_else(|| "Rest".to_string()),
+                    migration_state: descriptor
+                        .map(|descriptor| format!("{:?}", descriptor.migration_state))
+                        .unwrap_or_else(|| "LegacyRestHandler".to_string()),
+                    any_method: endpoint.http_method == "ANY",
+                    websocket: endpoint.http_method == "ANY" || endpoint.path.ends_with("/ws"),
+                }
             })
             .collect(),
     )
@@ -895,10 +910,7 @@ fn protocol_endpoint(operation: ApiMethod) -> Option<&'static allthecodes_protoc
 }
 
 fn experimental_reason(operation: ApiMethod) -> Option<&'static str> {
-    API_METADATA
-        .iter()
-        .find(|metadata| metadata.endpoint.operation == operation)
-        .and_then(|metadata| metadata.experimental)
+    api_operation_registry().experimental_reason(operation)
 }
 
 fn experimental_gate(
@@ -943,6 +955,8 @@ pub struct ProtocolRouteInfo {
     pub registered: bool,
     pub unimplemented: bool,
     pub experimental: Option<&'static str>,
+    pub transport_kind: String,
+    pub migration_state: String,
     pub any_method: bool,
     pub websocket: bool,
 }
@@ -1048,6 +1062,32 @@ mod tests {
                 "{operation} must accept websocket upgrade"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn protocol_routes_include_operation_registry_metadata() {
+        let routes = protocol_routes_handler().await.0;
+
+        let capabilities = routes
+            .iter()
+            .find(|route| route.operation == "Capabilities")
+            .expect("capabilities route");
+        assert_eq!(capabilities.transport_kind, "JsonRpcWebSocket");
+        assert_eq!(capabilities.migration_state, "Dispatched");
+
+        let terminal_ws = routes
+            .iter()
+            .find(|route| route.operation == "TerminalSessionWs")
+            .expect("terminal websocket route");
+        assert_eq!(terminal_ws.transport_kind, "DedicatedWebSocket");
+        assert_eq!(terminal_ws.migration_state, "DedicatedTransport");
+
+        let ipc_ws = routes
+            .iter()
+            .find(|route| route.operation == "IpcWs")
+            .expect("ipc websocket route");
+        assert_eq!(ipc_ws.transport_kind, "IpcBridge");
+        assert_eq!(ipc_ws.migration_state, "LegacyIpcBridge");
     }
 
     #[test]
