@@ -1,6 +1,6 @@
 # cc-rust 工作状态总览
 
-> 更新日期: 2026-07-02 | 分支历史名: `rust-lite` | 当前阶段: 全量构建 / Full Build
+> 更新日期: 2026-07-03 | 分支历史名: `rust-lite` | 当前阶段: 全量构建 / Full Build
 
 本文件只保留当前阶段仍需要判断和执行的状态。已经确认实现、已关闭或只具历史价值的阶段记录统一看：
 
@@ -23,6 +23,7 @@ cc-rust 已不再按历史 "Lite" 边界维护。触及上游能力时，默认�
 - Agent Teams：in-process backend、`/team`、`TeamSpawn`、`SendMessage`、Team Dashboard 已收口；tmux/iTerm2 pane backend 是 intentional crop。
 - Extensibility：hooks、skills、custom-agent active runtime safety、MCP stdio/local SSE/remote SSE/Streamable HTTP/OAuth/reconnect/tool refresh 已按当前标准面闭环。
 - MCP scope isolation：`mcpBindings` 已支持 `global/project/session/thread` 四级 binding；旧 `mcpServers` 继续生成兼容隐式 binding；engine、agent、skill fork、CLI/IPC/Web/TUI 展示均按 binding context 过滤 MCP tools/resources/calls。TUI 当前可编辑 global/project/session binding，thread binding 由 CLI/IPC/Web 编辑。
+- ACP v2 adapter：`--acp` JSON-RPC stdio server 已完成 review-fix baseline。已验证 `initialize`、auth、session new/load/resume/list/close/delete/prompt/cancel/set_config_option、permission request bridge、prompt/update mapping、stdout purity smoke；`session.prompt.image/audio/embeddedContext` 与 `session.mcp.*` 仍为 intentional unadvertised scope。
 - Ratatui UI：P0/P1 基础面已完成；运行时 residual 见 [KNOWN_ISSUES.md](../development/archive/KNOWN_ISSUES.md)，未跟踪 parity 缺口见 [ratatui-ui-parity-untracked-gap-plan-2026-05-08.md](../development/archive/plan/ratatui-ui-parity-untracked-gap-plan-2026-05-08.md)。
 - Runtime storage：`CC_RUST_HOME` / `~/.cc-rust/` 路径隔离已落地，旧计划归档。
 - Crate migration：root binary 已删除 `src/engine/**` 与 `src/ipc/**`；engine/agent 实现由 `cc-engine` 拥有，IPC JSONL runtime、agent settings 与共享 protocol/handler facade 由 `cc-ipc` / `cc-ipc-client` / `cc-ipc-protocol` 拥有，root 仅保留 startup、UI 与 runtime adapter glue。
@@ -39,6 +40,7 @@ cc-rust 已不再按历史 "Lite" 边界维护。触及上游能力时，默认�
 | Daemon | submit/abort worker ownership 已落地，仍有 permission/resize/history residual | 继续把 permission waiter replay、resize/history DTO 与 scheduler ownership 收束到 supervisor/worker 架构。 |
 | Session export | schema v2 与 API request snapshots 已接入，projection residual 开放 | 补 context collapse 原生事件、mode/tag 来源和完整 apiView 投影。 |
 | Crate migration | Engine + IPC owner migration landed; verification in progress | IPC envelope version/min-compat 已补；下一步收束剩余 root-style imports、allow attributes、Codex compatibility path hits，并补齐 thin-binary closeout 文档。 |
+| ACP live-provider smoke | Binary/stdout smoke target landed; deterministic ACP runtime tests pass; live real-model smoke is on-demand | `acp_stdio_real_model_prompt_smoke` is ignored by default because it requires configured credentials, provider access, and network. On 2026-07-03, explicit local runs against current `backend=codex` timed out after 300s after `available_commands_update` + `state_update: running`, with no model content or idle. |
 | UI/runtime issues | P0/P1 基础完成，存在 residuals 和未跟踪 parity 缺口 | 运行时 residual 见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)；`⚠️ 部分` / `❌ 缺失` 的未跟踪功能按 [ratatui-ui-parity-untracked-gap-plan-2026-05-08.md](../development/archive/plan/ratatui-ui-parity-untracked-gap-plan-2026-05-08.md) 分阶段处理。 |
 | 文档状态一致性 | 本轮已收敛顶层入口 | 后续每完成一个模块，都同步迁移完成记录到 archive，避免活跃 TODO 文档堆积完成历史。 |
 
@@ -60,6 +62,43 @@ cc-rust 已不再按历史 "Lite" 边界维护。触及上游能力时，默认�
 - 要实现：补到对应 plan / implementation task。
 - 要延期：保留在 [IMPLEMENTATION_GAPS.md](IMPLEMENTATION_GAPS.md) TODO 区。
 - 要裁剪：写入 [IMPLEMENTATION_GAPS.md](IMPLEMENTATION_GAPS.md) "Intentional 裁剪"，说明理由、决策者、日期和复审触发条件。
+
+## ACP v2 adapter status (2026-07-03)
+
+Completed scope:
+
+- JSON-RPC stdio runtime for `allthecodes --acp`, with stdout restricted to JSON-RPC frames and diagnostics on stderr.
+- ACP v2 method baseline: `initialize`, `auth/login`, `auth/logout`, `session/new`, `session/load`, `session/resume`, `session/list`, `session/close`, `session/delete`, `session/prompt`, `session/cancel`, `session/set_config_option`, and `$/cancel_request`.
+- Permission bridge from engine callbacks to ACP `session/request_permission` client requests, including allow/always-allow/deny/cancel/disconnect outcomes.
+- Session replay/list/delete parity for persisted sessions, including workspace filtering, cursor/meta mapping, archive behavior, and active-session close before delete.
+- Prompt update mapping for state, usage, text chunks, thinking, tool calls, progress, plan updates, retries, summaries, and tombstones.
+- Config options for `model`, `mode`, and `thought_level`, with validation, update notifications, and per-turn submit overrides.
+
+Unimplemented intentional scope:
+
+- `session.prompt.image`
+- `session.prompt.audio`
+- `session.prompt.embeddedContext`
+- `session.mcp.*`
+
+Verification run in `.worktrees/acp-adapter`:
+
+```bash
+cargo test -p allthecodes-acp
+cargo test -p allthecodes-acp --test prompt_updates prompt_acks_before_first_update
+cargo test -p allthecodes-acp --test protocol_methods cancel_request_cancels_pending_prompt_before_ack
+cargo test -p allthecodes-acp --test config_options
+cargo test -p allthecodes-acp --test protocol_methods auth
+cargo test -p allthecodes-acp --test protocol_methods capability
+cargo test -p allthecodes-acp --test session_lifecycle delete
+cargo test -p allthecodes-acp --test prompt_updates cancel_sends_idle_cancelled
+cargo test -p allthecodes --test acp_stdio_smoke
+cargo check -p allthecodes-acp
+cargo check --workspace
+cargo build --workspace --release
+```
+
+The on-demand ignored live-provider smoke was also exercised with the normal config/auth/model path and failed explicitly in this environment because the current Codex backend did not emit model content or final idle within 300 seconds.
 
 ## Ratatui UI parity OMX final verification (2026-05-10)
 

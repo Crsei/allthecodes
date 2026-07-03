@@ -60,14 +60,21 @@
 | DOC-002 | 中 | Open | Extensibility implementation map | Phase 5/6 closure 与旧“部分实现”状态冲突；Phase 5 实施记录、future fields、WebSocket/out-of-scope 口径需收口。 | [2026-05-07 review](issues/2026-05-07-code-review-findings.md) §五 |
 | DOC-003 | 中 | Review | stale Lite wording | 顶层 release/current-state/CLI docs 已改为 Full Build 与当前 crate 路径口径；command reference、TUI command UI reference、final release plan、implementation gaps 已同步 2026-05-21 production wiring 状态。plan/archive/mvp 文档中的历史 Lite 文字只按历史上下文保留，后续成为活跃 release reference 时继续清理。 | 本轮文档清理发现 |
 
-## 7. 更新规则
+## 7. ACP adapter residuals (2026-07-03)
+
+| ID | Severity | Status | Scope | Summary | Detail |
+| --- | --- | --- | --- | --- | --- |
+| ACP-001 | Medium | Open | Binary real-model smoke | The deterministic ACP stdio smoke passes, but the on-demand real-model binary smoke did not complete in this environment. | `acp_stdio_real_model_prompt_smoke` uses the normal allthecodes config/auth/model path and is ignored by default because it requires credentials, provider access, and network. Explicit local runs against current `backend=codex` timed out after 300s after `available_commands_update` and `state_update: running`, with no model content or final idle. |
+| ACP-002 | Medium | Intentional | ACP multimodal prompt and MCP | ACP image/audio/embedded-context prompt blocks and per-session MCP are intentionally unadvertised for this branch. | `session.prompt.image`, `session.prompt.audio`, `session.prompt.embeddedContext`, and `session.mcp.*` remain separate feature work. Current behavior is explicit rejection with `InvalidParams` or omitted capabilities, not partial support. |
+
+## 8. 更新规则
 
 1. 新增开放问题写入本文，不再新增 `docs/issues*.md` 或 `docs/issues/` 下的活跃问题文档。
 2. 只读审查原文、长日志和历史复盘放入 [archive/issues/](issues)。
 3. 修复完成后，把问题从本文移到 [archive/resolved-known-issues-2026-05-07.md](resolved-known-issues-2026-05-07.md) 或后续同类 resolved archive。
 4. 文档中若只有“已实现/已修复”历史，不应留在活跃入口；迁入 `development/archive/`。
 
-## 8. Remote-Control Gateway Residuals (2026-05-08)
+## 9. Remote-Control Gateway Residuals (2026-05-08)
 
 | ID | Severity | Status | Scope | Summary | Detail |
 | --- | --- | --- | --- | --- | --- |
@@ -77,19 +84,19 @@
 | REMOTE-004 | Medium | Open | Release verification | Session 16 performed docs-gate verification, not full remote-control code verification. | The next release step must run the Session 17 command set before claiming the gateway implementation is fully green. |
 | REMOTE-005 | Low | Open | Public exposure | Public hosted gateway and multi-tenant SaaS are non-goals for this release. | Non-loopback use requires explicit remote-token policy and origin controls; production hosting design remains out of scope. |
 
-## 9. Ratatui UI parity OMX verification residuals (2026-05-10)
+## 10. Ratatui UI parity OMX verification residuals (2026-05-10)
 
 | ID | Severity | Status | Scope | Summary | Detail |
 | --- | --- | --- | --- | --- | --- |
 | UI-005 | Low | Open | line endings | `git diff --check` passes but reports CRLF-to-LF normalization warnings for several touched files. | The warnings are not whitespace errors, but commit packaging should expect Git normalization on touched Rust/docs files. |
 
-## 10. Agent Teams / Swarm residuals (2026-05-18)
+## 11. Agent Teams / Swarm residuals (2026-05-18)
 
 | ID | Severity | Status | Scope | Summary | Detail |
 | --- | --- | --- | --- | --- | --- |
 | TEAMS-001 | Medium | Open | teammate session resume | TeamContext resume by session id is wired for team leads, but teammate self-session resume still depends on persisting `TeamMember.session_id`. | `restore_team_context_for_session()` matches `TeamFile.lead_session_id` and member `session_id`. Current in-process spawn records teammate members with `session_id: None`, so a teammate's own saved session cannot be restored by session id until runner/spawn records the child session id back into the team file. |
 
-## 11. PTY E2E 测试发现的问题 (2026-05-23)
+## 12. PTY E2E 测试发现的问题 (2026-05-23)
 
 | ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
 | --- | --- | --- | --- | --- | --- |
