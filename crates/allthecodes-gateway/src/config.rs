@@ -175,14 +175,16 @@ fn validate_child(
 mod tests {
     use super::*;
 
+    const ALLTHECODES_HOME_ENV: &str = "ALLTHECODES_HOME";
+
     struct EnvGuard {
         previous: Option<String>,
     }
 
     impl EnvGuard {
         fn set(value: &str) -> Self {
-            let previous = std::env::var("CC_RUST_HOME").ok();
-            std::env::set_var("CC_RUST_HOME", value);
+            let previous = std::env::var(ALLTHECODES_HOME_ENV).ok();
+            std::env::set_var(ALLTHECODES_HOME_ENV, value);
             Self { previous }
         }
     }
@@ -190,14 +192,14 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.previous {
-                Some(value) => std::env::set_var("CC_RUST_HOME", value),
-                None => std::env::remove_var("CC_RUST_HOME"),
+                Some(value) => std::env::set_var(ALLTHECODES_HOME_ENV, value),
+                None => std::env::remove_var(ALLTHECODES_HOME_ENV),
             }
         }
     }
 
     #[test]
-    fn config_defaults_use_gateway_paths_under_cc_rust_home() {
+    fn config_defaults_use_gateway_paths_under_allthecodes_home() {
         let tmp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set(tmp.path().to_str().unwrap());
 

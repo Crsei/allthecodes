@@ -213,7 +213,7 @@ fn classify_bash_segment(command: &str) -> CommandSegmentRisk {
     let first_word = extract_first_word(trimmed);
 
     // 1. Secret check (highest priority).
-    if let Some((reason, rule)) = check_bash_secret(trimmed, &first_word) {
+    if let Some((reason, rule)) = check_bash_secret(trimmed, first_word) {
         return CommandSegmentRisk {
             text: trimmed.to_string(),
             level: CommandRiskLevel::Secret,
@@ -223,7 +223,7 @@ fn classify_bash_segment(command: &str) -> CommandSegmentRisk {
     }
 
     // 2. Build check (before destructive/deploy so cargo build isn't intercepted).
-    if let Some((reason, rule)) = check_bash_build(trimmed, &first_word) {
+    if let Some((reason, rule)) = check_bash_build(trimmed, first_word) {
         tracing::debug!("command_risk: build match for '{}': {}", trimmed, reason);
         return CommandSegmentRisk {
             text: trimmed.to_string(),
@@ -234,7 +234,7 @@ fn classify_bash_segment(command: &str) -> CommandSegmentRisk {
     }
 
     // 3. Destructive check.
-    if let Some((reason, rule)) = check_bash_destructive(trimmed, &first_word) {
+    if let Some((reason, rule)) = check_bash_destructive(trimmed, first_word) {
         return CommandSegmentRisk {
             text: trimmed.to_string(),
             level: CommandRiskLevel::Destructive,
@@ -244,7 +244,7 @@ fn classify_bash_segment(command: &str) -> CommandSegmentRisk {
     }
 
     // 4. Deploy check.
-    if let Some((reason, rule)) = check_bash_deploy(trimmed, &first_word) {
+    if let Some((reason, rule)) = check_bash_deploy(trimmed, first_word) {
         return CommandSegmentRisk {
             text: trimmed.to_string(),
             level: CommandRiskLevel::Deploy,
@@ -281,7 +281,7 @@ fn classify_powershell_segment(command: &str) -> CommandSegmentRisk {
     let first_word = extract_first_word(trimmed);
 
     // 1. Secret check.
-    if let Some((reason, rule)) = check_powershell_secret(trimmed, &first_word) {
+    if let Some((reason, rule)) = check_powershell_secret(trimmed, first_word) {
         return CommandSegmentRisk {
             text: trimmed.to_string(),
             level: CommandRiskLevel::Secret,
@@ -291,7 +291,7 @@ fn classify_powershell_segment(command: &str) -> CommandSegmentRisk {
     }
 
     // 2. Destructive check.
-    if let Some((reason, rule)) = check_powershell_destructive(trimmed, &first_word) {
+    if let Some((reason, rule)) = check_powershell_destructive(trimmed, first_word) {
         return CommandSegmentRisk {
             text: trimmed.to_string(),
             level: CommandRiskLevel::Destructive,
@@ -301,7 +301,7 @@ fn classify_powershell_segment(command: &str) -> CommandSegmentRisk {
     }
 
     // 3. Deploy check.
-    if let Some((reason, rule)) = check_powershell_deploy(trimmed, &first_word) {
+    if let Some((reason, rule)) = check_powershell_deploy(trimmed, first_word) {
         return CommandSegmentRisk {
             text: trimmed.to_string(),
             level: CommandRiskLevel::Deploy,
@@ -311,7 +311,7 @@ fn classify_powershell_segment(command: &str) -> CommandSegmentRisk {
     }
 
     // 4. Build check.
-    if let Some((reason, rule)) = check_powershell_build(trimmed, &first_word) {
+    if let Some((reason, rule)) = check_powershell_build(trimmed, first_word) {
         return CommandSegmentRisk {
             text: trimmed.to_string(),
             level: CommandRiskLevel::Build,
@@ -353,9 +353,9 @@ fn split_shell_segments(command: &str, shell: ShellKind) -> Vec<String> {
             let mut current = String::new();
             let mut in_single = false;
             let mut in_double = false;
-            let mut chars = command.chars().peekable();
+            let chars = command.chars();
 
-            while let Some(ch) = chars.next() {
+            for ch in chars {
                 if ch == '\'' && !in_double {
                     in_single = !in_single;
                     current.push(ch);
@@ -558,9 +558,9 @@ fn check_bash_destructive(command: &str, first_word: &str) -> Option<(String, Op
             if has_short_flag(trimmed, "f") && !lower.contains("--force-with-lease") {
                 // Must be a push-specific -f, not e.g. `git push -u origin -f`.
                 let push_part = split_after(trimmed, "push");
-                if push_part.map_or(false, |s| {
+                if push_part.is_some_and(|s| {
                     let words: Vec<&str> = s.split_whitespace().collect();
-                    words.iter().any(|w| *w == "-f")
+                    words.contains(&"-f")
                 }) {
                     return Some((
                         "git push -f overwrites remote history".into(),
@@ -798,10 +798,7 @@ fn check_bash_build(command: &str, first_word: &str) -> Option<(String, Option<S
         }
         "rustc" => return Some(("rustc compile".into(), Some("build:rustc".into()))),
         "pytest" | "vitest" | "jest" | "mocha" => {
-            return Some((
-                format!("{}", first_word),
-                Some("build:test_framework".into()),
-            ));
+            return Some((first_word.to_string(), Some("build:test_framework".into())));
         }
         _ => {}
     }
@@ -824,22 +821,21 @@ fn check_powershell_secret(command: &str, _first_word: &str) -> Option<(String, 
         ));
     }
     // Export-Clixml with credential
-    if lower.contains("export-clixml") {
-        if lower.contains("credential") || lower.contains("secret") {
-            return Some((
-                "PowerShell credential export".into(),
-                Some("secret:powershell_export_credential".into()),
-            ));
-        }
+    if lower.contains("export-clixml") && (lower.contains("credential") || lower.contains("secret"))
+    {
+        return Some((
+            "PowerShell credential export".into(),
+            Some("secret:powershell_export_credential".into()),
+        ));
     }
     // Reading .env / credential files
-    if lower.contains(".env") || lower.contains("credentials.json") {
-        if lower.contains("get-content") || lower.contains("type ") || lower.contains("cat ") {
-            return Some((
-                "PowerShell reading credential file".into(),
-                Some("secret:powershell_read_credential_file".into()),
-            ));
-        }
+    if (lower.contains(".env") || lower.contains("credentials.json"))
+        && (lower.contains("get-content") || lower.contains("type ") || lower.contains("cat "))
+    {
+        return Some((
+            "PowerShell reading credential file".into(),
+            Some("secret:powershell_read_credential_file".into()),
+        ));
     }
 
     None
@@ -987,15 +983,17 @@ fn check_is_read_only(command: &str, dialect: ShellDialect) -> bool {
 
     // Now check with the read_only_shell module.
     match dialect {
-        ShellDialect::Bash => match super::read_only_shell::is_read_only_bash_command(trimmed) {
-            ReadOnlyResult::ReadOnly => true,
-            _ => false,
-        },
+        ShellDialect::Bash => {
+            matches!(
+                super::read_only_shell::is_read_only_bash_command(trimmed),
+                ReadOnlyResult::ReadOnly
+            )
+        }
         ShellDialect::PowerShell => {
-            match super::read_only_shell::is_read_only_powershell_command(trimmed) {
-                ReadOnlyResult::ReadOnly => true,
-                _ => false,
-            }
+            matches!(
+                super::read_only_shell::is_read_only_powershell_command(trimmed),
+                ReadOnlyResult::ReadOnly
+            )
         }
         _ => false, // Other dialects (Zsh, Fish, Cmd, Sh, Unknown): fail-closed to non-read
     }
@@ -1011,7 +1009,7 @@ fn extract_first_word(command: &str) -> &str {
         return "";
     }
     // Handle leading path components.
-    let stripped = trimmed.trim_start_matches(|c: char| c == '/' || c == '.' || c == '~');
+    let stripped = trimmed.trim_start_matches(['/', '.', '~']);
     // Handle env prefix: FOO=bar cmd ...
     let mut word_start = 0;
     for (i, ch) in stripped.char_indices() {

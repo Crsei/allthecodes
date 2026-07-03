@@ -347,7 +347,7 @@ impl HashEditTool {
     fn apply_operations(mut lines: Vec<TextLine>, operations: Vec<ResolvedOperation>) -> String {
         let eol = hashline::dominant_line_ending(&lines).to_string();
         let mut operations = operations;
-        operations.sort_by(|left, right| right.sort_index().cmp(&left.sort_index()));
+        operations.sort_by_key(|operation| std::cmp::Reverse(operation.sort_index()));
 
         for operation in operations {
             match operation {

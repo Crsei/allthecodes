@@ -9,7 +9,7 @@ use allthecodes_permissions::decision::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
 use allthecodes_engine::query::deps::{ModelCallParams, QueryDeps};
@@ -602,7 +602,25 @@ pub fn redact_classifier_text(input: &str) -> String {
 }
 
 fn pretty_json(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    let canonical = canonical_json_value(value);
+    serde_json::to_string_pretty(&canonical).unwrap_or_else(|_| value.to_string())
+}
+
+fn canonical_json_value(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(canonical_json_value).collect()),
+        Value::Object(object) => {
+            let mut entries = object.iter().collect::<Vec<_>>();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+            let mut sorted = Map::new();
+            for (key, value) in entries {
+                sorted.insert(key.clone(), canonical_json_value(value));
+            }
+            Value::Object(sorted)
+        }
+        _ => value.clone(),
+    }
 }
 
 fn estimate_tokens(input: &str) -> usize {

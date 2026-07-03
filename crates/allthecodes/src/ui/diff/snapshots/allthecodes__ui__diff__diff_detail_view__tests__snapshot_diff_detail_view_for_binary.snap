@@ -1,0 +1,7 @@
+---
+source: crates/allthecodes/src/ui/diff/diff_detail_view.rs
+assertion_line: 91
+expression: "output.join(\"\\n\")"
+---
+asset.bin
+Binary file - cannot display diff

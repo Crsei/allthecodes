@@ -479,7 +479,7 @@ mod tests {
             zip_writer
                 .start_file("../evil.sh", options)
                 .expect("start file");
-            zip_writer.write(b"malicious content").expect("write");
+            zip_writer.write_all(b"malicious content").expect("write");
             zip_writer.finish().expect("finish");
         }
 

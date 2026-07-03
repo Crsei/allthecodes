@@ -4,8 +4,6 @@
 //! All items use `pub(super)` visibility so handler files can access them via
 //! `use crate::handlers::test_support::*;`.
 
-#![cfg(test)]
-
 use crate::state::WebState;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::QueryEngineConfig;

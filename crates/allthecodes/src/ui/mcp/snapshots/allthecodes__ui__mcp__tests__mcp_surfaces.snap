@@ -1,0 +1,126 @@
+---
+source: crates/allthecodes/src/ui/mcp/mod.rs
+assertion_line: 234
+expression: rendered
+---
+## list
+MCP servers (3)
+  database       stdio   connected  tools=1
+  uvx db-mcp
+> docs           remote  failed     tools=0
+  https://mcp.example.com
+  agent-tools    agent   connecting tools=0
+
+## capabilities
+Capabilities
+- tools        1
+- resources    3
+
+## warnings
+1 MCP parsing warning(s)
+- missing auth token
+
+## tool-list
+Tools (1)
+> query                Run a read-only query
+
+## tool-detail
+Tool: query
+Run a read-only query
+input:
+  - sql: string
+  - limit: number
+
+## stdio-menu
+Server: database
+kind: stdio
+command: uvx db-mcp
+status: connected
+actions: reconnect | disable | remove
+
+## remote-menu
+Server: docs
+kind: remote
+url: https://mcp.example.com
+status: failed
+actions: reconnect | open | disable
+
+## server-card
+> docs [remote/failed]
+  tools=0 capabilities=0 warnings=1
+  https://mcp.example.com
+  warning: missing auth token
+
+## dialog-copy
+MCP server security
+MCP servers may execute code or access system resources. All tool calls require approval. Learn more in the MCP documentation.
+Enter continue | Esc cancel
+
+## approval-dialog
++ New MCP server --------------------------------------------------------------------------------------------------------------------------+
+| server=playwright source=.mcp.json risk=code                                                                                             |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Decisions                                MCP servers may execute code or access system resources. All tool calls require approval. Le... |
+|   Use future project servers               Use this and all future MCP servers in this project enable current server and trust future... |
+| > Use this server                        > Use this MCP server          enable only this project MCP server  /mcp approve playwright     |
+|   Continue without server                  Continue without using this MCP server record this project MCP server as disabled  /mcp re... |
+|                                                                                                                                          |
+|                                          Commands                                                                                        |
+|                                          approve all:                   /mcp approve playwright --all-project                            |
+|                                          approve one:                   /mcp approve playwright                                          |
+|                                          reject:                        /mcp reject playwright                                           |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down decision | Enter submit | Esc reject                                                                                             |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## multiselect-dialog
++ New MCP servers -------------------------------------------------------------------------------------------------------------------------+
+| count=3 source=.mcp.json risk=code                                                                                                       |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Servers                                  MCP servers may execute code or access system resources. All tool calls require approval. Le... |
+|   github                                   [x] github                   enable                                                           |
+| > playwright                             > [ ] playwright               disable                                                          |
+|   sentry                                   [x] sentry                   enable                                                           |
+|                                                                                                                                          |
+|                                          Commands                                                                                        |
+|                                          enable:                        /mcp approve github sentry                                       |
+|                                          disable:                       /mcp reject playwright                                           |
+|------------------------------------------------------------------------------------------------------------------------------------------|
+| Up/Down server | Space toggle | Enter apply | Esc reject all                                                                             |
++------------------------------------------------------------------------------------------------------------------------------------------+
+
+## desktop-import-dialog
+Import MCP Servers from Claude Desktop
+Found 2 MCP server(s) in Claude Desktop.
+Target: ~/.allthecodes/settings.json
+Name collisions import with a numbered suffix when selected.
+  [x] filesystem - npx @modelcontextprotocol/server-filesystem
+> [ ] github -> github-1 - uvx mcp-github
+1 server(s) selected for import.
+Enter import | Space toggle | Esc skip import
+
+## agent-menu
+Server: agent-tools
+kind: agent
+owner: reviewer
+status: connecting
+actions: view tools | reconnect
+
+## settings
+MCP settings
+enabled: true
+config: ~/.allthecodes/mcp.json
+servers: 3
+warnings: 1
+
+## reconnect
+Reconnecting docs (2/5) - HTTP 401
+Enter retry | Esc cancel
+
+## elicitation
+MCP needs input
+> token (required) - API token
+  value: <empty>
+  region (optional) - Region
+  value: us
+Enter submit | Esc cancel

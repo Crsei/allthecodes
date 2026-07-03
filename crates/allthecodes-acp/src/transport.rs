@@ -11,6 +11,12 @@ pub struct AcpStdioReader {
     inner: BufReader<tokio::io::Stdin>,
 }
 
+impl Default for AcpStdioReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AcpStdioReader {
     /// Create a new stdin reader.
     pub fn new() -> Self {
@@ -38,6 +44,12 @@ impl AcpStdioReader {
 /// The ACP stdio writer: writes newline-delimited JSON-RPC frames to stdout.
 pub struct AcpStdioWriter {
     inner: BufWriter<tokio::io::Stdout>,
+}
+
+impl Default for AcpStdioWriter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AcpStdioWriter {

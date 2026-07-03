@@ -27,6 +27,9 @@ const VALID_API_PROVIDERS: &[&str] = &["anthropic", "openai-codex", "openai"];
 // ones used at runtime.
 const BUILT_IN_STYLE_NAMES: &[&str] = &["default", "explanatory", "learning"];
 
+type SettingsPresencePredicate = fn(&SettingsJson) -> bool;
+type SettingsPresenceRule = (&'static str, SettingsPresencePredicate);
+
 /// Accept any label the engine's effort resolver would accept.
 /// Mirrors `engine::effort::effort_to_budget_tokens` — kept in sync by hand.
 fn effort_label_is_known(effort: &str) -> bool {
@@ -50,7 +53,7 @@ fn model_reasoning_effort_is_known(effort: &str) -> bool {
     )
 }
 
-const ELECTRON_LEGACY_SETTINGS: &[(&str, fn(&SettingsJson) -> bool)] = &[
+const ELECTRON_LEGACY_SETTINGS: &[SettingsPresenceRule] = &[
     ("appIcon", |settings| settings.app_icon.is_some()),
     ("autoStart", |settings| settings.auto_start.is_some()),
     ("startMinimized", |settings| {
@@ -71,7 +74,7 @@ const ELECTRON_LEGACY_SETTINGS: &[(&str, fn(&SettingsJson) -> bool)] = &[
     }),
 ];
 
-const RESERVED_MEMORY_SETTINGS: &[(&str, fn(&SettingsJson) -> bool)] = &[
+const RESERVED_MEMORY_SETTINGS: &[SettingsPresenceRule] = &[
     ("memoryAutoRetrieve", |settings| {
         settings.memory_auto_retrieve.is_some()
     }),

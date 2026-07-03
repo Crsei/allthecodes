@@ -946,7 +946,15 @@ mod tests {
             MessageContent::Blocks(blocks) => match &blocks[0] {
                 ContentBlock::ToolResult { content, .. } => match content {
                     ToolResultContent::Text(text) => {
-                        assert_eq!(text, r#"{"status":"started","workflow_id":"workflow-1"}"#);
+                        let actual: serde_json::Value =
+                            serde_json::from_str(text).expect("tool result JSON");
+                        assert_eq!(
+                            actual,
+                            serde_json::json!({
+                                "status": "started",
+                                "workflow_id": "workflow-1",
+                            })
+                        );
                     }
                     other => panic!("expected text tool result, got {:?}", other),
                 },

@@ -8,6 +8,7 @@ use crate::startup::settings_runtime::SettingsRuntime;
 use crate::startup::startup_context::StartupContext;
 use crate::startup_model::{settings_effort_value, settings_thinking_enabled};
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum AppStateRuntime {
     InitOnly,
     Ready(AppState),

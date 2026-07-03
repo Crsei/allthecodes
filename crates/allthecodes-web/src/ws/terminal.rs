@@ -374,6 +374,7 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         id: String,
         label: String,

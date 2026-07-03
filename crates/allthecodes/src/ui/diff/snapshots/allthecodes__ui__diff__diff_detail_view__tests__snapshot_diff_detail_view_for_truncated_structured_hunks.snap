@@ -1,0 +1,10 @@
+---
+source: crates/allthecodes/src/ui/diff/diff_detail_view.rs
+assertion_line: 133
+expression: "output.join(\"\\n\")"
+---
+src/main.rs
+@@ -1 +1 @@
+   1      - old
+        1 + new
+(diff truncated (exceeded 400 line limit))

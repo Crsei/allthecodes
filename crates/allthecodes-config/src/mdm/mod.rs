@@ -246,8 +246,7 @@ mod tests {
         let config = load_managed_settings_policy().unwrap();
         // Without a managed file (in test env), the config should be inactive
         // but the function should not error.
-        assert!(!config.active || config.active);
-        // Just verify it returns without error.
+        assert_eq!(config.file_path, managed_settings_path());
     }
 
     #[test]

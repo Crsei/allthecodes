@@ -175,10 +175,7 @@ async fn start_auto_login_with_timeout(
         if let Some(scopes) = &scopes {
             pairs.append_pair("scope", scopes);
         }
-        let resource = oauth
-            .oauth_resource
-            .as_deref()
-            .or_else(|| config.url.as_deref());
+        let resource = oauth.oauth_resource.as_deref().or(config.url.as_deref());
         if let Some(resource) = resource {
             pairs.append_pair("resource", resource);
         }
@@ -763,7 +760,8 @@ mod tests {
         tokio::spawn(async move {
             let (mut stream, _) = metadata_listener.accept().await.unwrap();
             let mut buf = [0_u8; 4096];
-            stream.read(&mut buf).await.unwrap();
+            let bytes_read = stream.read(&mut buf).await.unwrap();
+            assert!(bytes_read > 0);
             let body = serde_json::json!({
                 "issuer": format!("http://127.0.0.1:{metadata_port}"),
                 "authorization_endpoint": format!("http://127.0.0.1:{metadata_port}/authorize"),
@@ -790,9 +788,7 @@ mod tests {
         assert!(handle.authorization_url().contains("/authorize?"));
         assert!(handle.authorization_url().contains("code_challenge="));
         assert!(!start_info.state.is_empty());
-        assert!(start_info
-            .redirect_uri
-            .contains(format!("{CALLBACK_PATH}").as_str()));
+        assert!(start_info.redirect_uri.contains(CALLBACK_PATH));
 
         drop(handle);
     }

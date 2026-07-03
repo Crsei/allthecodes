@@ -178,7 +178,10 @@ mod tests {
     use super::*;
     use allthecodes_bootstrap::SessionId;
     use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
+
+    static MODEL_ADD_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_ctx(cwd: PathBuf) -> CommandContext {
         CommandContext {
@@ -191,13 +194,17 @@ mod tests {
 
     /// Save and restore env vars to avoid contaminating parallel tests.
     struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
         saved: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvGuard {
         fn new(keys: &[&'static str]) -> Self {
+            let lock = MODEL_ADD_ENV_LOCK
+                .lock()
+                .expect("model-add env lock poisoned");
             let saved = keys.iter().map(|&k| (k, std::env::var(k).ok())).collect();
-            Self { saved }
+            Self { _lock: lock, saved }
         }
     }
 

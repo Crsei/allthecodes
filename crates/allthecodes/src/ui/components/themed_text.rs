@@ -88,13 +88,7 @@ impl<'a> ThemedText<'a> {
 
     /// Resolve the foreground colour from the theme.
     fn resolved_color(&self, colors: &ThemeColors) -> Option<Color> {
-        self.color.and_then(|k| {
-            if k.starts_with('#') || k.starts_with("rgb(") || k.starts_with("ansi") {
-                resolve_color(k, colors)
-            } else {
-                resolve_color(k, colors)
-            }
-        })
+        self.color.and_then(|k| resolve_color(k, colors))
     }
 
     /// Resolve the background colour from the theme.

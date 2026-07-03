@@ -707,6 +707,7 @@ fn worktree_fallback_enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepare_worktree_runtime(
     agent_id: &str,
     description: &str,

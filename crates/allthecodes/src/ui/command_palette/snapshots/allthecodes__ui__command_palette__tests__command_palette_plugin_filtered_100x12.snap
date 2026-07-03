@@ -1,0 +1,16 @@
+---
+source: crates/allthecodes/src/ui/command_palette/tests.rs
+expression: "render_palette_snapshot(\"/plugin\", &cwd, 100, 12, &[])"
+---
+"┌ Commands ────────────────────────────────────────────────────────────────────────────────────────┐"
+"│Commands                          Command details                                                 │"
+"│/plugin(plugins)                  Plugin management (list, status, enable, di...                  │"
+"│/reload-plugins                   Hot-refresh the plugin registry                                 │"
+"│                                                                                                  │"
+"│Behavior                                                                                          │"
+"│  Enter inserts: /plugin                                                                          │"
+"│  ghost: n                                                                                        │"
+"│  usage: /plugin <list|installed|disabled|errors|status|enable|disable|uninstall> [id]            │"
+"│  example: /plugin enable <plugin-id>                                                             │"
+"│  edit: installed: ~/.allthecodes/plugins/installed_plugins.json                               │"
+"└──────────────────────────────────────────────────────────────────────────────────────────────────┘"

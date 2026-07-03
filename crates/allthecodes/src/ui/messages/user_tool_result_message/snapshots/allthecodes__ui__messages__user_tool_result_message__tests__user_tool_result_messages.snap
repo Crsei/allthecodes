@@ -1,0 +1,34 @@
+---
+source: crates/allthecodes/src/ui/messages/user_tool_result_message/mod.rs
+assertion_line: 74
+expression: rendered
+---
+## canceled
+Interrupted by user
+
+## rejected-tool
+Tool use rejected by user (tool metadata unavailable)
+
+## rejected-plan
+User rejected Claude's plan:
+  check first
+
+## success
+done
+
+## error
+Tool use denied by classifier
+  policy blocked command
+
+## plan-error
+User rejected Claude's plan:
+  1. edit files
+  2. run tests
+
+## dispatch-cancel
+Interrupted by user
+
+## dispatch-success
+{
+  "ok": true
+}

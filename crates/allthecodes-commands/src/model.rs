@@ -570,10 +570,12 @@ mod tests {
 
     #[test]
     fn test_resolve_alias_prefers_settings_model() {
-        let mut settings = allthecodes_config::runtime_settings::SettingsJson::default();
-        settings.sota_model = Some("custom-sota".to_string());
-        settings.mota_model = Some("custom-mota".to_string());
-        settings.fota_model = Some("custom-fota".to_string());
+        let settings = allthecodes_config::runtime_settings::SettingsJson {
+            sota_model: Some("custom-sota".to_string()),
+            mota_model: Some("custom-mota".to_string()),
+            fota_model: Some("custom-fota".to_string()),
+            ..Default::default()
+        };
 
         assert_eq!(
             resolve_model_alias_with_settings("SOTA", &settings),

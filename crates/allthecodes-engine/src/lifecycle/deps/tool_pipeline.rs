@@ -59,6 +59,7 @@ pub(crate) struct PermissionPromptContinue {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ToolCallOutcome {
     Success {
         result: crate::types::tool::ToolResult,
@@ -78,6 +79,7 @@ pub(crate) struct PostHookContinue {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum PipelineStageResult<T> {
     Continue(T),
     Finish(ToolExecResult),
@@ -103,6 +105,7 @@ pub(crate) struct ToolExecutionPipeline<'a> {
 }
 
 impl<'a> ToolExecutionPipeline<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         deps: &'a QueryEngineDeps,
         request: &'a ToolExecRequest,

@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn test_watch_nonexistent_file() {
         let path = PathBuf::from("/nonexistent/file.json");
-        let detector = ChangeDetector::watch(&[path.clone()]);
+        let detector = ChangeDetector::watch(std::slice::from_ref(&path));
         // File doesn't exist, so it shouldn't be tracked.
         assert_eq!(detector.tracked_count(), 0);
         // has_changed should return false for a never-tracked, still-missing file.
@@ -179,7 +179,7 @@ mod tests {
         let path = dir.path().join("new.json");
 
         // Watch before the file exists.
-        let detector = ChangeDetector::watch(&[path.clone()]);
+        let detector = ChangeDetector::watch(std::slice::from_ref(&path));
         assert!(!detector.has_changed(&path));
 
         // Create the file.
@@ -196,7 +196,7 @@ mod tests {
         // Sleep to ensure mtime advances (filesystem ms resolution on ext4).
         std::thread::sleep(Duration::from_millis(1100));
 
-        let detector = ChangeDetector::watch(&[path.clone()]);
+        let detector = ChangeDetector::watch(std::slice::from_ref(&path));
         assert!(!detector.has_changed(&path));
 
         // Modify the file.
@@ -212,7 +212,7 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(1100));
 
-        let mut detector = ChangeDetector::watch(&[path.clone()]);
+        let mut detector = ChangeDetector::watch(std::slice::from_ref(&path));
         assert!(!detector.has_changed(&path));
 
         std::fs::write(&path, "v2").unwrap();
@@ -271,7 +271,7 @@ mod tests {
         // Sleep to ensure mtime advances.
         std::thread::sleep(Duration::from_millis(1100));
 
-        let detector = ChangeDetector::watch(&[path.clone()]);
+        let detector = ChangeDetector::watch(std::slice::from_ref(&path));
         std::fs::remove_file(&path).unwrap();
         assert!(detector.has_changed(&path));
     }

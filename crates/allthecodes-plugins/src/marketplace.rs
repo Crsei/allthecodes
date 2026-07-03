@@ -569,16 +569,29 @@ mod tests {
             entries[0].download_url.as_deref(),
             Some(SUPERPOWERS_DOWNLOAD_URL)
         );
-        assert_eq!(
-            index.list_sources()[0].name,
-            DEFAULT_MARKETPLACE_SOURCE_NAME
-        );
+        let source_names: Vec<String> = index
+            .list_sources()
+            .into_iter()
+            .map(|source| source.name)
+            .collect();
+        assert!(source_names
+            .iter()
+            .any(|name| name == DEFAULT_MARKETPLACE_SOURCE_NAME));
+        assert!(source_names
+            .iter()
+            .any(|name| name == OFFICIAL_MARKETPLACE_SOURCE_NAME));
         assert!(index.find_plugin(SUPERPOWERS_PLUGIN_ID).is_some());
     }
 
     #[tokio::test]
     async fn builtin_marketplace_refresh_stays_local() {
-        let index = MarketplaceIndex::with_builtin_defaults();
+        let index = MarketplaceIndex::new();
+        index.register_source(default_marketplace_source());
+        index.set_marketplace_entries(
+            DEFAULT_MARKETPLACE_SOURCE_NAME,
+            default_marketplace_entries(),
+        );
+
         let count = index.refresh_all().await.unwrap();
         assert_eq!(count, 1);
         assert_eq!(

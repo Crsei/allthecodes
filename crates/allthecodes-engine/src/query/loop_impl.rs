@@ -1045,7 +1045,7 @@ fn build_execution_record(
         retry_count: turn_context.retry_count,
         model: turn_context.model.clone(),
         fallback_used: turn_context.fallback_used,
-        permission_decision: exec_result.permission_decision.clone(),
+        permission_decision: exec_result.permission_decision,
         duration_ms: exec_result.duration_ms,
         had_error: exec_result.is_error || shell_had_error,
         schema_version: 1,

@@ -58,6 +58,7 @@ fn deterministic_memory_context(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_model_assisted_memory_context(
     cwd: &str,
     include_auto_memory: bool,

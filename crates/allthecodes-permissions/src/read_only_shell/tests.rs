@@ -390,11 +390,7 @@ fn test_read_only_commands_safe_for_plan_mode() {
     ];
     for argv in safe_commands {
         let raw = argv.join(" ");
-        assert!(
-            is_ro(&argv.iter().map(|s| *s).collect::<Vec<&str>>(), &raw),
-            "expected ReadOnly for: {}",
-            raw
-        );
+        assert!(is_ro(&argv, &raw), "expected ReadOnly for: {}", raw);
     }
 }
 
@@ -415,8 +411,7 @@ fn test_write_commands_blocked_in_plan_mode() {
     for argv in dangerous_commands {
         let raw = argv.join(" ");
         assert!(
-            is_not_ro(&argv.iter().map(|s| *s).collect::<Vec<&str>>(), &raw)
-                || is_unsupported(&argv.iter().map(|s| *s).collect::<Vec<&str>>(), &raw),
+            is_not_ro(&argv, &raw) || is_unsupported(&argv, &raw),
             "expected NOT ReadOnly for: {}",
             raw
         );

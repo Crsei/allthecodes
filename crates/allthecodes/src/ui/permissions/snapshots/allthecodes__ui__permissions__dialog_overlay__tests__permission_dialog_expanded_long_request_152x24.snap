@@ -1,0 +1,24 @@
+---
+source: crates/allthecodes/src/ui/permissions/dialog_overlay.rs
+assertion_line: 821
+expression: rendered
+---
+
+
+
+
+ ┌ Permission Required - Run command? ────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │Tool: Bash                                                                                                                                          │
+ │Kind: Run command                                                                                                                                   │
+ ││Request                        python scripts/run_extremely_long_validation_command.py --wor...                                                    │
+ ││shell: bash                                                                                                                                        │
+ ││command: python scripts/run_extremely_long_validation_command...                                                                                   │
+ ││risk: shell command                                                                                                                                │
+ ││Options                                                                                                                                            │
+ ││                                                                                                                                                   │
+ ││                                                                                                                                                   │
+ ││                                                                                                                                                   │
+ │  Allow (y)    Deny (n)    Always exact (a)                                                                                                         │
+ │                                                                                                                                                    │
+ │ Arrows/hotkeys. Enter confirms. R auto review. E details. Esc denies. Tab: tell model what to do differently.                                      │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

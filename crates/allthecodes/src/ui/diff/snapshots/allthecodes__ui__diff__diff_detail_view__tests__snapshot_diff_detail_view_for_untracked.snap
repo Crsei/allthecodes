@@ -1,0 +1,8 @@
+---
+source: crates/allthecodes/src/ui/diff/diff_detail_view.rs
+assertion_line: 84
+expression: "output.join(\"\\n\")"
+---
+foo.rs
+New file not yet staged.
+Run `git add foo.rs` to see line counts.

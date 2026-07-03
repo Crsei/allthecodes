@@ -1,0 +1,17 @@
+---
+source: crates/allthecodes/src/ui/command_palette/tests.rs
+assertion_line: 287
+expression: "render_palette_snapshot(\"/\", &cwd, 100, 12, &[KeyCode::PageDown])"
+---
+"┌ Commands ────────────────────────────────────────────────────────────────────────────────────────┐"
+"│Commands                          Command details                                                 │"
+"│  ─ Builtin ─                                                                                     │"
+"│/daemon                           View/control daemon process                                     │"
+"│/debug                            Export or inspect debug information                             │"
+"│/diff                             Show git diff of current changes                                │"
+"│                                                                                                  │"
+"│Behavior                                                                                          │"
+"│  Enter runs: /diff                                                                               │"
+"│  ghost: /diff                                                                                    │"
+"│  usage: /diff                                                                                    │"
+"└──────────────────────────────────────────────────────────────────────────────────────────────────┘"

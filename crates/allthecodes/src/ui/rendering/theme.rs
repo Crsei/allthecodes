@@ -182,6 +182,7 @@ impl Theme {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 fn light_theme() -> Theme {
     let mut t = Theme::default();
     t.assistant_name = Style::default()
@@ -224,6 +225,7 @@ fn light_theme() -> Theme {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 fn tron_theme() -> Theme {
     let mut t = Theme::default();
     t.assistant_name = Style::default()

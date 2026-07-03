@@ -1,0 +1,13 @@
+---
+source: crates/allthecodes/src/ui/memory/mod.rs
+assertion_line: 35
+expression: rendered
+---
+## selector
+  User memory - Saved in ~/.allthecodes/AGENTS.md
+> Project memory (new) - Saved in ./AGENTS.md
+  L ./docs/AGENTS.md - @-imported
+  Open ~/.allthecodes/memory - auto-memory folder
+
+## notification
+Memory updated in ./AGENTS.md - /memory to edit

@@ -366,7 +366,7 @@ fn test_export_saved_session_reads_rollout_without_legacy_file() {
     let created_at = Utc.with_ymd_and_hms(2026, 7, 2, 11, 0, 0).unwrap();
     let rollout_path = crate::record_replay::paths::new_rollout_file(session_id, created_at);
     std::fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
-    let lines = vec![
+    let lines = [
         RecordLine::new(
             session_id,
             0,

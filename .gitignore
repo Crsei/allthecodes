@@ -96,3 +96,5 @@ logs/
 
 # Snapshot directories anywhere in the tree
 **/snapshots/
+!crates/allthecodes/src/ui/**/snapshots/
+!crates/allthecodes/src/ui/**/snapshots/*.snap

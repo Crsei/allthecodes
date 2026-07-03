@@ -1041,6 +1041,7 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
+    #[allow(clippy::await_holding_lock)]
     async fn test_legacy_anthropic_alias_selects_claude_code_profile() {
         let _lock = ENV_LOCK.lock().expect("env lock poisoned");
         let dir = tempfile::TempDir::new().unwrap();
@@ -1066,6 +1067,7 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
+    #[allow(clippy::await_holding_lock)]
     async fn test_named_codex_login_selects_profile_without_oauth() {
         let _lock = ENV_LOCK.lock().expect("env lock poisoned");
         let dir = tempfile::TempDir::new().unwrap();

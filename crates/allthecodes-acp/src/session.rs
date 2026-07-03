@@ -167,7 +167,7 @@ pub async fn close_session(
     sink: &AcpSink,
 ) {
     permission_manager
-        .cancel_all(&session.session_id.0.to_string())
+        .cancel_all(session.session_id.0.as_ref())
         .await;
 
     let had_active_turn = {
@@ -207,7 +207,7 @@ pub async fn close_session(
     let _ = session.engine.flush_session_record().await;
 
     session_manager
-        .remove_session(&session.session_id.0.to_string())
+        .remove_session(session.session_id.0.as_ref())
         .await;
 }
 

@@ -34,6 +34,7 @@ use super::process_control::{
     configure_process_group, wait_for_exit_or_termination, ControlledExit,
 };
 
+#[allow(clippy::too_many_arguments)]
 fn shell_execution_output(
     command: &str,
     cwd: &std::path::Path,

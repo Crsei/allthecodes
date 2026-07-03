@@ -55,10 +55,7 @@ fn test_build_openai_request_strips_anthropic_cache_fields() {
     req.reasoning_effort = Some("high".to_string());
 
     let body = build_openai_request(&req, "openai");
-    assert!(serde_json::to_string(&body)
-        .unwrap()
-        .find("cache_")
-        .is_none());
+    assert!(!serde_json::to_string(&body).unwrap().contains("cache_"));
     assert_eq!(body["stream"], true);
     assert_eq!(body["max_completion_tokens"], 1024);
     assert!(body.get("max_tokens").is_none() || body["max_tokens"].is_null());

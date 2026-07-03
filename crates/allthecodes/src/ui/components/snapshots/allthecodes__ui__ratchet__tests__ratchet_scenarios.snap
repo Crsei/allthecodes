@@ -1,0 +1,25 @@
+---
+source: crates/allthecodes/src/ui/components/ratchet.rs
+assertion_line: 149
+expression: "format!(\"## grow then shrink\\n{}\\n---\\n{}\\n---\\n{}\\n\\n## offscreen (visible)\\n{}\\n---\\n{}\\n\\n## offscreen (hidden)\\n{}\",\nfmt_lines(&r1).join(\"\\n\"), fmt_lines(&r2).join(\"\\n\"),\nfmt_lines(&r3).join(\"\\n\"), fmt_lines(&o1).join(\"\\n\"),\nfmt_lines(&o2).join(\"\\n\"), fmt_lines(&o3).join(\"\\n\"),)"
+---
+## grow then shrink
+short
+---
+line 1
+line 2
+line 3
+---
+only one
+<blank:1>
+<blank:1>
+
+## offscreen (visible)
+a
+b
+c
+---
+x
+
+## offscreen (hidden)
+y

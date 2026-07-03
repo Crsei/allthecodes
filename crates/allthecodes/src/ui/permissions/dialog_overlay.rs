@@ -320,16 +320,21 @@ impl PermissionDialog {
 
     fn body_lines(&self, max_width: usize, max_height: u16, theme: &Theme) -> Vec<Line<'static>> {
         let routed = PermissionRequestRouter::route(&self.request, self.selected);
+        let max_detail_lines = max_height.saturating_sub(1) as usize;
         let mut detail_texts = routed_detail_lines(&routed.rendered);
         if self.show_raw_details {
-            if !detail_texts.is_empty() {
+            let raw_lines = self.raw_detail_lines();
+            if !raw_lines.is_empty() {
+                let raw_reserved_lines = raw_lines.len().saturating_add(1);
+                let routed_budget = max_detail_lines.saturating_sub(raw_reserved_lines);
+                detail_texts.truncate(routed_budget);
                 detail_texts.push("raw details".to_string());
+                detail_texts.extend(raw_lines);
             }
-            detail_texts.extend(self.raw_detail_lines());
         }
         let routed_lines = detail_texts
             .into_iter()
-            .take(max_height.saturating_sub(1) as usize)
+            .take(max_detail_lines)
             .map(|line| {
                 Line::from(vec![Span::styled(
                     truncate_str(&line, max_width),
@@ -565,6 +570,7 @@ fn is_router_chrome_line(line: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
         routed_detail_lines, PermissionChoice, PermissionDecisionChoice, PermissionDialog,

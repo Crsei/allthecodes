@@ -869,10 +869,7 @@ mod tests {
             advisor_model: None,
         };
         let body = build_gemini_request(&req);
-        assert!(serde_json::to_string(&body)
-            .unwrap()
-            .find("cache_")
-            .is_none());
+        assert!(!serde_json::to_string(&body).unwrap().contains("cache_"));
         assert_eq!(body["contents"][0]["parts"][0]["text"], "Hello");
     }
 

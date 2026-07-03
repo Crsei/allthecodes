@@ -22,7 +22,7 @@ fn has_markdown_syntax(text: &str) -> bool {
     text.contains(MARKDOWN_SYNTAX_CHARS)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MarkdownStreamCollector {
     buffer: String,
     /// Byte index in the buffer up to which content has been committed.
@@ -124,17 +124,6 @@ fn common_prefix_len_bytes(left: &str, right: &str) -> usize {
         common = left_idx + left_ch.len_utf8();
     }
     common
-}
-
-impl Default for MarkdownStreamCollector {
-    fn default() -> Self {
-        Self {
-            buffer: String::new(),
-            committed_len: 0,
-            rendered_len: 0,
-            rendered_lines: Text::default(),
-        }
-    }
 }
 
 pub(crate) fn simulate_stream_markdown_for_tests(chunks: &[&str]) -> Vec<Text<'static>> {

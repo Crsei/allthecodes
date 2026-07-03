@@ -134,7 +134,7 @@ impl ToolClassifier {
                     .map(str::to_string);
                 let target = pattern.clone().or(path.clone());
                 let label = pattern.as_deref().map_or_else(
-                    || format!("Search"),
+                    || "Search".to_string(),
                     |p| format!("Search \"{}\"", truncate_str(p, 64)),
                 );
                 (

@@ -48,6 +48,12 @@ pub struct AcpPermissionManager {
     next_request: AtomicU64,
 }
 
+impl Default for AcpPermissionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AcpPermissionManager {
     pub fn new() -> Self {
         Self {
