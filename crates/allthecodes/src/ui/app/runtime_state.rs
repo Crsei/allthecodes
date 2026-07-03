@@ -7,15 +7,20 @@ use allthecodes_ipc_protocol::BackendMessage;
 pub(super) struct RuntimeViewState {
     agent_nav: AgentNavigationState,
     current_agent_thread_id: Option<String>,
+    live_task_items: Vec<TaskSurfaceItem>,
+    backend_task_items: Vec<TaskSurfaceItem>,
     task_items: Vec<TaskSurfaceItem>,
 }
 
 impl Default for RuntimeViewState {
     fn default() -> Self {
+        let live_task_items = TasksSurface::new().items;
         Self {
             agent_nav: AgentNavigationState::default(),
             current_agent_thread_id: None,
-            task_items: TasksSurface::new().items,
+            task_items: live_task_items.clone(),
+            live_task_items,
+            backend_task_items: Vec::new(),
         }
     }
 }
@@ -46,9 +51,8 @@ impl RuntimeViewState {
     }
 
     pub(super) fn refresh_task_items(&mut self, items: &[TaskSurfaceItem]) {
-        if !items.is_empty() {
-            self.task_items = items.to_vec();
-        }
+        self.live_task_items = items.to_vec();
+        self.rebuild_task_items();
     }
 
     pub(super) fn tasks(&self) -> Vec<TaskStatus> {
@@ -59,9 +63,23 @@ impl RuntimeViewState {
     }
 
     pub(super) fn apply_task_event(&mut self, message: &BackendMessage) {
-        let mut surface = TasksSurface::from_items(std::mem::take(&mut self.task_items));
+        let mut surface = TasksSurface::from_items(std::mem::take(&mut self.backend_task_items));
         surface.handle_event(message);
-        self.task_items = surface.items;
+        self.backend_task_items = surface.items;
+        self.rebuild_task_items();
+    }
+
+    fn rebuild_task_items(&mut self) {
+        let mut items = self.live_task_items.clone();
+        for item in &self.backend_task_items {
+            if !items
+                .iter()
+                .any(|existing| existing.task.id == item.task.id)
+            {
+                items.push(item.clone());
+            }
+        }
+        self.task_items = items;
     }
 }
 
