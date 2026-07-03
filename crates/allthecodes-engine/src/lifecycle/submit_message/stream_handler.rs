@@ -5,7 +5,6 @@ use allthecodes_types::sdk::*;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::session::transcript;
 use crate::types::config::QueryEngineConfig;
 use crate::types::message::{
     Attachment, Message, MessageContent, QueryYield, StreamEvent, SystemSubtype, Usage,
@@ -13,6 +12,7 @@ use crate::types::message::{
 
 use super::super::types::AbortReason;
 use super::super::QueryEngineState;
+use super::transaction::SubmitTransaction;
 use super::{finish_submit_telemetry, SubmitTelemetrySpan, SubmitTurnState};
 
 pub(super) enum StreamAction {
@@ -70,12 +70,10 @@ fn handle_assistant_message(
         ctx.submit_turn.last_stop_reason = Some(sr.clone());
     }
 
-    {
-        let mut state = ctx.state_ref.write();
-        state.append_message(Message::Assistant(assistant_msg.clone()));
-        if let Some(ref msg_usage) = assistant_msg.usage {
-            state.update_usage(msg_usage, assistant_msg.cost_usd);
-        }
+    let mut transaction = SubmitTransaction::new();
+    transaction.append_message(Message::Assistant(assistant_msg.clone()));
+    if let Some(ref msg_usage) = assistant_msg.usage {
+        transaction.record_usage_cost(msg_usage.clone(), assistant_msg.cost_usd);
     }
 
     // Emit a durable cost event for completed model API calls.
@@ -153,27 +151,20 @@ fn handle_assistant_message(
         audit_ctx.flush();
     }
 
-    let action = StreamAction::Yield(SdkMessage::Assistant(SdkAssistantMessage {
+    transaction.emit(SdkMessage::Assistant(SdkAssistantMessage {
         message: assistant_msg.clone(),
         session_id: ctx.session_id.to_string(),
         parent_tool_use_id: None,
     }));
 
-    let _ = transcript::record_transcript(
-        ctx.session_id.as_str(),
-        &[Message::Assistant(assistant_msg.clone())],
-    );
+    transaction.persist(Message::Assistant(assistant_msg.clone()));
+    transaction.save_session_after_commit();
 
-    if ctx.config.auto_save_session {
-        let all_msgs = ctx.state_ref.read().transcript.messages.clone();
-        let _ = crate::session::storage::save_session(
-            ctx.session_id.as_str(),
-            &all_msgs,
-            &ctx.config.cwd,
-        );
-    }
-
-    let mut actions = vec![action];
+    let mut actions = transaction
+        .commit(ctx.state_ref, ctx.session_id, ctx.config)
+        .into_iter()
+        .map(StreamAction::Yield)
+        .collect::<Vec<_>>();
     let token_delta = assistant_msg.usage.as_ref().map(assistant_usage_tokens);
     if let Some(goal_update) =
         account_goal_runtime_message(ctx.session_id.as_str(), ctx.state_ref, token_delta)
@@ -361,13 +352,11 @@ fn handle_user_message(
 ) -> Vec<StreamAction> {
     ctx.submit_turn.turn_count_this_submit += 1;
 
-    {
-        let mut state = ctx.state_ref.write();
-        state.transcript.total_turn_count += 1;
-        state.append_message(Message::User(user_msg.clone()));
-    }
+    ctx.state_ref.write().transcript.total_turn_count += 1;
 
-    let mut actions = Vec::new();
+    let mut transaction = SubmitTransaction::new();
+    transaction.append_message(Message::User(user_msg.clone()));
+    transaction.persist(Message::User(user_msg.clone()));
     if ctx.replay_user_messages {
         let (content_text, content_blocks) = match &user_msg.content {
             MessageContent::Text(text) => (text.clone(), None),
@@ -376,7 +365,7 @@ fn handle_user_message(
                 Some(blocks.clone()),
             ),
         };
-        actions.push(StreamAction::Yield(SdkMessage::UserReplay(SdkUserReplay {
+        transaction.emit(SdkMessage::UserReplay(SdkUserReplay {
             content: content_text,
             session_id: ctx.session_id.to_string(),
             uuid: user_msg.uuid,
@@ -386,26 +375,28 @@ fn handle_user_message(
             tool_use_result: user_msg.tool_use_result.clone(),
             source_tool_assistant_uuid: user_msg.source_tool_assistant_uuid,
             content_blocks,
-        })));
+        }));
     }
 
-    let _ = transcript::record_transcript(ctx.session_id.as_str(), &[Message::User(user_msg)]);
-    actions
+    transaction
+        .commit(ctx.state_ref, ctx.session_id, ctx.config)
+        .into_iter()
+        .map(StreamAction::Yield)
+        .collect()
 }
 
 fn handle_progress_message(
     progress_msg: crate::types::message::ProgressMessage,
     ctx: &mut StreamContext<'_>,
 ) -> Vec<StreamAction> {
-    ctx.state_ref
-        .write()
-        .transcript
-        .messages
-        .push(Message::Progress(progress_msg.clone()));
-
-    let _ =
-        transcript::record_transcript(ctx.session_id.as_str(), &[Message::Progress(progress_msg)]);
-    Vec::new()
+    let mut transaction = SubmitTransaction::new();
+    transaction.append_message(Message::Progress(progress_msg.clone()));
+    transaction.persist(Message::Progress(progress_msg));
+    transaction
+        .commit(ctx.state_ref, ctx.session_id, ctx.config)
+        .into_iter()
+        .map(StreamAction::Yield)
+        .collect()
 }
 
 fn handle_system_message(
@@ -414,11 +405,8 @@ fn handle_system_message(
 ) -> Vec<StreamAction> {
     match &system_msg.subtype {
         SystemSubtype::CompactBoundary { compact_metadata } => {
-            ctx.state_ref
-                .write()
-                .transcript
-                .messages
-                .push(Message::System(system_msg.clone()));
+            let mut transaction = SubmitTransaction::new();
+            transaction.append_message(Message::System(system_msg.clone()));
             let internal_metadata_hidden = compact_metadata
                 .as_ref()
                 .is_some_and(|metadata| metadata.has_internal_metadata());
@@ -426,14 +414,17 @@ fn handle_system_message(
                 .as_ref()
                 .map(|metadata| metadata.public_copy());
 
-            vec![StreamAction::Yield(SdkMessage::CompactBoundary(
-                SdkCompactBoundary {
-                    session_id: ctx.session_id.to_string(),
-                    uuid: system_msg.uuid,
-                    compact_metadata: public_compact_metadata,
-                    internal_metadata_hidden,
-                },
-            ))]
+            transaction.emit(SdkMessage::CompactBoundary(SdkCompactBoundary {
+                session_id: ctx.session_id.to_string(),
+                uuid: system_msg.uuid,
+                compact_metadata: public_compact_metadata,
+                internal_metadata_hidden,
+            }));
+            transaction
+                .commit(ctx.state_ref, ctx.session_id, ctx.config)
+                .into_iter()
+                .map(StreamAction::Yield)
+                .collect()
         }
         SystemSubtype::ApiError {
             retry_attempt,
@@ -441,15 +432,12 @@ fn handle_system_message(
             retry_in_ms,
             error,
         } => {
-            ctx.state_ref
-                .write()
-                .transcript
-                .messages
-                .push(Message::System(system_msg.clone()));
+            let mut transaction = SubmitTransaction::new();
+            transaction.append_message(Message::System(system_msg.clone()));
 
             ctx.submit_turn.collected_errors.push(error.message.clone());
 
-            vec![StreamAction::Yield(SdkMessage::ApiRetry(SdkApiRetry {
+            transaction.emit(SdkMessage::ApiRetry(SdkApiRetry {
                 attempt: *retry_attempt,
                 max_retries: *max_retries,
                 retry_delay_ms: *retry_in_ms,
@@ -457,15 +445,21 @@ fn handle_system_message(
                 error: error.message.clone(),
                 session_id: ctx.session_id.to_string(),
                 uuid: system_msg.uuid,
-            }))]
+            }));
+            transaction
+                .commit(ctx.state_ref, ctx.session_id, ctx.config)
+                .into_iter()
+                .map(StreamAction::Yield)
+                .collect()
         }
         _ => {
-            ctx.state_ref
-                .write()
-                .transcript
-                .messages
-                .push(Message::System(system_msg));
-            Vec::new()
+            let mut transaction = SubmitTransaction::new();
+            transaction.append_message(Message::System(system_msg));
+            transaction
+                .commit(ctx.state_ref, ctx.session_id, ctx.config)
+                .into_iter()
+                .map(StreamAction::Yield)
+                .collect()
         }
     }
 }
@@ -474,11 +468,13 @@ fn handle_attachment_message(
     attachment_msg: crate::types::message::AttachmentMessage,
     ctx: &mut StreamContext<'_>,
 ) -> Vec<StreamAction> {
-    ctx.state_ref
-        .write()
-        .transcript
-        .messages
-        .push(Message::Attachment(attachment_msg.clone()));
+    let mut transaction = SubmitTransaction::new();
+    transaction.append_message(Message::Attachment(attachment_msg.clone()));
+    let appended_events = transaction
+        .commit(ctx.state_ref, ctx.session_id, ctx.config)
+        .into_iter()
+        .map(StreamAction::Yield)
+        .collect::<Vec<_>>();
 
     match &attachment_msg.attachment {
         Attachment::MaxTurnsReached {
@@ -500,7 +496,8 @@ fn handle_attachment_message(
             );
             finish_submit_telemetry(ctx.telemetry_submit_span, ctx.model_name, &usage_snap);
 
-            vec![StreamAction::Terminate(SdkResult {
+            let mut actions = appended_events;
+            actions.push(StreamAction::Terminate(SdkResult {
                 subtype: ResultSubtype::ErrorMaxTurns,
                 is_error: true,
                 duration_ms: ctx.submit_turn.duration_ms(),
@@ -515,11 +512,12 @@ fn handle_attachment_message(
                 structured_output: ctx.submit_turn.structured_output.clone(),
                 uuid: Uuid::new_v4(),
                 errors: ctx.submit_turn.collected_errors.clone(),
-            })]
+            }));
+            actions
         }
         Attachment::StructuredOutput { data } => {
             ctx.submit_turn.structured_output = Some(data.clone());
-            Vec::new()
+            appended_events
         }
         Attachment::QueuedCommand {
             prompt: cmd_prompt,
@@ -527,7 +525,8 @@ fn handle_attachment_message(
         } => {
             let _ = source_uuid;
             if ctx.replay_user_messages {
-                vec![StreamAction::Yield(SdkMessage::UserReplay(SdkUserReplay {
+                let mut actions = appended_events;
+                actions.push(StreamAction::Yield(SdkMessage::UserReplay(SdkUserReplay {
                     content: cmd_prompt.clone(),
                     session_id: ctx.session_id.to_string(),
                     uuid: attachment_msg.uuid,
@@ -537,9 +536,10 @@ fn handle_attachment_message(
                     tool_use_result: None,
                     source_tool_assistant_uuid: None,
                     content_blocks: None,
-                }))]
+                })));
+                actions
             } else {
-                Vec::new()
+                appended_events
             }
         }
         Attachment::SkillDiscovery { skills } => {
@@ -547,7 +547,7 @@ fn handle_attachment_message(
             for skill in skills {
                 state.tools.discovered_skill_names.insert(skill.clone());
             }
-            Vec::new()
+            appended_events
         }
         Attachment::NestedMemory { path, .. } => {
             ctx.state_ref
@@ -555,9 +555,9 @@ fn handle_attachment_message(
                 .tools
                 .loaded_nested_memory_paths
                 .insert(path.clone());
-            Vec::new()
+            appended_events
         }
-        _ => Vec::new(),
+        _ => appended_events,
     }
 }
 

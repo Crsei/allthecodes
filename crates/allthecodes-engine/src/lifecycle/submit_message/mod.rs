@@ -34,6 +34,7 @@ mod command_handling;
 mod memory_recall;
 mod stream_handler;
 mod system_prompt_build;
+mod transaction;
 
 use command_handling::{bash_mode_result_message, handle_parsed_command, skill_args_from_prompt};
 use stream_handler::{

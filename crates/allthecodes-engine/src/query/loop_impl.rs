@@ -48,16 +48,20 @@ use super::goal_runtime::{
     mark_active_goal_paused, mark_active_goal_usage_limited, GoalContinuationScheduler,
 };
 use super::loop_helpers::{
-    backfill_observable_tool_inputs, classify_model_call_failure, execute_tool_calls,
-    handle_max_output_tokens, handle_prompt_too_long, is_stream_progress_event, make_abort_message,
-    make_error_message, make_tool_result_user_message, make_user_message,
-    merge_tool_results_by_tool_use_order, stream_idle_timeout, stream_stall_timeout,
+    backfill_observable_tool_inputs, execute_tool_calls, make_abort_message, make_error_message,
+    make_tool_result_user_message, make_user_message, merge_tool_results_by_tool_use_order,
+    StreamingToolExecutor,
+};
+use super::recovery::{
+    classify_model_call_failure, handle_max_output_tokens, handle_prompt_too_long,
+    is_stream_progress_event, stream_idle_timeout, stream_stall_timeout,
     strip_fallback_signature_blocks, MaxTokensRecovery, ModelCallFailureRecovery,
-    ModelCallFailureStage, PromptRecovery, StreamingToolExecutor,
+    ModelCallFailureStage, PromptRecovery,
 };
 use super::stop_hooks::{self, StopHookResult};
 use super::token_budget::check_token_budget;
 use super::turn_context::{prepare_model_request, QueryRunContext};
+use super::turn_state::QueryTurnState;
 
 #[derive(Clone, Debug, Default)]
 struct RuntimeRecordTurnContext {
@@ -84,6 +88,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             // STEP 1: SETUP
 
             let turn_count = state.turn_count;
+            let mut query_turn_state = QueryTurnState::new(turn_count);
             debug!(turn = turn_count, "query loop iteration start");
 
             // Emit query.turn.start audit event
@@ -105,6 +110,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
             if deps.is_aborted() {
                 info!("aborted before API call");
+                query_turn_state.abort();
                 goal_continuation_scheduler.clear();
                 mark_active_goal_paused(&deps, "task aborted by user");
                 yield QueryYield::Message(Message::Assistant(make_abort_message(
@@ -219,6 +225,9 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     );
                 }
                 let model_call_start = std::time::Instant::now();
+                if let Err(error) = query_turn_state.start_streaming() {
+                    debug!(?error, "query turn state rejected streaming transition");
+                }
 
                 let stream_result = deps.call_model_streaming(attempt_params.clone()).await;
                 let mut event_stream = match stream_result {
@@ -536,6 +545,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
             if deps.is_aborted() {
                 info!("aborted after streaming");
+                query_turn_state.abort();
                 let observable_assistant =
                     backfill_observable_tool_inputs(&assistant_message, &tools).into_owned();
                 yield QueryYield::Message(Message::Assistant(observable_assistant));
@@ -569,6 +579,9 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             // STEP 5 vs 6: Branch -- tool calls or not
 
             let tool_uses = stop_hooks::extract_tool_uses(&assistant_message);
+            if let Err(error) = query_turn_state.finish_streaming(!tool_uses.is_empty()) {
+                debug!(?error, "query turn state rejected streaming completion");
+            }
             if goal_continuation_scheduler
                 .observe_assistant_response(&assistant_message)
                 .is_some()
@@ -776,6 +789,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
                 if deps.is_aborted() {
                     info!("aborted during tool execution");
+                    query_turn_state.abort();
                     goal_continuation_scheduler.clear();
                     mark_active_goal_paused(&deps, "task aborted by user");
                     break;
@@ -909,6 +923,9 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     }
                 }
 
+                if let Err(error) = query_turn_state.finish_tool_execution() {
+                    debug!(?error, "query turn state rejected tool completion");
+                }
                 state.transition = Some(Continue::NextTurn);
                 state.turn_count += 1;
                 state.stop_hook_active = None;
