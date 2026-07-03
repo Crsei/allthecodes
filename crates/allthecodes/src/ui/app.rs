@@ -711,6 +711,7 @@ impl App {
     /// Open a modal slash-command surface above the normal prompt.
     pub fn open_command_surface(&mut self, mut surface: CommandSurface) {
         if let CommandSurface::Tasks(tasks_surface) = &mut surface {
+            self.runtime_view.refresh_task_items(&tasks_surface.items);
             tasks_surface.sync_items(self.runtime_view.task_items());
         }
         self.overlays.command_surface = Some(surface);

@@ -45,6 +45,12 @@ impl RuntimeViewState {
         &self.task_items
     }
 
+    pub(super) fn refresh_task_items(&mut self, items: &[TaskSurfaceItem]) {
+        if !items.is_empty() {
+            self.task_items = items.to_vec();
+        }
+    }
+
     pub(super) fn tasks(&self) -> Vec<TaskStatus> {
         self.task_items
             .iter()

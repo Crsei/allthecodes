@@ -433,6 +433,47 @@ fn task_events_update_runtime_state_before_tasks_surface_opens() {
 }
 
 #[test]
+fn opening_tasks_surface_refreshes_runtime_from_live_items() {
+    let mut app = App::new();
+
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::ToolProgress {
+            tool_use_id: "stale-tool".to_string(),
+            tool: "old runtime task".to_string(),
+            output: "stale output".to_string(),
+            elapsed_seconds: 1,
+            total_lines: Some(1),
+            total_bytes: None,
+            timeout_ms: None,
+            operation: None,
+        }),
+    });
+
+    let live_item = crate::ui::command_surface::TaskSurfaceItem {
+        task: crate::ui::tasks::TaskStatus::new(
+            "live-tool",
+            "fresh live task",
+            crate::ui::tasks::TaskKind::Shell,
+        ),
+        source: crate::ui::command_surface::TaskSurfaceSource::Tool,
+    };
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::from_items(vec![live_item]),
+    ));
+
+    let runtime_tasks = app.runtime_state().tasks();
+    assert_eq!(runtime_tasks.len(), 1);
+    assert_eq!(runtime_tasks[0].id, "live-tool");
+
+    let Some(CommandSurface::Tasks(surface)) = app.overlays.command_surface.as_ref() else {
+        panic!("tasks surface should be open");
+    };
+    let selected = surface.selected_item().expect("selected task");
+    assert_eq!(selected.task.id, "live-tool");
+    assert!(surface.render().contains("fresh live task"));
+}
+
+#[test]
 fn high_priority_notification_preempts_verbose_indicator() {
     let mut app = App::new();
     let mut state = AppState::default();
