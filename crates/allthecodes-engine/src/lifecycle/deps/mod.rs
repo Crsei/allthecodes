@@ -14,11 +14,11 @@ use anyhow::Result;
 use futures::Stream;
 use uuid::Uuid;
 
-use allthecodes_tools::metadata::{ToolMetadata, ToolRisk};
 use allthecodes_types::callbacks::PermissionEventPayload;
 use allthecodes_types::permission_events::{
     HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
+use allthecodes_types::tool_metadata::{ToolMetadata, ToolRisk};
 
 use crate::compact::compaction::build_post_compact_messages_with_boundary;
 use crate::permissions::decision::{

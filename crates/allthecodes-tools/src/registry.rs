@@ -472,6 +472,16 @@ mod tests {
                 .capabilities
                 .spawn_agents
         );
+        assert!(
+            crate::metadata::ToolMetadata::from_tool_name("TeamSpawn")
+                .capabilities
+                .spawn_agents
+        );
+        assert!(
+            crate::metadata::ToolMetadata::from_tool_name("FollowupTask")
+                .capabilities
+                .spawn_agents
+        );
 
         let tools: Tools = vec![
             Arc::new(NamedTestTool("AskUserQuestion")),

@@ -1,6 +1,7 @@
 use allthecodes_types::permissions::{
     PermissionMode, StrippedPermissionRule, ToolPermissionContext, ToolPermissionRulesBySource,
 };
+use allthecodes_types::tool_metadata::{ToolMetadata, ToolRisk};
 
 const CROSS_PLATFORM_CODE_EXEC_AUTO_ALLOW_PATTERNS: &[&str] = &[
     "python", "python3", "python2", "node", "deno", "tsx", "ruby", "perl", "php", "lua", "npm",
@@ -38,31 +39,6 @@ const DANGEROUS_POWERSHELL_AUTO_ALLOW_PATTERNS: &[&str] = &[
     "new-object",
     "runas",
 ];
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct AutoModeToolCapabilities {
-    run_processes: bool,
-    spawn_agents: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum AutoModeToolRisk {
-    Low,
-    High,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AutoModeToolPolicy {
-    capabilities: AutoModeToolCapabilities,
-    risk: AutoModeToolRisk,
-    shell: Option<AutoModeShellKind>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AutoModeShellKind {
-    Bash,
-    PowerShell,
-}
 
 /// Result of removing allow rules that would bypass Auto mode classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,56 +217,28 @@ fn dangerous_auto_mode_allow_reason(rule: &str) -> Option<&'static str> {
     }
 
     let (tool, specifier) = split_permission_rule(trimmed);
-    let policy = auto_mode_tool_policy(tool);
-    if !tool_requires_auto_mode_classifier_review(tool) {
+    let metadata = ToolMetadata::from_tool_name(tool);
+    if !tool_requires_auto_mode_classifier_review(metadata) {
         return None;
     }
 
-    if policy.capabilities.spawn_agents {
+    if metadata.capabilities.spawn_agents {
         return Some("Agent allow rules bypass Auto mode classifier review");
     }
 
-    if policy.capabilities.run_processes {
-        return match policy.shell {
-            Some(AutoModeShellKind::Bash) => dangerous_shell_allow_reason(specifier, false),
-            Some(AutoModeShellKind::PowerShell) => dangerous_shell_allow_reason(specifier, true),
-            None => Some("Process allow rules bypass Auto mode classifier review"),
+    if metadata.capabilities.run_processes {
+        return match metadata.name {
+            "Bash" => dangerous_shell_allow_reason(specifier, false),
+            "PowerShell" => dangerous_shell_allow_reason(specifier, true),
+            _ => Some("Process allow rules bypass Auto mode classifier review"),
         };
     }
 
     None
 }
 
-fn tool_requires_auto_mode_classifier_review(tool: &str) -> bool {
-    auto_mode_tool_policy(tool).risk > AutoModeToolRisk::Low
-}
-
-fn auto_mode_tool_policy(tool: &str) -> AutoModeToolPolicy {
-    let mut policy = AutoModeToolPolicy {
-        capabilities: AutoModeToolCapabilities::default(),
-        risk: AutoModeToolRisk::Low,
-        shell: None,
-    };
-
-    match tool.to_ascii_lowercase().as_str() {
-        "agent" => {
-            policy.capabilities.spawn_agents = true;
-            policy.risk = AutoModeToolRisk::High;
-        }
-        "bash" => {
-            policy.capabilities.run_processes = true;
-            policy.risk = AutoModeToolRisk::High;
-            policy.shell = Some(AutoModeShellKind::Bash);
-        }
-        "powershell" | "pwsh" => {
-            policy.capabilities.run_processes = true;
-            policy.risk = AutoModeToolRisk::High;
-            policy.shell = Some(AutoModeShellKind::PowerShell);
-        }
-        _ => {}
-    }
-
-    policy
+fn tool_requires_auto_mode_classifier_review(metadata: ToolMetadata) -> bool {
+    metadata.risk > ToolRisk::Low
 }
 
 fn split_permission_rule(rule: &str) -> (&str, Option<&str>) {
@@ -662,10 +610,48 @@ mod tests {
     }
 
     #[test]
+    fn test_auto_mode_rule_stripping_covers_spawn_agent_metadata() {
+        let mut rules = ToolPermissionRulesBySource::new();
+        rules.insert(
+            "user".into(),
+            vec![
+                "Agent(*)".into(),
+                "TeamSpawn(*)".into(),
+                "FollowupTask(*)".into(),
+                "Read".into(),
+            ],
+        );
+
+        let result = strip_dangerous_permissions_for_auto_mode(&rules);
+
+        assert_eq!(
+            result.sanitized_allow_rules.get("user").unwrap(),
+            &vec!["Read".to_string()]
+        );
+        for expected in ["Agent(*)", "TeamSpawn(*)", "FollowupTask(*)"] {
+            assert!(
+                result
+                    .stripped_dangerous_rules
+                    .iter()
+                    .any(|stripped| stripped.rule == expected),
+                "expected {expected} to be stripped"
+            );
+        }
+    }
+
+    #[test]
     fn test_auto_mode_rule_stripping_uses_tool_policy_metadata() {
-        assert!(tool_requires_auto_mode_classifier_review("Agent"));
-        assert!(tool_requires_auto_mode_classifier_review("Bash"));
-        assert!(tool_requires_auto_mode_classifier_review("PowerShell"));
-        assert!(!tool_requires_auto_mode_classifier_review("Read"));
+        assert!(tool_requires_auto_mode_classifier_review(
+            ToolMetadata::from_tool_name("Agent")
+        ));
+        assert!(tool_requires_auto_mode_classifier_review(
+            ToolMetadata::from_tool_name("Bash")
+        ));
+        assert!(tool_requires_auto_mode_classifier_review(
+            ToolMetadata::from_tool_name("PowerShell")
+        ));
+        assert!(!tool_requires_auto_mode_classifier_review(
+            ToolMetadata::from_tool_name("Read")
+        ));
     }
 }
