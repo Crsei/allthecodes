@@ -8,6 +8,27 @@
 
 **Tech Stack:** Rust 1.91.1, ratatui, crossterm, existing `allthecodes-types`, existing TUI test helpers, `cargo test -p allthecodes`.
 
+## Implementation Result (2026-07-03)
+
+Phase 4 is implemented on branch `codebase-opt-phase3` and reviewed through the Subagent-Driven workflow.
+
+- Task 1 landed focused app domain stores: `ConversationStore`, `PromptQueueStore`, `SessionUiStore`, and `RenderLayoutStore`.
+- Task 2 landed `OverlayState` and `OverlayOutcome`; the resolved overlay priority is `BypassPermissions > Question > Permission > AgentTree > HistorySearch > CommandSurface`.
+- Task 3 landed `MessageListViewModel` and render-context projection use in the main render path.
+- Task 4 landed `RuntimeViewState` for agent navigation and task snapshots/events, including live/backend task provenance.
+- Task 5 landed guardrails for app facade routing and the complete overlay fallback chain. Final cleanup removed the stale render-context helper anchor noted during review.
+
+Final verification after cleanup:
+
+```bash
+cargo fmt --all -- --check
+cargo test -p allthecodes ui::app
+cargo check --workspace
+cargo build --workspace --release
+```
+
+All four commands exited 0. `ui::app` reported 70 passed tests, and `cargo check --workspace` completed without warnings.
+
 ## Global Constraints
 
 - Work from a clean worktree based on `codebase-opt-phase3` commit `ccd3cf53`.
