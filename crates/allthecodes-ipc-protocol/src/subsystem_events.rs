@@ -817,6 +817,7 @@ mod tests {
                 server_info: None,
                 instructions: None,
                 error: None,
+                ..Default::default()
             }],
         };
         let value = serde_json::to_value(&event).expect("serialize");

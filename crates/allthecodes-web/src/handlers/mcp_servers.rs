@@ -12,8 +12,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use allthecodes_config::settings::{user_settings_path, write_settings_file, RawSettings};
-use allthecodes_ipc_protocol::subsystem_types::{ConfigScope, McpServerConfigEntry};
+use allthecodes_ipc_protocol::subsystem_types::{
+    ConfigScope, McpServerConfigEntry, McpServerInfoBrief, McpServerStatusInfo,
+};
 use allthecodes_mcp::discovery::{discover_mcp_servers_scoped, DiscoveryScope};
+use allthecodes_mcp::probe::probe_mcp_server;
 use allthecodes_mcp::McpServerConfig;
 
 use crate::state::WebState;
@@ -31,6 +34,18 @@ static MCP_OAUTH_FLOW_STATUS: OnceLock<Mutex<HashMap<String, McpOAuthFlowSnapsho
 #[derive(Serialize)]
 pub struct McpServersListResponse {
     pub servers: Vec<McpServerConfigEntry>,
+}
+
+#[derive(Serialize)]
+pub struct McpServersHealthResponse {
+    pub servers: Vec<McpServerStatusInfo>,
+}
+
+#[derive(Deserialize)]
+pub struct McpServerProbeRequest {
+    pub name: Option<String>,
+    pub config: Option<McpServerConfig>,
+    pub entry: Option<McpServerConfigEntry>,
 }
 
 #[derive(Serialize)]
@@ -72,6 +87,27 @@ pub async fn mcp_servers_list_handler(State(state): State<WebState>) -> Response
         Ok(servers) => Json(McpServersListResponse { servers }).into_response(),
         Err(error) => internal_error(error),
     }
+}
+
+/// GET /api/mcp-servers/health
+pub async fn mcp_servers_health_handler(State(state): State<WebState>) -> Response {
+    let cwd = engine_cwd(&state);
+    let servers = build_mcp_server_health_response(&cwd).await;
+    Json(McpServersHealthResponse { servers }).into_response()
+}
+
+/// POST /api/mcp-servers/probe
+pub async fn mcp_servers_probe_handler(
+    State(state): State<WebState>,
+    Json(req): Json<McpServerProbeRequest>,
+) -> Response {
+    let cwd = engine_cwd(&state);
+    let config = match probe_config_from_request(&cwd, req) {
+        Ok(config) => config,
+        Err(error) => return crate::api_errors::protocol_error_response(error).into_response(),
+    };
+    let probe = probe_mcp_server(config).await;
+    Json(probe).into_response()
 }
 
 /// GET /api/mcp-servers/{name}
@@ -466,6 +502,211 @@ enum RemoveError {
     Internal(String),
 }
 
+async fn build_mcp_server_health_response(cwd: &Path) -> Vec<McpServerStatusInfo> {
+    let scoped = match discover_mcp_servers_scoped(cwd) {
+        Ok(scoped) => scoped,
+        Err(error) => return vec![mcp_discovery_error_status(error.to_string())],
+    };
+    let mut configs: Vec<McpServerConfig> = Vec::new();
+    let mut diagnostics = Vec::new();
+    for entry in scoped {
+        if let Some(error) = entry.error {
+            diagnostics.push(McpServerStatusInfo {
+                name: entry.config.name,
+                state: "error".to_string(),
+                transport: entry.config.transport,
+                tools_count: 0,
+                resources_count: 0,
+                server_info: None,
+                instructions: None,
+                error: Some(format!(
+                    "{} scope: {}",
+                    scope_from_discovery(&entry.scope).label(),
+                    error
+                )),
+                ..Default::default()
+            });
+            continue;
+        }
+        if let Some(existing) = configs
+            .iter_mut()
+            .find(|config| config.name == entry.config.name)
+        {
+            *existing = entry.config;
+        } else {
+            configs.push(entry.config);
+        }
+    }
+
+    let mut rows = if let Some(manager) = allthecodes_mcp::runtime::current_manager() {
+        let manager = manager.lock().await;
+        build_mcp_server_health_from_configs(configs, Some(&manager))
+    } else {
+        build_mcp_server_health_from_configs(configs, None)
+    };
+    rows.append(&mut diagnostics);
+    rows
+}
+
+fn build_mcp_server_health_from_configs(
+    configs: Vec<McpServerConfig>,
+    manager: Option<&allthecodes_mcp::manager::McpManager>,
+) -> Vec<McpServerStatusInfo> {
+    let health_by_name = manager.map(|manager| {
+        manager
+            .health_snapshots()
+            .into_iter()
+            .map(|snapshot| (snapshot.server_name.clone(), snapshot))
+            .collect::<HashMap<_, _>>()
+    });
+    configs
+        .into_iter()
+        .map(|cfg| {
+            let health = health_by_name
+                .as_ref()
+                .and_then(|health| health.get(&cfg.name));
+            build_mcp_server_health_row(cfg, manager, health)
+        })
+        .collect()
+}
+
+fn build_mcp_server_health_row(
+    cfg: McpServerConfig,
+    manager: Option<&allthecodes_mcp::manager::McpManager>,
+    health: Option<&allthecodes_mcp::McpServerHealthSnapshot>,
+) -> McpServerStatusInfo {
+    if cfg.disabled.unwrap_or(false) {
+        return McpServerStatusInfo {
+            name: cfg.name,
+            state: "disabled".to_string(),
+            transport: cfg.transport,
+            tools_count: 0,
+            resources_count: 0,
+            server_info: None,
+            instructions: None,
+            error: None,
+            ..mcp_health_defaults(health)
+        };
+    }
+
+    if let Some(client) = manager.and_then(|manager| manager.clients.get(&cfg.name)) {
+        let (state, error) = match &client.state {
+            allthecodes_mcp::McpConnectionState::Pending => ("pending".to_string(), None),
+            allthecodes_mcp::McpConnectionState::Connected => ("connected".to_string(), None),
+            allthecodes_mcp::McpConnectionState::Disconnected => ("disconnected".to_string(), None),
+            allthecodes_mcp::McpConnectionState::Error(error) => {
+                ("error".to_string(), Some(error.clone()))
+            }
+        };
+        let server_info = (!client.server_info.name.is_empty()).then(|| McpServerInfoBrief {
+            name: client.server_info.name.clone(),
+            version: client.server_info.version.clone(),
+        });
+        return McpServerStatusInfo {
+            name: cfg.name,
+            state,
+            transport: cfg.transport,
+            tools_count: client.tools.len(),
+            resources_count: client.resources.len(),
+            server_info,
+            instructions: client.instructions.clone(),
+            error: error.or_else(|| health.and_then(|health| health.last_error.clone())),
+            ..mcp_health_defaults(health)
+        };
+    }
+
+    let remembered = allthecodes_mcp::runtime::server_state(&cfg.name);
+    let remembered_state = remembered.as_ref().map(|state| state.state.clone());
+    let remembered_error = remembered.and_then(|state| state.error);
+    McpServerStatusInfo {
+        name: cfg.name,
+        state: health
+            .map(|health| health.state.clone())
+            .or(remembered_state)
+            .unwrap_or_else(|| "pending".to_string()),
+        transport: cfg.transport,
+        tools_count: health.and_then(|health| health.tools_count).unwrap_or(0),
+        resources_count: health
+            .and_then(|health| health.resources_count)
+            .unwrap_or(0),
+        server_info: None,
+        instructions: None,
+        error: health
+            .and_then(|health| health.last_error.clone())
+            .or(remembered_error),
+        ..mcp_health_defaults(health)
+    }
+}
+
+fn mcp_discovery_error_status(error: String) -> McpServerStatusInfo {
+    McpServerStatusInfo {
+        name: "discovery".to_string(),
+        state: "error".to_string(),
+        transport: "settings".to_string(),
+        tools_count: 0,
+        resources_count: 0,
+        server_info: None,
+        instructions: None,
+        error: Some(format!("Failed to discover MCP servers: {error}")),
+        ..Default::default()
+    }
+}
+
+fn mcp_health_defaults(
+    health: Option<&allthecodes_mcp::McpServerHealthSnapshot>,
+) -> McpServerStatusInfo {
+    let Some(health) = health else {
+        return McpServerStatusInfo::default();
+    };
+
+    McpServerStatusInfo {
+        last_success_at: health.last_success_at,
+        last_attempt_at: health.last_attempt_at,
+        last_error_kind: health.last_error_kind.clone(),
+        failure_count: (health.failure_count > 0).then_some(health.failure_count),
+        connect_attempt_count: Some(health.connect_attempt_count),
+        retry_scheduled_count: Some(health.retry_scheduled_count),
+        retry_exhausted_count: Some(health.retry_exhausted_count),
+        recovered_count: Some(health.recovered_count),
+        next_retry_at: health.next_retry_at,
+        stderr_tail: health.stderr_tail.clone(),
+        stderr_tail_dropped_line_count: Some(health.stderr_tail_dropped_line_count),
+        ..Default::default()
+    }
+}
+
+fn probe_config_from_request(
+    cwd: &Path,
+    req: McpServerProbeRequest,
+) -> Result<McpServerConfig, ProtocolApiError> {
+    let selector_count = usize::from(req.name.is_some())
+        + usize::from(req.config.is_some())
+        + usize::from(req.entry.is_some());
+    if selector_count != 1 {
+        return Err(validation_api(
+            "probe request must include exactly one of `name`, `config`, or `entry`".to_string(),
+        ));
+    }
+
+    if let Some(mut config) = req.config {
+        if config.name.trim().is_empty() {
+            config.name = "probe".to_string();
+        }
+        return Ok(config);
+    }
+    if let Some(entry) = req.entry {
+        return Ok(entry_to_config(&entry));
+    }
+    let name = req.name.unwrap_or_default();
+    if name.trim().is_empty() {
+        return Err(validation_api("MCP server name is required".to_string()));
+    }
+    find_mcp_config(cwd, &name).map_err(|error| ProtocolApiError::NotFound {
+        entity: "mcp_server",
+        id: error,
+    })
+}
+
 fn list_entries(cwd: &Path) -> Result<Vec<McpServerConfigEntry>, String> {
     discover_mcp_servers_scoped(cwd)
         .map_err(|error| error.to_string())
@@ -618,8 +859,8 @@ fn read_raw_settings(path: &Path) -> Result<RawSettings, String> {
         .map_err(|error| format!("failed to parse {}: {}", path.display(), error))
 }
 
-fn entry_to_settings_value(entry: &McpServerConfigEntry) -> Value {
-    let cfg = McpServerConfig {
+fn entry_to_config(entry: &McpServerConfigEntry) -> McpServerConfig {
+    McpServerConfig {
         name: entry.name.clone(),
         transport: entry.transport.clone(),
         command: entry.command.clone(),
@@ -633,7 +874,11 @@ fn entry_to_settings_value(entry: &McpServerConfigEntry) -> Value {
         bearer_token_env_var: entry.bearer_token_env_var.clone(),
         env_http_headers: entry.env_http_headers.clone(),
         auth: entry.auth.clone(),
-    };
+    }
+}
+
+fn entry_to_settings_value(entry: &McpServerConfigEntry) -> Value {
+    let cfg = entry_to_config(entry);
     let mut value = serde_json::to_value(cfg).unwrap_or(Value::Null);
     if let Some(object) = value.as_object_mut() {
         object.remove("name");

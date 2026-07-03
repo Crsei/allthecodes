@@ -16,6 +16,7 @@ pub mod discovery;
 pub mod manager;
 pub mod oauth_login;
 pub mod oauth_store;
+pub mod probe;
 pub mod runtime;
 pub mod transport;
 
@@ -79,6 +80,56 @@ pub enum McpSubsystemEvent {
         server_id: String,
         error: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerHealthSnapshot {
+    pub server_name: String,
+    pub state: String,
+    pub transport: String,
+    pub last_success_at: Option<i64>,
+    pub last_attempt_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub last_error_kind: Option<String>,
+    pub failure_count: u32,
+    #[serde(default)]
+    pub connect_attempt_count: u64,
+    #[serde(default)]
+    pub retry_scheduled_count: u64,
+    #[serde(default)]
+    pub retry_exhausted_count: u64,
+    #[serde(default)]
+    pub recovered_count: u64,
+    pub next_retry_at: Option<i64>,
+    pub stderr_tail: Vec<String>,
+    #[serde(default)]
+    pub stderr_tail_dropped_line_count: u64,
+    pub tools_count: Option<usize>,
+    pub resources_count: Option<usize>,
+}
+
+impl McpServerHealthSnapshot {
+    pub fn new(server_name: impl Into<String>, transport: impl Into<String>) -> Self {
+        Self {
+            server_name: server_name.into(),
+            state: "pending".to_string(),
+            transport: transport.into(),
+            last_success_at: None,
+            last_attempt_at: None,
+            last_error: None,
+            last_error_kind: None,
+            failure_count: 0,
+            connect_attempt_count: 0,
+            retry_scheduled_count: 0,
+            retry_exhausted_count: 0,
+            recovered_count: 0,
+            next_retry_at: None,
+            stderr_tail: Vec::new(),
+            stderr_tail_dropped_line_count: 0,
+            tools_count: None,
+            resources_count: None,
+        }
+    }
 }
 
 /// Host-provided sink for MCP subsystem events.

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use allthecodes_ipc_protocol::subsystem_types::*;
@@ -68,6 +69,7 @@ fn mcp_discovery_error_status(err: anyhow::Error) -> McpServerStatusInfo {
         server_info: None,
         instructions: None,
         error: Some(format!("Failed to discover MCP servers: {err:#}")),
+        ..Default::default()
     }
 }
 
@@ -96,6 +98,7 @@ fn discover_mcp_runtime_configs_with_diagnostics(
                     scope_from_discovery(&entry.scope).label(),
                     error
                 )),
+                ..Default::default()
             });
             continue;
         }
@@ -117,16 +120,25 @@ fn build_mcp_server_info_list_from_configs(
     configs: Vec<allthecodes_mcp::McpServerConfig>,
     manager: Option<&allthecodes_mcp::manager::McpManager>,
 ) -> Vec<McpServerStatusInfo> {
+    let health_by_name = manager.map(|manager| {
+        manager
+            .health_snapshots()
+            .into_iter()
+            .map(|snapshot| (snapshot.server_name.clone(), snapshot))
+            .collect::<HashMap<_, _>>()
+    });
     configs
         .into_iter()
-        .map(|cfg| build_mcp_server_info(cfg, manager))
+        .map(|cfg| build_mcp_server_info(cfg, manager, health_by_name.as_ref()))
         .collect()
 }
 
 fn build_mcp_server_info(
     cfg: allthecodes_mcp::McpServerConfig,
     manager: Option<&allthecodes_mcp::manager::McpManager>,
+    health_by_name: Option<&HashMap<String, allthecodes_mcp::McpServerHealthSnapshot>>,
 ) -> McpServerStatusInfo {
+    let health = health_by_name.and_then(|health| health.get(&cfg.name));
     if cfg.disabled.unwrap_or(false) {
         return McpServerStatusInfo {
             name: cfg.name,
@@ -137,6 +149,7 @@ fn build_mcp_server_info(
             server_info: None,
             instructions: None,
             error: None,
+            ..mcp_health_defaults(health)
         };
     }
 
@@ -161,23 +174,54 @@ fn build_mcp_server_info(
             resources_count: client.resources.len(),
             server_info,
             instructions: client.instructions.clone(),
-            error,
+            error: error.or_else(|| health.and_then(|health| health.last_error.clone())),
+            ..mcp_health_defaults(health)
         };
     }
 
     let remembered = allthecodes_mcp::runtime::server_state(&cfg.name);
+    let remembered_state = remembered.as_ref().map(|state| state.state.clone());
+    let remembered_error = remembered.and_then(|state| state.error);
     McpServerStatusInfo {
         name: cfg.name,
-        state: remembered
-            .as_ref()
-            .map(|state| state.state.clone())
+        state: health
+            .map(|health| health.state.clone())
+            .or(remembered_state)
             .unwrap_or_else(|| "pending".to_string()),
         transport: cfg.transport,
-        tools_count: 0,
-        resources_count: 0,
+        tools_count: health.and_then(|health| health.tools_count).unwrap_or(0),
+        resources_count: health
+            .and_then(|health| health.resources_count)
+            .unwrap_or(0),
         server_info: None,
         instructions: None,
-        error: remembered.and_then(|state| state.error),
+        error: health
+            .and_then(|health| health.last_error.clone())
+            .or(remembered_error),
+        ..mcp_health_defaults(health)
+    }
+}
+
+fn mcp_health_defaults(
+    health: Option<&allthecodes_mcp::McpServerHealthSnapshot>,
+) -> McpServerStatusInfo {
+    let Some(health) = health else {
+        return McpServerStatusInfo::default();
+    };
+
+    McpServerStatusInfo {
+        last_success_at: health.last_success_at,
+        last_attempt_at: health.last_attempt_at,
+        last_error_kind: health.last_error_kind.clone(),
+        failure_count: (health.failure_count > 0).then_some(health.failure_count),
+        connect_attempt_count: Some(health.connect_attempt_count),
+        retry_scheduled_count: Some(health.retry_scheduled_count),
+        retry_exhausted_count: Some(health.retry_exhausted_count),
+        recovered_count: Some(health.recovered_count),
+        next_retry_at: health.next_retry_at,
+        stderr_tail: health.stderr_tail.clone(),
+        stderr_tail_dropped_line_count: Some(health.stderr_tail_dropped_line_count),
+        ..Default::default()
     }
 }
 
@@ -375,10 +419,62 @@ pub fn build_subsystem_status_snapshot() -> SubsystemStatusSnapshot {
 mod tests {
     use super::*;
 
+    fn broken_stdio_config(name: &str) -> allthecodes_mcp::McpServerConfig {
+        allthecodes_mcp::McpServerConfig {
+            name: name.to_string(),
+            transport: "stdio".to_string(),
+            command: Some(format!("allthecodes-test-missing-mcp-{name}")),
+            args: None,
+            url: None,
+            headers: None,
+            oauth: None,
+            env: None,
+            browser_mcp: None,
+            disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
+        }
+    }
+
     #[test]
     fn build_subsystem_status_snapshot_has_timestamp() {
         let snapshot = build_subsystem_status_snapshot();
         assert!(snapshot.timestamp > 0, "timestamp should be positive");
         assert!(snapshot.lsp.len() >= 6);
+    }
+
+    #[tokio::test]
+    async fn mcp_server_info_includes_manager_health_details() {
+        let mut manager = allthecodes_mcp::manager::McpManager::new();
+        let config = broken_stdio_config("broken-health");
+
+        let error = manager
+            .connect_server(config.clone())
+            .await
+            .expect_err("missing stdio command should fail");
+        assert!(
+            error.to_string().contains("failed to spawn MCP server"),
+            "unexpected error: {error:#}"
+        );
+
+        let statuses = build_mcp_server_info_list_from_configs(vec![config], Some(&manager));
+        assert_eq!(statuses.len(), 1);
+        let status = &statuses[0];
+        assert_eq!(status.name, "broken-health");
+        assert_eq!(status.state, "error");
+        assert_eq!(status.last_error_kind.as_deref(), Some("spawn_failed"));
+        assert_eq!(status.failure_count, Some(3));
+        assert_eq!(status.connect_attempt_count, Some(3));
+        assert_eq!(status.retry_scheduled_count, Some(2));
+        assert_eq!(status.retry_exhausted_count, Some(1));
+        assert_eq!(status.recovered_count, Some(0));
+        assert_eq!(status.stderr_tail_dropped_line_count, Some(0));
+        assert!(status.last_attempt_at.is_some());
+        assert!(status
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("failed to spawn"));
     }
 }

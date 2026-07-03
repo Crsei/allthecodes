@@ -281,6 +281,14 @@ pub fn mcp_server_handlers() -> HandlerRegistry {
             get(handlers::mcp_servers_marketplace_handler),
         )
         .handle(
+            ApiMethod::McpServersHealth,
+            get(handlers::mcp_servers_health_handler),
+        )
+        .handle(
+            ApiMethod::McpServersProbe,
+            post(handlers::mcp_servers_probe_handler),
+        )
+        .handle(
             ApiMethod::McpServersDetail,
             get(handlers::mcp_servers_detail_handler),
         )
@@ -621,6 +629,7 @@ pub fn log_handlers() -> HandlerRegistry {
 
 pub fn terminal_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
+        .handle(ApiMethod::TerminalHealth, get(ws::terminal::health_handler))
         .handle(
             ApiMethod::TerminalProfiles,
             get(ws::terminal::profiles_handler),
@@ -1024,6 +1033,9 @@ mod tests {
             ApiMethod::Health,
             ApiMethod::SessionList,
             ApiMethod::Capabilities,
+            ApiMethod::McpServersHealth,
+            ApiMethod::McpServersProbe,
+            ApiMethod::TerminalHealth,
             ApiMethod::TerminalProfiles,
             ApiMethod::TerminalSessionsList,
             ApiMethod::TerminalSessionWs,

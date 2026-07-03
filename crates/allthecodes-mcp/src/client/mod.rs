@@ -16,7 +16,7 @@ mod sse;
 mod stdio;
 mod streamable_http;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -94,6 +94,8 @@ pub struct McpClient {
     /// Pending requests: id -> oneshot sender for the response.
     pub(super) pending: PendingRequests,
     pub(super) runtime: McpRuntimeContext,
+    pub(super) stderr_tail: Arc<StdMutex<VecDeque<String>>>,
+    pub(super) stderr_tail_dropped_line_count: Arc<AtomicU64>,
     streamable_http_recovery_lock: Mutex<()>,
 }
 
@@ -120,8 +122,21 @@ impl McpClient {
             next_id: Arc::new(AtomicU64::new(1)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             runtime,
+            stderr_tail: Arc::new(StdMutex::new(VecDeque::new())),
+            stderr_tail_dropped_line_count: Arc::new(AtomicU64::new(0)),
             streamable_http_recovery_lock: Mutex::new(()),
         }
+    }
+
+    pub fn stderr_tail(&self) -> Vec<String> {
+        self.stderr_tail
+            .lock()
+            .map(|tail| tail.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn stderr_tail_dropped_line_count(&self) -> u64 {
+        self.stderr_tail_dropped_line_count.load(Ordering::SeqCst)
     }
 
     pub fn set_event_sink(&mut self, event_sink: Option<SharedMcpEventSink>) {

@@ -121,6 +121,8 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::PromptsUpdate - legacy REST handler, PromptsProcessor target.
 // ClientRequest::PromptsDelete - legacy REST handler, PromptsProcessor target.
 // ClientRequest::McpServersList - legacy REST handler, McpProcessor target.
+// ClientRequest::McpServersHealth - legacy REST handler, McpProcessor target.
+// ClientRequest::McpServersProbe - legacy REST handler, McpProcessor target.
 // ClientRequest::McpServersCreate - legacy REST handler, McpProcessor target.
 // ClientRequest::McpServersMarketplace - legacy REST handler, McpProcessor target.
 // ClientRequest::McpServersDetail - legacy REST handler, McpProcessor target.
@@ -1314,6 +1316,7 @@ mod tests {
             ApiRequestContext::direct(),
             ClientRequest::TerminalSessionsCreate(v1::terminal::TerminalCreateRequest {
                 profile: "shell".to_string(),
+                client_request_id: None,
                 cwd: None,
                 label: None,
                 command: None,

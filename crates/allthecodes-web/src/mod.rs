@@ -121,7 +121,7 @@ mod tests {
     use allthecodes_engine::lifecycle::QueryEngine;
     use allthecodes_engine::types::config::QueryEngineConfig;
     use axum::body::{to_bytes, Body};
-    use axum::http::{Method, Request, StatusCode};
+    use axum::http::{header, Method, Request, StatusCode};
     use serde_json::{json, Value};
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
@@ -170,6 +170,30 @@ mod tests {
         (status, serde_json::from_slice(&body).expect("json"))
     }
 
+    async fn request_json(
+        app: Router,
+        method: Method,
+        uri: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).expect("body")))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&body).expect("json"))
+    }
+
     #[tokio::test]
     async fn root_probe_endpoints_are_available() {
         let app = build_router(make_web_state());
@@ -201,5 +225,64 @@ mod tests {
         assert!(body.get("probe").is_none());
         assert!(body.get("service").is_none());
         assert!(body.get("pid").is_none());
+    }
+
+    #[tokio::test]
+    async fn terminal_healthz_reports_subsystem_without_starting_session() {
+        let state = make_web_state();
+        let app = build_router(state.clone());
+
+        let (status, body) = get_json(app, "/api/terminal/healthz").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], json!("ok"));
+        assert_eq!(body["subsystem"], json!("terminal"));
+        assert_eq!(body["active_sessions"], json!(0));
+        assert_eq!(body["can_spawn_profile"], json!(true));
+        assert!(body.get("last_spawn_error").is_none());
+        assert!(body.get("last_spawn_error_at").is_none());
+        assert!(state.terminal_manager.list_sessions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn terminal_create_unknown_profile_returns_classified_error() {
+        let app = build_router(make_web_state());
+
+        let (status, body) = request_json(
+            app,
+            Method::POST,
+            "/api/terminal/sessions",
+            json!({ "profile": "missing-profile" }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["code"], json!("terminal_profile_not_found"));
+    }
+
+    #[tokio::test]
+    async fn terminal_create_invalid_cwd_returns_classified_error() {
+        let app = build_router(make_web_state());
+
+        let (status, body) = request_json(
+            app,
+            Method::POST,
+            "/api/terminal/sessions",
+            json!({ "profile": "shell", "cwd": "/definitely/outside/allthecodes" }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], json!("terminal_cwd_invalid"));
+    }
+
+    #[tokio::test]
+    async fn terminal_detail_missing_returns_terminal_not_found() {
+        let app = build_router(make_web_state());
+
+        let (status, body) = get_json(app, "/api/terminal/sessions/missing").await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["code"], json!("terminal_not_found"));
     }
 }

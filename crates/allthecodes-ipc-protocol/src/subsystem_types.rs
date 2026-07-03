@@ -256,7 +256,7 @@ pub struct McpServerConfigEntry {
 }
 
 /// Aggregate status of a single MCP server connection.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct McpServerStatusInfo {
     /// Logical name used to identify this server in configuration.
     pub name: String,
@@ -277,6 +277,39 @@ pub struct McpServerStatusInfo {
     /// Error message if the server is in an error state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Last successful connection timestamp in Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_at: Option<i64>,
+    /// Last connection attempt timestamp in Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<i64>,
+    /// Machine-readable kind for the most recent connection failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_kind: Option<String>,
+    /// Consecutive connection failures recorded by the MCP manager.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_count: Option<u32>,
+    /// Total connection attempts recorded by the MCP manager for this server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_attempt_count: Option<u64>,
+    /// Retry attempts that were scheduled after a failed connection attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_scheduled_count: Option<u64>,
+    /// Retry sequences that reached the final failed attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_exhausted_count: Option<u64>,
+    /// Successful connections after a previously recorded failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovered_count: Option<u64>,
+    /// Scheduled retry timestamp in Unix milliseconds, when a retry is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<i64>,
+    /// Redacted tail of stderr captured from stdio MCP servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stderr_tail: Vec<String>,
+    /// Lines dropped from the bounded stderr tail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_tail_dropped_line_count: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -818,6 +851,7 @@ mod tests {
             }),
             instructions: Some("Use for docs".to_string()),
             error: None,
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&status).expect("serialize McpServerStatusInfo");
@@ -845,12 +879,62 @@ mod tests {
             server_info: None,
             instructions: None,
             error: Some("connection refused".to_string()),
+            ..Default::default()
         };
 
         let value = serde_json::to_value(&status).expect("serialize");
         assert!(value.get("server_info").is_none());
         assert!(value.get("instructions").is_none());
         assert_eq!(value["error"], "connection refused");
+    }
+
+    #[test]
+    fn mcp_server_status_info_health_fields_are_optional_and_defaulted() {
+        let json = r#"{
+            "name": "legacy",
+            "state": "pending",
+            "transport": "stdio",
+            "tools_count": 0,
+            "resources_count": 0
+        }"#;
+        let parsed: McpServerStatusInfo =
+            serde_json::from_str(json).expect("deserialize legacy status");
+        assert_eq!(parsed.name, "legacy");
+        assert!(parsed.last_error_kind.is_none());
+        assert!(parsed.failure_count.is_none());
+        assert!(parsed.connect_attempt_count.is_none());
+        assert!(parsed.retry_scheduled_count.is_none());
+        assert!(parsed.retry_exhausted_count.is_none());
+        assert!(parsed.recovered_count.is_none());
+        assert!(parsed.stderr_tail_dropped_line_count.is_none());
+        assert!(parsed.stderr_tail.is_empty());
+
+        let status = McpServerStatusInfo {
+            name: "broken".to_string(),
+            state: "error".to_string(),
+            transport: "stdio".to_string(),
+            tools_count: 0,
+            resources_count: 0,
+            error: Some("failed to spawn MCP server".to_string()),
+            last_error_kind: Some("spawn_failed".to_string()),
+            failure_count: Some(3),
+            connect_attempt_count: Some(3),
+            retry_scheduled_count: Some(2),
+            retry_exhausted_count: Some(1),
+            recovered_count: Some(0),
+            stderr_tail: vec!["redacted stderr".to_string()],
+            stderr_tail_dropped_line_count: Some(4),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&status).expect("serialize status");
+        assert_eq!(value["last_error_kind"], "spawn_failed");
+        assert_eq!(value["failure_count"], 3);
+        assert_eq!(value["connect_attempt_count"], 3);
+        assert_eq!(value["retry_scheduled_count"], 2);
+        assert_eq!(value["retry_exhausted_count"], 1);
+        assert_eq!(value["recovered_count"], 0);
+        assert_eq!(value["stderr_tail"][0], "redacted stderr");
+        assert_eq!(value["stderr_tail_dropped_line_count"], 4);
     }
 
     #[test]
@@ -919,6 +1003,7 @@ mod tests {
                 }),
                 instructions: None,
                 error: None,
+                ..Default::default()
             }],
             plugins: vec![PluginInfo {
                 id: "test-plugin".to_string(),

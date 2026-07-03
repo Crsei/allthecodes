@@ -338,6 +338,7 @@ mod tests {
             9,
             ClientRequest::TerminalSessionsCreate(v1::terminal::TerminalCreateRequest {
                 profile: "shell".to_string(),
+                client_request_id: None,
                 cwd: None,
                 label: None,
                 command: None,

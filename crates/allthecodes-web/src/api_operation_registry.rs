@@ -142,7 +142,8 @@ fn is_websocket_endpoint(http_method: &str, path: &str) -> bool {
 fn is_dedicated_transport_operation(operation: ApiMethod) -> bool {
     matches!(
         operation,
-        ApiMethod::TerminalProfiles
+        ApiMethod::TerminalHealth
+            | ApiMethod::TerminalProfiles
             | ApiMethod::TerminalSessionsList
             | ApiMethod::TerminalSessionsCreate
             | ApiMethod::TerminalSessionDetail

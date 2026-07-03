@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use allthecodes_tools::runtime_capability::{RuntimeCapability, RuntimeCapabilityRegistry};
 use allthecodes_types::mcp::{McpBinding, McpBindingContext, McpPermission, McpToolScope};
@@ -15,8 +16,8 @@ use tracing::{info, warn};
 use super::client::McpClient;
 use super::discovery::BoundMcpServerConfig;
 use super::{
-    McpResource, McpResourceWithServer, McpRuntimeContext, McpServerConfig, McpSubsystemEvent,
-    McpToolDef, ReadResourceResult, SharedMcpEventSink,
+    McpResource, McpResourceWithServer, McpRuntimeContext, McpServerConfig,
+    McpServerHealthSnapshot, McpSubsystemEvent, McpToolDef, ReadResourceResult, SharedMcpEventSink,
 };
 
 const CONNECT_RETRY_ATTEMPTS: usize = 3;
@@ -31,6 +32,7 @@ pub struct McpManager {
     bindings: Vec<McpBinding>,
     display_names: HashMap<String, String>,
     source_scopes: HashMap<String, String>,
+    health: HashMap<String, McpServerHealthSnapshot>,
 }
 
 impl McpManager {
@@ -49,6 +51,7 @@ impl McpManager {
             bindings: Vec::new(),
             display_names: HashMap::new(),
             source_scopes: HashMap::new(),
+            health: HashMap::new(),
         }
     }
 
@@ -83,6 +86,12 @@ impl McpManager {
 
     pub fn server_source_scope(&self, server_id: &str) -> Option<&str> {
         self.source_scopes.get(server_id).map(String::as_str)
+    }
+
+    pub fn health_snapshots(&self) -> Vec<McpServerHealthSnapshot> {
+        let mut snapshots = self.health.values().cloned().collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.server_name.cmp(&right.server_name));
+        snapshots
     }
 
     /// Connect to all configured MCP servers.
@@ -161,6 +170,7 @@ impl McpManager {
         // is preserved for a later re-enable.
         if config.disabled.unwrap_or(false) {
             tracing::info!(server = %name, "MCP: server disabled in settings, skipping");
+            self.record_health_disabled(&config);
             self.runtime
                 .emit_event(super::McpSubsystemEvent::ServerStateChanged {
                     server_name: name,
@@ -190,27 +200,58 @@ impl McpManager {
     }
 
     async fn connect_ready_client_with_retries(
-        &self,
+        &mut self,
         config: McpServerConfig,
     ) -> Result<McpClient> {
         let mut last_error = None;
         for attempt in 0..CONNECT_RETRY_ATTEMPTS {
+            self.record_health_attempt(&config, attempt + 1, None);
             match self.connect_ready_client(config.clone()).await {
-                Ok(client) => return Ok(client),
+                Ok(client) => {
+                    let recovered = self.record_health_success(&config, &client);
+                    if recovered {
+                        info!(
+                            event = "McpServerRecovered",
+                            server = %config.name,
+                            attempt = attempt + 1,
+                            max_attempts = CONNECT_RETRY_ATTEMPTS,
+                            "MCP: server recovered after connection failure"
+                        );
+                    }
+                    return Ok(client);
+                }
                 Err(err) => {
                     let final_attempt = attempt + 1 >= CONNECT_RETRY_ATTEMPTS;
+                    let delay_ms = connect_retry_delay_ms(attempt);
+                    let next_retry_at =
+                        (!final_attempt).then(|| now_millis().saturating_add(delay_ms as i64));
+                    self.record_health_failure(&config, attempt + 1, &err, next_retry_at);
+                    let error_kind = classify_mcp_connect_error(&err);
+                    if final_attempt {
+                        warn!(
+                            event = "McpServerRetryExhausted",
+                            server = %config.name,
+                            attempt = attempt + 1,
+                            max_attempts = CONNECT_RETRY_ATTEMPTS,
+                            error_kind,
+                            error = %err,
+                            "MCP: connect retry exhausted"
+                        );
+                        return Err(err);
+                    }
                     warn!(
+                        event = "McpServerRetryScheduled",
                         server = %config.name,
                         attempt = attempt + 1,
                         max_attempts = CONNECT_RETRY_ATTEMPTS,
+                        delay_ms,
+                        next_retry_at = ?next_retry_at,
+                        error_kind,
                         error = %err,
-                        "MCP: connect attempt failed"
+                        "MCP: connect retry scheduled"
                     );
-                    if final_attempt {
-                        return Err(err);
-                    }
                     last_error = Some(err);
-                    sleep(Duration::from_millis(connect_retry_delay_ms(attempt))).await;
+                    sleep(Duration::from_millis(delay_ms)).await;
                 }
             }
         }
@@ -224,11 +265,14 @@ impl McpManager {
 
         client.connect().await?;
 
+        let initialize_started_at = now_millis();
         if let Err(e) = client.initialize().await {
             let error = e.to_string();
+            let initialize_latency_ms = now_millis().saturating_sub(initialize_started_at);
             warn!(
                 server = %name,
                 error = %error,
+                initialize_latency_ms,
                 "MCP: failed to initialize server"
             );
             self.runtime
@@ -267,6 +311,7 @@ impl McpManager {
             server = %name,
             tools = client.tools.len(),
             resources = client.resources.len(),
+            initialize_latency_ms = now_millis().saturating_sub(initialize_started_at),
             "MCP: server ready"
         );
 
@@ -500,10 +545,108 @@ impl McpManager {
     pub async fn disconnect_server(&mut self, name: &str) -> bool {
         if let Some(mut client) = self.clients.remove(name) {
             client.disconnect().await;
+            if let Some(snapshot) = self.health.get_mut(name) {
+                snapshot.state = "disconnected".to_string();
+                snapshot.next_retry_at = None;
+            }
             true
         } else {
             false
         }
+    }
+
+    fn health_entry(&mut self, config: &McpServerConfig) -> &mut McpServerHealthSnapshot {
+        self.health
+            .entry(config.name.clone())
+            .or_insert_with(|| McpServerHealthSnapshot::new(&config.name, &config.transport))
+    }
+
+    fn record_health_attempt(
+        &mut self,
+        config: &McpServerConfig,
+        attempt: usize,
+        next_retry_at: Option<i64>,
+    ) {
+        let now = now_millis();
+        let snapshot = self.health_entry(config);
+        snapshot.state = "connecting".to_string();
+        snapshot.transport = config.transport.clone();
+        snapshot.last_attempt_at = Some(now);
+        snapshot.failure_count = attempt.saturating_sub(1) as u32;
+        snapshot.connect_attempt_count = snapshot.connect_attempt_count.saturating_add(1);
+        snapshot.next_retry_at = next_retry_at;
+    }
+
+    fn record_health_failure(
+        &mut self,
+        config: &McpServerConfig,
+        attempt: usize,
+        error: &anyhow::Error,
+        next_retry_at: Option<i64>,
+    ) {
+        let (state, error_message) = {
+            let snapshot = self.health_entry(config);
+            let state = if next_retry_at.is_some() {
+                snapshot.retry_scheduled_count = snapshot.retry_scheduled_count.saturating_add(1);
+                "retrying"
+            } else {
+                snapshot.retry_exhausted_count = snapshot.retry_exhausted_count.saturating_add(1);
+                "error"
+            };
+            snapshot.state = state.to_string();
+            snapshot.last_error = Some(error.to_string());
+            snapshot.last_error_kind = Some(classify_mcp_connect_error(error).to_string());
+            snapshot.failure_count = attempt as u32;
+            snapshot.next_retry_at = next_retry_at;
+            snapshot.tools_count = None;
+            snapshot.resources_count = None;
+            (snapshot.state.clone(), error.to_string())
+        };
+        self.runtime
+            .emit_event(super::McpSubsystemEvent::ServerStateChanged {
+                server_name: config.name.clone(),
+                state,
+                error: Some(error_message),
+            });
+    }
+
+    fn record_health_success(&mut self, config: &McpServerConfig, client: &McpClient) -> bool {
+        let now = now_millis();
+        let recovered = {
+            let snapshot = self.health_entry(config);
+            let recovered = snapshot.failure_count > 0 || snapshot.last_error.is_some();
+            snapshot.state = "connected".to_string();
+            snapshot.transport = config.transport.clone();
+            snapshot.last_success_at = Some(now);
+            snapshot.last_error = None;
+            snapshot.last_error_kind = None;
+            snapshot.failure_count = 0;
+            if recovered {
+                snapshot.recovered_count = snapshot.recovered_count.saturating_add(1);
+            }
+            snapshot.next_retry_at = None;
+            snapshot.stderr_tail = client.stderr_tail();
+            snapshot.stderr_tail_dropped_line_count = client.stderr_tail_dropped_line_count();
+            snapshot.tools_count = Some(client.tools.len());
+            snapshot.resources_count = Some(client.resources.len());
+            recovered
+        };
+        self.runtime
+            .emit_event(super::McpSubsystemEvent::ServerStateChanged {
+                server_name: config.name.clone(),
+                state: "connected".to_string(),
+                error: None,
+            });
+        recovered
+    }
+
+    fn record_health_disabled(&mut self, config: &McpServerConfig) {
+        let snapshot = self.health_entry(config);
+        snapshot.state = "disabled".to_string();
+        snapshot.transport = config.transport.clone();
+        snapshot.next_retry_at = None;
+        snapshot.last_error = None;
+        snapshot.last_error_kind = None;
     }
 }
 
@@ -512,6 +655,31 @@ pub(crate) fn connect_retry_delay_ms(attempt: usize) -> u64 {
     CONNECT_RETRY_BASE_DELAY_MS
         .saturating_mul(factor)
         .min(CONNECT_RETRY_MAX_DELAY_MS)
+}
+
+fn classify_mcp_connect_error(error: &anyhow::Error) -> &'static str {
+    let message = format!("{error:#}");
+    if message.contains("failed to spawn MCP server") {
+        "spawn_failed"
+    } else if message.contains("timed out") && message.contains("initialize") {
+        "initialize_timeout"
+    } else if message.contains("failed to parse initialize response")
+        || message.contains("JSON-RPC")
+        || message.contains("protocol")
+    {
+        "protocol_parse_error"
+    } else if super::client::is_auth_needed_error(error) {
+        "auth_needed"
+    } else {
+        "connection_failed"
+    }
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 impl Default for McpManager {
@@ -721,5 +889,89 @@ mod tests {
                 "alpha".to_string()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn failed_stdio_spawn_records_health_snapshot() {
+        let mut manager = McpManager::new();
+        let config = McpServerConfig {
+            name: "broken".to_string(),
+            transport: "stdio".to_string(),
+            command: Some("__allthecodes_missing_mcp_server__".to_string()),
+            args: None,
+            url: None,
+            headers: None,
+            oauth: None,
+            env: None,
+            browser_mcp: None,
+            disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
+        };
+
+        let err = manager.connect_server(config).await.unwrap_err();
+        assert!(err.to_string().contains("failed to spawn MCP server"));
+
+        let health = manager.health_snapshots();
+        let broken = health
+            .iter()
+            .find(|snapshot| snapshot.server_name == "broken")
+            .expect("broken health snapshot");
+
+        assert_eq!(broken.state, "error");
+        assert_eq!(broken.transport, "stdio");
+        assert_eq!(broken.last_error_kind.as_deref(), Some("spawn_failed"));
+        assert_eq!(broken.failure_count, CONNECT_RETRY_ATTEMPTS as u32);
+        assert_eq!(broken.connect_attempt_count, CONNECT_RETRY_ATTEMPTS as u64);
+        assert_eq!(
+            broken.retry_scheduled_count,
+            CONNECT_RETRY_ATTEMPTS.saturating_sub(1) as u64
+        );
+        assert_eq!(broken.retry_exhausted_count, 1);
+        assert_eq!(broken.recovered_count, 0);
+        assert_eq!(broken.stderr_tail_dropped_line_count, 0);
+        assert!(broken.last_attempt_at.is_some());
+        assert!(broken.next_retry_at.is_none());
+    }
+
+    #[test]
+    fn health_success_records_recovery_after_failure() {
+        let mut manager = McpManager::new();
+        let config = McpServerConfig {
+            name: "recovering".to_string(),
+            transport: "stdio".to_string(),
+            command: Some("dummy".to_string()),
+            args: None,
+            url: None,
+            headers: None,
+            oauth: None,
+            env: None,
+            browser_mcp: None,
+            disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
+        };
+        let error = anyhow::anyhow!("initialize timed out");
+
+        manager.record_health_attempt(&config, 1, None);
+        manager.record_health_failure(&config, 1, &error, None);
+        let recovered =
+            manager.record_health_success(&config, &tool_client("recovering", "search"));
+
+        assert!(recovered);
+        let snapshot = manager
+            .health_snapshots()
+            .into_iter()
+            .find(|snapshot| snapshot.server_name == "recovering")
+            .expect("recovering health snapshot");
+        assert_eq!(snapshot.state, "connected");
+        assert_eq!(snapshot.failure_count, 0);
+        assert_eq!(snapshot.connect_attempt_count, 1);
+        assert_eq!(snapshot.retry_scheduled_count, 0);
+        assert_eq!(snapshot.retry_exhausted_count, 1);
+        assert_eq!(snapshot.recovered_count, 1);
+        assert_eq!(snapshot.stderr_tail_dropped_line_count, 0);
     }
 }

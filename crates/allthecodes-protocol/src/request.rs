@@ -284,6 +284,13 @@ crate::api_definitions! {
     McpServersList => "GET /api/mcp-servers" {
         response: Value,
     },
+    McpServersHealth => "GET /api/mcp-servers/health" {
+        response: Value,
+    },
+    McpServersProbe => "POST /api/mcp-servers/probe" {
+        params: Value,
+        response: Value,
+    },
     McpServersCreate => "POST /api/mcp-servers" {
         params: Value,
         response: Value,
@@ -645,6 +652,9 @@ crate::api_definitions! {
         response: v1::logs::TracesResponse,
     },
 
+    TerminalHealth => "GET /api/terminal/healthz" {
+        response: v1::terminal::TerminalHealthResponse,
+    },
     TerminalProfiles => "GET /api/terminal/profiles" {
         response: v1::terminal::TerminalProfilesResponse,
     },

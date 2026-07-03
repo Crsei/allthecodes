@@ -8,6 +8,24 @@ use axum::Json;
 use serde_json::json;
 use serial_test::serial;
 
+struct RuntimeMcpGuard;
+
+impl RuntimeMcpGuard {
+    fn install(
+        manager: std::sync::Arc<tokio::sync::Mutex<allthecodes_mcp::manager::McpManager>>,
+    ) -> Self {
+        allthecodes_mcp::runtime::clear_for_tests();
+        allthecodes_mcp::runtime::install_manager(manager);
+        Self
+    }
+}
+
+impl Drop for RuntimeMcpGuard {
+    fn drop(&mut self) {
+        allthecodes_mcp::runtime::clear_for_tests();
+    }
+}
+
 #[test]
 fn mcp_server_list_redacts_account_access_token_env() {
     let redacted = redact_server_env(Some(std::collections::HashMap::from([
@@ -31,6 +49,171 @@ fn mcp_server_list_redacts_account_access_token_env() {
     assert_eq!(
         redacted.get("ALLTHECODES_COM_BASE_URL").map(String::as_str),
         Some("https://allthecodes.cc")
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn mcp_servers_health_exposes_runtime_health_details() {
+    let (_home, _guard) = temp_home();
+    let project = tempfile::tempdir().expect("project");
+    let state = make_web_state_with_cwd(project.path());
+    let server_name = "broken-health";
+    let command = "allthecodes-test-missing-mcp-web-health";
+
+    let mut user = allthecodes_config::settings::RawSettings::default();
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        server_name.to_string(),
+        json!({
+            "type": "stdio",
+            "command": command
+        }),
+    );
+    user.extra
+        .insert("mcpServers".to_string(), serde_json::Value::Object(servers));
+    allthecodes_config::settings::write_user_settings(&user).expect("seed user settings");
+
+    let mut manager = allthecodes_mcp::manager::McpManager::new();
+    let config = allthecodes_mcp::McpServerConfig {
+        name: server_name.to_string(),
+        transport: "stdio".to_string(),
+        command: Some(command.to_string()),
+        args: None,
+        url: None,
+        headers: None,
+        oauth: None,
+        env: None,
+        browser_mcp: None,
+        disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
+    };
+    manager
+        .connect_server(config)
+        .await
+        .expect_err("missing stdio command should fail");
+    let _runtime = RuntimeMcpGuard::install(std::sync::Arc::new(tokio::sync::Mutex::new(manager)));
+
+    let response = mcp_servers_health_handler(State(state))
+        .await
+        .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let servers = body["servers"].as_array().expect("servers");
+    let server = servers
+        .iter()
+        .find(|server| server["name"] == json!(server_name))
+        .unwrap_or_else(|| panic!("broken health server missing in body: {body}"));
+    assert_eq!(server["state"], json!("error"));
+    assert_eq!(server["last_error_kind"], json!("spawn_failed"));
+    assert_eq!(server["failure_count"], json!(3));
+    assert_eq!(server["connect_attempt_count"], json!(3));
+    assert_eq!(server["retry_scheduled_count"], json!(2));
+    assert_eq!(server["retry_exhausted_count"], json!(1));
+    assert_eq!(server["recovered_count"], json!(0));
+    assert_eq!(server["stderr_tail_dropped_line_count"], json!(0));
+    assert!(server["last_attempt_at"].is_number());
+    assert!(server["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("failed to spawn"));
+}
+
+#[tokio::test]
+#[serial]
+async fn mcp_servers_probe_accepts_inline_config_without_live_manager() {
+    let (_home, _guard) = temp_home();
+    allthecodes_mcp::runtime::clear_for_tests();
+    let project = tempfile::tempdir().expect("project");
+    let state = make_web_state_with_cwd(project.path());
+
+    let response = mcp_servers_probe_handler(
+        State(state),
+        Json(McpServerProbeRequest {
+            name: None,
+            config: Some(allthecodes_mcp::McpServerConfig {
+                name: "inline-probe".to_string(),
+                transport: "stdio".to_string(),
+                command: None,
+                args: None,
+                url: None,
+                headers: None,
+                oauth: None,
+                env: None,
+                browser_mcp: None,
+                disabled: None,
+                bearer_token_env_var: None,
+                env_http_headers: None,
+                auth: None,
+            }),
+            entry: None,
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["server"], json!("inline-probe"));
+    assert_eq!(body["status"], json!("failed"));
+    assert_eq!(
+        body["message"],
+        json!("stdio MCP server is missing a command")
+    );
+    assert!(body["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| { check["name"] == json!("command") && check["status"] == json!("failed") }));
+    assert!(!body["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| check["name"] == json!("connect")));
+}
+
+#[tokio::test]
+#[serial]
+async fn mcp_servers_probe_named_server_uses_settings_config() {
+    let (_home, _guard) = temp_home();
+    allthecodes_mcp::runtime::clear_for_tests();
+    let project = tempfile::tempdir().expect("project");
+    let state = make_web_state_with_cwd(project.path());
+    let server_name = "named-probe";
+
+    let mut user = allthecodes_config::settings::RawSettings::default();
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        server_name.to_string(),
+        json!({
+            "type": "stdio"
+        }),
+    );
+    user.extra
+        .insert("mcpServers".to_string(), serde_json::Value::Object(servers));
+    allthecodes_config::settings::write_user_settings(&user).expect("seed user settings");
+
+    let response = mcp_servers_probe_handler(
+        State(state),
+        Json(McpServerProbeRequest {
+            name: Some(server_name.to_string()),
+            config: None,
+            entry: None,
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["server"], json!(server_name));
+    assert_eq!(body["status"], json!("failed"));
+    assert_eq!(
+        body["message"],
+        json!("stdio MCP server is missing a command")
     );
 }
 

@@ -206,17 +206,57 @@ fn format_mcp_section(servers: &[McpServerStatusInfo]) -> String {
         section.push_str("No MCP servers configured.\n");
     } else {
         for s in servers {
+            let detail = format_mcp_health_detail(s);
             let mut line = format!(
-                "- {}: {} ({}, {} tools, {} resources)",
-                s.name, s.state, s.transport, s.tools_count, s.resources_count
+                "- {}: {} ({}, {} tools, {} resources){}",
+                s.name, s.state, s.transport, s.tools_count, s.resources_count, detail
             );
             if let Some(ref info) = s.server_info {
                 line.push_str(&format!(" [{}@{}]", info.name, info.version));
             }
+            if let Some(error) = s.error.as_deref() {
+                line.push_str(&format!(" error={error}"));
+            }
             section.push_str(&format!("{}\n", line));
+            if let Some(stderr) = s.stderr_tail.last() {
+                section.push_str(&format!("  stderr: {stderr}\n"));
+            }
         }
     }
     section
+}
+
+fn format_mcp_health_detail(server: &McpServerStatusInfo) -> String {
+    let mut fields = Vec::new();
+    if let Some(kind) = server.last_error_kind.as_deref() {
+        fields.push(format!("error_kind={kind}"));
+    }
+    if let Some(count) = server.failure_count {
+        fields.push(format!("failures={count}"));
+    }
+    if let Some(count) = server.connect_attempt_count {
+        fields.push(format!("attempts={count}"));
+    }
+    if let Some(count) = server.retry_scheduled_count {
+        fields.push(format!("retries_scheduled={count}"));
+    }
+    if let Some(count) = server.retry_exhausted_count {
+        fields.push(format!("retries_exhausted={count}"));
+    }
+    if let Some(count) = server.recovered_count {
+        fields.push(format!("recovered={count}"));
+    }
+    if let Some(next_retry_at) = server.next_retry_at {
+        fields.push(format!("next_retry_at={next_retry_at}"));
+    }
+    if let Some(count) = server.stderr_tail_dropped_line_count {
+        fields.push(format!("stderr_dropped={count}"));
+    }
+    if fields.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", fields.join(", "))
+    }
 }
 
 fn format_plugin_section(plugins: &[PluginInfo]) -> String {
@@ -370,5 +410,36 @@ mod tests {
         let output = format_status_output("lsp", None);
         assert!(output.contains("## LSP Servers"));
         assert!(!output.contains("## MCP Servers"));
+    }
+
+    #[test]
+    fn format_mcp_section_includes_health_details() {
+        let output = format_mcp_section(&[McpServerStatusInfo {
+            name: "broken".to_string(),
+            state: "error".to_string(),
+            transport: "stdio".to_string(),
+            tools_count: 0,
+            resources_count: 0,
+            error: Some("failed to spawn MCP server".to_string()),
+            last_error_kind: Some("spawn_failed".to_string()),
+            failure_count: Some(3),
+            connect_attempt_count: Some(3),
+            retry_scheduled_count: Some(2),
+            retry_exhausted_count: Some(1),
+            recovered_count: Some(0),
+            stderr_tail: vec!["startup failed".to_string()],
+            stderr_tail_dropped_line_count: Some(4),
+            ..Default::default()
+        }]);
+
+        assert!(output.contains("error_kind=spawn_failed"));
+        assert!(output.contains("failures=3"));
+        assert!(output.contains("attempts=3"));
+        assert!(output.contains("retries_scheduled=2"));
+        assert!(output.contains("retries_exhausted=1"));
+        assert!(output.contains("recovered=0"));
+        assert!(output.contains("stderr_dropped=4"));
+        assert!(output.contains("failed to spawn MCP server"));
+        assert!(output.contains("stderr: startup failed"));
     }
 }

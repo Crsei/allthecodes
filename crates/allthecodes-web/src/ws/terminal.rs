@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,8 +17,9 @@ use parking_lot::{Mutex, RwLock};
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use tracing::warn;
+use tracing::{info, warn};
 
+use allthecodes_protocol::v1::terminal::TerminalHealthResponse;
 use allthecodes_server::{
     EventSeq, OutputEvent, OutputLifecycleState, OutputReadBatch, OutputRetention, OutputStream,
     DEFAULT_DETACH_RESUME_TTL, DEFAULT_EXITED_OUTPUT_RETENTION_TTL,
@@ -35,6 +36,11 @@ static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Default)]
 pub struct TerminalManager {
     sessions: Arc<RwLock<HashMap<String, Arc<TerminalSession>>>>,
+    request_index: Arc<RwLock<HashMap<String, String>>>,
+    create_lock: Arc<Mutex<()>>,
+    last_spawn_error: Arc<RwLock<Option<TerminalSpawnError>>>,
+    metrics: Arc<TerminalMetrics>,
+    backend_health_state: Arc<AtomicU8>,
 }
 
 impl TerminalManager {
@@ -42,8 +48,78 @@ impl TerminalManager {
         &self,
         workspace_cwd: &Path,
         request: TerminalCreateRequest,
-    ) -> Result<TerminalSessionSnapshot, String> {
+    ) -> Result<TerminalSessionSnapshot, TerminalCreateError> {
+        let requested_profile = request.profile.clone();
+        let requested_client_request_id =
+            normalize_client_request_id(request.client_request_id.as_deref());
+        let result = self.create_session_inner(workspace_cwd, request);
+        match &result {
+            Ok(snapshot) => {
+                self.metrics
+                    .create_success_count
+                    .fetch_add(1, Ordering::SeqCst);
+                info!(
+                    event = "TerminalCreateSucceeded",
+                    profile = %snapshot.profile,
+                    session_id = %snapshot.id,
+                    client_request_id = snapshot.client_request_id.as_deref().unwrap_or(""),
+                    pid = snapshot.pid,
+                    "Terminal: session create succeeded"
+                );
+            }
+            Err(error) => {
+                self.metrics
+                    .create_failure_count
+                    .fetch_add(1, Ordering::SeqCst);
+                warn!(
+                    event = "TerminalCreateFailed",
+                    profile = %requested_profile,
+                    client_request_id = requested_client_request_id.as_deref().unwrap_or(""),
+                    error_code = error.code(),
+                    error = %error.message(),
+                    "Terminal: session create failed"
+                );
+                self.record_spawn_error(error.message());
+            }
+        }
+        result
+    }
+
+    fn create_session_inner(
+        &self,
+        workspace_cwd: &Path,
+        request: TerminalCreateRequest,
+    ) -> Result<TerminalSessionSnapshot, TerminalCreateError> {
+        let _create_guard = self.create_lock.lock();
         self.prune_idle_sessions();
+        let client_request_id = normalize_client_request_id(request.client_request_id.as_deref());
+        if let Some(request_id) = client_request_id.as_deref() {
+            if let Some(session_id) = self.request_index.read().get(request_id).cloned() {
+                if let Some(session) = self.sessions.read().get(&session_id).cloned() {
+                    self.metrics
+                        .create_idempotency_hit_count
+                        .fetch_add(1, Ordering::SeqCst);
+                    info!(
+                        event = "TerminalCreateIdempotencyHit",
+                        client_request_id = %request_id,
+                        session_id = %session_id,
+                        "Terminal: idempotent create reused existing session"
+                    );
+                    return Ok(session.snapshot());
+                }
+                self.request_index.write().remove(request_id);
+                warn!(
+                    event = "TerminalCreateIdempotencyExpired",
+                    client_request_id = %request_id,
+                    session_id = %session_id,
+                    "Terminal: idempotent create key pointed to an expired session"
+                );
+                return Err(TerminalCreateError::new(
+                    TerminalErrorKind::IdempotencyExpired,
+                    "terminal idempotency key expired",
+                ));
+            }
+        }
         let profile = TerminalProfile::from_id(&request.profile)?;
         let cwd = resolve_cwd(workspace_cwd, request.cwd.as_deref())?;
         let resolved = match request.command {
@@ -61,11 +137,42 @@ impl TerminalManager {
             .label
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| profile.default_label().to_string());
-        let session =
-            TerminalSession::spawn(id.clone(), label, profile, cwd, resolved, size, persist)?;
+        let session = TerminalSession::spawn(
+            id.clone(),
+            label,
+            profile,
+            cwd,
+            resolved,
+            size,
+            persist,
+            client_request_id.clone(),
+        )?;
         let snapshot = session.snapshot();
         self.sessions.write().insert(id, Arc::new(session));
+        if let Some(request_id) = client_request_id {
+            self.request_index
+                .write()
+                .insert(request_id, snapshot.id.clone());
+        }
         Ok(snapshot)
+    }
+
+    pub fn health_snapshot(&self) -> TerminalHealthResponse {
+        let can_spawn_profile = resolve_profile_command(TerminalProfile::Shell, None).is_ok();
+        self.record_backend_health(can_spawn_profile);
+        let last_spawn_error = self.last_spawn_error.read().clone();
+        let metrics = self.metrics.snapshot();
+        TerminalHealthResponse {
+            status: if can_spawn_profile { "ok" } else { "degraded" }.to_string(),
+            subsystem: "terminal".to_string(),
+            active_sessions: self.sessions.read().len(),
+            last_spawn_error: last_spawn_error.as_ref().map(|error| error.message.clone()),
+            last_spawn_error_at: last_spawn_error.map(|error| error.at),
+            can_spawn_profile,
+            create_success_count: Some(metrics.create_success_count),
+            create_failure_count: Some(metrics.create_failure_count),
+            create_idempotency_hit_count: Some(metrics.create_idempotency_hit_count),
+        }
     }
 
     pub fn list_sessions(&self) -> Vec<TerminalSessionSnapshot> {
@@ -84,6 +191,7 @@ impl TerminalManager {
 
     pub fn remove_session(&self, id: &str) -> Option<TerminalSessionSnapshot> {
         let session = self.sessions.write().remove(id)?;
+        self.remove_request_index_for_session(id);
         session.terminate();
         Some(session.snapshot())
     }
@@ -112,16 +220,135 @@ impl TerminalManager {
         let mut sessions = self.sessions.write();
         for id in stale_ids {
             if let Some(session) = sessions.remove(&id) {
+                self.remove_request_index_for_session(&id);
                 session.terminate();
             }
         }
     }
+
+    fn remove_request_index_for_session(&self, session_id: &str) {
+        self.request_index
+            .write()
+            .retain(|_, indexed_session_id| indexed_session_id != session_id);
+    }
+
+    fn record_spawn_error(&self, error: &str) {
+        *self.last_spawn_error.write() = Some(TerminalSpawnError {
+            message: error.to_string(),
+            at: now_millis(),
+        });
+    }
+
+    fn record_backend_health(&self, can_spawn_profile: bool) {
+        const READY: u8 = 1;
+        const UNREADY: u8 = 2;
+
+        let current = if can_spawn_profile { READY } else { UNREADY };
+        let previous = self.backend_health_state.swap(current, Ordering::SeqCst);
+        if previous == current {
+            return;
+        }
+
+        if can_spawn_profile {
+            info!(
+                event = "TerminalBackendReady",
+                previous_state = previous,
+                "Terminal: backend can spawn shell profiles"
+            );
+        } else {
+            warn!(
+                event = "TerminalBackendUnready",
+                previous_state = previous,
+                "Terminal: backend cannot spawn shell profiles"
+            );
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TerminalSpawnError {
+    message: String,
+    at: i64,
+}
+
+#[derive(Default)]
+struct TerminalMetrics {
+    create_success_count: AtomicU64,
+    create_failure_count: AtomicU64,
+    create_idempotency_hit_count: AtomicU64,
+}
+
+impl TerminalMetrics {
+    fn snapshot(&self) -> TerminalMetricsSnapshot {
+        TerminalMetricsSnapshot {
+            create_success_count: self.create_success_count.load(Ordering::SeqCst),
+            create_failure_count: self.create_failure_count.load(Ordering::SeqCst),
+            create_idempotency_hit_count: self.create_idempotency_hit_count.load(Ordering::SeqCst),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TerminalMetricsSnapshot {
+    create_success_count: u64,
+    create_failure_count: u64,
+    create_idempotency_hit_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalCreateError {
+    kind: TerminalErrorKind,
+    message: String,
+}
+
+impl TerminalCreateError {
+    fn new(kind: TerminalErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn status_code(&self) -> StatusCode {
+        match self.kind {
+            TerminalErrorKind::ProfileNotFound => StatusCode::NOT_FOUND,
+            TerminalErrorKind::CommandInvalid | TerminalErrorKind::CwdInvalid => {
+                StatusCode::BAD_REQUEST
+            }
+            TerminalErrorKind::SpawnFailed => StatusCode::INTERNAL_SERVER_ERROR,
+            TerminalErrorKind::IdempotencyExpired => StatusCode::CONFLICT,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self.kind {
+            TerminalErrorKind::ProfileNotFound => "terminal_profile_not_found",
+            TerminalErrorKind::CommandInvalid => "terminal_command_invalid",
+            TerminalErrorKind::CwdInvalid => "terminal_cwd_invalid",
+            TerminalErrorKind::SpawnFailed => "terminal_spawn_failed",
+            TerminalErrorKind::IdempotencyExpired => "terminal_idempotency_expired",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalErrorKind {
+    ProfileNotFound,
+    CommandInvalid,
+    CwdInvalid,
+    SpawnFailed,
+    IdempotencyExpired,
 }
 
 pub struct TerminalSession {
     id: String,
     label: String,
     profile: TerminalProfile,
+    client_request_id: Option<String>,
     cwd: PathBuf,
     command: String,
     persist: bool,
@@ -138,6 +365,8 @@ pub struct TerminalSession {
     updated_at: Arc<AtomicU64>,
     exit_code: Arc<Mutex<Option<i32>>>,
     error: Arc<Mutex<Option<String>>>,
+    last_error_at: Arc<AtomicU64>,
+    lifecycle_reason: Arc<RwLock<Option<String>>>,
     output: OutputRetention,
     attached_count: Arc<AtomicU64>,
     last_detached_at: Arc<AtomicU64>,
@@ -153,11 +382,15 @@ impl TerminalSession {
         resolved: ResolvedCommand,
         size: PtySize,
         persist: bool,
-    ) -> Result<Self, String> {
+        client_request_id: Option<String>,
+    ) -> Result<Self, TerminalCreateError> {
         let pty_system = NativePtySystem::default();
-        let pair = pty_system
-            .openpty(size)
-            .map_err(|error| format!("failed to open PTY: {error}"))?;
+        let pair = pty_system.openpty(size).map_err(|error| {
+            TerminalCreateError::new(
+                TerminalErrorKind::SpawnFailed,
+                format!("failed to open PTY: {error}"),
+            )
+        })?;
 
         let mut cmd = CommandBuilder::new(&resolved.executable);
         for arg in &resolved.args {
@@ -166,19 +399,25 @@ impl TerminalSession {
         cmd.cwd(&cwd);
         configure_terminal_environment(&mut cmd);
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|error| format!("failed to spawn {}: {error}", resolved.display))?;
+        let child = pair.slave.spawn_command(cmd).map_err(|error| {
+            TerminalCreateError::new(
+                TerminalErrorKind::SpawnFailed,
+                format!("failed to spawn {}: {error}", resolved.display),
+            )
+        })?;
         let pid = child.process_id().unwrap_or_default() as u64;
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|error| format!("failed to clone PTY reader: {error}"))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|error| format!("failed to take PTY writer: {error}"))?;
+        let reader = pair.master.try_clone_reader().map_err(|error| {
+            TerminalCreateError::new(
+                TerminalErrorKind::SpawnFailed,
+                format!("failed to clone PTY reader: {error}"),
+            )
+        })?;
+        let writer = pair.master.take_writer().map_err(|error| {
+            TerminalCreateError::new(
+                TerminalErrorKind::SpawnFailed,
+                format!("failed to take PTY writer: {error}"),
+            )
+        })?;
         let (output_tx, _) = broadcast::channel(512);
         let created_at = now_millis();
         let output = OutputRetention::default();
@@ -188,6 +427,7 @@ impl TerminalSession {
             id: id.clone(),
             label,
             profile,
+            client_request_id,
             cwd,
             command: resolved.display,
             persist,
@@ -204,6 +444,8 @@ impl TerminalSession {
             updated_at: Arc::new(AtomicU64::new(created_at as u64)),
             exit_code: Arc::new(Mutex::new(None)),
             error: Arc::new(Mutex::new(None)),
+            last_error_at: Arc::new(AtomicU64::new(0)),
+            lifecycle_reason: Arc::new(RwLock::new(None)),
             output,
             attached_count: Arc::new(AtomicU64::new(0)),
             last_detached_at: Arc::new(AtomicU64::new(0)),
@@ -223,6 +465,8 @@ impl TerminalSession {
         let status = self.status.clone();
         let exit_code = self.exit_code.clone();
         let error_slot = self.error.clone();
+        let last_error_at = self.last_error_at.clone();
+        let lifecycle_reason = self.lifecycle_reason.clone();
         let child_slot = self.child.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -241,6 +485,8 @@ impl TerminalSession {
                         let message = format!("PTY read error: {error}");
                         warn!("{}", message);
                         *error_slot.lock() = Some(message);
+                        last_error_at.store(now_millis() as u64, Ordering::SeqCst);
+                        *lifecycle_reason.write() = Some("pty_read_error".to_string());
                         output.set_state(OutputLifecycleState::Failed);
                         *status.write() = TerminalStatus::Failed;
                         break;
@@ -248,9 +494,14 @@ impl TerminalSession {
                 }
             }
 
-            if *status.read() != TerminalStatus::Failed {
+            let current_status = status.read().clone();
+            if !matches!(
+                current_status,
+                TerminalStatus::Failed | TerminalStatus::Expired | TerminalStatus::Terminating
+            ) {
                 output.set_state(OutputLifecycleState::Exited);
                 *status.write() = TerminalStatus::Exited;
+                *lifecycle_reason.write() = Some("process_exited".to_string());
             }
             updated_at.store(now_millis() as u64, Ordering::SeqCst);
             let code = child_slot
@@ -279,6 +530,9 @@ impl TerminalSession {
             bytes_out: self.bytes_out.load(Ordering::SeqCst),
             created_at: self.created_at,
             updated_at: self.updated_at.load(Ordering::SeqCst) as i64,
+            client_request_id: self.client_request_id.clone(),
+            last_error_at: non_zero_i64(self.last_error_at.load(Ordering::SeqCst)),
+            lifecycle_reason: self.lifecycle_reason.read().clone(),
             exit_code: *self.exit_code.lock(),
             error: self.error.lock().clone(),
             first_available_seq: self.output.first_available_seq(),
@@ -369,6 +623,7 @@ impl TerminalSession {
 
     pub fn terminate(&self) {
         *self.status.write() = TerminalStatus::Terminating;
+        self.set_lifecycle_reason_if_empty("terminate_requested");
         self.updated_at.store(now_millis() as u64, Ordering::SeqCst);
         *self.writer.lock() = None;
         if let Some(mut child) = self.child.lock().take() {
@@ -378,7 +633,29 @@ impl TerminalSession {
             }
         }
         *self.status.write() = TerminalStatus::Exited;
+        self.replace_lifecycle_reason("terminate_requested", "terminated");
         self.output.set_state(OutputLifecycleState::Exited);
+    }
+
+    pub fn mark_expired(&self) {
+        *self.status.write() = TerminalStatus::Expired;
+        *self.lifecycle_reason.write() = Some("idle_expired".to_string());
+        self.updated_at.store(now_millis() as u64, Ordering::SeqCst);
+        self.output.set_state(OutputLifecycleState::Expired);
+    }
+
+    fn set_lifecycle_reason_if_empty(&self, reason: &str) {
+        let mut lifecycle_reason = self.lifecycle_reason.write();
+        if lifecycle_reason.is_none() {
+            *lifecycle_reason = Some(reason.to_string());
+        }
+    }
+
+    fn replace_lifecycle_reason(&self, from: &str, to: &str) {
+        let mut lifecycle_reason = self.lifecycle_reason.write();
+        if lifecycle_reason.as_deref() == Some(from) {
+            *lifecycle_reason = Some(to.to_string());
+        }
     }
 }
 
@@ -386,6 +663,8 @@ impl TerminalSession {
 #[serde(rename_all = "snake_case")]
 pub struct TerminalCreateRequest {
     pub profile: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
     pub cwd: Option<String>,
     pub label: Option<String>,
     pub command: Option<TerminalCommandRequest>,
@@ -466,6 +745,8 @@ pub struct TerminalSessionSnapshot {
     pub id: String,
     pub label: String,
     pub profile: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
     pub cwd: String,
     pub command: String,
     pub status: TerminalStatus,
@@ -476,6 +757,10 @@ pub struct TerminalSessionSnapshot {
     pub bytes_out: u64,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -580,7 +865,7 @@ impl TerminalProfile {
         ]
     }
 
-    fn from_id(id: &str) -> Result<Self, String> {
+    fn from_id(id: &str) -> Result<Self, TerminalCreateError> {
         match id {
             "allthecodes" | "tui" => Ok(Self::Allthecodes),
             "codex" => Ok(Self::Codex),
@@ -588,7 +873,10 @@ impl TerminalProfile {
             "allthecodes-bridge-cli" | "bridge-cli" => Ok(Self::BridgeCli),
             "custom" => Ok(Self::Custom),
             "shell" | "bash" => Ok(Self::Shell),
-            _ => Err(format!("unknown terminal profile: {id}")),
+            _ => Err(TerminalCreateError::new(
+                TerminalErrorKind::ProfileNotFound,
+                format!("unknown terminal profile: {id}"),
+            )),
         }
     }
 
@@ -638,12 +926,16 @@ pub async fn profiles_handler() -> Response {
                     label: profile.default_label().to_string(),
                     available: false,
                     command: None,
-                    error: Some(error),
+                    error: Some(error.message),
                 },
             })
             .collect(),
     })
     .into_response()
+}
+
+pub async fn health_handler(State(state): State<WebState>) -> Response {
+    Json(state.terminal_manager.health_snapshot()).into_response()
 }
 
 pub async fn create_session_handler(
@@ -656,7 +948,7 @@ pub async fn create_session_handler(
         .create_session(&workspace_cwd, request)
     {
         Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
-        Err(error) => terminal_error(StatusCode::BAD_REQUEST, "terminal_create_failed", error),
+        Err(error) => terminal_create_error(error),
     }
 }
 
@@ -759,6 +1051,7 @@ pub async fn legacy_tui_ws_handler(
     let workspace_cwd = workspace_cwd(&state);
     let request = TerminalCreateRequest {
         profile: "allthecodes".to_string(),
+        client_request_id: None,
         cwd: params.cwd,
         label: Some("Allthecodes".to_string()),
         command: None,
@@ -772,7 +1065,7 @@ pub async fn legacy_tui_ws_handler(
     {
         Ok(snapshot) => state.terminal_manager.get_session(&snapshot.id),
         Err(error) => {
-            return terminal_error(StatusCode::BAD_REQUEST, "terminal_create_failed", error);
+            return terminal_create_error(error);
         }
     };
     let Some(session) = session else {
@@ -874,8 +1167,7 @@ async fn attach_socket(
 
     session.mark_detached();
     if session.should_prune(now_millis() as u64) {
-        *session.status.write() = TerminalStatus::Expired;
-        session.output.set_state(OutputLifecycleState::Expired);
+        session.mark_expired();
         let _ = manager.remove_session(&session.id);
     }
 
@@ -984,6 +1276,10 @@ fn terminal_error(status: StatusCode, code: &'static str, error: impl Into<Strin
         .into_response()
 }
 
+fn terminal_create_error(error: TerminalCreateError) -> Response {
+    terminal_error(error.status_code(), error.code(), error.message)
+}
+
 fn workspace_cwd(state: &WebState) -> PathBuf {
     let engine = state.engine();
     PathBuf::from(engine.cwd())
@@ -991,16 +1287,22 @@ fn workspace_cwd(state: &WebState) -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(engine.cwd()))
 }
 
-fn resolve_cwd(workspace_cwd: &Path, raw: Option<&str>) -> Result<PathBuf, String> {
+fn resolve_cwd(workspace_cwd: &Path, raw: Option<&str>) -> Result<PathBuf, TerminalCreateError> {
     match raw.filter(|value| !value.trim().is_empty()) {
         Some(value) => {
-            let path = PathBuf::from(value)
-                .canonicalize()
-                .map_err(|error| format!("terminal cwd is invalid: {error}"))?;
+            let path = PathBuf::from(value).canonicalize().map_err(|error| {
+                TerminalCreateError::new(
+                    TerminalErrorKind::CwdInvalid,
+                    format!("terminal cwd is invalid: {error}"),
+                )
+            })?;
             if path.starts_with(workspace_cwd) {
                 Ok(path)
             } else {
-                Err("terminal cwd must stay inside the current workspace".to_string())
+                Err(TerminalCreateError::new(
+                    TerminalErrorKind::CwdInvalid,
+                    "terminal cwd must stay inside the current workspace",
+                ))
             }
         }
         None => Ok(workspace_cwd.to_path_buf()),
@@ -1010,11 +1312,14 @@ fn resolve_cwd(workspace_cwd: &Path, raw: Option<&str>) -> Result<PathBuf, Strin
 fn resolve_profile_command(
     profile: TerminalProfile,
     allthecodes_session_id: Option<&str>,
-) -> Result<ResolvedCommand, String> {
+) -> Result<ResolvedCommand, TerminalCreateError> {
     match profile {
         TerminalProfile::Allthecodes => {
             let executable = find_allthecodes_binary().ok_or_else(|| {
-                "allthecodes binary was not found in target/debug or PATH".to_string()
+                TerminalCreateError::new(
+                    TerminalErrorKind::CommandInvalid,
+                    "allthecodes binary was not found in target/debug or PATH",
+                )
             })?;
             let mut args = Vec::new();
             if let Some(session_id) = allthecodes_session_id.filter(|value| !value.is_empty()) {
@@ -1031,7 +1336,10 @@ fn resolve_profile_command(
         TerminalProfile::Codex => resolve_path_command("codex", &[]),
         TerminalProfile::Claude => resolve_path_command("claude", &[]),
         TerminalProfile::BridgeCli => resolve_bridge_cli_command(),
-        TerminalProfile::Custom => Err("custom terminal profile requires a command".to_string()),
+        TerminalProfile::Custom => Err(TerminalCreateError::new(
+            TerminalErrorKind::CommandInvalid,
+            "custom terminal profile requires a command",
+        )),
         TerminalProfile::Shell => {
             if let Some(shell) = std::env::var_os("SHELL")
                 .map(PathBuf::from)
@@ -1049,28 +1357,41 @@ fn resolve_profile_command(
     }
 }
 
-fn resolve_custom_command(command: TerminalCommandRequest) -> Result<ResolvedCommand, String> {
+fn resolve_custom_command(
+    command: TerminalCommandRequest,
+) -> Result<ResolvedCommand, TerminalCreateError> {
     let raw_executable = command.executable.trim();
     if raw_executable.is_empty() {
-        return Err("custom terminal command executable is required".to_string());
+        return Err(TerminalCreateError::new(
+            TerminalErrorKind::CommandInvalid,
+            "custom terminal command executable is required",
+        ));
     }
 
     let requested = PathBuf::from(raw_executable);
     let executable = if requested.is_absolute() {
         if !requested.exists() {
-            return Err(format!(
-                "custom terminal command was not found at {}",
-                requested.display()
+            return Err(TerminalCreateError::new(
+                TerminalErrorKind::CommandInvalid,
+                format!(
+                    "custom terminal command was not found at {}",
+                    requested.display()
+                ),
             ));
         }
         requested
     } else if raw_executable.contains('/') || raw_executable.contains('\\') {
-        return Err(
-            "custom terminal command executable must be absolute or available on PATH".to_string(),
-        );
+        return Err(TerminalCreateError::new(
+            TerminalErrorKind::CommandInvalid,
+            "custom terminal command executable must be absolute or available on PATH",
+        ));
     } else {
-        find_on_path(raw_executable)
-            .ok_or_else(|| format!("{} command was not found in PATH", raw_executable))?
+        find_on_path(raw_executable).ok_or_else(|| {
+            TerminalCreateError::new(
+                TerminalErrorKind::CommandInvalid,
+                format!("{} command was not found in PATH", raw_executable),
+            )
+        })?
     };
     let args = command.args;
     let display = command
@@ -1084,7 +1405,7 @@ fn resolve_custom_command(command: TerminalCommandRequest) -> Result<ResolvedCom
     })
 }
 
-fn resolve_bridge_cli_command() -> Result<ResolvedCommand, String> {
+fn resolve_bridge_cli_command() -> Result<ResolvedCommand, TerminalCreateError> {
     let (plugin_id, config) = allthecodes_plugins::discover_plugin_mcp_servers_scoped()
         .into_iter()
         .find(|(plugin_id, config)| {
@@ -1095,49 +1416,72 @@ fn resolve_bridge_cli_command() -> Result<ResolvedCommand, String> {
                     .is_some_and(|name| name == BRIDGE_CLI_PLUGIN_NAME)
         })
         .ok_or_else(|| {
-            format!(
-                "Bridge CLI plugin is not installed or did not contribute MCP server '{}'",
-                BRIDGE_CLI_MCP_SERVER
+            TerminalCreateError::new(
+                TerminalErrorKind::CommandInvalid,
+                format!(
+                    "Bridge CLI plugin is not installed or did not contribute MCP server '{}'",
+                    BRIDGE_CLI_MCP_SERVER
+                ),
             )
         })?;
     if config.disabled == Some(true) {
-        return Err(format!(
-            "Bridge CLI MCP server '{}' is disabled",
-            BRIDGE_CLI_MCP_SERVER
+        return Err(TerminalCreateError::new(
+            TerminalErrorKind::CommandInvalid,
+            format!(
+                "Bridge CLI MCP server '{}' is disabled",
+                BRIDGE_CLI_MCP_SERVER
+            ),
         ));
     }
     if config.transport != "stdio" {
-        return Err(format!(
-            "Bridge CLI MCP server '{}' must use stdio transport",
-            BRIDGE_CLI_MCP_SERVER
+        return Err(TerminalCreateError::new(
+            TerminalErrorKind::CommandInvalid,
+            format!(
+                "Bridge CLI MCP server '{}' must use stdio transport",
+                BRIDGE_CLI_MCP_SERVER
+            ),
         ));
     }
     let command = config.command.as_deref().ok_or_else(|| {
-        format!(
-            "Bridge CLI MCP server '{}' has no command",
-            BRIDGE_CLI_MCP_SERVER
+        TerminalCreateError::new(
+            TerminalErrorKind::CommandInvalid,
+            format!(
+                "Bridge CLI MCP server '{}' has no command",
+                BRIDGE_CLI_MCP_SERVER
+            ),
         )
     })?;
     let command_path = PathBuf::from(command);
     if command_path.is_absolute() && !command_path.exists() {
-        return Err(format!(
-            "Bridge CLI MCP command was not found at {}",
-            command_path.display()
+        return Err(TerminalCreateError::new(
+            TerminalErrorKind::CommandInvalid,
+            format!(
+                "Bridge CLI MCP command was not found at {}",
+                command_path.display()
+            ),
         ));
     }
     let plugin_root = allthecodes_plugins::find_plugin(&plugin_id)
         .and_then(|plugin| plugin.cache_path)
         .ok_or_else(|| {
-            format!(
-                "Bridge CLI plugin '{}' is registered without a plugin root",
-                plugin_id
+            TerminalCreateError::new(
+                TerminalErrorKind::CommandInvalid,
+                format!(
+                    "Bridge CLI plugin '{}' is registered without a plugin root",
+                    plugin_id
+                ),
             )
         })?;
     let shell = std::env::var_os("SHELL")
         .map(PathBuf::from)
         .filter(|path| path.exists())
         .or_else(|| find_on_path("bash"))
-        .ok_or_else(|| "shell command was not found in SHELL or PATH".to_string())?;
+        .ok_or_else(|| {
+            TerminalCreateError::new(
+                TerminalErrorKind::CommandInvalid,
+                "shell command was not found in SHELL or PATH",
+            )
+        })?;
     let server_args = config.args.unwrap_or_else(|| vec!["serve".to_string()]);
     let args = vec![
         "-lc".to_string(),
@@ -1146,6 +1490,28 @@ fn resolve_bridge_cli_command() -> Result<ResolvedCommand, String> {
     let display = display_command(&shell, &args);
     Ok(ResolvedCommand {
         executable: shell,
+        args,
+        display,
+    })
+}
+
+fn resolve_path_command(
+    command: &str,
+    args: &[&str],
+) -> Result<ResolvedCommand, TerminalCreateError> {
+    let executable = find_on_path(command).ok_or_else(|| {
+        TerminalCreateError::new(
+            TerminalErrorKind::CommandInvalid,
+            format!("{} command was not found in PATH", command),
+        )
+    })?;
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    let display = display_command(&executable, &args);
+    Ok(ResolvedCommand {
+        executable,
         args,
         display,
     })
@@ -1179,21 +1545,6 @@ fn shell_quote(value: impl AsRef<str>) -> String {
         return value.to_string();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn resolve_path_command(command: &str, args: &[&str]) -> Result<ResolvedCommand, String> {
-    let executable = find_on_path(command)
-        .ok_or_else(|| format!("{} command was not found in PATH", command))?;
-    let args = args
-        .iter()
-        .map(|arg| (*arg).to_string())
-        .collect::<Vec<_>>();
-    let display = display_command(&executable, &args);
-    Ok(ResolvedCommand {
-        executable,
-        args,
-        display,
-    })
 }
 
 fn display_command(executable: &Path, args: &[String]) -> String {
@@ -1254,6 +1605,16 @@ fn configure_terminal_environment(cmd: &mut CommandBuilder) {
     cmd.env_remove("NO_COLOR");
 }
 
+fn normalize_client_request_id(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn non_zero_i64(value: u64) -> Option<i64> {
+    (value > 0).then_some(value as i64)
+}
+
 fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1265,6 +1626,126 @@ fn now_millis() -> i64 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn custom_sleep_request(client_request_id: Option<&str>) -> TerminalCreateRequest {
+        TerminalCreateRequest {
+            profile: "custom".to_string(),
+            client_request_id: client_request_id.map(str::to_string),
+            cwd: None,
+            label: Some("idempotent terminal".to_string()),
+            command: Some(TerminalCommandRequest {
+                executable: "sh".to_string(),
+                args: vec!["-lc".to_string(), "sleep 30".to_string()],
+                display: Some("sleep 30".to_string()),
+            }),
+            session_id: None,
+            persist: Some(false),
+            initial_size: Some(TerminalSize::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_session_reuses_existing_session_for_client_request_id() {
+        let manager = TerminalManager::default();
+        let workspace_cwd = std::env::current_dir()
+            .expect("current dir")
+            .canonicalize()
+            .expect("canonical cwd");
+
+        let first = manager
+            .create_session(&workspace_cwd, custom_sleep_request(Some("task-123-shell")))
+            .expect("first terminal session");
+        let second = manager
+            .create_session(&workspace_cwd, custom_sleep_request(Some("task-123-shell")))
+            .expect("second terminal session");
+
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.pid, first.pid);
+        assert_eq!(second.created_at, first.created_at);
+        assert_eq!(second.client_request_id.as_deref(), Some("task-123-shell"));
+        assert!(second.lifecycle_reason.is_none());
+        assert_eq!(manager.list_sessions().len(), 1);
+        let health = manager.health_snapshot();
+        assert_eq!(health.create_success_count, Some(2));
+        assert_eq!(health.create_failure_count, Some(0));
+        assert_eq!(health.create_idempotency_hit_count, Some(1));
+
+        let session = manager
+            .get_session(&first.id)
+            .expect("stored terminal session");
+        session.mark_expired();
+        assert_eq!(
+            session.snapshot().lifecycle_reason.as_deref(),
+            Some("idle_expired")
+        );
+        let removed = manager
+            .remove_session(&first.id)
+            .expect("removed terminal session");
+        assert_eq!(removed.client_request_id.as_deref(), Some("task-123-shell"));
+        assert_eq!(removed.lifecycle_reason.as_deref(), Some("idle_expired"));
+    }
+
+    #[test]
+    fn terminal_health_snapshot_reports_default_ready_state() {
+        let manager = TerminalManager::default();
+
+        let health = manager.health_snapshot();
+
+        assert_eq!(health.status, "ok");
+        assert_eq!(health.subsystem, "terminal");
+        assert_eq!(health.active_sessions, 0);
+        assert!(health.can_spawn_profile);
+        assert!(health.last_spawn_error.is_none());
+        assert!(health.last_spawn_error_at.is_none());
+        assert_eq!(health.create_success_count, Some(0));
+        assert_eq!(health.create_failure_count, Some(0));
+        assert_eq!(health.create_idempotency_hit_count, Some(0));
+    }
+
+    #[test]
+    fn terminal_health_snapshot_records_last_create_error() {
+        let manager = TerminalManager::default();
+        let workspace_cwd = std::env::current_dir()
+            .expect("current dir")
+            .canonicalize()
+            .expect("canonical cwd");
+
+        let error = manager
+            .create_session(
+                &workspace_cwd,
+                TerminalCreateRequest {
+                    profile: "missing-profile".to_string(),
+                    client_request_id: None,
+                    cwd: None,
+                    label: None,
+                    command: None,
+                    session_id: None,
+                    persist: None,
+                    initial_size: None,
+                },
+            )
+            .expect_err("profile should be missing");
+        assert_eq!(error.code(), "terminal_profile_not_found");
+
+        let health = manager.health_snapshot();
+
+        assert!(health.last_spawn_error.is_some());
+        assert!(health.last_spawn_error_at.is_some());
+        assert_eq!(health.create_success_count, Some(0));
+        assert_eq!(health.create_failure_count, Some(1));
+        assert_eq!(health.create_idempotency_hit_count, Some(0));
+    }
+
+    #[test]
+    fn idempotency_expired_error_maps_to_conflict_code() {
+        let error = TerminalCreateError::new(
+            TerminalErrorKind::IdempotencyExpired,
+            "terminal idempotency key expired",
+        );
+
+        assert_eq!(error.status_code(), StatusCode::CONFLICT);
+        assert_eq!(error.code(), "terminal_idempotency_expired");
+    }
 
     #[test]
     fn bridge_cli_profile_id_resolves() {

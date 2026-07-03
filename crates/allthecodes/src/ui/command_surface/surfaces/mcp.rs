@@ -107,6 +107,10 @@ impl McpSurface {
         detail_lines.extend(split_lines(render_capabilities_section(
             &server.capabilities,
         )));
+        if !server.health.is_empty() {
+            detail_lines.push(String::new());
+            detail_lines.extend(split_lines(render_mcp_health_details(server)));
+        }
         if !server.warnings.is_empty() {
             detail_lines.push(String::new());
             detail_lines.extend(split_lines(render_mcp_parsing_warnings(&server.warnings)));
@@ -118,9 +122,13 @@ impl McpSurface {
             detail_lines.push(String::new());
             detail_lines.extend(split_lines(render_mcp_reconnect(&ReconnectAttempt {
                 server_name: server.name.clone(),
-                attempt: 1,
+                attempt: server.health.failure_count.unwrap_or(1).max(1) as usize,
                 max_attempts: 3,
-                last_error: server.warnings.first().cloned(),
+                last_error: server
+                    .health
+                    .last_error
+                    .clone()
+                    .or_else(|| server.warnings.first().cloned()),
             })));
         }
         detail_lines.push(String::new());
@@ -490,6 +498,31 @@ impl McpSurface {
     fn tool_detail_index(&self) -> Option<usize> {
         self.action_index.checked_sub(VIEW_TOOL_DETAIL_BASE)
     }
+}
+
+fn render_mcp_health_details(server: &McpServer) -> String {
+    let mut lines = vec!["Health".to_string()];
+    let summary = server.health.summary_fields();
+    if !summary.is_empty() {
+        lines.push(format!("  {}", summary.join("  ")));
+    }
+    if let Some(error) = server.health.last_error.as_deref() {
+        lines.push(format!("  last_error: {error}"));
+    }
+    if let Some(last_attempt_at) = server.health.last_attempt_at {
+        lines.push(format!("  last_attempt_at: {last_attempt_at}"));
+    }
+    if let Some(last_success_at) = server.health.last_success_at {
+        lines.push(format!("  last_success_at: {last_success_at}"));
+    }
+    if !server.health.stderr_tail.is_empty() {
+        lines.push("  stderr_tail:".to_string());
+        let start = server.health.stderr_tail.len().saturating_sub(5);
+        for line in &server.health.stderr_tail[start..] {
+            lines.push(format!("    - {line}"));
+        }
+    }
+    lines.join("\n")
 }
 
 fn split_lines(value: String) -> Vec<String> {

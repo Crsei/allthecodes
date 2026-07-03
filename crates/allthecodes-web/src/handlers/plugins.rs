@@ -1,8 +1,6 @@
 //! Plugin REST handlers.
 
 use std::collections::HashMap;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use axum::extract::{Path as AxumPath, State};
@@ -11,7 +9,10 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use allthecodes_mcp::client::McpClient;
+use allthecodes_mcp::probe::{
+    probe_mcp_server_with_options, McpProbeCheck, McpProbeOptions, McpProbeRequiredEnv,
+    McpProbeResult,
+};
 use allthecodes_mcp::runtime::current_manager;
 use allthecodes_mcp::McpServerConfig;
 use allthecodes_plugins::installation::{
@@ -1002,217 +1003,44 @@ async fn test_mcp_server_connection(
     plugin: &PluginEntry,
     config: McpServerConfig,
 ) -> PluginMcpConnectionTestResult {
-    let mut checks = Vec::new();
-    checks.push(check("manifest", "ready", "MCP server is declared"));
-
-    let command = config.command.clone();
-    let mut hard_failure = None;
-    if config.transport == "stdio" {
-        match command.as_deref() {
-            Some(command) if !command.trim().is_empty() => {
-                checks.push(check("command", "ready", format!("Command: {command}")));
-                if command_has_path_components(command) {
-                    match std::fs::metadata(command) {
-                        Ok(metadata) if metadata.is_file() => {
-                            checks.push(check("command_file", "ready", "Command file exists"));
-                            if command_is_executable(&metadata) {
-                                checks.push(check(
-                                    "executable",
-                                    "ready",
-                                    "Command file is executable",
-                                ));
-                            } else {
-                                hard_failure = Some("Command file is not executable".to_string());
-                                checks.push(check(
-                                    "executable",
-                                    "failed",
-                                    "Command file is not executable",
-                                ));
-                            }
-                        }
-                        Ok(_) => {
-                            hard_failure = Some("Command path is not a file".to_string());
-                            checks.push(check(
-                                "command_file",
-                                "failed",
-                                "Command path is not a file",
-                            ));
-                        }
-                        Err(error) => {
-                            hard_failure = Some(format!("Command file is missing: {error}"));
-                            checks.push(check(
-                                "command_file",
-                                "failed",
-                                format!("Command file is missing: {error}"),
-                            ));
-                        }
-                    }
-                } else {
-                    checks.push(check(
-                        "command_file",
-                        "warning",
-                        "Command will be resolved from PATH",
-                    ));
-                }
-            }
-            _ => {
-                hard_failure = Some("stdio MCP server is missing a command".to_string());
-                checks.push(check(
-                    "command",
-                    "failed",
-                    "stdio MCP server is missing a command",
-                ));
-            }
-        }
-    }
-
+    let mut options = McpProbeOptions {
+        declaration_check: Some(McpProbeCheck::new(
+            "manifest",
+            "ready",
+            "MCP server is declared",
+        )),
+        required_env: Vec::new(),
+    };
     if is_official_plugin(plugin) {
-        let token_present = config
-            .env
-            .as_ref()
-            .and_then(|env| env.get("ALLTHECODES_COM_ACCESS_TOKEN"))
-            .is_some_and(|token| !token.trim().is_empty());
-        if token_present {
-            checks.push(check(
-                "account_token",
-                "ready",
-                "Account access token is present",
-            ));
-        } else {
-            hard_failure = Some("Official plugin MCP server is missing account token".to_string());
-            checks.push(check(
-                "account_token",
-                "failed",
-                "Official plugin MCP server is missing account token",
-            ));
-        }
-    }
-
-    if let Some(message) = hard_failure {
-        return PluginMcpConnectionTestResult {
-            server: config.name,
-            status: "failed".to_string(),
-            message,
-            command,
-            tools: None,
-            resources: None,
-            checks,
-        };
-    }
-
-    let mut client = McpClient::new(config.clone());
-    if let Err(error) = client.connect().await {
-        checks.push(check("connect", "failed", error.to_string()));
-        return PluginMcpConnectionTestResult {
-            server: config.name,
-            status: "failed".to_string(),
-            message: format!("MCP connect failed: {error}"),
-            command,
-            tools: None,
-            resources: None,
-            checks,
-        };
-    }
-    checks.push(check("connect", "ready", "MCP process connected"));
-
-    if let Err(error) = client.initialize().await {
-        checks.push(check("initialize", "failed", error.to_string()));
-        client.disconnect().await;
-        return PluginMcpConnectionTestResult {
-            server: config.name,
-            status: "failed".to_string(),
-            message: format!("MCP initialize failed: {error}"),
-            command,
-            tools: None,
-            resources: None,
-            checks,
-        };
-    }
-    checks.push(check("initialize", "ready", "MCP initialize completed"));
-
-    let mut status = "ready".to_string();
-    let mut message = "MCP server is ready".to_string();
-    let mut tools = None;
-    let mut resources = None;
-
-    if client.supports_tools() {
-        match client.list_tools().await {
-            Ok(list) => {
-                tools = Some(list.len());
-                checks.push(check(
-                    "tools_list",
-                    "ready",
-                    format!("{} tools", list.len()),
-                ));
-            }
-            Err(error) => {
-                status = "warning".to_string();
-                message = format!("tools/list failed: {error}");
-                checks.push(check("tools_list", "warning", error.to_string()));
-            }
-        }
-    } else {
-        tools = Some(0);
-        checks.push(check(
-            "tools_list",
-            "warning",
-            "Server does not advertise tools",
+        options.required_env.push(McpProbeRequiredEnv::new(
+            "ALLTHECODES_COM_ACCESS_TOKEN",
+            "account_token",
+            "Account access token is present",
+            "Official plugin MCP server is missing account token",
         ));
     }
 
-    if client.supports_resources() {
-        match client.list_resources().await {
-            Ok(list) => {
-                resources = Some(list.len());
-                checks.push(check(
-                    "resources_list",
-                    "ready",
-                    format!("{} resources", list.len()),
-                ));
-            }
-            Err(error) => {
-                status = "warning".to_string();
-                if message == "MCP server is ready" {
-                    message = format!("resources/list failed: {error}");
-                }
-                checks.push(check("resources_list", "warning", error.to_string()));
-            }
-        }
-    } else {
-        resources = Some(0);
-        checks.push(check(
-            "resources_list",
-            "warning",
-            "Server does not advertise resources",
-        ));
-    }
-
-    if tools == Some(0) && resources == Some(0) && status == "ready" {
-        status = "warning".to_string();
-        message = "MCP initialized but returned 0 tools and 0 resources".to_string();
-    }
-
-    client.disconnect().await;
-    PluginMcpConnectionTestResult {
-        server: config.name,
-        status,
-        message,
-        command,
-        tools,
-        resources,
-        checks,
-    }
+    let probe = probe_mcp_server_with_options(config, options).await;
+    plugin_probe_result(probe)
 }
 
-fn check(
-    name: impl Into<String>,
-    status: impl Into<String>,
-    message: impl Into<String>,
-) -> PluginMcpConnectionCheck {
-    PluginMcpConnectionCheck {
-        name: name.into(),
-        status: status.into(),
-        message: message.into(),
+fn plugin_probe_result(probe: McpProbeResult) -> PluginMcpConnectionTestResult {
+    PluginMcpConnectionTestResult {
+        server: probe.server,
+        status: probe.status,
+        message: probe.message,
+        command: probe.command,
+        tools: probe.tools,
+        resources: probe.resources,
+        checks: probe
+            .checks
+            .into_iter()
+            .map(|check| PluginMcpConnectionCheck {
+                name: check.name,
+                status: check.status,
+                message: check.message,
+            })
+            .collect(),
     }
 }
 
@@ -1244,16 +1072,6 @@ fn resolve_plugin_mcp_command(plugin_root: &Path, command: &str) -> String {
 
 fn command_has_path_components(command: &str) -> bool {
     command.contains('/') || command.contains('\\') || Path::new(command).is_absolute()
-}
-
-#[cfg(unix)]
-fn command_is_executable(metadata: &std::fs::Metadata) -> bool {
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn command_is_executable(_metadata: &std::fs::Metadata) -> bool {
-    true
 }
 
 pub(crate) fn refresh_plugin_contributed_skills(state: &WebState) {

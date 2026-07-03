@@ -73,6 +73,10 @@ pub fn render_mcp_list_panel(servers: &[McpServer], selected_index: usize) -> St
                 server.binding_permissions.join(",")
             ));
         }
+        let health_fields = server.health.summary_fields();
+        if !health_fields.is_empty() {
+            metadata.push(format!("health={}", health_fields.join(",")));
+        }
         if !metadata.is_empty() {
             lines.push(format!("  {}", metadata.join("  ")));
         }
