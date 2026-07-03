@@ -10,12 +10,11 @@ use allthecodes_engine::types::app_state::AppState;
 use tokio::sync::mpsc;
 
 use allthecodes_acp::engine_factory::AcpEngineFactory;
-use allthecodes_acp::jsonrpc::build_response;
-use allthecodes_acp::runtime::dispatch_request;
 use allthecodes_acp::runtime::RuntimeContext;
+use allthecodes_acp::runtime::{dispatch_request, send_dispatch_outcome};
 use allthecodes_acp::session::AcpSessionManager;
 use allthecodes_acp::transport::AcpSink;
-use allthecodes_acp::{AcpCliOverrides, AcpEngineParams};
+use allthecodes_acp::AcpCliOverrides;
 
 /// In-memory test harness for the ACP runtime dispatch.
 ///
@@ -74,7 +73,7 @@ impl RuntimeHarness {
         params: Option<serde_json::Value>,
     ) -> (Option<serde_json::Value>, Vec<serde_json::Value>) {
         let id = RequestId::Number(1);
-        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        let (_cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
         let raw_params = params.as_ref().and_then(|p| {
             serde_json::value::RawValue::from_string(serde_json::to_string(p).ok()?).ok()
@@ -90,7 +89,6 @@ impl RuntimeHarness {
             &self.session_manager,
             &self.sink,
             &self.ctx,
-            cancel_rx,
         )
         .await;
 
@@ -98,8 +96,84 @@ impl RuntimeHarness {
         // dispatch returned.  These are pre-response messages.
         let pre_response = self.drain_all();
 
-        let response = result.map(|r| build_response(&id, r));
+        if let Some(result) = result {
+            send_dispatch_outcome(&id, result, &self.sink, &mut cancel_rx).await;
+        }
+        let response = self.drain_all().into_iter().find(is_response);
         (response, pre_response)
+    }
+
+    /// Dispatch a request, intentionally yield before writing its response, and
+    /// return the actual outgoing order that a runtime response writer would see.
+    #[allow(dead_code)]
+    pub async fn send_request_with_response_gap(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        let id = RequestId::Number(2);
+        let (_cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let raw_params = params.as_ref().and_then(|p| {
+            serde_json::value::RawValue::from_string(serde_json::to_string(p).ok()?).ok()
+        });
+
+        let result = dispatch_request(
+            method,
+            raw_params.as_deref(),
+            &id,
+            &self.capabilities,
+            &self.session_manager,
+            &self.sink,
+            &self.ctx,
+        )
+        .await;
+
+        tokio::task::yield_now().await;
+        let mut messages = self.drain_all();
+        if let Some(result) = result {
+            send_dispatch_outcome(&id, result, &self.sink, &mut cancel_rx).await;
+        }
+        tokio::task::yield_now().await;
+        messages.extend(self.drain_all());
+        messages
+    }
+
+    /// Dispatch a request, cancel it before its response is written, and return
+    /// the actual outgoing order.
+    #[allow(dead_code)]
+    pub async fn send_request_cancelled_before_response(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        let id = RequestId::Number(3);
+        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let raw_params = params.as_ref().and_then(|p| {
+            serde_json::value::RawValue::from_string(serde_json::to_string(p).ok()?).ok()
+        });
+
+        let result = dispatch_request(
+            method,
+            raw_params.as_deref(),
+            &id,
+            &self.capabilities,
+            &self.session_manager,
+            &self.sink,
+            &self.ctx,
+        )
+        .await;
+
+        let _ = cancel_tx.send(());
+        tokio::task::yield_now().await;
+        let mut messages = self.drain_all();
+        if let Some(result) = result {
+            send_dispatch_outcome(&id, result, &self.sink, &mut cancel_rx).await;
+        }
+        tokio::task::yield_now().await;
+        messages.extend(self.drain_all());
+        messages
     }
 
     /// Drain all messages currently in the outgoing channel.

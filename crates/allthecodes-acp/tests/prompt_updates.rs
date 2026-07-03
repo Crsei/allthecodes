@@ -13,16 +13,13 @@ use allthecodes_acp::AcpEngineParams;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::QueryEngineConfig;
 
-use support::RuntimeHarness;
+use support::{is_response, RuntimeHarness};
 
 /// A factory that creates a real QueryEngine for test prompting.
 pub struct TestEngineFactory;
 
 impl AcpEngineFactory for TestEngineFactory {
-    fn create_engine(
-        &self,
-        params: AcpEngineParams,
-    ) -> anyhow::Result<Arc<QueryEngine>> {
+    fn create_engine(&self, params: AcpEngineParams) -> anyhow::Result<Arc<QueryEngine>> {
         let cwd = params.cwd.to_string_lossy().to_string();
         let config = QueryEngineConfig {
             cwd,
@@ -92,35 +89,21 @@ async fn prompt_acks_before_first_update() {
         "sessionId": session_id,
         "prompt": [{"type": "text", "text": "Hello"}]
     });
-    let (prompt_resp, pre_prompt) = harness
-        .send_request_and_capture("session/prompt", Some(prompt_params))
+    let messages = harness
+        .send_request_with_response_gap("session/prompt", Some(prompt_params))
         .await;
 
-    // 3. The response should be a valid PromptResponse.
-    assert!(
-        prompt_resp.is_some(),
-        "session/prompt should return a response"
-    );
-    assert!(
-        prompt_resp
-            .as_ref()
-            .unwrap()
-            .get("result")
-            .is_some(),
-        "session/prompt should return a PromptResponse, got: {:?}",
-        prompt_resp
-    );
-
-    // 4. NO session/update should arrive before the prompt ACK.  If we
-    //    captured any session/update in `pre_prompt`, the ACK ordering is
-    //    broken.
-    let pre_updates: Vec<_> = pre_prompt
-        .into_iter()
-        .filter(|v| support::is_session_update(v))
-        .collect();
+    let first_response = messages
+        .iter()
+        .position(is_response)
+        .expect("session/prompt should write a JSON-RPC response");
+    let first_update = messages
+        .iter()
+        .position(support::is_session_update)
+        .expect("session/prompt should eventually write a session/update");
 
     assert!(
-        pre_updates.is_empty(),
-        "session/update notification(s) arrived before prompt ACK: {pre_updates:?}"
+        first_response < first_update,
+        "session/update arrived before prompt ACK: {messages:?}"
     );
 }

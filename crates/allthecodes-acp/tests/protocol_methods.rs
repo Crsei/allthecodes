@@ -13,16 +13,13 @@ use allthecodes_acp::AcpEngineParams;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::QueryEngineConfig;
 
-use support::RuntimeHarness;
+use support::{is_response, RuntimeHarness};
 
 /// A factory that creates a real QueryEngine for test prompting.
 pub struct TestEngineFactory;
 
 impl AcpEngineFactory for TestEngineFactory {
-    fn create_engine(
-        &self,
-        params: AcpEngineParams,
-    ) -> anyhow::Result<Arc<QueryEngine>> {
+    fn create_engine(&self, params: AcpEngineParams) -> anyhow::Result<Arc<QueryEngine>> {
         let cwd = params.cwd.to_string_lossy().to_string();
         let config = QueryEngineConfig {
             cwd,
@@ -86,25 +83,24 @@ async fn cancel_request_cancels_pending_prompt_before_ack() {
         "sessionId": session_id,
         "prompt": [{"type": "text", "text": "Hello"}]
     });
-    let (prompt_resp, _pre_prompt) = harness
-        .send_request_and_capture("session/prompt", Some(prompt_params))
+    let messages = harness
+        .send_request_cancelled_before_response("session/prompt", Some(prompt_params))
         .await;
 
-    // 3. The response should be a valid PromptResponse (ACK).
-    //    In the failing case, no response at all would have been returned
-    //    because the cancellation killed the handler before it could
-    //    produce one.
-    assert!(
-        prompt_resp.is_some(),
-        "session/prompt should return PromptResponse even when cancelled"
+    let response = messages
+        .iter()
+        .find(|message| is_response(message))
+        .expect("cancelled prompt should write a JSON-RPC response");
+    let error_code = response
+        .pointer("/error/code")
+        .and_then(|value| value.as_i64());
+    assert_eq!(
+        error_code,
+        Some(-32800),
+        "cancelled prompt should return RequestCancelled, got: {response:?}"
     );
     assert!(
-        prompt_resp
-            .as_ref()
-            .unwrap()
-            .get("result")
-            .is_some(),
-        "session/prompt should return PromptResponse, got: {:?}",
-        prompt_resp
+        !messages.iter().any(support::is_session_update),
+        "cancelled prompt must not start the engine stream: {messages:?}"
     );
 }
