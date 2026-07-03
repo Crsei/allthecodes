@@ -11,7 +11,7 @@ impl QueryEngineDeps {
             .await;
     }
 
-    async fn record_tool_permission_request(
+    pub(super) async fn record_tool_permission_request(
         &self,
         request: &ToolExecRequest,
         input: &serde_json::Value,
@@ -107,7 +107,6 @@ impl QueryEngineDeps {
         on_progress: Option<Arc<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolExecResult> {
         use crate::types::tool::PermissionResult;
-        use allthecodes_types::hooks::PostToolHookResult;
 
         // Hook dispatcher trait object — decouples the engine from the concrete
         // concrete shell-hook runner (see issue #74, full-build parity).
@@ -262,6 +261,8 @@ impl QueryEngineDeps {
             hooks,
             &hooks_map,
             &pre_configs,
+            &post_configs,
+            &failure_configs,
             execution_started,
         );
 
@@ -453,840 +454,43 @@ impl QueryEngineDeps {
                     ));
                 }
                 PermissionResult::Ask { message } => {
-                    if let PipelineStageResult::Finish(result) = pipeline.maybe_prompt_user().await
-                    {
-                        return Ok(result);
-                    }
-                    // Emit permission.requested audit event
-                    {
-                        use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
-                        perm_audit_ctx.emit(
-                            EventKind::PermissionRequested,
-                            Stage::Permission,
-                            AuditLevel::Info,
-                            Outcome::Info,
-                            None,
-                            Some(serde_json::json!({
-                                "tool_name": request.tool_name,
-                                "message": message,
-                            })),
-                        );
-                    }
-
-                    let options = vec![
-                        "Allow".to_string(),
-                        "Deny".to_string(),
-                        "Always Allow".to_string(),
-                        "Auto Review".to_string(),
-                    ];
-                    self.record_tool_permission_request(
-                        &request,
-                        &effective_input,
-                        &message,
-                        &options,
-                    )
-                    .await;
-
-                    // Fire PermissionRequest hook before interactive prompt
-                    let mut hook_allowed = false;
-                    let perm_req_configs = hooks.load_hook_configs(&hooks_map, "PermissionRequest");
-                    if !perm_req_configs.is_empty() {
-                        let payload = serde_json::json!({
-                            "tool_name": request.tool_name,
-                            "tool_input": effective_input.clone(),
-                            "message": message,
-                        });
-                        if let Ok(output) = hooks
-                            .run_event_hooks("PermissionRequest", &payload, &perm_req_configs)
-                            .await
-                        {
-                            // If hook provides a permission decision, use it
-                            if let Some(ref decision) = output.permission_decision {
-                                emit_hook_permission_decision(
-                                    &ctx,
-                                    "PermissionRequest",
-                                    "PermissionRequest",
-                                    "*",
-                                    decision,
-                                    vec![format!("tool: {}", request.tool_name)],
-                                );
-                                match decision.as_str() {
-                                    "allow" => {
-                                        // Skip the interactive prompt, proceed to execution
-                                        tracing::debug!(
-                                            tool = %request.tool_name,
-                                            "PermissionRequest hook allowed tool execution"
-                                        );
-                                        permission_decision =
-                                            AgentRuntimePermissionDecision::AllowedByHook;
-                                        self.record_tool_permission_response(
-                                            &request.tool_use_id,
-                                            "allow",
-                                            Some("PermissionRequest hook".to_string()),
-                                        )
-                                        .await;
-                                        hook_allowed = true;
-                                    }
-                                    "deny" => {
-                                        // Fire PermissionDenied hook
-                                        let deny_configs =
-                                            hooks.load_hook_configs(&hooks_map, "PermissionDenied");
-                                        if !deny_configs.is_empty() {
-                                            let deny_payload = serde_json::json!({
-                                                "tool_name": request.tool_name,
-                                                "tool_input": effective_input.clone(),
-                                                "reason": "Permission denied by PermissionRequest hook",
-                                            });
-                                            let _ = hooks
-                                                .run_event_hooks(
-                                                    "PermissionDenied",
-                                                    &deny_payload,
-                                                    &deny_configs,
-                                                )
-                                                .await;
-                                        }
-
-                                        self.record_tool_permission_response(
-                                            &request.tool_use_id,
-                                            "deny",
-                                            Some("PermissionRequest hook".to_string()),
-                                        )
-                                        .await;
-                                        return Ok(tool_exec_result(
-                                            &request,
-                                            crate::types::tool::ToolResult {
-                                                data: serde_json::json!(
-                                                    "Permission denied by hook"
-                                                ),
-                                                new_messages: vec![],
-                                                ..Default::default()
-                                            },
-                                            true,
-                                            false,
-                                            effective_input.clone(),
-                                            elapsed_ms(execution_started),
-                                            Some(AgentRuntimePermissionDecision::DeniedByHook),
-                                        ));
-                                    }
-                                    _ => {} // unknown decision, continue with normal prompt
-                                }
-                            }
+                    let prompt_plan =
+                        ToolExecutionPlan::new(effective_input.clone(), permission_decision);
+                    match pipeline.maybe_prompt_user(message, &prompt_plan).await {
+                        PipelineStageResult::Continue(prompt) => {
+                            permission_decision = prompt.permission_decision;
+                            accepted_permission_feedback = prompt.accepted_permission_feedback;
                         }
+                        PipelineStageResult::Finish(result) => return Ok(result),
                     }
-
-                    if !hook_allowed {
-                        if let Some(ref callback) = ctx.permission_callback {
-                            let response = callback(PermissionRequestPayload {
-                                tool_use_id: request.tool_use_id.clone(),
-                                tool_name: request.tool_name.clone(),
-                                tool_input: effective_input.clone(),
-                                message: message.clone(),
-                                options: options.clone(),
-                                operation: None,
-                            })
-                            .await;
-
-                            let decision = response.normalized_decision();
-                            self.record_tool_permission_response(
-                                &request.tool_use_id,
-                                decision.clone(),
-                                response.feedback.clone(),
-                            )
-                            .await;
-                            match decision.as_str() {
-                                "allow" => {
-                                    permission_decision =
-                                        AgentRuntimePermissionDecision::AllowedByUser;
-                                    accepted_permission_feedback = response.feedback.clone();
-                                    // Emit permission.resolved(allow) audit event
-                                    use crate::observability::{
-                                        AuditLevel, EventKind, Outcome, Stage,
-                                    };
-                                    perm_audit_ctx.emit(
-                                        EventKind::PermissionResolved,
-                                        Stage::Permission,
-                                        AuditLevel::Info,
-                                        Outcome::Completed,
-                                        None,
-                                        Some(serde_json::json!({
-                                            "tool_name": request.tool_name,
-                                            "decision": "allow",
-                                        })),
-                                    );
-                                }
-                                "always_allow" => {
-                                    permission_decision =
-                                        AgentRuntimePermissionDecision::AllowedByUser;
-                                    let rule = exact_always_allow_rule(
-                                        &request.tool_name,
-                                        &effective_input,
-                                    );
-                                    if let Err(error) =
-                                        persist_local_always_allow_rule(&self.cwd, &rule)
-                                    {
-                                        let error_message = format!(
-                                            "Permission denied: failed to persist Always Allow rule: {error}"
-                                        );
-                                        use crate::observability::{
-                                            AuditLevel, EventKind, Outcome, Stage,
-                                        };
-                                        perm_audit_ctx.emit(
-                                            EventKind::PermissionResolved,
-                                            Stage::Permission,
-                                            AuditLevel::Warn,
-                                            Outcome::Denied,
-                                            None,
-                                            Some(serde_json::json!({
-                                                "tool_name": request.tool_name,
-                                                "decision": "always_allow",
-                                                "source": "user",
-                                                "error": error.to_string(),
-                                            })),
-                                        );
-                                        return Ok(permission_denied_exec_result(
-                                            &request,
-                                            error_message,
-                                            effective_input.clone(),
-                                            execution_started,
-                                            AgentRuntimePermissionDecision::DeniedByUser,
-                                        ));
-                                    }
-                                    {
-                                        let mut state = self.state.write();
-                                        add_local_always_allow_rule(&mut state, &rule);
-                                    }
-                                    tracing::debug!(
-                                        tool = %request.tool_name,
-                                        rule = %rule,
-                                        "local exact always_allow rule recorded"
-                                    );
-                                    accepted_permission_feedback = response.feedback.clone();
-                                    use crate::observability::{
-                                        AuditLevel, EventKind, Outcome, Stage,
-                                    };
-                                    perm_audit_ctx.emit(
-                                        EventKind::PermissionResolved,
-                                        Stage::Permission,
-                                        AuditLevel::Info,
-                                        Outcome::Completed,
-                                        None,
-                                        Some(serde_json::json!({
-                                            "tool_name": request.tool_name,
-                                            "decision": "always_allow",
-                                            "source": "user",
-                                            "rule": rule,
-                                        })),
-                                    );
-                                }
-                                "auto_review" => {
-                                    permission_decision =
-                                        AgentRuntimePermissionDecision::AllowedByUser;
-                                    let risk_level =
-                                        permission_risk_level(&request.tool_name, &effective_input);
-                                    let action = Some(permission_action_summary(
-                                        &request.tool_name,
-                                        &effective_input,
-                                    ));
-                                    let review_id = Uuid::new_v4().to_string();
-                                    let start_result = {
-                                        let mut state = self.state.write();
-                                        state
-                                            .permissions
-                                            .auto_review_tracker
-                                            .try_start(&request.tool_use_id)
-                                    };
-                                    if let Err(reason) = start_result {
-                                        emit_permission_auto_review(
-                                            &ctx,
-                                            permission_auto_review_event(
-                                                &review_id,
-                                                &request.tool_use_id,
-                                                "circuit_open",
-                                                risk_level.clone(),
-                                                true,
-                                                Some(reason.to_string()),
-                                                action.clone(),
-                                            ),
-                                        );
-                                        use crate::observability::{
-                                            AuditLevel, EventKind, Outcome, Stage,
-                                        };
-                                        perm_audit_ctx.emit(
-                                            EventKind::PermissionResolved,
-                                            Stage::Permission,
-                                            AuditLevel::Warn,
-                                            Outcome::Denied,
-                                            None,
-                                            Some(serde_json::json!({
-                                                "tool_name": request.tool_name,
-                                                "decision": "auto_review",
-                                                "source": "user",
-                                                "reason": reason,
-                                            })),
-                                        );
-                                        return Ok(permission_denied_exec_result(
-                                            &request,
-                                            format!(
-                                                "Permission denied: auto review unavailable ({reason})."
-                                            ),
-                                            effective_input.clone(),
-                                            execution_started,
-                                            AgentRuntimePermissionDecision::DeniedByUser,
-                                        ));
-                                    }
-
-                                    emit_permission_auto_review(
-                                        &ctx,
-                                        permission_auto_review_event(
-                                            &review_id,
-                                            &request.tool_use_id,
-                                            "started",
-                                            risk_level.clone(),
-                                            true,
-                                            response.feedback.clone(),
-                                            action.clone(),
-                                        ),
-                                    );
-
-                                    let mut classifier_input =
-                                        tool.to_auto_classifier_input(&effective_input);
-                                    if matches!(&classifier_input, serde_json::Value::String(s) if s.is_empty())
-                                    {
-                                        classifier_input = effective_input.clone();
-                                    }
-                                    let classifier = self
-                                        .compute_permission_auto_review(
-                                            &request.tool_name,
-                                            &effective_input,
-                                            &classifier_input,
-                                        )
-                                        .await;
-                                    let Some(classifier) = classifier else {
-                                        {
-                                            let mut state = self.state.write();
-                                            state.permissions.auto_review_tracker.record_denied();
-                                        }
-                                        emit_permission_auto_review(
-                                            &ctx,
-                                            permission_auto_review_event(
-                                                &review_id,
-                                                &request.tool_use_id,
-                                                "failed",
-                                                risk_level.clone(),
-                                                true,
-                                                Some("classifier unavailable".to_string()),
-                                                action.clone(),
-                                            ),
-                                        );
-                                        use crate::observability::{
-                                            AuditLevel, EventKind, Outcome, Stage,
-                                        };
-                                        perm_audit_ctx.emit(
-                                            EventKind::PermissionResolved,
-                                            Stage::Permission,
-                                            AuditLevel::Warn,
-                                            Outcome::Denied,
-                                            None,
-                                            Some(serde_json::json!({
-                                                "tool_name": request.tool_name,
-                                                "decision": "auto_review",
-                                                "source": "user",
-                                                "reason": "classifier unavailable",
-                                            })),
-                                        );
-                                        return Ok(permission_denied_exec_result(
-                                            &request,
-                                            "Permission denied: auto review classifier is unavailable."
-                                                .to_string(),
-                                            effective_input.clone(),
-                                            execution_started,
-                                            AgentRuntimePermissionDecision::DeniedByUser,
-                                        ));
-                                    };
-
-                                    let rationale = if classifier.reason.trim().is_empty() {
-                                        None
-                                    } else {
-                                        Some(classifier.reason.clone())
-                                    };
-                                    if classifier.unavailable || classifier.transcript_too_long {
-                                        {
-                                            let mut state = self.state.write();
-                                            state.permissions.auto_review_tracker.record_denied();
-                                        }
-                                        emit_permission_auto_review(
-                                            &ctx,
-                                            permission_auto_review_event(
-                                                &review_id,
-                                                &request.tool_use_id,
-                                                "failed",
-                                                risk_level.clone(),
-                                                true,
-                                                rationale.clone(),
-                                                action.clone(),
-                                            ),
-                                        );
-                                        use crate::observability::{
-                                            AuditLevel, EventKind, Outcome, Stage,
-                                        };
-                                        perm_audit_ctx.emit(
-                                            EventKind::PermissionResolved,
-                                            Stage::Permission,
-                                            AuditLevel::Warn,
-                                            Outcome::Denied,
-                                            None,
-                                            Some(serde_json::json!({
-                                                "tool_name": request.tool_name,
-                                                "decision": "auto_review",
-                                                "source": "user",
-                                                "reason": classifier.reason.clone(),
-                                            })),
-                                        );
-                                        return Ok(permission_denied_exec_result(
-                                            &request,
-                                            format!(
-                                                "Permission denied: auto review could not classify this request: {}",
-                                                classifier.reason
-                                            ),
-                                            effective_input.clone(),
-                                            execution_started,
-                                            AgentRuntimePermissionDecision::DeniedByUser,
-                                        ));
-                                    }
-
-                                    match classifier.verdict {
-                                        AutoClassifierVerdict::Allow => {
-                                            {
-                                                let mut state = self.state.write();
-                                                state
-                                                    .permissions
-                                                    .auto_review_tracker
-                                                    .record_allowed();
-                                            }
-                                            emit_permission_auto_review(
-                                                &ctx,
-                                                permission_auto_review_event(
-                                                    &review_id,
-                                                    &request.tool_use_id,
-                                                    "approved",
-                                                    risk_level,
-                                                    true,
-                                                    rationale,
-                                                    action,
-                                                ),
-                                            );
-                                            accepted_permission_feedback =
-                                                response.feedback.clone();
-                                            use crate::observability::{
-                                                AuditLevel, EventKind, Outcome, Stage,
-                                            };
-                                            perm_audit_ctx.emit(
-                                                EventKind::PermissionResolved,
-                                                Stage::Permission,
-                                                AuditLevel::Info,
-                                                Outcome::Completed,
-                                                None,
-                                                Some(serde_json::json!({
-                                                    "tool_name": request.tool_name,
-                                                    "decision": "auto_review",
-                                                    "source": "user",
-                                                    "classifier_model": classifier.model,
-                                                })),
-                                            );
-                                        }
-                                        AutoClassifierVerdict::Deny
-                                        | AutoClassifierVerdict::Ask => {
-                                            {
-                                                let mut state = self.state.write();
-                                                state
-                                                    .permissions
-                                                    .auto_review_tracker
-                                                    .record_denied();
-                                            }
-                                            let reason = if classifier.reason.trim().is_empty() {
-                                                "auto review did not approve this request"
-                                                    .to_string()
-                                            } else {
-                                                classifier.reason.clone()
-                                            };
-                                            emit_permission_auto_review(
-                                                &ctx,
-                                                permission_auto_review_event(
-                                                    &review_id,
-                                                    &request.tool_use_id,
-                                                    "denied",
-                                                    risk_level,
-                                                    true,
-                                                    Some(reason.clone()),
-                                                    action,
-                                                ),
-                                            );
-                                            use crate::observability::{
-                                                AuditLevel, EventKind, Outcome, Stage,
-                                            };
-                                            perm_audit_ctx.emit(
-                                                EventKind::PermissionResolved,
-                                                Stage::Permission,
-                                                AuditLevel::Warn,
-                                                Outcome::Denied,
-                                                None,
-                                                Some(serde_json::json!({
-                                                    "tool_name": request.tool_name,
-                                                    "decision": "auto_review",
-                                                    "source": "user",
-                                                    "reason": reason.clone(),
-                                                })),
-                                            );
-
-                                            let deny_configs = hooks
-                                                .load_hook_configs(&hooks_map, "PermissionDenied");
-                                            if !deny_configs.is_empty() {
-                                                let payload = serde_json::json!({
-                                                    "tool_name": request.tool_name,
-                                                    "tool_input": effective_input.clone(),
-                                                    "reason": "Permission denied by auto review",
-                                                });
-                                                let _ = hooks
-                                                    .run_event_hooks(
-                                                        "PermissionDenied",
-                                                        &payload,
-                                                        &deny_configs,
-                                                    )
-                                                    .await;
-                                            }
-
-                                            return Ok(permission_denied_exec_result(
-                                                &request,
-                                                format!(
-                                                    "Permission denied by auto review: {reason}"
-                                                ),
-                                                effective_input.clone(),
-                                                execution_started,
-                                                AgentRuntimePermissionDecision::DeniedByUser,
-                                            ));
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    let denial_message = permission_denied_message(&response);
-                                    // Emit permission.resolved(denied) audit event
-                                    {
-                                        use crate::observability::{
-                                            AuditLevel, EventKind, Outcome, Stage,
-                                        };
-                                        perm_audit_ctx.emit(
-                                            EventKind::PermissionResolved,
-                                            Stage::Permission,
-                                            AuditLevel::Warn,
-                                            Outcome::Denied,
-                                            None,
-                                            Some(serde_json::json!({
-                                                "tool_name": request.tool_name,
-                                                "decision": "deny",
-                                                "source": "user",
-                                            })),
-                                        );
-                                    }
-
-                                    // Fire PermissionDenied hook (user chose deny)
-                                    let deny_configs =
-                                        hooks.load_hook_configs(&hooks_map, "PermissionDenied");
-                                    if !deny_configs.is_empty() {
-                                        let payload = serde_json::json!({
-                                            "tool_name": request.tool_name,
-                                            "tool_input": effective_input.clone(),
-                                            "reason": "Permission denied by user",
-                                        });
-                                        let _ = hooks
-                                            .run_event_hooks(
-                                                "PermissionDenied",
-                                                &payload,
-                                                &deny_configs,
-                                            )
-                                            .await;
-                                    }
-
-                                    return Ok(permission_denied_exec_result(
-                                        &request,
-                                        denial_message,
-                                        effective_input.clone(),
-                                        execution_started,
-                                        AgentRuntimePermissionDecision::DeniedByUser,
-                                    ));
-                                }
-                            }
-                        } else {
-                            // Fire PermissionDenied hook (no callback available)
-                            let deny_configs =
-                                hooks.load_hook_configs(&hooks_map, "PermissionDenied");
-                            if !deny_configs.is_empty() {
-                                let payload = serde_json::json!({
-                                    "tool_name": request.tool_name,
-                                    "tool_input": effective_input.clone(),
-                                    "reason": format!("Permission required (no callback): {}", message),
-                                });
-                                let _ = hooks
-                                    .run_event_hooks("PermissionDenied", &payload, &deny_configs)
-                                    .await;
-                            }
-
-                            self.record_tool_permission_response(
-                                &request.tool_use_id,
-                                "deny",
-                                Some(format!("Permission required: {message}")),
-                            )
-                            .await;
-                            return Ok(permission_denied_exec_result(
-                                &request,
-                                format!("Permission required: {}", message),
-                                effective_input.clone(),
-                                execution_started,
-                                AgentRuntimePermissionDecision::DeniedByPolicy,
-                            ));
-                        }
-                    } // if !hook_allowed
                 }
             }
         }
 
         // Tool execution with post-hooks.
+        let mut plan = ToolExecutionPlan::new(effective_input, permission_decision);
+        plan.accepted_permission_feedback = accepted_permission_feedback;
 
-        if let PipelineStageResult::Finish(result) = pipeline.record_and_audit() {
+        let call_outcome = match pipeline.call_tool(&plan, parent_message, on_progress).await {
+            PipelineStageResult::Continue(outcome) => outcome,
+            PipelineStageResult::Finish(result) => return Ok(result),
+        };
+
+        let post_hook = match pipeline.run_post_hooks(&plan, call_outcome).await {
+            PipelineStageResult::Continue(post_hook) => post_hook,
+            PipelineStageResult::Finish(result) => return Ok(result),
+        };
+
+        if let PipelineStageResult::Finish(result) = pipeline.record_and_audit(
+            post_hook.result,
+            &plan,
+            post_hook.hook_stopped_continuation,
+            post_hook.tool_start,
+        ) {
             return Ok(result);
         }
-        // Emit tool.start audit event
-        let tool_audit_ctx = self.audit_ctx.with_tool_use(&request.tool_use_id);
-        let tool_langfuse_span = self.langfuse_trace.as_ref().and_then(|trace| {
-            crate::services::langfuse::create_tool_span(
-                trace,
-                &request.tool_name,
-                &request.tool_use_id,
-                &effective_input,
-                request.langfuse_batch_span.as_ref(),
-            )
-        });
-        {
-            use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
-            tool_audit_ctx.emit(
-                EventKind::ToolStart,
-                Stage::ToolExecution,
-                AuditLevel::Info,
-                Outcome::Started,
-                None,
-                Some(serde_json::json!({
-                    "tool_name": request.tool_name,
-                })),
-            );
-        }
-        let tool_start = std::time::Instant::now();
 
-        // Adapt the `Arc` from `QueryDeps::execute_tool` into the `Box`
-        // the `Tool::call` contract expects. The wrapper also stamps the
-        // current `request.tool_use_id` onto each `ToolProgress` so
-        // downstream tools don't need to know it themselves.
-        let tool_use_id_for_progress = request.tool_use_id.clone();
-        let boxed_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>> =
-            on_progress.as_ref().map(|arc| {
-                let arc = arc.clone();
-                let tool_use_id = tool_use_id_for_progress.clone();
-                Box::new(move |mut p: ToolProgress| {
-                    if p.tool_use_id.is_empty() {
-                        p.tool_use_id = tool_use_id.clone();
-                    }
-                    arc(p)
-                }) as Box<dyn Fn(ToolProgress) + Send + Sync>
-            });
-
-        if let PipelineStageResult::Finish(result) = pipeline.call_tool().await {
-            return Ok(result);
-        }
-        match tool
-            .call(
-                effective_input.clone(),
-                &ctx,
-                parent_message,
-                boxed_progress,
-            )
-            .await
-        {
-            Ok(mut result) => {
-                let result_preview =
-                    result
-                        .display_preview
-                        .clone()
-                        .unwrap_or_else(|| match &result.data {
-                            serde_json::Value::String(value) => value.clone(),
-                            other => {
-                                serde_json::to_string(other).unwrap_or_else(|_| "null".to_string())
-                            }
-                        });
-                crate::services::langfuse::finish_tool_span(
-                    tool_langfuse_span,
-                    &request.tool_name,
-                    &result_preview,
-                    false,
-                );
-                // Emit tool.finish audit event
-                {
-                    use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
-                    tool_audit_ctx.emit(
-                        EventKind::ToolFinish,
-                        Stage::ToolExecution,
-                        AuditLevel::Info,
-                        Outcome::Completed,
-                        Some(tool_start.elapsed().as_millis() as u64),
-                        Some(serde_json::json!({
-                            "tool_name": request.tool_name,
-                        })),
-                    );
-                }
-
-                // Run post-tool hooks on success
-                let mut hook_stopped_continuation = false;
-                if let PipelineStageResult::Finish(result) = pipeline.run_post_hooks().await {
-                    return Ok(result);
-                }
-                if !post_configs.is_empty() {
-                    match hooks
-                        .run_post_tool_hooks(
-                            &request.tool_name,
-                            &effective_input,
-                            &result.data,
-                            &post_configs,
-                        )
-                        .await
-                    {
-                        Ok(PostToolHookResult::Continue) => {}
-                        Ok(PostToolHookResult::StopContinuation { message }) => {
-                            tracing::debug!(
-                                message = %message,
-                                "post-tool hook stopped continuation"
-                            );
-                            hook_stopped_continuation = true;
-                        }
-                        Err(e) if hook_error_is_critical(&request.tool_name, &post_configs) => {
-                            tracing::warn!(error = %e, tool = %request.tool_name, "critical post-tool hook error, failing tool execution");
-                            return Ok(tool_exec_result(
-                                &request,
-                                crate::types::tool::ToolResult {
-                                    data: serde_json::json!(format!(
-                                        "Critical post-tool hook failed: {}",
-                                        e
-                                    )),
-                                    new_messages: vec![],
-                                    ..Default::default()
-                                },
-                                true,
-                                false,
-                                effective_input.clone(),
-                                elapsed_ms(tool_start),
-                                Some(permission_decision),
-                            ));
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, tool = %request.tool_name, "optional post-tool hook error, continuing");
-                        }
-                    }
-                }
-
-                if let Some(feedback) = accepted_permission_feedback.as_deref() {
-                    result
-                        .new_messages
-                        .push(permission_feedback_message(feedback));
-                }
-
-                result.data = allthecodes_tools::result::enforce_result_size(
-                    result.data,
-                    tool.max_result_size_chars(),
-                );
-
-                Ok(tool_exec_result(
-                    &request,
-                    result,
-                    false,
-                    hook_stopped_continuation,
-                    effective_input.clone(),
-                    elapsed_ms(tool_start),
-                    Some(permission_decision),
-                ))
-            }
-            Err(e) => {
-                crate::services::langfuse::finish_tool_span(
-                    tool_langfuse_span,
-                    &request.tool_name,
-                    &e.to_string(),
-                    true,
-                );
-                // Emit tool.error audit event
-                {
-                    use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
-                    tool_audit_ctx.emit(
-                        EventKind::ToolError,
-                        Stage::ToolExecution,
-                        AuditLevel::Error,
-                        Outcome::Failed,
-                        Some(tool_start.elapsed().as_millis() as u64),
-                        Some(serde_json::json!({
-                            "tool_name": request.tool_name,
-                            "error": e.to_string(),
-                        })),
-                    );
-                }
-
-                // Run post-failure hooks on error
-                if !failure_configs.is_empty() {
-                    match hooks
-                        .run_post_tool_failure_hooks(
-                            &request.tool_name,
-                            &effective_input,
-                            &e.to_string(),
-                            &failure_configs,
-                        )
-                        .await
-                    {
-                        Ok(()) => {}
-                        Err(hook_error)
-                            if hook_error_is_critical(&request.tool_name, &failure_configs) =>
-                        {
-                            tracing::warn!(error = %hook_error, tool = %request.tool_name, "critical post-failure hook error, failing tool execution");
-                            return Ok(tool_exec_result(
-                                &request,
-                                crate::types::tool::ToolResult {
-                                    data: serde_json::json!(format!(
-                                        "Critical post-failure hook failed after tool error ({}): {}",
-                                        e, hook_error
-                                    )),
-                                    new_messages: vec![],
-                                    ..Default::default()
-                                },
-                                true,
-                                false,
-                                effective_input.clone(),
-                                elapsed_ms(tool_start),
-                                Some(permission_decision),
-                            ));
-                        }
-                        Err(hook_error) => {
-                            tracing::warn!(error = %hook_error, tool = %request.tool_name, "optional post-failure hook error, continuing");
-                        }
-                    }
-                }
-
-                Ok(tool_exec_result(
-                    &request,
-                    crate::types::tool::ToolResult {
-                        data: serde_json::json!(format!("Error: {}", e)),
-                        new_messages: vec![],
-                        ..Default::default()
-                    },
-                    true,
-                    false,
-                    effective_input.clone(),
-                    elapsed_ms(tool_start),
-                    Some(permission_decision),
-                ))
-            }
-        }
+        unreachable!("record_and_audit always finalizes successful tool execution");
     }
 }
 
@@ -1373,7 +577,7 @@ pub(super) fn permission_denied_exec_result(
     )
 }
 
-fn exact_always_allow_rule(tool_name: &str, input: &serde_json::Value) -> String {
+pub(super) fn exact_always_allow_rule(tool_name: &str, input: &serde_json::Value) -> String {
     let rule_tool = canonical_permission_rule_tool(tool_name);
     let specifier = exact_rule_subject(&rule_tool, input);
     format!(
@@ -1443,7 +647,7 @@ fn stable_json_subject(input: &serde_json::Value) -> String {
     serde_json::to_string(input).unwrap_or_else(|_| input.to_string())
 }
 
-fn persist_local_always_allow_rule(cwd: &str, rule: &str) -> anyhow::Result<()> {
+pub(super) fn persist_local_always_allow_rule(cwd: &str, rule: &str) -> anyhow::Result<()> {
     let cwd = std::path::Path::new(cwd);
     let mut raw = allthecodes_config::settings::load_local_config(cwd)?;
     let permissions = raw.permissions.get_or_insert_with(Default::default);
@@ -1454,7 +658,7 @@ fn persist_local_always_allow_rule(cwd: &str, rule: &str) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn add_local_always_allow_rule(state: &mut QueryEngineState, rule: &str) {
+pub(super) fn add_local_always_allow_rule(state: &mut QueryEngineState, rule: &str) {
     let rules = state
         .app_state
         .tool_permission_context
@@ -1466,7 +670,7 @@ fn add_local_always_allow_rule(state: &mut QueryEngineState, rule: &str) {
     }
 }
 
-fn permission_auto_review_event(
+pub(super) fn permission_auto_review_event(
     review_id: &str,
     target_tool_use_id: &str,
     status: &str,
@@ -1487,7 +691,7 @@ fn permission_auto_review_event(
     }
 }
 
-fn permission_action_summary(tool_name: &str, input: &serde_json::Value) -> String {
+pub(super) fn permission_action_summary(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {
         "Bash" | "bash" | "PowerShell" | "powershell" | "pwsh" | "Pwsh" => {
             format!("Run {}", shell_command_subject(input))
@@ -1516,7 +720,7 @@ fn permission_action_summary(tool_name: &str, input: &serde_json::Value) -> Stri
     }
 }
 
-fn permission_risk_level(tool_name: &str, input: &serde_json::Value) -> Option<String> {
+pub(super) fn permission_risk_level(tool_name: &str, input: &serde_json::Value) -> Option<String> {
     match tool_name {
         "Bash" | "bash" | "PowerShell" | "powershell" | "pwsh" | "Pwsh" => {
             let command = shell_command_subject(input).to_ascii_lowercase();

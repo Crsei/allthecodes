@@ -528,6 +528,7 @@ impl HookRunner for RecordingToolHookRunner {
 #[derive(Clone, Copy)]
 enum BaselinePermission {
     Allow,
+    Ask,
     Deny,
 }
 
@@ -535,6 +536,8 @@ struct ToolExecutionBaselineTool {
     calls: Arc<AtomicUsize>,
     seen_inputs: Arc<parking_lot::Mutex<Vec<Value>>>,
     permission: BaselinePermission,
+    validation_error: Option<&'static str>,
+    call_error: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
@@ -551,6 +554,20 @@ impl crate::types::tool::Tool for ToolExecutionBaselineTool {
         json!({"type": "object"})
     }
 
+    async fn validate_input(
+        &self,
+        _input: &Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+    ) -> crate::types::tool::ValidationResult {
+        match self.validation_error {
+            Some(message) => crate::types::tool::ValidationResult::Error {
+                message: message.to_string(),
+                error_code: 1,
+            },
+            None => crate::types::tool::ValidationResult::Ok,
+        }
+    }
+
     async fn check_permissions(
         &self,
         input: &Value,
@@ -559,6 +576,9 @@ impl crate::types::tool::Tool for ToolExecutionBaselineTool {
         match self.permission {
             BaselinePermission::Allow => PermissionResult::Allow {
                 updated_input: input.clone(),
+            },
+            BaselinePermission::Ask => PermissionResult::Ask {
+                message: "Allow ToolExecutionBaseline?".to_string(),
             },
             BaselinePermission::Deny => PermissionResult::Deny {
                 message: "baseline denied".to_string(),
@@ -575,6 +595,9 @@ impl crate::types::tool::Tool for ToolExecutionBaselineTool {
     ) -> anyhow::Result<ToolResult> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.seen_inputs.lock().push(input.clone());
+        if let Some(message) = self.call_error {
+            anyhow::bail!(message);
+        }
         Ok(ToolResult {
             data: json!({ "input": input }),
             ..Default::default()
@@ -589,19 +612,36 @@ impl crate::types::tool::Tool for ToolExecutionBaselineTool {
 #[derive(Default)]
 struct ToolExecutionBaselineHookRunner {
     updated_input: Option<Value>,
+    pre_override: Option<PermissionOverride>,
+    post_error: Option<&'static str>,
+    post_critical: bool,
+    failure_error: Option<&'static str>,
+    failure_critical: bool,
+    failure_calls: Arc<AtomicUsize>,
 }
 
 #[async_trait::async_trait]
 impl HookRunner for ToolExecutionBaselineHookRunner {
     fn load_hook_configs(&self, _hooks_value: &HooksMap, event_name: &str) -> Vec<HookEventConfig> {
-        if event_name == "PreToolUse" && self.updated_input.is_some() {
-            vec![HookEventConfig {
+        match event_name {
+            "PreToolUse" if self.updated_input.is_some() || self.pre_override.is_some() => {
+                vec![HookEventConfig {
+                    matcher: Some("*".to_string()),
+                    critical: false,
+                    hooks: vec![],
+                }]
+            }
+            "PostToolUse" if self.post_error.is_some() => vec![HookEventConfig {
                 matcher: Some("*".to_string()),
-                critical: false,
+                critical: self.post_critical,
                 hooks: vec![],
-            }]
-        } else {
-            vec![]
+            }],
+            "PostToolUseFailure" if self.failure_error.is_some() => vec![HookEventConfig {
+                matcher: Some("*".to_string()),
+                critical: self.failure_critical,
+                hooks: vec![],
+            }],
+            _ => vec![],
         }
     }
 
@@ -613,7 +653,7 @@ impl HookRunner for ToolExecutionBaselineHookRunner {
     ) -> anyhow::Result<PreToolHookResult> {
         Ok(PreToolHookResult::Continue {
             updated_input: self.updated_input.clone(),
-            permission_override: None,
+            permission_override: self.pre_override.clone(),
         })
     }
 
@@ -624,6 +664,9 @@ impl HookRunner for ToolExecutionBaselineHookRunner {
         _tool_result_data: &Value,
         _hook_configs: &[HookEventConfig],
     ) -> anyhow::Result<PostToolHookResult> {
+        if let Some(message) = self.post_error {
+            anyhow::bail!(message);
+        }
         Ok(PostToolHookResult::Continue)
     }
 
@@ -634,6 +677,10 @@ impl HookRunner for ToolExecutionBaselineHookRunner {
         _error: &str,
         _hook_configs: &[HookEventConfig],
     ) -> anyhow::Result<()> {
+        self.failure_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(message) = self.failure_error {
+            anyhow::bail!(message);
+        }
         Ok(())
     }
 
@@ -825,9 +872,12 @@ async fn tool_execution_preserves_pre_hook_modified_input() {
         calls: calls.clone(),
         seen_inputs: seen_inputs.clone(),
         permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: None,
     });
     let hook_runner = Arc::new(ToolExecutionBaselineHookRunner {
         updated_input: Some(json!({"value": "from-hook"})),
+        ..Default::default()
     });
 
     let result = execute_tool_execution_baseline(
@@ -856,6 +906,8 @@ async fn tool_execution_denied_permission_does_not_call_tool() {
         calls: calls.clone(),
         seen_inputs: seen_inputs.clone(),
         permission: BaselinePermission::Deny,
+        validation_error: None,
+        call_error: None,
     });
 
     let result = execute_tool_execution_baseline(
@@ -904,6 +956,8 @@ async fn tool_execution_records_audit_after_success() {
         calls: calls.clone(),
         seen_inputs: Arc::new(parking_lot::Mutex::new(Vec::new())),
         permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: None,
     });
 
     let result = execute_tool_execution_baseline(
@@ -924,6 +978,221 @@ async fn tool_execution_records_audit_after_success() {
         .collect::<Vec<_>>();
     assert!(event_kinds.contains(&json!("tool_start")));
     assert!(event_kinds.contains(&json!("tool_finish")));
+}
+
+#[test]
+fn tool_execution_plan_carries_stage_state() {
+    let mut plan = super::deps::ToolExecutionPlan::new(
+        json!({"value": "planned"}),
+        AgentRuntimePermissionDecision::AllowedByPolicy,
+    );
+
+    assert_eq!(plan.effective_input, json!({"value": "planned"}));
+    assert_eq!(
+        plan.permission_decision,
+        AgentRuntimePermissionDecision::AllowedByPolicy
+    );
+    assert!(plan.accepted_permission_feedback.is_none());
+
+    plan.accepted_permission_feedback = Some("keep going".to_string());
+    assert_eq!(
+        plan.accepted_permission_feedback.as_deref(),
+        Some("keep going")
+    );
+}
+
+#[tokio::test]
+async fn tool_execution_validation_failure_does_not_call_tool() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Allow,
+        validation_error: Some("bad input"),
+        call_error: None,
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        Arc::new(ToolExecutionBaselineHookRunner::default()),
+        |ctx| ctx.mode = PermissionMode::Bypass,
+        crate::observability::AuditContext::noop("tool-execution-validation"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(seen_inputs.lock().is_empty());
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Input validation error: bad input")));
+}
+
+#[tokio::test]
+async fn tool_execution_pre_hook_deny_does_not_call_tool() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: None,
+    });
+    let hook_runner = Arc::new(ToolExecutionBaselineHookRunner {
+        pre_override: Some(PermissionOverride::Deny {
+            reason: "blocked before call".to_string(),
+        }),
+        ..Default::default()
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        hook_runner,
+        |ctx| ctx.grant_session_allow("ToolExecutionBaseline"),
+        crate::observability::AuditContext::noop("tool-execution-pre-hook-deny"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(seen_inputs.lock().is_empty());
+    assert_eq!(
+        result.permission_decision,
+        Some(AgentRuntimePermissionDecision::DeniedByHook)
+    );
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("blocked before call")));
+}
+
+#[tokio::test]
+async fn tool_execution_interactive_prompt_without_callback_denies() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen_inputs = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: seen_inputs.clone(),
+        permission: BaselinePermission::Ask,
+        validation_error: None,
+        call_error: None,
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        Arc::new(ToolExecutionBaselineHookRunner::default()),
+        |_| {},
+        crate::observability::AuditContext::noop("tool-execution-interactive-timeout"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(seen_inputs.lock().is_empty());
+    assert_eq!(
+        result.permission_decision,
+        Some(AgentRuntimePermissionDecision::DeniedByPolicy)
+    );
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Permission required")));
+}
+
+#[tokio::test]
+async fn tool_execution_interactive_timeout_decision_denies() {
+    let result = execute_permission_matrix_case(
+        MatrixToolPermission::Ask,
+        |_| {},
+        Arc::new(PermissionMatrixHookRunner::default()),
+        Some(permission_callback("timeout")),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(
+        result.permission_decision,
+        Some(AgentRuntimePermissionDecision::DeniedByUser)
+    );
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Permission denied by user")));
+}
+
+#[tokio::test]
+async fn tool_execution_tool_error_runs_failure_hook() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let failure_calls = Arc::new(AtomicUsize::new(0));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: Some("tool boom"),
+    });
+    let hook_runner = Arc::new(ToolExecutionBaselineHookRunner {
+        failure_error: Some("optional failure hook boom"),
+        failure_calls: failure_calls.clone(),
+        ..Default::default()
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        hook_runner,
+        |ctx| ctx.mode = PermissionMode::Bypass,
+        crate::observability::AuditContext::noop("tool-execution-tool-error"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(failure_calls.load(Ordering::SeqCst), 1);
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Error: tool boom")));
+}
+
+#[tokio::test]
+async fn tool_execution_critical_post_hook_error_fails_after_success() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tool = Arc::new(ToolExecutionBaselineTool {
+        calls: calls.clone(),
+        seen_inputs: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        permission: BaselinePermission::Allow,
+        validation_error: None,
+        call_error: None,
+    });
+    let hook_runner = Arc::new(ToolExecutionBaselineHookRunner {
+        post_error: Some("post hook boom"),
+        post_critical: true,
+        ..Default::default()
+    });
+
+    let result = execute_tool_execution_baseline(
+        tool,
+        hook_runner,
+        |ctx| ctx.mode = PermissionMode::Bypass,
+        crate::observability::AuditContext::noop("tool-execution-post-hook"),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("Critical post-tool hook failed: post hook boom")));
 }
 
 #[test]

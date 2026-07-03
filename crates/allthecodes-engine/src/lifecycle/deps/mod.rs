@@ -59,7 +59,7 @@ pub(crate) use permission::{
 };
 pub(crate) use tool_pipeline::{
     InputValidationKind, PermissionOverrideStageResult, PipelineStageResult, SanitizedInput,
-    ToolExecutionPipeline,
+    ToolExecutionPipeline, ToolExecutionPlan,
 };
 
 /// Dependency injection bridge: provides the query loop with access to the
