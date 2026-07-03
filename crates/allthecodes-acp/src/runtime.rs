@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::engine_factory::AcpEngineFactory;
 use crate::jsonrpc::{self, InboundBatchEntry, InboundMessage};
+use crate::permissions::AcpPermissionManager;
 use crate::session::AcpSessionManager;
 use crate::transport::{spawn_sink_writer, AcpSink, AcpStdioReader};
 use crate::updates::{state_idle_update, state_running_update, AcpUpdateMapper};
@@ -137,6 +138,7 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
 
     let engine_factory = ctx.engine_factory.clone();
     let session_manager = Arc::new(AcpSessionManager::new(engine_factory));
+    let permission_manager = Arc::new(AcpPermissionManager::new());
 
     let capabilities = AcpCapabilities::baseline();
 
@@ -177,6 +179,7 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
                     &id,
                     &capabilities,
                     &session_manager,
+                    &permission_manager,
                     &sink,
                     &ctx,
                 )
@@ -188,11 +191,15 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
 
                 pending_requests.lock().await.remove(&request_id_key(&id));
             }
+            InboundMessage::Response { id, result, error } => {
+                handle_response(id, result, error, &permission_manager).await;
+            }
             InboundMessage::Notification { method, params } => {
                 handle_notification(
                     &method,
                     params.as_deref(),
                     &session_manager,
+                    &permission_manager,
                     &sink,
                     &pending_requests,
                 )
@@ -203,6 +210,7 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
                     entries,
                     &capabilities,
                     &session_manager,
+                    &permission_manager,
                     &sink,
                     &ctx,
                     &pending_requests,
@@ -212,8 +220,7 @@ pub async fn run_runtime(ctx: RuntimeContext) -> anyhow::Result<()> {
         }
     }
 
-    // Graceful shutdown: cancel all pending permissions
-    // (sessions are cleaned up when the process exits)
+    permission_manager.cancel_all_sessions().await;
 
     Ok(())
 }
@@ -226,6 +233,7 @@ pub async fn dispatch_request(
     _id: &RequestId,
     capabilities: &AcpCapabilities,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
     sink: &AcpSink,
     ctx: &RuntimeContext,
 ) -> Option<DispatchOutcome> {
@@ -258,7 +266,15 @@ pub async fn dispatch_request(
                     Err(v2::Error::method_not_found()),
                 ));
             }
-            let result = handle_session_method(method, params, session_manager, sink, ctx).await;
+            let result = handle_session_method(
+                method,
+                params,
+                session_manager,
+                permission_manager,
+                sink,
+                ctx,
+            )
+            .await;
             Some(DispatchOutcome::Response(result))
         }
         "session/set_config_option" => {
@@ -287,7 +303,8 @@ pub async fn dispatch_request(
                     Err(v2::Error::method_not_found()),
                 ));
             }
-            let result = handle_session_delete(params, session_manager, sink).await;
+            let result =
+                handle_session_delete(params, session_manager, permission_manager, sink).await;
             Some(DispatchOutcome::Response(result))
         }
         _ => Some(DispatchOutcome::Response(Err(v2::Error::method_not_found(
@@ -296,11 +313,32 @@ pub async fn dispatch_request(
     }
 }
 
+/// Handle a JSON-RPC response to an ACP agent-originated client request.
+pub async fn handle_response(
+    id: RequestId,
+    result: Option<serde_json::Value>,
+    error: Option<serde_json::Value>,
+    permission_manager: &Arc<AcpPermissionManager>,
+) {
+    if error.is_some() {
+        let _ = permission_manager.cancel_request_id(&id).await;
+        return;
+    }
+    if let Some(result) = result {
+        let _ = permission_manager
+            .resolve_client_response(&id, result)
+            .await;
+    } else {
+        let _ = permission_manager.cancel_request_id(&id).await;
+    }
+}
+
 /// Handle a notification (fire-and-forget).
 async fn handle_notification(
     method: &str,
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
     _sink: &AcpSink,
     pending_requests: &PendingRequests,
 ) {
@@ -314,6 +352,9 @@ async fn handle_notification(
                     if let Some(cancel_tx) = pending_requests.lock().await.remove(&id_str) {
                         let _ = cancel_tx.send(());
                     }
+                    let _ = permission_manager
+                        .cancel_request_id(&notif.request_id)
+                        .await;
                 }
             }
         }
@@ -328,6 +369,7 @@ async fn handle_notification(
                             turn.cancel_requested = true;
                         }
                         session.engine.abort();
+                        permission_manager.cancel_all(&sid).await;
                         tracing::info!(session_id = %sid, "acp session/cancel: engine aborted");
                     }
                 }
@@ -343,6 +385,7 @@ async fn handle_batch(
     entries: Vec<InboundBatchEntry>,
     capabilities: &AcpCapabilities,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
     sink: &AcpSink,
     ctx: &RuntimeContext,
     pending_requests: &PendingRequests,
@@ -370,6 +413,7 @@ async fn handle_batch(
                     id,
                     capabilities,
                     session_manager,
+                    permission_manager,
                     sink,
                     ctx,
                 )
@@ -386,8 +430,18 @@ async fn handle_batch(
                     method,
                     params.as_deref(),
                     session_manager,
+                    permission_manager,
                     sink,
                     pending_requests,
+                )
+                .await;
+            }
+            InboundBatchEntry::Response { id, result, error } => {
+                handle_response(
+                    id.clone(),
+                    result.clone(),
+                    error.clone(),
+                    permission_manager,
                 )
                 .await;
             }
@@ -495,6 +549,7 @@ async fn handle_session_method(
     method: &str,
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
     sink: &AcpSink,
     _ctx: &RuntimeContext,
 ) -> Result<serde_json::Value, v2::Error> {
@@ -524,6 +579,11 @@ async fn handle_session_method(
                 .create_session(sid.clone(), cwd, additional, None)
                 .await
                 .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
+            crate::permissions::install_permission_callbacks(
+                &session,
+                sink.clone(),
+                permission_manager.clone(),
+            );
 
             let config_entries = crate::config_options::build_config_options(&session);
             let config_options: Vec<v2::SessionConfigOption> = config_entries
@@ -575,6 +635,11 @@ async fn handle_session_method(
                 .create_session(sid.clone(), cwd.clone(), additional, Some(resumed.messages))
                 .await
                 .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
+            crate::permissions::install_permission_callbacks(
+                &session,
+                sink.clone(),
+                permission_manager.clone(),
+            );
 
             crate::session::replay_loaded_messages(sid.clone(), &replay_messages, &cwd, sink)
                 .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
@@ -620,6 +685,11 @@ async fn handle_session_method(
                 .create_session(sid.clone(), cwd, Vec::new(), Some(resumed.messages))
                 .await
                 .map_err(|e| v2::Error::internal_error().data(e.to_string()))?;
+            crate::permissions::install_permission_callbacks(
+                &session,
+                sink.clone(),
+                permission_manager.clone(),
+            );
 
             let config_entries = crate::config_options::build_config_options(&session);
             let config_options: Vec<v2::SessionConfigOption> = config_entries
@@ -666,7 +736,8 @@ async fn handle_session_method(
                     v2::Error::resource_not_found(Some(format!("session:{}", req.session_id)))
                 })?;
 
-            crate::session::close_session(&session, session_manager, sink).await;
+            crate::session::close_session(&session, session_manager, permission_manager, sink)
+                .await;
 
             serde_json::to_value(v2::CloseSessionResponse::new())
                 .map_err(|e| v2::Error::internal_error().data(format!("serialization error: {e}")))
@@ -682,6 +753,7 @@ async fn handle_session_method(
 async fn handle_session_delete(
     params: Option<&serde_json::value::RawValue>,
     session_manager: &Arc<AcpSessionManager>,
+    permission_manager: &Arc<AcpPermissionManager>,
     sink: &AcpSink,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
@@ -693,7 +765,7 @@ async fn handle_session_delete(
 
     // If session is active in memory, close it first
     if let Some(session) = session_manager.get_session(&sid_str).await {
-        crate::session::close_session(&session, session_manager, sink).await;
+        crate::session::close_session(&session, session_manager, permission_manager, sink).await;
     }
 
     // Archive the session in storage (delete is an archive operation)
@@ -837,7 +909,32 @@ async fn handle_session_prompt(
         let sink = sink_clone;
         let session = session_clone;
         let _session_mgr = session_manager_clone;
-        let mut mapper = AcpUpdateMapper::new(sid.clone(), session.cwd.clone());
+        let mapper = Arc::new(tokio::sync::Mutex::new(AcpUpdateMapper::new(
+            sid.clone(),
+            session.cwd.clone(),
+        )));
+        {
+            let progress_mapper = mapper.clone();
+            let progress_sink = sink.clone();
+            let progress_sid = sid.clone();
+            session.engine.set_tool_progress_callback(Arc::new(
+                move |progress: allthecodes_engine::types::tool::ToolProgress| {
+                    let mapper = progress_mapper.clone();
+                    let sink = progress_sink.clone();
+                    let sid = progress_sid.clone();
+                    tokio::spawn(async move {
+                        let text = crate::permissions::tool_progress_text(&progress.data);
+                        let update = {
+                            let mut mapper = mapper.lock().await;
+                            mapper.map_tool_progress(&progress.tool_use_id, &text)
+                        };
+                        if let Some(update) = update {
+                            send_session_update(&sink, sid, update);
+                        }
+                    });
+                },
+            ));
+        }
 
         // Send state running before polling
         send_session_update(&sink, sid.clone(), state_running_update());
@@ -859,12 +956,14 @@ async fn handle_session_prompt(
                         .map(|handle| handle.cancel_requested)
                         .unwrap_or(false)
                 };
+                let mut mapper = mapper.lock().await;
                 if turn_cancelled || session.engine.abort_reason().is_some() {
                     mapper.map_result(result, Some(v2::StopReason::Cancelled))
                 } else {
                     mapper.map_result(result, None)
                 }
             } else {
+                let mut mapper = mapper.lock().await;
                 mapper.map_message(&sdk_msg)
             };
             for update in updates {

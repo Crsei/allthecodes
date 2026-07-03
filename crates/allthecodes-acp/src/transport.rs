@@ -81,8 +81,8 @@ impl AcpSink {
     }
 
     /// Enqueue a JSON-RPC message to be written to stdout.
-    pub fn send(&self, value: serde_json::Value) {
-        let _ = self.tx.send(value);
+    pub fn send(&self, value: serde_json::Value) -> bool {
+        self.tx.send(value).is_ok()
     }
 }
 

@@ -16,6 +16,7 @@ use tokio::time::{sleep, timeout, Duration};
 
 use crate::engine_factory::AcpEngineFactory;
 use crate::jsonrpc;
+use crate::permissions::AcpPermissionManager;
 use crate::transport::AcpSink;
 use crate::AcpEngineParams;
 
@@ -162,8 +163,13 @@ impl AcpSessionManager {
 pub async fn close_session(
     session: &AcpSession,
     session_manager: &AcpSessionManager,
+    permission_manager: &AcpPermissionManager,
     sink: &AcpSink,
 ) {
+    permission_manager
+        .cancel_all(&session.session_id.0.to_string())
+        .await;
+
     let had_active_turn = {
         let mut turn = session.active_turn.lock().await;
         if let Some(ref mut handle) = *turn {

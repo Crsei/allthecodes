@@ -10,6 +10,7 @@ use allthecodes_engine::types::app_state::AppState;
 use tokio::sync::mpsc;
 
 use allthecodes_acp::engine_factory::AcpEngineFactory;
+use allthecodes_acp::permissions::AcpPermissionManager;
 use allthecodes_acp::runtime::RuntimeContext;
 use allthecodes_acp::runtime::{dispatch_request, send_dispatch_outcome};
 use allthecodes_acp::session::AcpSessionManager;
@@ -27,6 +28,7 @@ pub struct RuntimeHarness {
     pub outgoing_rx: mpsc::UnboundedReceiver<serde_json::Value>,
     pub ctx: RuntimeContext,
     pub session_manager: Arc<AcpSessionManager>,
+    pub permission_manager: Arc<AcpPermissionManager>,
     pub capabilities: allthecodes_acp::runtime::AcpCapabilities,
 }
 
@@ -53,6 +55,7 @@ impl RuntimeHarness {
         };
 
         let session_manager = Arc::new(AcpSessionManager::new(engine_factory));
+        let permission_manager = Arc::new(AcpPermissionManager::new());
         let capabilities = allthecodes_acp::runtime::AcpCapabilities::baseline();
 
         Self {
@@ -60,6 +63,7 @@ impl RuntimeHarness {
             outgoing_rx: sink_rx,
             ctx,
             session_manager,
+            permission_manager,
             capabilities,
         }
     }
@@ -67,6 +71,7 @@ impl RuntimeHarness {
     /// Send a JSON-RPC request via the in-memory dispatch and return the
     /// JSON-RPC response.  Also captures any pre-response messages (notifications)
     /// that were sent before the dispatch returned.
+    #[allow(dead_code)]
     pub async fn send_request_and_capture(
         &mut self,
         method: &str,
@@ -87,6 +92,7 @@ impl RuntimeHarness {
             &id,
             &self.capabilities,
             &self.session_manager,
+            &self.permission_manager,
             &self.sink,
             &self.ctx,
         )
@@ -124,6 +130,7 @@ impl RuntimeHarness {
             &id,
             &self.capabilities,
             &self.session_manager,
+            &self.permission_manager,
             &self.sink,
             &self.ctx,
         )
@@ -160,6 +167,7 @@ impl RuntimeHarness {
             &id,
             &self.capabilities,
             &self.session_manager,
+            &self.permission_manager,
             &self.sink,
             &self.ctx,
         )

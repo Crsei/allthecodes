@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use agent_client_protocol_schema::rpc::{
-    JsonRpcBatch, JsonRpcMessage, Notification, RequestId, Response,
+    JsonRpcBatch, JsonRpcMessage, Notification, Request, RequestId, Response,
 };
 use agent_client_protocol_schema::v2;
 use serde_json::value::RawValue;
@@ -26,6 +26,12 @@ pub enum InboundMessage {
         method: Arc<str>,
         params: Option<Box<RawValue>>,
     },
+    /// A response to an agent-originated request.
+    Response {
+        id: RequestId,
+        result: Option<serde_json::Value>,
+        error: Option<serde_json::Value>,
+    },
     /// A non-empty batch containing requests and/or notifications.
     Batch(Vec<InboundBatchEntry>),
 }
@@ -43,6 +49,12 @@ pub enum InboundBatchEntry {
     Notification {
         method: Arc<str>,
         params: Option<Box<RawValue>>,
+    },
+    /// A response within a batch.
+    Response {
+        id: RequestId,
+        result: Option<serde_json::Value>,
+        error: Option<serde_json::Value>,
     },
 }
 
@@ -67,8 +79,9 @@ pub fn parse_frame(raw: &str) -> Result<Option<InboundMessage>, v2::Error> {
     match &value {
         serde_json::Value::Array(items) => {
             if items.is_empty() {
-                return Err(v2::Error::invalid_request()
-                    .data("empty batch is not allowed by JSON-RPC 2.0"));
+                return Err(
+                    v2::Error::invalid_request().data("empty batch is not allowed by JSON-RPC 2.0")
+                );
             }
             let mut entries = Vec::with_capacity(items.len());
             for item in items {
@@ -85,6 +98,9 @@ pub fn parse_frame(raw: &str) -> Result<Option<InboundMessage>, v2::Error> {
                 }
                 InboundBatchEntry::Notification { method, params } => {
                     Ok(Some(InboundMessage::Notification { method, params }))
+                }
+                InboundBatchEntry::Response { id, result, error } => {
+                    Ok(Some(InboundMessage::Response { id, result, error }))
                 }
             }
         }
@@ -107,13 +123,29 @@ fn parse_single_value(value: &serde_json::Value) -> Result<InboundBatchEntry, v2
         }
     }
 
+    let has_id = obj.get("id").is_some();
+    let has_result = obj.get("result").is_some();
+    let has_error = obj.get("error").is_some();
+
+    if has_result || has_error {
+        if has_result && has_error {
+            return Err(
+                v2::Error::invalid_request().data("response cannot contain both result and error")
+            );
+        }
+        let id = parse_request_id(obj.get("id"))?;
+        return Ok(InboundBatchEntry::Response {
+            id,
+            result: obj.get("result").cloned(),
+            error: obj.get("error").cloned(),
+        });
+    }
+
     let method = obj
         .get("method")
         .and_then(|v| v.as_str())
         .map(|s| Arc::<str>::from(s.to_string()))
         .ok_or_else(|| v2::Error::invalid_request().data("missing 'method' field"))?;
-
-    let has_id = obj.get("id").is_some();
 
     let params = obj.get("params").and_then(parse_params_raw);
 
@@ -172,10 +204,7 @@ pub fn build_response<T: serde::Serialize>(
 }
 
 /// Build a JSON-RPC notification (no response expected).
-pub fn build_notification<T: serde::Serialize>(
-    method: &str,
-    params: &T,
-) -> serde_json::Value {
+pub fn build_notification<T: serde::Serialize>(method: &str, params: &T) -> serde_json::Value {
     let notification = Notification {
         method: Arc::from(method),
         params: Some(serde_json::to_value(params).unwrap_or_default()),
@@ -188,6 +217,18 @@ pub fn build_notification<T: serde::Serialize>(
 pub fn build_agent_notification(notification: v2::AgentNotification) -> serde_json::Value {
     let method = notification.method().to_string();
     build_notification(&method, &notification)
+}
+
+/// Build an ACP agent-to-client JSON-RPC request.
+pub fn build_agent_request(id: &RequestId, request: v2::AgentRequest) -> serde_json::Value {
+    let method = request.method().to_string();
+    let request = Request {
+        id: id.clone(),
+        method: Arc::from(method),
+        params: Some(serde_json::to_value(request).unwrap_or_default()),
+    };
+    let msg = JsonRpcMessage::wrap(request);
+    serde_json::to_value(msg).unwrap_or_default()
 }
 
 /// Build a JSON-RPC batch response containing responses for requests that
@@ -231,6 +272,9 @@ pub fn build_batch_response(
             }
             InboundBatchEntry::Notification { .. } => {
                 // Notifications do not get responses.
+            }
+            InboundBatchEntry::Response { .. } => {
+                // Responses do not get responses.
             }
         }
     }
@@ -317,7 +361,10 @@ mod tests {
             InboundMessage::Batch(entries) => {
                 assert_eq!(entries.len(), 2);
                 assert!(matches!(&entries[0], InboundBatchEntry::Request { .. }));
-                assert!(matches!(&entries[1], InboundBatchEntry::Notification { .. }));
+                assert!(matches!(
+                    &entries[1],
+                    InboundBatchEntry::Notification { .. }
+                ));
             }
             _ => panic!("expected batch"),
         }
@@ -328,10 +375,7 @@ mod tests {
         let raw = r#"[]"#;
         let result = parse_frame(raw);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("empty batch"));
+        assert!(result.unwrap_err().to_string().contains("empty batch"));
     }
 
     #[test]
@@ -352,9 +396,7 @@ mod tests {
     fn session_update_notification_is_jsonrpc_enveloped() {
         let update = v2::UpdateSessionNotification::new(
             v2::SessionId::new("sess"),
-            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
-                v2::RunningStateUpdate::new(),
-            )),
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(v2::RunningStateUpdate::new())),
         );
         let value = build_agent_notification(v2::AgentNotification::UpdateSessionNotification(
             Box::new(update),
