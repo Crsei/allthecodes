@@ -5,8 +5,6 @@
 //! - **Webhook routes** (`/webhook/*`) -- Phase-3 stubs for GitHub/Slack/generic
 //! - **Health** (`/health`) -- simple liveness probe
 
-use std::sync::atomic::Ordering;
-
 use allthecodes_engine::command_runtime::{CommandContext, CommandResult};
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::app_state::AppState;
@@ -20,7 +18,7 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::automation_state::{AutomationState, AutomationStatus};
-use crate::protocol::{DaemonCommandKind, DaemonCommandStatus, DaemonEvent, DaemonEventKind};
+use crate::protocol::{DaemonCommandKind, DaemonEvent, DaemonEventKind};
 use allthecodes_types::message::CompactMetadata;
 use allthecodes_types::plan_workflow::PlanWorkflowRecord;
 use allthecodes_types::sdk::SdkMessage;
