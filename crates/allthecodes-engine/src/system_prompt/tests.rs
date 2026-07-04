@@ -243,6 +243,87 @@ fn test_coordinator_mode_injects_prompt_section_when_enabled() {
 }
 
 #[test]
+#[serial_test::serial]
+fn kairos_prompt_injects_proactive_section_when_kairos_enabled() {
+    let _guard = FeatureOverrideGuard;
+    let mut flags = FeatureFlags::all_disabled();
+    flags.kairos = true;
+    features::set_runtime_override(flags);
+    prompt_sections::clear_cache();
+
+    let (parts, _, _) = build_system_prompt(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+    );
+    let joined = parts.join("\n");
+
+    assert!(joined.contains("# Autonomous work"));
+    assert!(joined.contains("<tick_tag>"));
+    assert!(joined.contains("Sleep"));
+    assert!(joined.contains("terminalFocus"));
+    assert!(joined.contains("still waiting"));
+}
+
+#[test]
+#[serial_test::serial]
+fn kairos_prompt_injects_brief_section_when_brief_enabled() {
+    let _guard = FeatureOverrideGuard;
+    let mut flags = FeatureFlags::all_disabled();
+    flags.kairos = true;
+    flags.kairos_brief = true;
+    features::set_runtime_override(flags);
+    prompt_sections::clear_cache();
+
+    let (parts, _, _) = build_system_prompt(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+    );
+    let joined = parts.join("\n");
+
+    assert!(joined.contains("# Brief output"));
+    assert!(joined.contains("Brief"));
+    assert!(joined.contains("structured"));
+    assert!(joined.contains("user-facing"));
+}
+
+#[test]
+#[serial_test::serial]
+fn kairos_prompt_omits_resident_sections_when_kairos_disabled() {
+    let _guard = FeatureOverrideGuard;
+    let flags = FeatureFlags::all_disabled();
+    features::set_runtime_override(flags);
+    prompt_sections::clear_cache();
+
+    let (parts, _, _) = build_system_prompt(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+    );
+    let joined = parts.join("\n");
+
+    assert!(!joined.contains("# Autonomous work"));
+    assert!(!joined.contains("# Brief output"));
+    assert!(!joined.contains("<tick_tag>"));
+}
+
+#[test]
 fn test_language_setting_injects_section() {
     prompt_sections::clear_cache();
     let (parts, _, _) = build_system_prompt(

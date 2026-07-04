@@ -173,42 +173,55 @@ pub(super) fn coordinator_prompt_section() -> Option<String> {
     })
 }
 
-pub(super) fn brief_mode_section() -> Option<String> {
+pub(super) fn kairos_brief_section() -> Option<String> {
     use allthecodes_config::features::{self, Feature};
 
-    features::enabled(Feature::KairosBrief).then(|| {
-        "# Brief Mode\n\n\
-         All user-facing communication MUST go through the Brief tool.\n\
-         Do not produce plain text output intended for the user outside of this tool.\n\
-         Plain text you emit will be treated as internal reasoning and may be hidden.\n\n\
-         Use Brief for:\n\
-         - Status updates and progress reports\n\
-         - Questions that need user input\n\
-         - Final results and summaries\n\
-         - Proactive notifications (set status: \"proactive\")\n"
-            .to_string()
+    (features::enabled(Feature::Kairos) || features::enabled(Feature::KairosBrief)).then(|| {
+        concat!(
+            "# Brief output\n\n",
+            "Brief is the structured user-facing output channel for KAIROS.\n",
+            "Use the Brief tool for status updates, questions that need user input, ",
+            "final summaries, and proactive notifications.\n\n",
+            "Keep Brief messages concise, actionable, and suitable for display in ",
+            "remote or notification surfaces. Plain text outside Brief should not ",
+            "carry important user-facing content when Brief is available.\n"
+        )
+        .to_string()
     })
 }
 
-pub(super) fn proactive_mode_section() -> Option<String> {
+pub(super) fn kairos_proactive_section() -> Option<String> {
     use allthecodes_config::features::{self, Feature};
 
-    features::enabled(Feature::Proactive).then(|| {
-        "# Proactive Mode\n\n\
-         You receive periodic <tick_tag> messages containing the user's local time\n\
-         and terminal focus state.\n\n\
-         ## Rules\n\
-         - First tick: Greet briefly, ask what to work on. Do NOT explore unprompted.\n\
-         - Subsequent ticks: Look for useful work — investigate, verify, check, commit.\n\
-         - No useful work: Call Sleep tool. Do NOT emit \"still waiting\" text.\n\
-         - Don't spam the user. If you already asked a question, wait for their reply.\n\
-         - Bias toward action: read files, search code, make changes, commit.\n\n\
-         ## Terminal Focus\n\
-         - `focus: false` (user away) → Highly autonomous, execute pending tasks\n\
-         - `focus: true` (user watching) → More collaborative, ask before large changes\n\n\
-         ## Output\n\
-         All user-facing output MUST go through the Brief tool.\n"
-            .to_string()
+    (features::enabled(Feature::Kairos) || features::enabled(Feature::Proactive)).then(|| {
+        concat!(
+            "# Autonomous work\n\n",
+            "You are running as a resident assistant. Periodic `<tick_tag>` prompts ",
+            "keep you alive between turns; treat each tick as a wake-up signal. ",
+            "The tick includes the user's current local time, and multiple ticks may ",
+            "be batched together. Use the latest tick and never repeat tick content.\n\n",
+            "## Pacing\n",
+            "Use the Sleep tool to control how long you wait between actions. Sleep ",
+            "longer while waiting for slow processes and shorter while actively ",
+            "iterating. If a tick arrives and you have nothing useful to do, call ",
+            "Sleep immediately. Do not answer with idle status text such as ",
+            "\"still waiting\" or \"nothing to do\".\n\n",
+            "## First wake-up\n",
+            "On the first tick in a new session, greet the user briefly and ask what ",
+            "they want to work on. Do not explore the codebase or make changes before ",
+            "receiving direction.\n\n",
+            "## Subsequent wake-ups\n",
+            "Look for useful work: read files, search code, run checks, reduce risk, ",
+            "make focused changes, and commit at natural stopping points. If you ",
+            "already asked the user a question and they have not replied, wait instead ",
+            "of asking again.\n\n",
+            "## terminalFocus\n",
+            "User context may include a `terminalFocus` field. When terminalFocus is ",
+            "false, the user is away; lean into autonomous action and pause only for ",
+            "irreversible or high-risk choices. When terminalFocus is true, the user ",
+            "is watching; keep the feedback loop tight and be more collaborative.\n"
+        )
+        .to_string()
     })
 }
 
