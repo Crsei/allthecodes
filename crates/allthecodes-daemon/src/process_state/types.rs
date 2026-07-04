@@ -121,6 +121,19 @@ pub struct DaemonSleepState {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonBridgeSessionState {
+    pub schema_version: u32,
+    pub session_id: String,
+    pub account_id: Option<String>,
+    pub profile: Option<String>,
+    pub cwd: PathBuf,
+    pub assistant_worker_id: String,
+    pub last_poll_cursor: Option<String>,
+    pub last_ack_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonStatusSnapshot {
     Running(DaemonProcessState),

@@ -255,7 +255,11 @@ mod tests {
         let state = write_sleep_state(60, " waiting ").unwrap();
 
         let path = allthecodes_config::paths::daemon_dir().join("sleep-state.json");
-        let legacy_path = home.path().join(".allthecodes").join("daemon").join("sleep-state.json");
+        let legacy_path = home
+            .path()
+            .join(".allthecodes")
+            .join("daemon")
+            .join("sleep-state.json");
         let body: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(path.exists());

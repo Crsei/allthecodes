@@ -8,7 +8,11 @@ pub(crate) fn daily_log_path(now: DateTime<Local>) -> PathBuf {
     let year = now.format("%Y").to_string();
     let month = now.format("%m").to_string();
     let filename = now.format("%Y-%m-%d.md").to_string();
-    data_root().join("logs").join(year).join(month).join(filename)
+    data_root()
+        .join("logs")
+        .join(year)
+        .join(month)
+        .join(filename)
 }
 
 pub(crate) fn team_memory_dir(cwd: &Path) -> PathBuf {

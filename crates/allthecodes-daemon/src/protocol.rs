@@ -548,7 +548,10 @@ mod tests {
             DaemonEventKind::AskUserQuestion.as_str(),
             "ask_user_question"
         );
-        assert_eq!(DaemonEventKind::HistorySnapshot.as_str(), "history_snapshot");
+        assert_eq!(
+            DaemonEventKind::HistorySnapshot.as_str(),
+            "history_snapshot"
+        );
     }
 
     #[test]

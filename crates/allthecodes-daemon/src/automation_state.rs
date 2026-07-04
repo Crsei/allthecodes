@@ -48,8 +48,7 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
         .flatten()
         .map(|sleep| (sleep.sleeping_until, sleep.reason));
     let engine_sleeping = state.engine.is_sleeping();
-    let query_running =
-        state.is_query_running.load(Ordering::SeqCst) || assistant_command_active();
+    let query_running = state.is_query_running.load(Ordering::SeqCst) || assistant_command_active();
     let pending_input = pending_input_active();
     let sleeping = daemon_sleep.is_some() || engine_sleeping;
     let status = if pending_input {

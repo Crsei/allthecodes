@@ -86,11 +86,11 @@ pub fn gateway_routes() -> axum::Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{DaemonCommandKind, DaemonEventKind};
+    use crate::supervisor::ASSISTANT_WORKER_ID;
     use allthecodes_gateway::{
         BusyPolicy, RemoteSource, RemoteTransport, RunPolicy, RunRequest, RunStatus,
     };
-    use crate::protocol::{DaemonCommandKind, DaemonEventKind};
-    use crate::supervisor::ASSISTANT_WORKER_ID;
     use serial_test::serial;
 
     #[test]

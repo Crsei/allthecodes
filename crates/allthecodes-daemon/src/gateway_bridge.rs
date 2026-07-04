@@ -98,11 +98,54 @@ fn daemon_payload(command: &GatewayCommand) -> Value {
                 "gateway": gateway_context(command),
             })
         }
-        GatewayCommandKind::Abort
-        | GatewayCommandKind::PermissionResponse
-        | GatewayCommandKind::AskUserResponse => {
+        GatewayCommandKind::Abort | GatewayCommandKind::AskUserResponse => {
             let mut payload = command.payload.clone();
             if let Some(object) = payload.as_object_mut() {
+                if command.kind == GatewayCommandKind::AskUserResponse {
+                    if let Some(question_id) = payload_string(
+                        &command.payload,
+                        &["request_id", "questionId", "question_id", "id"],
+                    ) {
+                        object.insert("request_id".to_string(), json!(question_id));
+                    }
+                    if let Some(answer) =
+                        payload_string(&command.payload, &["answer", "response", "text"])
+                    {
+                        object.insert("answer".to_string(), json!(answer));
+                    }
+                }
+                object.insert("gateway".to_string(), gateway_context(command));
+                payload
+            } else {
+                json!({
+                    "value": payload,
+                    "gateway": gateway_context(command),
+                })
+            }
+        }
+        GatewayCommandKind::PermissionResponse => {
+            let mut payload = command.payload.clone();
+            if let Some(object) = payload.as_object_mut() {
+                if let Some(tool_use_id) = payload_string(
+                    &command.payload,
+                    &["tool_use_id", "toolUseId", "request_id", "id"],
+                ) {
+                    object.insert("tool_use_id".to_string(), json!(tool_use_id));
+                }
+                let decision =
+                    payload_string(&command.payload, &["decision"]).unwrap_or_else(|| {
+                        if command
+                            .payload
+                            .get("approved")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        {
+                            "allow".to_string()
+                        } else {
+                            "deny".to_string()
+                        }
+                    });
+                object.insert("decision".to_string(), json!(decision));
                 object.insert("gateway".to_string(), gateway_context(command));
                 payload
             } else {
@@ -191,7 +234,8 @@ impl AssistantInteractionState {
             return response;
         }
 
-        rx.await.unwrap_or_else(|_| PermissionResponsePayload::deny())
+        rx.await
+            .unwrap_or_else(|_| PermissionResponsePayload::deny())
     }
 
     async fn ask_user(&self, worker_id: &str, request: AskUserRequestPayload) -> String {
@@ -399,8 +443,8 @@ impl AssistantWorkerRuntime {
             &["tool_use_id", "toolUseId", "request_id", "id"],
         )
         .context("permission response payload missing tool_use_id")?;
-        let decision = payload_string(&command.payload, &["decision"])
-            .unwrap_or_else(|| "deny".to_string());
+        let decision =
+            payload_string(&command.payload, &["decision"]).unwrap_or_else(|| "deny".to_string());
         let feedback = payload_string(&command.payload, &["feedback", "reason"]);
         let delivery = self.interactions.complete_permission(
             tool_use_id.clone(),
@@ -419,9 +463,8 @@ impl AssistantWorkerRuntime {
     }
 
     fn handle_ask_user_response(&self, command: &protocol::DaemonCommand) -> Result<()> {
-        let question_id =
-            payload_string(&command.payload, &["request_id", "id", "question_id"])
-                .context("ask-user response payload missing request_id")?;
+        let question_id = payload_string(&command.payload, &["request_id", "id", "question_id"])
+            .context("ask-user response payload missing request_id")?;
         let answer = payload_string(&command.payload, &["text", "answer"]).unwrap_or_default();
         let delivery = self
             .interactions
@@ -604,6 +647,51 @@ mod tests {
         assert_eq!(command.payload["text"], "hello");
         assert_eq!(command.payload["idempotencyKey"], "delivery-1");
         assert_eq!(command.payload["gateway"]["runId"], "run_bridge123");
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_normalizes_gateway_interaction_payloads() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let bridge = GatewayDaemonBridge::for_worker("assistant-session-1");
+
+        bridge
+            .dispatch(GatewayCommand {
+                kind: GatewayCommandKind::PermissionResponse,
+                run_id: "run_bridge123".to_string(),
+                session_key: "remote:http:abc".to_string(),
+                payload: json!({
+                    "toolUseId": "toolu_1",
+                    "approved": true,
+                    "reason": "looks ok",
+                }),
+                idempotency_key: Some("permission-1".to_string()),
+            })
+            .unwrap();
+        bridge
+            .dispatch(GatewayCommand {
+                kind: GatewayCommandKind::AskUserResponse,
+                run_id: "run_bridge123".to_string(),
+                session_key: "remote:http:abc".to_string(),
+                payload: json!({
+                    "questionId": "question-1",
+                    "response": "yes",
+                }),
+                idempotency_key: Some("ask-1".to_string()),
+            })
+            .unwrap();
+
+        let commands = crate::protocol_store()
+            .read_worker_commands("assistant-session-1")
+            .unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].kind, DaemonCommandKind::PermissionResponse);
+        assert_eq!(commands[0].payload["tool_use_id"], "toolu_1");
+        assert_eq!(commands[0].payload["decision"], "allow");
+        assert_eq!(commands[1].kind, DaemonCommandKind::AskUserResponse);
+        assert_eq!(commands[1].payload["request_id"], "question-1");
+        assert_eq!(commands[1].payload["answer"], "yes");
     }
 
     #[test]

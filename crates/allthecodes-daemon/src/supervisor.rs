@@ -15,25 +15,31 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use tracing::{info, warn};
 
+use allthecodes_config::features::{self, Feature};
+
 use super::{
+    bridge_worker::BridgeWorkerRuntime,
     gateway_bridge::{handle_worker_command, AssistantWorkerRuntime},
     process_state::{self, DaemonWorkerStatus},
 };
 
 pub const ASSISTANT_WORKER_ID: &str = "assistant-session-1";
+pub const BRIDGE_WORKER_ID: &str = "bridge-sync-1";
 const REGISTRY_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const WORKER_STALE_AFTER: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerKind {
     AssistantSession,
+    BridgeSync,
 }
 
 impl WorkerKind {
     pub fn parse(raw: &str) -> Result<Self> {
         match raw {
             "assistant-session" => Ok(Self::AssistantSession),
+            "bridge-sync" => Ok(Self::BridgeSync),
             other => anyhow::bail!("unknown daemon worker kind: {other}"),
         }
     }
@@ -41,6 +47,7 @@ impl WorkerKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::AssistantSession => "assistant-session",
+            Self::BridgeSync => "bridge-sync",
         }
     }
 }
@@ -81,6 +88,18 @@ impl WorkerSpec {
             log_path: process_state::worker_log_path(ASSISTANT_WORKER_ID),
             restart_policy: RestartPolicy::default(),
             required: true,
+        }
+    }
+
+    fn bridge_sync(cwd: &Path) -> Self {
+        Self {
+            worker_id: BRIDGE_WORKER_ID.to_string(),
+            kind: WorkerKind::BridgeSync,
+            cwd: cwd.to_path_buf(),
+            env: Vec::new(),
+            log_path: process_state::worker_log_path(BRIDGE_WORKER_ID),
+            restart_policy: RestartPolicy::default(),
+            required: false,
         }
     }
 }
@@ -235,7 +254,11 @@ impl WorkerRegistry {
 }
 
 pub fn default_worker_specs(cwd: &Path) -> Vec<WorkerSpec> {
-    vec![WorkerSpec::assistant_session(cwd)]
+    let mut specs = vec![WorkerSpec::assistant_session(cwd)];
+    if features::enabled(Feature::Kairos) {
+        specs.push(WorkerSpec::bridge_sync(cwd));
+    }
+    specs
 }
 
 pub async fn run_supervisor_loop(cwd: PathBuf, port: u16) -> Result<()> {
@@ -259,19 +282,15 @@ pub async fn run_supervisor_loop(cwd: PathBuf, port: u16) -> Result<()> {
 
 pub async fn run_worker_mode(kind: &str, worker_id: &str, cwd: PathBuf) -> Result<()> {
     let kind = WorkerKind::parse(kind)?;
-    let mut runtime = AssistantWorkerRuntime::new(&cwd)?;
-    if process_state::read_worker_state(worker_id)?.is_none() {
-        let log_path = process_state::worker_log_path(worker_id);
-        process_state::write_worker_running(
-            worker_id,
-            kind.as_str(),
-            std::process::id(),
-            &cwd,
-            &log_path,
-            0,
-            true,
-        )?;
+    match kind {
+        WorkerKind::AssistantSession => run_assistant_worker_mode(kind, worker_id, cwd).await,
+        WorkerKind::BridgeSync => run_bridge_worker_mode(kind, worker_id, cwd).await,
     }
+}
+
+async fn run_assistant_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf) -> Result<()> {
+    let mut runtime = AssistantWorkerRuntime::new(&cwd)?;
+    ensure_worker_state(kind, worker_id, &cwd)?;
 
     let mut tick = tokio::time::interval(WORKER_HEARTBEAT_INTERVAL);
     loop {
@@ -300,6 +319,48 @@ pub async fn run_worker_mode(kind: &str, worker_id: &str, cwd: PathBuf) -> Resul
             );
         }
     }
+}
+
+async fn run_bridge_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf) -> Result<()> {
+    let mut runtime = BridgeWorkerRuntime::new(&cwd)?;
+    ensure_worker_state(kind, worker_id, &cwd)?;
+
+    let mut tick = tokio::time::interval(WORKER_HEARTBEAT_INTERVAL);
+    loop {
+        tick.tick().await;
+        if process_state::shutdown_requested() {
+            process_state::write_worker_stopped(worker_id, None)?;
+            return Ok(());
+        }
+        process_state::write_worker_heartbeat(worker_id)?;
+        let outcome = runtime.poll_once()?;
+        if outcome.processed > 0 {
+            info!(
+                worker_id,
+                processed = outcome.processed,
+                acknowledged = outcome.acknowledged,
+                last_cursor = ?outcome.last_cursor,
+                "bridge worker processed work items"
+            );
+        }
+    }
+}
+
+fn ensure_worker_state(kind: WorkerKind, worker_id: &str, cwd: &Path) -> Result<()> {
+    if process_state::read_worker_state(worker_id)?.is_some() {
+        return Ok(());
+    }
+    let log_path = process_state::worker_log_path(worker_id);
+    process_state::write_worker_running(
+        worker_id,
+        kind.as_str(),
+        std::process::id(),
+        cwd,
+        &log_path,
+        0,
+        kind == WorkerKind::AssistantSession,
+    )?;
+    Ok(())
 }
 
 pub fn terminate_known_workers() -> Result<()> {
@@ -411,6 +472,7 @@ fn exit_status_text(status: ExitStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allthecodes_config::features::{self, FeatureFlags};
     use serial_test::serial;
 
     struct EnvGuard {
@@ -436,11 +498,33 @@ mod tests {
         }
     }
 
+    struct FeatureOverrideGuard {
+        previous: Option<FeatureFlags>,
+    }
+
+    impl FeatureOverrideGuard {
+        fn set(flags: FeatureFlags) -> Self {
+            let previous = features::runtime_override();
+            features::set_runtime_override(flags);
+            Self { previous }
+        }
+    }
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(flags) => features::set_runtime_override(flags),
+                None => features::clear_runtime_override(),
+            }
+        }
+    }
+
     #[test]
     #[serial]
     fn default_worker_spec_uses_daemon_paths() {
         let temp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let _features = FeatureOverrideGuard::set(FeatureFlags::all_disabled());
         let specs = default_worker_specs(temp.path());
 
         assert_eq!(specs.len(), 1);
@@ -484,8 +568,40 @@ mod tests {
     }
 
     #[test]
-    fn worker_kind_rejects_unknown_values() {
-        assert!(WorkerKind::parse("assistant-session").is_ok());
-        assert!(WorkerKind::parse("bridge-sync").is_err());
+    fn worker_kind_accepts_bridge_sync() {
+        assert_eq!(
+            WorkerKind::parse("assistant-session").unwrap(),
+            WorkerKind::AssistantSession
+        );
+        assert_eq!(
+            WorkerKind::parse("bridge-sync").unwrap(),
+            WorkerKind::BridgeSync
+        );
+        assert!(WorkerKind::parse("unknown").is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn default_worker_specs_include_bridge_sync_when_kairos_enabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let _features = FeatureOverrideGuard::set(FeatureFlags {
+            kairos: true,
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+
+        let specs = default_worker_specs(temp.path());
+
+        assert_eq!(specs.len(), 2);
+        assert!(specs
+            .iter()
+            .any(|spec| spec.kind == WorkerKind::AssistantSession));
+        let bridge = specs
+            .iter()
+            .find(|spec| spec.kind == WorkerKind::BridgeSync)
+            .expect("bridge-sync spec");
+        assert_eq!(bridge.worker_id, "bridge-sync-1");
+        assert!(bridge.log_path.starts_with(temp.path()));
     }
 }
