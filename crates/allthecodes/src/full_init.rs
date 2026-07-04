@@ -164,6 +164,7 @@ async fn run_daemon_with_server(
     // --- Start background loops ---
     let tick_enabled = features::enabled(Feature::Proactive);
     let supervisor_cwd = std::path::PathBuf::from(&cwd);
+    let _notification_handle = start_notification_consumer_if_enabled(&mut daemon_state);
 
     if tick_enabled {
         let tick_state = daemon_state.clone();
@@ -199,6 +200,26 @@ async fn run_daemon_with_server(
 
     server_result?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn start_notification_consumer_if_enabled(
+    daemon_state: &mut allthecodes_daemon::state::DaemonState,
+) -> Option<tokio::task::JoinHandle<()>> {
+    use allthecodes_config::features::{self, Feature};
+
+    if !features::enabled(Feature::KairosPushNotification) {
+        return None;
+    }
+    let rx = daemon_state.notification_rx.lock().take()?;
+    let client_state = daemon_state.clone();
+    Some(tokio::spawn(async move {
+        allthecodes_daemon::notification::notification_consumer(
+            rx,
+            allthecodes_daemon::notification::NotificationConfig::default(),
+            move || client_state.has_clients(),
+        )
+        .await;
+    }))
 }
 
 async fn wait_for_server_shutdown(

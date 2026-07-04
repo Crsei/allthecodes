@@ -1,10 +1,14 @@
 //! Channel manager — routes external messages (MCP + webhook) to QueryEngine.
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
+
+use crate::protocol::{DaemonCommand, DaemonCommandKind};
+use crate::supervisor::ASSISTANT_WORKER_ID;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ChannelOrigin {
@@ -58,14 +62,79 @@ impl ChannelManager {
             return false;
         }
         debug!("channel event accepted from '{}'", key);
+        if let Err(error) = enqueue_channel_event(&event) {
+            warn!(error = %error, "failed to enqueue accepted channel event");
+            return false;
+        }
         let _ = self.event_tx.send(event);
         true
+    }
+}
+
+pub fn enqueue_channel_event(event: &ChannelEvent) -> Result<DaemonCommand> {
+    crate::protocol_store()
+        .enqueue_command(
+            ASSISTANT_WORKER_ID,
+            DaemonCommandKind::Submit,
+            channel_submit_payload(event),
+            None,
+        )
+        .context("failed to enqueue channel event for assistant worker")
+}
+
+pub(crate) fn channel_submit_payload(event: &ChannelEvent) -> Value {
+    json!({
+        "text": event.to_xml(),
+        "source": "channel",
+        "channel": {
+            "source": event.source.clone(),
+            "sender": event.sender.clone(),
+            "meta": event.meta.clone(),
+            "origin": channel_origin_payload(&event.origin),
+        },
+    })
+}
+
+pub(crate) fn channel_origin_payload(origin: &ChannelOrigin) -> Value {
+    match origin {
+        ChannelOrigin::Mcp { server_name } => json!({
+            "type": "mcp",
+            "server_name": server_name,
+        }),
+        ChannelOrigin::Webhook { endpoint } => json!({
+            "type": "webhook",
+            "endpoint": endpoint,
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::DaemonCommandKind;
+    use crate::supervisor::ASSISTANT_WORKER_ID;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
     fn test_channel_event_to_xml() {
@@ -99,7 +168,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_channel_manager_allowlist() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let manager = ChannelManager::new(
@@ -147,5 +219,37 @@ mod tests {
         assert!(manager.submit(webhook_event));
         let received2 = rx.try_recv().expect("should receive webhook event");
         assert_eq!(received2.content, "webhook message");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn accepted_channel_event_queues_assistant_submit_command() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let event = ChannelEvent {
+            source: "slack".into(),
+            sender: Some("alice".into()),
+            content: "please triage this incident".into(),
+            meta: serde_json::json!({ "thread": "C123/456" }),
+            origin: ChannelOrigin::Mcp {
+                server_name: "slack-mcp".into(),
+            },
+        };
+
+        let command = enqueue_channel_event(&event).unwrap();
+        let commands = crate::protocol_store()
+            .read_worker_commands(ASSISTANT_WORKER_ID)
+            .unwrap();
+
+        assert_eq!(command.kind, DaemonCommandKind::Submit);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].kind, DaemonCommandKind::Submit);
+        assert!(commands[0].payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("<channel source=\"slack\" sender=\"alice\">"));
+        assert_eq!(commands[0].payload["source"], "channel");
+        assert_eq!(commands[0].payload["channel"]["source"], "slack");
+        assert_eq!(commands[0].payload["channel"]["origin"]["type"], "mcp");
     }
 }

@@ -92,11 +92,22 @@ fn daemon_payload(command: &GatewayCommand) -> Value {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            json!({
-                "text": text,
-                "idempotencyKey": command.idempotency_key.clone(),
-                "gateway": gateway_context(command),
-            })
+            let mut payload = command.payload.clone();
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("text".to_string(), json!(text));
+                object.insert(
+                    "idempotencyKey".to_string(),
+                    json!(command.idempotency_key.clone()),
+                );
+                object.insert("gateway".to_string(), gateway_context(command));
+                payload
+            } else {
+                json!({
+                    "text": text,
+                    "idempotencyKey": command.idempotency_key.clone(),
+                    "gateway": gateway_context(command),
+                })
+            }
         }
         GatewayCommandKind::Abort | GatewayCommandKind::AskUserResponse => {
             let mut payload = command.payload.clone();
