@@ -164,6 +164,7 @@ allthecodes-voice = { workspace = true }
 allthecodes-web = { workspace = true }
 allthecodes-worktree = { workspace = true }
 allthecodes-gateway = { workspace = true }
+allthecodes-db = { workspace = true }
 allthecodes-tool-display = { path = "../allthecodes-tool-display" }
 allthecodes-acp = { path = "../allthecodes-acp" }
 allthecodes-server = { workspace = true }
@@ -179,6 +180,7 @@ notify-rust = { workspace = true }
 tree-sitter = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 tempfile = { workspace = true }
+sqlx = { workspace = true }
 
 # Platform sandbox helpers
 which = { workspace = true }

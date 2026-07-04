@@ -9,6 +9,7 @@
 | [PLAN.md](PLAN.md) | 总体架构与阶段性实施计划 | ✅ 草稿 |
 | [SCHEMA.md](SCHEMA.md) | 分库设计与表结构定义 | ✅ 草稿 |
 | [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) | 逐 crate 迁移方案 (JSON→SQLite) | ✅ 草稿 |
+| [AGENT_RUNTIME_SQLITE_PLAN.md](AGENT_RUNTIME_SQLITE_PLAN.md) | Agent runtime 执行记录和生命周期事件进入 SQLite 的实施计划 | ✅ 草稿 |
 
 ## 核心决策
 

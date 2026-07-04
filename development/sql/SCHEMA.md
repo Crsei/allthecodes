@@ -262,6 +262,80 @@ DELETE FROM log_entries WHERE id NOT IN (
 );
 ```
 
+### 2.3 agent_runtime_events
+
+Append-only agent lifecycle and runtime event stream. This table is for audit
+and timeline reconstruction, not prompt reconstruction.
+
+```sql
+CREATE TABLE IF NOT EXISTS agent_runtime_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT NOT NULL,
+    ts_millis       INTEGER NOT NULL,
+    session_id      TEXT,
+    agent_id        TEXT NOT NULL,
+    parent_agent_id TEXT,
+    kind            TEXT NOT NULL,
+    description     TEXT,
+    model           TEXT,
+    depth           INTEGER,
+    background      INTEGER NOT NULL DEFAULT 0,
+    payload_json    TEXT,
+    schema_version  INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_events_session
+    ON agent_runtime_events(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_events_agent
+    ON agent_runtime_events(agent_id, id);
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_events_kind
+    ON agent_runtime_events(kind, timestamp DESC, id DESC);
+```
+
+### 2.4 agent_runtime_execution_records
+
+Structured one-row-per-tool-execution records. Shell output is represented only
+by SHA-256 digests; full stdout/stderr stays in existing transcript/task output
+channels.
+
+```sql
+CREATE TABLE IF NOT EXISTS agent_runtime_execution_records (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp           TEXT NOT NULL,
+    ts_millis           INTEGER NOT NULL,
+    session_id          TEXT NOT NULL,
+    agent_id            TEXT NOT NULL,
+    parent_agent_id     TEXT,
+    agent_role          TEXT,
+    tool                TEXT NOT NULL,
+    tool_use_id         TEXT,
+    command             TEXT,
+    cwd                 TEXT,
+    exit_code           INTEGER,
+    stdout_digest       TEXT,
+    stderr_digest       TEXT,
+    retry_count         INTEGER NOT NULL DEFAULT 0,
+    model               TEXT,
+    fallback_used       INTEGER NOT NULL DEFAULT 0,
+    permission_decision TEXT,
+    duration_ms         INTEGER,
+    had_error           INTEGER NOT NULL DEFAULT 0,
+    record_json         TEXT NOT NULL,
+    schema_version      INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_records_session
+    ON agent_runtime_execution_records(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_records_agent
+    ON agent_runtime_execution_records(agent_id, id);
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_records_tool
+    ON agent_runtime_execution_records(tool, timestamp DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_records_permission
+    ON agent_runtime_execution_records(permission_decision, timestamp DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_records_model
+    ON agent_runtime_execution_records(model, timestamp DESC, id DESC);
+```
+
 ---
 
 ## 3. app_1.sqlite — 应用级数据

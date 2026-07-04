@@ -35,6 +35,7 @@ mod plan_workflow;
 mod shutdown;
 
 mod dashboard;
+mod runtime_history;
 
 use std::process::ExitCode;
 use std::sync::Arc;

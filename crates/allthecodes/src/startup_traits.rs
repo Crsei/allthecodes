@@ -53,6 +53,21 @@ impl DashboardEmitter for RootDashboardEmitter {
         background: bool,
         payload: Option<Value>,
     ) -> anyhow::Result<()> {
+        if let Err(error) = crate::runtime_history::persist_subagent_event(
+            crate::runtime_history::RuntimeSubagentEvent {
+                kind,
+                agent_id,
+                parent_agent_id,
+                description,
+                model,
+                depth,
+                background,
+                payload: payload.clone(),
+            },
+        ) {
+            tracing::debug!(%error, agent_id, kind, "failed to persist agent runtime event");
+        }
+
         crate::dashboard::emit_subagent_event(
             kind,
             agent_id,
@@ -66,6 +81,15 @@ impl DashboardEmitter for RootDashboardEmitter {
     }
 
     fn emit_execution_record(&self, record: &AgentRuntimeExecutionRecord) -> anyhow::Result<()> {
+        if let Err(error) = crate::runtime_history::persist_execution_record(record) {
+            tracing::debug!(
+                %error,
+                agent_id = %record.agent_id,
+                tool = %record.tool,
+                "failed to persist agent runtime execution record"
+            );
+        }
+
         crate::dashboard::emit_execution_record(record)
     }
 }

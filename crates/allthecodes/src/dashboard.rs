@@ -21,6 +21,10 @@ pub fn init_session_id(id: &str) {
     let _ = SESSION_ID.set(id.to_string());
 }
 
+pub(crate) fn current_session_id() -> Option<&'static str> {
+    SESSION_ID.get().map(String::as_str)
+}
+
 const DEFAULT_PORT: u16 = 19838;
 const HEALTH_CHECK_TIMEOUT_MS: u64 = 5000;
 const HEALTH_CHECK_INTERVAL_MS: u64 = 100;
