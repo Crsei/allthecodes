@@ -23,6 +23,7 @@ pub enum DaemonCommandKind {
     Abort,
     PermissionResponse,
     AskUserResponse,
+    Resize,
     Shutdown,
     ReloadConfig,
 }
@@ -34,8 +35,61 @@ impl DaemonCommandKind {
             Self::Abort => "abort",
             Self::PermissionResponse => "permission_response",
             Self::AskUserResponse => "ask_user_response",
+            Self::Resize => "resize",
             Self::Shutdown => "shutdown",
             Self::ReloadConfig => "reload_config",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DaemonEventKind {
+    CommandAck,
+    CommandHandled,
+    CommandFailed,
+    AbortAck,
+    WorkerHeartbeat,
+    WorkerShutdownAck,
+    SubmitStarted,
+    SubmitCompleted,
+    PermissionRequest,
+    AskUserQuestion,
+    HistorySnapshot,
+    Unknown(String),
+}
+
+impl DaemonEventKind {
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "command_ack" => Self::CommandAck,
+            "command_handled" => Self::CommandHandled,
+            "command_failed" => Self::CommandFailed,
+            "abort_ack" => Self::AbortAck,
+            "worker_heartbeat" => Self::WorkerHeartbeat,
+            "worker_shutdown_ack" => Self::WorkerShutdownAck,
+            "submit_started" => Self::SubmitStarted,
+            "submit_completed" => Self::SubmitCompleted,
+            "permission_request" => Self::PermissionRequest,
+            "ask_user_question" => Self::AskUserQuestion,
+            "history_snapshot" => Self::HistorySnapshot,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::CommandAck => "command_ack",
+            Self::CommandHandled => "command_handled",
+            Self::CommandFailed => "command_failed",
+            Self::AbortAck => "abort_ack",
+            Self::WorkerHeartbeat => "worker_heartbeat",
+            Self::WorkerShutdownAck => "worker_shutdown_ack",
+            Self::SubmitStarted => "submit_started",
+            Self::SubmitCompleted => "submit_completed",
+            Self::PermissionRequest => "permission_request",
+            Self::AskUserQuestion => "ask_user_question",
+            Self::HistorySnapshot => "history_snapshot",
+            Self::Unknown(value) => value.as_str(),
         }
     }
 }
@@ -304,10 +358,13 @@ pub fn event_to_ndjson_line(event: &DaemonEvent) -> serde_json::Result<String> {
 }
 
 pub fn events_from_ndjson(text: &str) -> serde_json::Result<Vec<DaemonEvent>> {
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(serde_json::from_str)
-        .collect()
+    let mut events = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        if let Ok(event) = serde_json::from_str(line) {
+            events.push(event);
+        }
+    }
+    Ok(events)
 }
 
 pub fn sanitize_path_component(raw: &str) -> String {
@@ -437,6 +494,177 @@ mod tests {
         assert_eq!(command.kind, DaemonCommandKind::AskUserResponse);
         assert_eq!(command.status, DaemonCommandStatus::Failed);
         assert_eq!(command.payload["answer"], "yes");
+    }
+
+    #[test]
+    fn interaction_command_kinds_have_stable_json_names() {
+        assert_eq!(
+            serde_json::to_value(DaemonCommandKind::PermissionResponse).unwrap(),
+            json!("permission_response")
+        );
+        assert_eq!(
+            serde_json::to_value(DaemonCommandKind::AskUserResponse).unwrap(),
+            json!("ask_user_response")
+        );
+        assert_eq!(
+            serde_json::to_value(DaemonCommandKind::Resize).unwrap(),
+            json!("resize")
+        );
+    }
+
+    #[test]
+    fn resize_command_json_matches_worker_contract() {
+        let command = DaemonCommand {
+            schema_version: SCHEMA_VERSION,
+            command_id: "cmd-resize".to_string(),
+            idempotency_key: Some("resize-120x40".to_string()),
+            target_worker_id: "assistant-session-1".to_string(),
+            kind: DaemonCommandKind::Resize,
+            payload: json!({
+                "cols": 120,
+                "rows": 40,
+                "source": "http",
+            }),
+            status: DaemonCommandStatus::Pending,
+            created_at: ts(1_700_000_000),
+            updated_at: ts(1_700_000_000),
+            acked_at: None,
+            handled_at: None,
+            error: None,
+        };
+
+        assert_eq!(serde_json::to_value(&command).unwrap()["kind"], "resize");
+        assert_eq!(command.payload["cols"], 120);
+        assert_eq!(command.payload["rows"], 40);
+    }
+
+    #[test]
+    fn interaction_event_kinds_have_stable_json_names() {
+        assert_eq!(
+            DaemonEventKind::PermissionRequest.as_str(),
+            "permission_request"
+        );
+        assert_eq!(
+            DaemonEventKind::AskUserQuestion.as_str(),
+            "ask_user_question"
+        );
+        assert_eq!(
+            DaemonEventKind::HistorySnapshot.as_str(),
+            "history_snapshot"
+        );
+    }
+
+    #[test]
+    fn permission_request_event_json_matches_worker_contract() {
+        let event = DaemonEvent {
+            schema_version: SCHEMA_VERSION,
+            event_id: "evt-permission".to_string(),
+            worker_id: "assistant-session-1".to_string(),
+            command_id: Some("cmd-1".to_string()),
+            event_type: DaemonEventKind::PermissionRequest.as_str().to_string(),
+            data: json!({
+                "request_id": "perm-1",
+                "tool_use_id": "toolu_1",
+                "tool_name": "Bash",
+                "input": { "command": "cargo test" },
+                "message": "Allow Bash?",
+            }),
+            created_at: ts(1_700_000_000),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["event_type"],
+            "permission_request"
+        );
+        assert_eq!(event.data["tool_use_id"], "toolu_1");
+        assert_eq!(event.data["tool_name"], "Bash");
+    }
+
+    #[test]
+    fn ask_user_question_event_json_matches_worker_contract() {
+        let event = DaemonEvent {
+            schema_version: SCHEMA_VERSION,
+            event_id: "evt-ask-user".to_string(),
+            worker_id: "assistant-session-1".to_string(),
+            command_id: Some("cmd-1".to_string()),
+            event_type: DaemonEventKind::AskUserQuestion.as_str().to_string(),
+            data: json!({
+                "request_id": "ask-1",
+                "question": "Which branch should I use?",
+                "choices": ["main", "feature"],
+            }),
+            created_at: ts(1_700_000_000),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["event_type"],
+            "ask_user_question"
+        );
+        assert_eq!(event.data["request_id"], "ask-1");
+        assert_eq!(event.data["choices"][0], "main");
+    }
+
+    #[test]
+    fn history_snapshot_event_json_matches_worker_contract() {
+        let event = DaemonEvent {
+            schema_version: SCHEMA_VERSION,
+            event_id: "evt-history".to_string(),
+            worker_id: "assistant-session-1".to_string(),
+            command_id: None,
+            event_type: DaemonEventKind::HistorySnapshot.as_str().to_string(),
+            data: json!({
+                "session_id": "session-1",
+                "messages": [
+                    { "role": "user", "content": "hello" },
+                    { "role": "assistant", "content": "hi" }
+                ],
+                "cursor": "2",
+            }),
+            created_at: ts(1_700_000_000),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["event_type"],
+            "history_snapshot"
+        );
+        assert_eq!(event.data["messages"][0]["role"], "user");
+        assert_eq!(event.data["cursor"], "2");
+    }
+
+    #[test]
+    fn worker_event_ndjson_skips_corrupted_lines_and_preserves_unknown_events() {
+        let valid = DaemonEvent {
+            schema_version: SCHEMA_VERSION,
+            event_id: "evt-history".to_string(),
+            worker_id: "assistant-session-1".to_string(),
+            command_id: None,
+            event_type: DaemonEventKind::HistorySnapshot.as_str().to_string(),
+            data: json!({ "messages": [] }),
+            created_at: ts(1_700_000_000),
+        };
+        let unknown = json!({
+            "schema_version": 1,
+            "event_id": "evt-future",
+            "worker_id": "assistant-session-1",
+            "command_id": null,
+            "event_type": "future_event",
+            "data": { "opaque": true },
+            "created_at": "2023-11-14T22:13:20Z"
+        });
+        let text = format!(
+            "{}{{\"schema_version\":\n{}\n",
+            event_to_ndjson_line(&valid).unwrap(),
+            serde_json::to_string(&unknown).unwrap()
+        );
+
+        let events = events_from_ndjson(&text).unwrap();
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "history_snapshot");
+        assert_eq!(
+            DaemonEventKind::parse(&events[1].event_type),
+            DaemonEventKind::Unknown("future_event".to_string())
+        );
     }
 
     #[test]

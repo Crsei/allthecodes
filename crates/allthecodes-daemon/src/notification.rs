@@ -77,6 +77,66 @@ pub struct FullNotification {
     pub source: NotificationSource,
 }
 
+pub fn full_notification_from_daemon(notif: super::state::Notification) -> FullNotification {
+    FullNotification {
+        title: notif.title,
+        body: notif.body,
+        level: notification_level_from_str(&notif.level),
+        source: notification_source_from_value(notif.source),
+    }
+}
+
+fn notification_level_from_str(raw: &str) -> NotificationLevel {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "warning" | "warn" => NotificationLevel::Warning,
+        "error" => NotificationLevel::Error,
+        "success" | "ok" => NotificationLevel::Success,
+        _ => NotificationLevel::Info,
+    }
+}
+
+fn notification_source_from_value(value: serde_json::Value) -> NotificationSource {
+    serde_json::from_value(value.clone()).unwrap_or_else(|_| {
+        let source_type = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        match source_type {
+            "task_complete" => NotificationSource::TaskComplete {
+                task_id: value
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+            "background_agent_done" => NotificationSource::BackgroundAgentDone {
+                agent_id: value
+                    .get("agent_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+            "channel_message" => NotificationSource::ChannelMessage {
+                source: value
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+            "error" => NotificationSource::Error {
+                detail: value
+                    .get("detail")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+            _ => NotificationSource::ProactiveAction {
+                summary: "notification".into(),
+            },
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Windows Toast
 // ---------------------------------------------------------------------------
@@ -150,14 +210,7 @@ pub async fn notification_consumer(
 ) {
     info!("notification consumer started");
     while let Some(notif) = rx.recv().await {
-        let full = FullNotification {
-            title: notif.title,
-            body: notif.body,
-            level: NotificationLevel::Info,
-            source: NotificationSource::ProactiveAction {
-                summary: "notification".into(),
-            },
-        };
+        let full = full_notification_from_daemon(notif);
 
         // Windows Toast dispatch
         if let Some(tc) = &config.windows_toast {
@@ -220,5 +273,49 @@ mod tests {
         assert_eq!(value["level"], "success");
         assert_eq!(value["source"]["type"], "TaskComplete");
         assert_eq!(value["source"]["task_id"], "task-1");
+    }
+
+    #[test]
+    fn daemon_notification_preserves_task_complete_payload() {
+        let notif = crate::state::Notification {
+            title: "Task done".into(),
+            body: "Background task completed".into(),
+            level: "success".into(),
+            source: json!({
+                "type": "TaskComplete",
+                "task_id": "task-42"
+            }),
+        };
+
+        let full = full_notification_from_daemon(notif);
+        let value = serde_json::to_value(full).unwrap();
+
+        assert_eq!(value["title"], "Task done");
+        assert_eq!(value["level"], "success");
+        assert_eq!(value["source"]["type"], "TaskComplete");
+        assert_eq!(value["source"]["task_id"], "task-42");
+    }
+
+    #[tokio::test]
+    async fn notification_consumer_drains_task_complete_without_client() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(crate::state::Notification {
+            title: "Task done".into(),
+            body: "Background task completed".into(),
+            level: "success".into(),
+            source: json!({
+                "type": "TaskComplete",
+                "task_id": "task-42"
+            }),
+        })
+        .unwrap();
+        drop(tx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            notification_consumer(rx, NotificationConfig::default(), || false),
+        )
+        .await
+        .expect("consumer should exit after channel closes");
     }
 }

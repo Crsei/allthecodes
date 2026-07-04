@@ -17,9 +17,10 @@ use super::platform::{process_matches_record, process_start_key};
 #[cfg(feature = "sqlite-storage")]
 use super::sqlite_store;
 use super::types::{
-    DaemonControlToken, DaemonProcessState, DaemonRunStatus, DaemonShutdownRequest,
-    DaemonSleepState, DaemonStatusSnapshot, DaemonWorkerState, DaemonWorkerStatus,
-    DaemonWorkerSummary, ProcessIdentityStatus, StaleStateCleanupReport, SCHEMA_VERSION,
+    DaemonBridgeSessionState, DaemonControlToken, DaemonProcessState, DaemonRunStatus,
+    DaemonShutdownRequest, DaemonSleepState, DaemonStatusSnapshot, DaemonWorkerState,
+    DaemonWorkerStatus, DaemonWorkerSummary, ProcessIdentityStatus, StaleStateCleanupReport,
+    SCHEMA_VERSION,
 };
 
 const DEFAULT_LOG_TAIL_BYTES: usize = 16 * 1024;
@@ -486,6 +487,53 @@ pub fn active_sleep_state() -> Result<Option<DaemonSleepState>> {
 
 pub fn clear_sleep_state() -> Result<()> {
     remove_state_value("sleep-state", &sleep_state_path()).map(|_| ())
+}
+
+pub fn write_bridge_session_state(
+    state: &DaemonBridgeSessionState,
+) -> Result<DaemonBridgeSessionState> {
+    ensure_daemon_dir()?;
+    let mut state = state.clone();
+    state.schema_version = SCHEMA_VERSION;
+    state.updated_at = Utc::now();
+    let path = bridge_session_path(&state.session_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    atomic_write_json(&path, &state)?;
+    Ok(state)
+}
+
+pub fn read_bridge_session_state(session_id: &str) -> Result<Option<DaemonBridgeSessionState>> {
+    let path = bridge_session_path(session_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read bridge session state {}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse bridge session state {}", path.display()))
+        .map(Some)
+}
+
+fn bridge_session_path(session_id: &str) -> PathBuf {
+    daemon_dir()
+        .join("bridge")
+        .join("sessions")
+        .join(format!("{}.json", sanitize_bridge_id(session_id)))
+}
+
+fn sanitize_bridge_id(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn cleanup_worker_state_files(report: &mut StaleStateCleanupReport) -> Result<()> {

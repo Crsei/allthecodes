@@ -1,5 +1,6 @@
 //! Webhook signature verification, declarative route handling, and payload parsing.
 
+use allthecodes_gateway::{GatewayCommand, GatewayCommandKind, GatewayCommandSink};
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -8,7 +9,7 @@ use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
 use sha2::Sha256;
 
-use super::routes::assistant_command_active;
+use super::channels::{channel_submit_payload, ChannelEvent, ChannelOrigin};
 use super::state::DaemonState;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -153,7 +154,10 @@ fn submit_webhook_run(
         policy.clone(),
     );
     let snapshot = allthecodes_gateway::BusySnapshot {
-        running: usize::from(assistant_command_active()),
+        running: usize::from(
+            crate::automation_state::assistant_command_active()
+                || crate::automation_state::pending_input_active(),
+        ),
         queued: 0,
         max_running: policy.max_running,
         max_queued: policy.max_queued,
@@ -181,7 +185,7 @@ fn deliver_webhook_event(
     route: &allthecodes_gateway::webhook::WebhookRouteConfig,
     event: Option<String>,
     prompt: String,
-    _source: allthecodes_gateway::RemoteSource,
+    source: allthecodes_gateway::RemoteSource,
     idempotency_key: Option<String>,
 ) -> Json<Value> {
     if route.provider == allthecodes_gateway::webhook::WebhookProvider::GitHub {
@@ -222,6 +226,17 @@ fn deliver_webhook_event(
         }));
     }
 
+    let receipt = match submit_webhook_channel_event(
+        route,
+        event.as_deref(),
+        &prompt,
+        source,
+        idempotency_key.clone(),
+    ) {
+        Ok(receipt) => receipt,
+        Err(error) => return webhook_error(error),
+    };
+
     Json(json!({
         "status": "received",
         "source": route.provider.as_source_client(),
@@ -229,7 +244,68 @@ fn deliver_webhook_event(
         "event": event,
         "deliverOnly": true,
         "idempotencyKey": idempotency_key,
+        "commandId": receipt.command_id,
     }))
+}
+
+fn submit_webhook_channel_event(
+    route: &allthecodes_gateway::webhook::WebhookRouteConfig,
+    event: Option<&str>,
+    prompt: &str,
+    source: allthecodes_gateway::RemoteSource,
+    idempotency_key: Option<String>,
+) -> Result<allthecodes_gateway::GatewayCommandReceipt, allthecodes_gateway::GatewayError> {
+    let delivery_id = idempotency_key.clone().unwrap_or_else(|| {
+        format!(
+            "{}:{}:{}",
+            route.route_id,
+            event.unwrap_or("event"),
+            source.message_id.as_deref().unwrap_or("message")
+        )
+    });
+    let channel_event = ChannelEvent {
+        source: route.provider.as_source_client().to_string(),
+        sender: Some(source.user_id.clone()),
+        content: prompt.to_string(),
+        meta: json!({
+            "routeId": route.route_id,
+            "event": event,
+            "remoteSource": source.redacted_json(),
+            "idempotencyKey": idempotency_key,
+        }),
+        origin: ChannelOrigin::Webhook {
+            endpoint: route.route_id.clone(),
+        },
+    };
+    let bridge = crate::gateway_bridge::GatewayDaemonBridge::assistant_worker();
+    bridge.dispatch(GatewayCommand {
+        kind: GatewayCommandKind::Submit,
+        run_id: format!("run_webhook_{}", sanitize_webhook_id(&delivery_id)),
+        session_key: format!(
+            "webhook:{}:{}:{}",
+            route.route_id, source.client_id, source.thread_id
+        ),
+        payload: channel_submit_payload(&channel_event),
+        idempotency_key: Some(delivery_id),
+    })
+}
+
+fn sanitize_webhook_id(raw: &str) -> String {
+    let sanitized: String = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "delivery".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn webhook_error(error: allthecodes_gateway::GatewayError) -> Json<Value> {
@@ -275,6 +351,30 @@ fn webhook_secret(route_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::DaemonCommandKind;
+    use crate::supervisor::ASSISTANT_WORKER_ID;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     // ---- GitHub ----
 
@@ -370,5 +470,55 @@ mod tests {
             &sig,
             signing_secret
         ));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn declarative_deliver_only_webhook_queues_assistant_submit() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let secret = "generic-secret";
+        let _secret = EnvGuard::set("ALLTHECODES_WEBHOOK_GENERIC_SECRET", secret);
+        let route = declarative_route("generic").with_deliver_only(true);
+        let body = serde_json::to_vec(&json!({
+            "action": "opened",
+            "repository": { "full_name": "acme/project" },
+            "message": "investigate flaky test"
+        }))
+        .unwrap();
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(&body);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            allthecodes_gateway::webhook::GITHUB_SIGNATURE_HEADER,
+            format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+                .parse()
+                .unwrap(),
+        );
+        headers.insert("idempotency-key", "delivery-1".parse().unwrap());
+
+        let Json(response) =
+            handle_deliver_only_webhook(route, headers, axum::body::Bytes::from(body)).await;
+        let commands = crate::protocol_store()
+            .read_worker_commands(ASSISTANT_WORKER_ID)
+            .unwrap();
+
+        assert_eq!(response["status"], "received");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].kind, DaemonCommandKind::Submit);
+        assert_eq!(commands[0].payload["source"], "channel");
+        assert_eq!(commands[0].payload["channel"]["source"], "generic");
+        assert!(commands[0].payload["gateway"]["runId"]
+            .as_str()
+            .unwrap()
+            .starts_with("run_webhook_"));
+        assert!(commands[0].payload["gateway"]["sessionKey"]
+            .as_str()
+            .unwrap()
+            .contains("webhook:generic"));
+        assert!(commands[0].payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("Webhook generic/generic received"));
     }
 }

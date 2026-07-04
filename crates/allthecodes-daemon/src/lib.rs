@@ -1,7 +1,10 @@
 //! cc-daemon — KAIROS daemon contracts and runtime owner.
 
 pub mod account_auth;
+pub mod automation_state;
+pub mod bridge_worker;
 pub mod channels;
+pub mod dream;
 pub mod gateway_bridge;
 pub mod gateway_client;
 pub mod gateway_routes;

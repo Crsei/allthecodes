@@ -1,114 +1,129 @@
 # Daemon 操作与发布检查
 
-> 状态日期：2026-05-17
-> 范围：`crates/cc-daemon/**`、daemon CLI 管理命令、KAIROS HTTP/SSE 控制面。
+> 状态日期：2026-07-04
+> 范围：`crates/allthecodes-daemon/**`、root `allthecodes` daemon CLI、KAIROS HTTP/SSE 控制面。
 
 ## 当前可用能力
 
-Rust 端 daemon 现在已经从单进程 `--daemon` HTTP demo 推进为可由外部 CLI 管理的后台进程形态：
+KAIROS daemon 已是可由外部 CLI 管理的后台进程形态。所有持久化状态必须留在 allthecodes 隔离数据根：
 
-- supervisor 状态写入 `~/.cc-rust/daemon/supervisor.json`。
-- worker 状态写入 `~/.cc-rust/daemon/workers/<worker-id>.json`。
-- command 文件写入 `~/.cc-rust/daemon/commands/<worker-id>/<command-id>.json`。
-- worker event 写入 `~/.cc-rust/daemon/events/<worker-id>.ndjson`。
-- control token 写入 `~/.cc-rust/daemon/control-token.json`，daemon stop 时清理。
-- sleep state 写入 `~/.cc-rust/daemon/sleep-state.json`，过期、wake 或 stop 时清理。
+- 默认数据根：`~/.allthecodes/`
+- 测试/临时数据根：`ALLTHECODES_HOME=<dir>`
+- 项目配置：`<repo>/.allthecodes/settings.json`
+- 禁止写入上游 Claude/Codex 持久化路径，如 `~/.Codex/`、`.Codex/`、旧 `~/.cc-rust/`。
 
-所有 daemon 持久化状态必须继续留在 `~/.cc-rust/daemon/`，不能写入上游 Claude/Codex 路径。
+daemon 状态位于 `{ALLTHECODES_HOME:-~/.allthecodes}/daemon/`：
+
+- `supervisor.json`：supervisor PID、端口、ready URL、worker 摘要和 shutdown 标记。
+- `workers/<worker-id>.json`：worker PID、状态、日志路径和重启次数。
+- `commands/<worker-id>/<command-id>.json`：durable command DTO。
+- `events/<worker-id>.ndjson`：worker event log，`/events` 连接时会 replay。
+- `control-token.json`：mutating HTTP endpoint token，stop 时清理。
+- `sleep-state.json`：proactive/scheduler sleep state，过期、wake 或 stop 时清理。
+
+固定 worker IDs：
+
+- `assistant-session-1`
+- `bridge-sync-1`
+- `proactive-1`
+- `scheduler-1`
 
 ## CLI 管理命令
 
-daemon 管理命令是首选入口；`--daemon` 仍是隐藏运行面。
+`daemon start` 和隐藏 `--daemon` 运行面需要 `FEATURE_KAIROS=1`。管理命令可以从另一个 CLI 进程操作同一个后台 supervisor。
 
 ```bash
-FEATURE_KAIROS=1 claude-code-rs daemon start
-FEATURE_KAIROS=1 claude-code-rs daemon start --port 19837
-claude-code-rs daemon status
-claude-code-rs daemon token
-claude-code-rs daemon submit "hello"
-claude-code-rs daemon abort
-claude-code-rs daemon command <command-id> [worker-id]
-claude-code-rs daemon events [worker-id]
-claude-code-rs daemon sleep 60 "pause proactive"
-claude-code-rs daemon wake
-claude-code-rs daemon stop
-claude-code-rs daemon restart --port 19837
+FEATURE_KAIROS=1 allthecodes daemon start
+FEATURE_KAIROS=1 allthecodes --port 19837 daemon start
+
+allthecodes daemon status
+allthecodes daemon token
+allthecodes daemon submit "hello"
+allthecodes daemon abort
+allthecodes daemon command <command-id> [worker-id]
+allthecodes daemon events [worker-id]
+allthecodes daemon sleep 60 "pause proactive"
+allthecodes daemon wake
+allthecodes daemon stop
+FEATURE_KAIROS=1 allthecodes --port 19837 daemon restart
 ```
 
-`daemon start` 需要 `FEATURE_KAIROS=1`。`daemon status/stop/restart` 可以从另一个 CLI 进程操作同一个后台 supervisor。
+`daemon stop` writes a shutdown request and the daemon runtime now observes that request directly, so normal stop should not wait for the fallback terminate grace period.
 
 ## Slash 命令
 
-`/daemon` 是会话内的轻量入口：
+`/daemon` 是会话内轻量入口：
 
 - `/daemon` 或 `/daemon status`：读取跨进程 supervisor/worker 状态。
 - `/daemon stop`：写入 shutdown request，让后台 supervisor 优雅退出。
-- `/daemon start` 与 `/daemon restart`：只提示使用 shell 管理命令，不在当前 REPL 内 fork 后台进程。
+- `/daemon start` 与 `/daemon restart`：提示使用 shell 管理命令，不在当前 REPL 内 fork 后台进程。
 
-`/sleep <seconds>` 会写入 daemon sleep state，使 proactive tick 与 `/api/status` 都能观察到同一份休眠状态。
+`/sleep <seconds>` 写入 daemon sleep state；`/api/status`、proactive worker 和 scheduler worker 读取同一份状态。
 
 ## HTTP 控制面
 
 daemon 默认监听 `127.0.0.1:19836`，可通过 `--port` 调整。
 
-- `GET /health`：健康检查。
-- `GET /api/status`：返回 QueryEngine、supervisor、workers、command root、event log、daemon sleep state。
-- `GET /api/history`：返回当前 SSE buffer 与 daemon worker event log。
+- `GET /health`、`GET /healthz`、`GET /readyz`、`GET /startupz`：探针。
+- `GET /api/status`：返回 QueryEngine/KAIROS flags、automation state、supervisor、workers、command root、assistant event log、sleep state。
+- `GET /api/history`：返回 current history、history snapshots 和 daemon worker event log。
 - `GET /events`：SSE stream，连接时 replay assistant worker event log。
-- `POST /api/submit`：只投递 `Submit` command；assistant worker claim 后拥有 QueryEngine 执行和 worker event log。
-- `POST /api/abort`：只投递 `Abort` command；assistant worker 执行 abort 并写入 `abort_ack` event。
-- `POST /api/permission`：投递 `PermissionResponse` command 并持久化 ack；尚未完整恢复到 live permission waiter。
+- `POST /api/submit`：投递 `Submit` command；assistant worker claim 后拥有 QueryEngine 执行和 worker event log。
+- `POST /api/abort`：投递 `Abort` command；assistant worker 执行 abort 并写入 `abort_ack` event。
+- `POST /api/permission`：投递 `PermissionResponse` command，并接回 live permission response path。
 - `POST /api/command`：执行 slash command。
-- `POST /api/resize`：当前明确为 no-op。
+- `POST /api/resize`：更新 daemon-visible resize DTO。
+- gateway/channel endpoints：通过 allthecodes local gateway/protocol 映射本地 channel、bridge session、remote run 能力；不把 `/api/*` 直接声明为公网 remote-control API。
 
 所有 mutating endpoint 都必须带 token：
 
 ```bash
-TOKEN=$(claude-code-rs daemon token)
-curl -H "x-cc-rust-daemon-token: $TOKEN" \
+TOKEN="$(allthecodes daemon token)"
+curl -H "x-allthecodes-daemon-token: $TOKEN" \
   -H "content-type: application/json" \
-  -d '{"decision":"allow","tool_use_id":"example"}' \
-  http://127.0.0.1:19836/api/permission
+  -d '{"text":"hello"}' \
+  http://127.0.0.1:19836/api/submit
 ```
 
 也可以使用 `Authorization: Bearer <token>`。
 
-## 发布验证命令
+## 验证命令
 
-Phase 1-6 已经用目标测试和本地 smoke 验证过核心路径。发布前至少运行：
-
-```bash
-cargo test -p cc-config partition_functions_all_root_under_data_root --lib
-cargo test -p cc-daemon protocol
-cargo test -p cc-daemon routes
-cargo test -p cc-daemon supervisor
-cargo test -p cc-daemon gateway_bridge
-cargo test -p claude-code-rs commands::daemon_cmd
-cargo test -p claude-code-rs --test e2e_cli daemon_management_reports_stopped_state_without_running_daemon
-```
-
-仍应在干净工作区补跑完整门槛：
+本任务的默认发布检查：
 
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo fmt --all -- --check
+cargo test -p allthecodes-config partition_functions_all_root_under_data_root --lib
+cargo test -p allthecodes-daemon protocol
+cargo test -p allthecodes-daemon routes
+cargo test -p allthecodes-daemon supervisor
+cargo test -p allthecodes-daemon gateway_bridge
+cargo test -p allthecodes-engine system_prompt
+cargo test -p allthecodes-tools sleep_tool
+cargo test -p allthecodes --test e2e_cli
+cargo check --workspace
+cargo build --workspace --release
 ```
 
-2026-05-17 当前专项结论：
+`crates/allthecodes/tests/e2e_cli.rs` 使用临时 `ALLTHECODES_HOME`、假 Anthropic-compatible key、`ANTHROPIC_BASE_URL=http://127.0.0.1:9` 和随机端口，覆盖 stopped status、start/readiness、status DTO、history DTO、submit command ownership、sleep state 和 graceful stop，不需要真实模型凭据或外网。
 
-- `/api/submit`、`/api/abort` 和 `/api/permission` route 不再直接执行 assistant QueryEngine submit/abort/permission response；route 只做 token 校验、command enqueue 和事件提示。
-- `AssistantWorkerRuntime` claim command 后执行 submit/abort，并把 `submit_started`、SDK-derived SSE event、`submit_completed`、`abort_ack` 写入 worker event log。
-- 本轮验证覆盖共享 engine lifecycle：`cargo test -p cc-engine lifecycle -- --nocapture`。
+## Live Smoke
 
-不要把 workspace 级非 daemon 失败误判为 daemon 专项回归；daemon 目标测试集应以本节上方命令为准。
+可选脚本：`development/reference/kairos-live-smoke.sh`
 
-## 仍未完成
+```bash
+ALLTHECODES_BIN=target/release/allthecodes \
+PORT=19846 \
+TIMEOUT_SECS=120 \
+PROMPT="KAIROS live smoke: reply with exactly 'kairos live smoke ok'." \
+development/reference/kairos-live-smoke.sh
+```
 
-以下能力尚未达到完整上游 parity：
+该脚本会启动 daemon、读取 token、`POST /api/submit`、轮询 `/api/history` 直到 terminal event，并验证 `/events` SSE replay。它需要真实可用的 provider 凭据、provider 网络访问和本机可用端口，因此不属于默认自动验证门禁；缺少凭据或网络时应记录为 skipped，而不是失败。
 
-- permission response command 当前只有 durable ack，尚未接回 live permission waiter/replay 队列。
-- resize 仍是明确 no-op；history 只返回 SSE buffer 与 worker event log，尚未形成 worker-owned history/resize DTO。
-- bridge worker 尚未接入 remote-control server 注册、远程 submit/abort/permission 映射和结果回传。
-- scheduler/proactive worker 尚未独立化，cron-style task 与 daily log 结构化双轨仍未接入。
-- 30 分钟以上 daemon soak、worker 崩溃自动 e2e、HTTP submit + SSE result live e2e 仍需在有模型凭据和干净工作区时执行。
+2026-07-04 closeout：本轮未运行 live smoke；原因是该脚本会触发真实 provider 调用，需要明确可用的模型凭据和外网访问。默认验证以离线 E2E 覆盖 daemon start/status/submit/sleep/stop。
+
+## 当前 intentional deviations
+
+- allthecodes 使用本地 gateway/protocol 作为 Bridge/GrowthBook 类能力的收口面；除非后续产品契约要求，不直接复制上游公网 Bridge/GrowthBook 行为。
+- Telegram/Lark 入站会话、schedule remote trigger 和完整公网 remote-control exposure 仍登记为 intentional/deferred scope；当前只承诺本地 daemon/gateway control plane 和 outbound adapter status/test-message。

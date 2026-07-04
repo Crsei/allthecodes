@@ -1,6 +1,6 @@
-# cc-rust 未完备项与全量构建 TODO
+# allthecodes 未完备项与全量构建 TODO
 
-> 更新日期: 2026-05-21 | 当前阶段: 全量构建 / Full Build
+> 更新日期: 2026-07-04 | 当前阶段: 全量构建 / Full Build
 
 本文只登记仍未补齐、仍需重评或明确 intentional crop 的内容。已确认实现或已关闭的历史记录已迁移到：
 
@@ -8,9 +8,11 @@
 - [archive/COMPLETED_SIMPLIFIED.md](COMPLETED_SIMPLIFIED.md)
 - [archive/completed-gap-closures-2026-05-07.md](completed-gap-closures-2026-05-07.md)
 
-开放问题与代码审查发现统一看 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。当前完成度基线看 [WORK_STATUS.md](WORK_STATUS.md)。最终发布阶段、门禁和预期效果看 [FINAL_RELEASE_PLAN.md](FINAL_RELEASE_PLAN.md)。
+开放问题与代码审查发现统一看 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。当前完成度基线看 [WORK_STATUS.md](../../docs/WORK_STATUS.md)。最终发布阶段、门禁和预期效果看 [FINAL_RELEASE_PLAN.md](FINAL_RELEASE_PLAN.md)。
 
-2026-05-21 关闭项：Rust TUI cfg-test production wiring plan Phase 1-16 已完成，`CommandSurface`、`CommandSurfaceDialog`、agent create/edit、MCP detail/tool panes、permissions、tasks/team、dialog/tabs helpers 已进入生产构建；验证通过 `cargo test -p claude-code-rs ui::`、`cargo build --workspace --release`、`git diff --check`，实现提交 `9ac3ae5`。该计划不再作为活跃缺口，只保留真实 backend/e2e 证据和 runtime residual。
+2026-07-04 关闭项：KAIROS resident assistant / daemon parity 主线已完成。system prompt resident sections、assistant/bridge/proactive/scheduler worker ownership、automation state DTO、notification/channel ingress、dream memory distillation、scheduler supervision、HTTP/SSE history replay、daemon CLI submit/sleep/stop E2E 和 graceful shutdown request 监听已落地。默认验证不需要真实 provider；live provider smoke 因需要凭据/网络保留为按需检查。
+
+2026-05-21 关闭项：Rust TUI cfg-test production wiring plan Phase 1-16 已完成，`CommandSurface`、`CommandSurfaceDialog`、agent create/edit、MCP detail/tool panes、permissions、tasks/team、dialog/tabs helpers 已进入生产构建；验证通过 `cargo test -p allthecodes ui::`、`cargo build --workspace --release`、`git diff --check`，实现提交 `9ac3ae5`。该计划不再作为活跃缺口，只保留真实 backend/e2e 证据和 runtime residual。
 
 ## 1. 当前仍未完成或仅部分完成
 
@@ -21,9 +23,9 @@
 | TaskTools remote/multi-type runtime | 本地与 UI production 完成，remote runtime parity 未完 | 持久化、依赖字段、输出保留、`TaskOutput` 阻塞/超时、task taxonomy、remote metadata、recoverable marker、restore timer reset、remote review timeout guard、local-agent 取消已完成；`/tasks` production surface 已接入 BackendMessage、task list/detail、shell/remote/agent/team/MCP/dream/workflow detail renderers、stop/delete/refresh actions。仍需 remote/multi-type poller/reconnect runtime parity。 |
 | PlanMode auto-mode parity | 基础完成，classifier parity 未完 | 保守 classifier、计划持久化、approval lifecycle、实现任务关联、团队审批 mailbox、plan file 写入白名单已落地；仍需 full auto-mode LLM classifier parity 和 `allowedPrompts` 语义分类收口。 |
 | WebFetch browser-grade 能力 | HTTP-only release scope | redirect budget / cross-host diagnostic、Content-Type 分发、环境代理/`NO_PROXY`、Cookie/credential 边界已完成；browser-grade JS rendering 已登记为 §6 intentional crop，本次发布不承诺。 |
-| Daemon supervisor/worker ownership | submit/abort worker-owned，仍有 parity residual | `/api/submit`、`/api/abort`、`/api/permission` 已写入 `cc-daemon` command/event protocol，assistant worker 执行 submit 并回写事件；permission response 仍只是 durable ack，resize/history 仍缺 worker-owned 语义。 |
+| Daemon live-provider smoke | 默认 E2E 完成，真实模型 smoke 按需 | `crates/allthecodes/tests/e2e_cli.rs` 已覆盖 stopped/start/status/submit/sleep/stop、worker IDs、automation state、history DTO 和 graceful shutdown；`development/reference/kairos-live-smoke.sh` 仍需真实 provider 凭据、provider 网络和空闲端口，因此不是默认门禁。 |
 | Session export | API snapshot/schema v2 已接入，context collapse residual | 导出 schema v2 已包含 raw transcript、api view summary、`ApiRequestSnapshot`、custom title 和图片块可读占位；仍缺 context collapse 原生事件、mode/tag 来源和完整 api-view 投影。 |
-| Crate migration / thin binary | Engine + IPC owner migration 已落地，thin-binary guard 未关闭 | `claude-code-rs/src/engine/**` 与 `claude-code-rs/src/ipc/**` 已删除；`cc-engine` 拥有 engine/agent，`cc-ipc`/`cc-ipc-client`/`cc-ipc-protocol` 拥有 IPC runtime、client helper 与 wire DTO；IPC envelope 已有 version/min-compat 策略。仍需收束剩余 root-style imports、allow-attribute hits、Codex compatibility path hits，并跑完整 workspace/release gates。 |
+| Crate migration / thin binary | Engine + IPC owner migration 已落地，thin-binary guard 未关闭 | 旧 root `src/engine/**` 与 `src/ipc/**` 已删除；`allthecodes-engine` 拥有 engine/agent，`allthecodes-ipc`/`allthecodes-ipc-client`/`allthecodes-ipc-protocol` 拥有 IPC runtime、client helper 与 wire DTO；IPC envelope 已有 version/min-compat 策略。仍需收束剩余 root-style imports、allow-attribute hits、Codex compatibility path hits，并跑完整 workspace/release gates。 |
 | Remote-control gateway control plane | 基础完成，release evidence 未全收口 | `crates/gateway` 已拥有 `/remote-control/v1/**`、RemoteSource/session/run、auth、adapter registry、durable events、delivery 和 recovery；现有 daemon `/api/*` 仍不是公网 remote-control API。剩余工作是 release gate 验证、public exposure policy 和 admin UX。 |
 | Telegram/Lark gateway adapter connectivity | outbound 完成，inbound 裁剪 | 第一版支持连接、健康检查、provider-neutral 状态诊断和 allowlisted test-message 发送；不做 inbound conversation、完整远程会话控制或绕过 gateway runner 触发模型。 |
 | Local `/remote` and TUI remote surface | 基础完成，验证残留 | `/remote` slash command、`RemoteSurface`、remote status indicator 已存在并读取 local gateway status/adapters/runs/events。剩余工作是完整 release gate 验证和真实运维证据。 |
@@ -85,7 +87,7 @@
 - `test_ctx()` 等测试样板未完全收束到共享 helper。
 - 模型别名映射未完全合并到单一查找表。
 - 工具输入解析风格不统一。
-- IPC subsystem 仍需更多 per-subsystem serialization contract tests；envelope version/min-compat 策略已接入 `cc-ipc-protocol`。
+- IPC subsystem 仍需更多 per-subsystem serialization contract tests；envelope version/min-compat 策略已接入 `allthecodes-ipc-protocol`。
 
 ## 6. Intentional 裁剪
 
@@ -93,10 +95,11 @@
 
 `- <模块/功能>: <裁剪理由> | <决策者> | <日期> | <复审触发条件>`
 
-- Agent Teams tmux/iTerm2 pane backend: cc-rust 当前主运行环境包含 Windows，外部 pane backend 会引入 tmux/iTerm2/窗口管理器耦合、跨平台清理语义和额外交互面；MVP-005 决定不实现外部 pane backend，而是把 in-process backend 做成唯一受支持路径并补齐生命周期控制。`PaneBackend` trait 保留为未来上游 parity 审查边界。 | Codex | 2026-04-28 | 用户明确需要可见终端 pane、上游 pane protocol 成为产品必需项，或 cc-rust roadmap 切换到 Unix terminal-pane 优先发布。
-- BashTool Windows Restricted Token / Job Object OS-level primitive: 上游 `@anthropic-ai/sandbox-runtime` 当前只对 macOS、Linux 与 WSL2 暴露 sandbox 支持，PowerShell permission UI 明确没有 sandbox toggle；cc-rust 不自研 Windows token/job sandbox，保留 Rust-level FS/network preflight、`/sandbox require` fail-closed 与 unavailable 诊断。 | Codex | 2026-05-05 | 上游发布 Windows sandbox-runtime backend、PowerShell sandbox toggle 成为产品必需项，或安全策略要求 Windows OS-level enforcement。
+- Agent Teams tmux/iTerm2 pane backend: allthecodes 当前主运行环境包含 Windows，外部 pane backend 会引入 tmux/iTerm2/窗口管理器耦合、跨平台清理语义和额外交互面；MVP-005 决定不实现外部 pane backend，而是把 in-process backend 做成唯一受支持路径并补齐生命周期控制。`PaneBackend` trait 保留为未来上游 parity 审查边界。 | Codex | 2026-04-28 | 用户明确需要可见终端 pane、上游 pane protocol 成为产品必需项，或 roadmap 切换到 Unix terminal-pane 优先发布。
+- BashTool Windows Restricted Token / Job Object OS-level primitive: 上游 `@anthropic-ai/sandbox-runtime` 当前只对 macOS、Linux 与 WSL2 暴露 sandbox 支持，PowerShell permission UI 明确没有 sandbox toggle；allthecodes 不自研 Windows token/job sandbox，保留 Rust-level FS/network preflight、`/sandbox require` fail-closed 与 unavailable 诊断。 | Codex | 2026-05-05 | 上游发布 Windows sandbox-runtime backend、PowerShell sandbox toggle 成为产品必需项，或安全策略要求 Windows OS-level enforcement。
 - WebFetch browser-grade JS rendering: 本次发布只承诺 HTTP fetch 能力，包括 redirect/MIME/proxy/`NO_PROXY`、credential URL 拒绝和无 cookie store 边界；不内置浏览器运行时，不执行页面 JavaScript，避免把 cookie/session/DOM 执行面引入普通 WebFetch。需要 JS 渲染的工作流应走外置 Browser MCP 或后续 native browser host 方案。 | Codex | 2026-05-17 | 外置 Browser MCP 升级为默认发布支持面、用户明确要求 JS-rendered page fetch，或安全模型允许受控浏览器 profile/session 隔离。
-- Voice dictation audio/STT backend: cc-rust 当前只保留 `/voice`、`voiceEnabled`、keybinding 和 language normalization 兼容面；不声明真实 microphone capture、waveform UI、streaming transcription 或 Claude.ai voice STT。 | Codex | 2026-05-17 | 项目新增受支持 audio backend、STT client、local/SSH/WSL/auth 矩阵测试，并决定把 voice 纳入发布支持面。
+- Voice dictation audio/STT backend: allthecodes 当前只保留 `/voice`、`voiceEnabled`、keybinding 和 language normalization 兼容面；不声明真实 microphone capture、waveform UI、streaming transcription 或 Claude.ai voice STT。 | Codex | 2026-05-17 | 项目新增受支持 audio backend、STT client、local/SSH/WSL/auth 矩阵测试，并决定把 voice 纳入发布支持面。
+- KAIROS Bridge/GrowthBook upstream surface: 本轮以 allthecodes local gateway/protocol 收口 bridge session、channel status、run timeline/output 和 daemon worker state；不直接复制上游公网 Bridge/GrowthBook 控制面，也不把 daemon `/api/*` 暴露为公网 remote-control API。 | Codex | 2026-07-04 | 产品定义公网 remote-control/experimentation contract、安全审计策略和 admin UX，并要求与上游 Bridge/GrowthBook 行为完全一致。
 - Telegram/Lark inbound channel sessions and remote triggers: 本轮只承诺 gateway-backed outbound adapter status/control、connect health check 和 allowlisted test-message；不承诺入站 Telegram/Lark conversation、schedule remote triggers 或完整远程会话 parity。 | Codex | 2026-05-17 | 产品定义入站 channel session contract、gateway runner 注入语义和安全/审计策略，并补 e2e。
 
 新增规则：

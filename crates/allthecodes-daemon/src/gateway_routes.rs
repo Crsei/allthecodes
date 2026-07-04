@@ -1,6 +1,5 @@
 //! Remote-control gateway route wiring for the daemon HTTP server.
 
-use crate::protocol::{DaemonCommandKind, DaemonCommandStatus};
 use allthecodes_gateway::auth::{invalid_token_error, missing_token_error, GatewayAuthMode};
 use allthecodes_gateway::{
     api, BusySnapshot, GatewayAuthVerifier, GatewayBusySnapshotProvider, GatewayError,
@@ -11,7 +10,6 @@ use tracing::warn;
 
 use super::gateway_bridge::GatewayDaemonBridge;
 use super::process_state;
-use super::supervisor::ASSISTANT_WORKER_ID;
 
 #[derive(Debug, Clone, Copy)]
 struct DaemonGatewayAuth;
@@ -47,22 +45,11 @@ struct DaemonBusySnapshotProvider {
 
 impl GatewayBusySnapshotProvider for DaemonBusySnapshotProvider {
     fn snapshot(&self) -> BusySnapshot {
-        let commands = super::protocol_store()
-            .read_worker_commands(ASSISTANT_WORKER_ID)
-            .unwrap_or_default();
-        let active_submits = commands
-            .iter()
-            .filter(|command| {
-                command.kind == DaemonCommandKind::Submit
-                    && matches!(
-                        command.status,
-                        DaemonCommandStatus::Pending | DaemonCommandStatus::Acked
-                    )
-            })
-            .count();
+        let active_submits = crate::automation_state::active_submit_count();
+        let pending_input = crate::automation_state::pending_input_active();
 
         BusySnapshot {
-            running: usize::from(active_submits > 0),
+            running: usize::from(active_submits > 0 || pending_input),
             queued: active_submits.saturating_sub(1),
             max_running: self.policy.max_running,
             max_queued: self.policy.max_queued,
@@ -99,6 +86,8 @@ pub fn gateway_routes() -> axum::Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{DaemonCommandKind, DaemonEventKind};
+    use crate::supervisor::ASSISTANT_WORKER_ID;
     use allthecodes_gateway::{
         BusyPolicy, RemoteSource, RemoteTransport, RunPolicy, RunRequest, RunStatus,
     };
@@ -116,6 +105,38 @@ mod tests {
                 DaemonCommandKind::Submit,
                 serde_json::json!({ "text": "hello" }),
                 None,
+            )
+            .unwrap();
+
+        let snapshot = DaemonBusySnapshotProvider {
+            policy: GatewayPolicy::default(),
+        }
+        .snapshot();
+
+        assert_eq!(snapshot.running, 1);
+        assert_eq!(snapshot.queued, 0);
+        match previous {
+            Some(value) => std::env::set_var("ALLTHECODES_HOME", value),
+            None => std::env::remove_var("ALLTHECODES_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn busy_snapshot_counts_pending_input_as_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var("ALLTHECODES_HOME").ok();
+        std::env::set_var("ALLTHECODES_HOME", tmp.path());
+        crate::protocol_store()
+            .append_event(
+                ASSISTANT_WORKER_ID,
+                None,
+                DaemonEventKind::PermissionRequest.as_str(),
+                serde_json::json!({
+                    "request_id": "toolu_1",
+                    "tool_use_id": "toolu_1",
+                    "tool_name": "Bash",
+                }),
             )
             .unwrap();
 

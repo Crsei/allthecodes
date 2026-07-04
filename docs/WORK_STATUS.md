@@ -1,6 +1,6 @@
-# cc-rust 工作状态总览
+# allthecodes 工作状态总览
 
-> 更新日期: 2026-07-03 | 分支历史名: `rust-lite` | 当前阶段: 全量构建 / Full Build
+> 更新日期: 2026-07-04 | 分支历史名: `rust-lite` | 当前阶段: 全量构建 / Full Build
 
 本文件只保留当前阶段仍需要判断和执行的状态。已经确认实现、已关闭或只具历史价值的阶段记录统一看：
 
@@ -12,7 +12,7 @@
 
 ## 当前结论
 
-cc-rust 已不再按历史 "Lite" 边界维护。触及上游能力时，默认按 `F:\AIclassmanager\cc\src\**` 或 `F:\AIclassmanager\cc\claude-code-bun\**` 的完整行为对齐；确需保留裁剪时，必须写入 [IMPLEMENTATION_GAPS.md](IMPLEMENTATION_GAPS.md) 的 "Intentional 裁剪"。
+allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默认按 `/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/claude-code-bun/` 的完整行为对齐；确需保留裁剪时，必须写入 [IMPLEMENTATION_GAPS.md](../development/archive/IMPLEMENTATION_GAPS.md) 的 "Intentional 裁剪"。
 
 当前已确认完成并归档的主线包括：
 
@@ -24,9 +24,10 @@ cc-rust 已不再按历史 "Lite" 边界维护。触及上游能力时，默认�
 - Extensibility：hooks、skills、custom-agent active runtime safety、MCP stdio/local SSE/remote SSE/Streamable HTTP/OAuth/reconnect/tool refresh 已按当前标准面闭环。
 - MCP scope isolation：`mcpBindings` 已支持 `global/project/session/thread` 四级 binding；旧 `mcpServers` 继续生成兼容隐式 binding；engine、agent、skill fork、CLI/IPC/Web/TUI 展示均按 binding context 过滤 MCP tools/resources/calls。TUI 当前可编辑 global/project/session binding，thread binding 由 CLI/IPC/Web 编辑。
 - ACP v2 adapter：`--acp` JSON-RPC stdio server 已完成 review-fix baseline。已验证 `initialize`、auth、session new/load/resume/list/close/delete/prompt/cancel/set_config_option、permission request bridge、prompt/update mapping、stdout purity smoke；`session.prompt.image/audio/embeddedContext` 与 `session.mcp.*` 仍为 intentional unadvertised scope。
+- KAIROS resident assistant / daemon parity：system prompt resident-assistant sections、assistant/bridge/proactive/scheduler worker ownership、automation state DTO、push notification/channel ingress、dream memory distillation、scheduler supervision、HTTP/SSE history replay、daemon CLI submit/sleep/stop E2E 已落地；live provider smoke 仍按需运行。
 - Ratatui UI：P0/P1 基础面已完成；运行时 residual 见 [KNOWN_ISSUES.md](../development/archive/KNOWN_ISSUES.md)，未跟踪 parity 缺口见 [ratatui-ui-parity-untracked-gap-plan-2026-05-08.md](../development/archive/plan/ratatui-ui-parity-untracked-gap-plan-2026-05-08.md)。
-- Runtime storage：`CC_RUST_HOME` / `~/.cc-rust/` 路径隔离已落地，旧计划归档。
-- Crate migration：root binary 已删除 `src/engine/**` 与 `src/ipc/**`；engine/agent 实现由 `cc-engine` 拥有，IPC JSONL runtime、agent settings 与共享 protocol/handler facade 由 `cc-ipc` / `cc-ipc-client` / `cc-ipc-protocol` 拥有，root 仅保留 startup、UI 与 runtime adapter glue。
+- Runtime storage：`ALLTHECODES_HOME` / `~/.allthecodes/` 和项目级 `.allthecodes/` 路径隔离已落地，旧计划归档。
+- Crate migration：root binary 已删除旧 `src/engine/**` 与 `src/ipc/**`；engine/agent 实现由 `allthecodes-engine` 拥有，IPC JSONL runtime、agent settings 与共享 protocol/handler facade 由 `allthecodes-ipc` / `allthecodes-ipc-client` / `allthecodes-ipc-protocol` 拥有，root 仅保留 startup、UI 与 runtime adapter glue。
 - Codebase optimization Phase 4：Rust TUI 状态解耦已落地；`App` facade 下沉到 domain stores、overlay dispatcher、message view-model 与 runtime view state，最终验证见 [codebase-optimization-plan-2026-07-03.md](../development/code-split/codebase-optimization-plan-2026-07-03.md)。
 
 ## 活跃待办
@@ -37,12 +38,12 @@ cc-rust 已不再按历史 "Lite" 边界维护。触及上游能力时，默认�
 | Team Memory 客户端同步 | 代码路径已接通，验证与文档收口未完 | 补同步、断线恢复、冲突处理 e2e；通过后归档旧 Team Memory plan/spec。 |
 | TaskTools | 多数基础已完成，remote/multi-type poller parity 仍开放 | 对齐远程/多类型后台任务 poller/reconnect runtime。 |
 | PlanMode | 保守 classifier、持久化、审批和 plan file 白名单已完成 | 补 full auto-mode LLM classifier parity，并覆盖 plan 创建/恢复/审批/e2e。 |
-| WebFetch | HTTP-only release scope | redirect/MIME/proxy/credential 边界已完成；browser-grade JS rendering 已写入 [IMPLEMENTATION_GAPS.md](IMPLEMENTATION_GAPS.md) §6 intentional crop。 |
-| Daemon | submit/abort worker ownership 已落地，仍有 permission/resize/history residual | 继续把 permission waiter replay、resize/history DTO 与 scheduler ownership 收束到 supervisor/worker 架构。 |
+| WebFetch | HTTP-only release scope | redirect/MIME/proxy/credential 边界已完成；browser-grade JS rendering 已写入 [IMPLEMENTATION_GAPS.md](../development/archive/IMPLEMENTATION_GAPS.md) §6 intentional crop。 |
+| Daemon / KAIROS | resident assistant parity 主线已落地 | 默认验证覆盖 CLI stopped/start/status/submit/sleep/stop、worker IDs、automation state、history DTO 和 graceful shutdown。可选 live smoke 需要真实 provider 凭据和网络；Bridge/GrowthBook 公网行为、Telegram/Lark 入站会话仍按 intentional/deferred scope 处理。 |
 | Session export | schema v2 与 API request snapshots 已接入，projection residual 开放 | 补 context collapse 原生事件、mode/tag 来源和完整 apiView 投影。 |
 | Crate migration | Engine + IPC owner migration landed; verification in progress | IPC envelope version/min-compat 已补；下一步收束剩余 root-style imports、allow attributes、Codex compatibility path hits，并补齐 thin-binary closeout 文档。 |
 | ACP live-provider smoke | Binary/stdout smoke target landed; deterministic ACP runtime tests pass; live real-model smoke is on-demand | `acp_stdio_real_model_prompt_smoke` is ignored by default because it requires configured credentials, provider access, and network. On 2026-07-03, explicit local runs against current `backend=codex` timed out after 300s after `available_commands_update` + `state_update: running`, with no model content or idle. |
-| UI/runtime issues | P0/P1 基础完成；Phase 4 TUI state decoupling 已落地；仍有 residuals 和未跟踪 parity 缺口 | 运行时 residual 见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)；`⚠️ 部分` / `❌ 缺失` 的未跟踪功能按 [ratatui-ui-parity-untracked-gap-plan-2026-05-08.md](../development/archive/plan/ratatui-ui-parity-untracked-gap-plan-2026-05-08.md) 分阶段处理。 |
+| UI/runtime issues | P0/P1 基础完成；Phase 4 TUI state decoupling 已落地；仍有 residuals 和未跟踪 parity 缺口 | 运行时 residual 见 [KNOWN_ISSUES.md](../development/archive/KNOWN_ISSUES.md)；`⚠️ 部分` / `❌ 缺失` 的未跟踪功能按 [ratatui-ui-parity-untracked-gap-plan-2026-05-08.md](../development/archive/plan/ratatui-ui-parity-untracked-gap-plan-2026-05-08.md) 分阶段处理。 |
 | 文档状态一致性 | 本轮已收敛顶层入口 | 后续每完成一个模块，都同步迁移完成记录到 archive，避免活跃 TODO 文档堆积完成历史。 |
 
 ## 活跃文档入口
@@ -53,7 +54,7 @@ cc-rust 已不再按历史 "Lite" 边界维护。触及上游能力时，默认�
 - [COMMAND_REFERENCE.md](../development/archive/COMMAND_REFERENCE.md), [CLI_REFERENCE.md](../development/archive/CLI_REFERENCE.md), [USAGE_GUIDE.md](../development/archive/USAGE_GUIDE.md): 用户命令与使用说明。
 - [DAEMON_OPERATIONS.md](../development/reference/DAEMON_OPERATIONS.md), [daemon-usability-plan.md](../development/archive/plan/daemon-usability-plan.md): daemon 当前操作面与后续计划。
 - [RATATUI_UI_PARITY.md](../development/archive/RATATUI_UI_PARITY.md), [ratatui-ui-parity-untracked-gap-plan-2026-05-08.md](../development/archive/plan/ratatui-ui-parity-untracked-gap-plan-2026-05-08.md): Rust TUI 对标与后续 UI parity。
-- [STORAGE.md](STORAGE.md): cc-rust 路径隔离与数据目录规则。
+- [STORAGE.md](STORAGE.md): allthecodes 路径隔离与数据目录规则。
 - [traceable-logging-plan.md](../development/archive/plan/traceable-logging-plan.md): 可追溯日志体系 draft。
 
 ## 历史 Deferred
@@ -61,8 +62,8 @@ cc-rust 已不再按历史 "Lite" 边界维护。触及上游能力时，默认�
 历史 deferred 不再等于 "不做"。远程控制、多端集成、服务端扩展、遥测/MDM、Ant-only 命令和内部工具都需要在触及时重新评估：
 
 - 要实现：补到对应 plan / implementation task。
-- 要延期：保留在 [IMPLEMENTATION_GAPS.md](IMPLEMENTATION_GAPS.md) TODO 区。
-- 要裁剪：写入 [IMPLEMENTATION_GAPS.md](IMPLEMENTATION_GAPS.md) "Intentional 裁剪"，说明理由、决策者、日期和复审触发条件。
+- 要延期：保留在 [IMPLEMENTATION_GAPS.md](../development/archive/IMPLEMENTATION_GAPS.md) TODO 区。
+- 要裁剪：写入 [IMPLEMENTATION_GAPS.md](../development/archive/IMPLEMENTATION_GAPS.md) "Intentional 裁剪"，说明理由、决策者、日期和复审触发条件。
 
 ## ACP v2 adapter status (2026-07-03)
 

@@ -16,6 +16,8 @@ use crate::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, ValidationResu
 use allthecodes_config::features::{self, Feature};
 use allthecodes_types::message::AssistantMessage;
 
+const DAEMON_SLEEP_STATE_SCHEMA_VERSION: u32 = 2;
+
 /// SleepTool -- signal the proactive tick loop to pause.
 pub struct SleepTool;
 
@@ -107,7 +109,7 @@ struct ToolSleepState {
 fn write_sleep_state(duration_seconds: u64, reason: &str) -> Result<ToolSleepState> {
     let now = Utc::now();
     let state = ToolSleepState {
-        schema_version: 1,
+        schema_version: DAEMON_SLEEP_STATE_SCHEMA_VERSION,
         sleeping_until: now + chrono::Duration::seconds(duration_seconds as i64),
         reason: if reason.trim().is_empty() {
             None
@@ -133,6 +135,28 @@ fn write_sleep_state(duration_seconds: u64, reason: &str) -> Result<ToolSleepSta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
     fn test_sleep_tool_name() {
@@ -220,6 +244,29 @@ mod tests {
             matches!(result, ValidationResult::Ok),
             "expected Ok for valid input"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn write_sleep_state_uses_config_daemon_contract() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+
+        let state = write_sleep_state(60, " waiting ").unwrap();
+
+        let path = allthecodes_config::paths::daemon_dir().join("sleep-state.json");
+        let legacy_path = home
+            .path()
+            .join(".allthecodes")
+            .join("daemon")
+            .join("sleep-state.json");
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(path.exists());
+        assert!(!legacy_path.exists());
+        assert_eq!(state.schema_version, 2);
+        assert_eq!(body["schema_version"], 2);
+        assert_eq!(body["reason"], "waiting");
     }
 
     // -----------------------------------------------------------------------

@@ -10,6 +10,7 @@ use async_trait::async_trait;
 
 use crate::{CommandContext, CommandHandler, CommandResult};
 use allthecodes_config::features::{self, Feature};
+use allthecodes_services::dream;
 
 pub struct DreamHandler;
 
@@ -57,9 +58,23 @@ impl CommandHandler for DreamHandler {
             }
         };
 
+        let written = dream::run_recent_days(days, chrono::Local::now().date_naive())?;
+        if written.is_empty() {
+            return Ok(CommandResult::Output(format!(
+                "No dream memory written for the last {} days; logs were missing or already distilled.",
+                days
+            )));
+        }
+
+        let paths = written
+            .iter()
+            .map(|path| format!("- {}", path.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
         Ok(CommandResult::Output(format!(
-            "Distilling last {} days of logs into memory...",
-            days
+            "Dream memory written for {} day(s):\n{}",
+            written.len(),
+            paths
         )))
     }
 }
@@ -72,6 +87,7 @@ impl CommandHandler for DreamHandler {
 mod tests {
     use super::*;
     use allthecodes_bootstrap::SessionId;
+    use allthecodes_config::features::{self, FeatureFlags};
     use std::path::PathBuf;
 
     fn test_ctx() -> CommandContext {
@@ -83,8 +99,41 @@ mod tests {
         }
     }
 
+    struct FeatureGuard(Option<FeatureFlags>);
+
+    impl FeatureGuard {
+        fn set(flags: FeatureFlags) -> Self {
+            let previous = features::runtime_override();
+            features::set_runtime_override(flags);
+            Self(previous)
+        }
+
+        fn disable_all() -> Self {
+            Self::set(FeatureFlags::all_disabled())
+        }
+
+        fn enable_kairos() -> Self {
+            Self::set(FeatureFlags {
+                kairos: true,
+                proactive: true,
+                ..FeatureFlags::all_disabled()
+            })
+        }
+    }
+
+    impl Drop for FeatureGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(previous) => features::set_runtime_override(previous),
+                None => features::clear_runtime_override(),
+            }
+        }
+    }
+
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_feature_gate() {
+        let _features = FeatureGuard::disable_all();
         let handler = DreamHandler;
         let mut ctx = test_ctx();
         let result = handler.execute("", &mut ctx).await.unwrap();
@@ -95,7 +144,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_unknown_argument_gated() {
+        let _features = FeatureGuard::disable_all();
         let handler = DreamHandler;
         let mut ctx = test_ctx();
         let result = handler.execute("--days 30", &mut ctx).await.unwrap();
@@ -125,5 +176,63 @@ mod tests {
     #[test]
     fn test_parse_days_absent() {
         assert_eq!(parse_days(""), None);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn kairos_dream_writes_today_memory_file() {
+        use chrono::Local;
+
+        struct EnvGuard {
+            key: &'static str,
+            previous: Option<String>,
+        }
+
+        impl EnvGuard {
+            fn set(key: &'static str, value: impl AsRef<std::path::Path>) -> Self {
+                let previous = std::env::var(key).ok();
+                std::env::set_var(key, value.as_ref());
+                Self { key, previous }
+            }
+        }
+
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _features = FeatureGuard::enable_kairos();
+
+        let today = Local::now();
+        let log_path = allthecodes_config::paths::daily_log_path(today);
+        std::fs::create_dir_all(log_path.parent().expect("daily log has parent")).unwrap();
+        std::fs::write(&log_path, "- Task: command dream distillation.\n").unwrap();
+
+        let handler = DreamHandler;
+        let mut ctx = test_ctx();
+        let result = handler.execute("--days 1", &mut ctx).await.unwrap();
+        let output = match result {
+            CommandResult::Output(text) => text,
+            _ => panic!("Expected Output"),
+        };
+
+        assert!(output.contains("Dream memory written"));
+        assert!(output.contains("memory/dream"));
+        let expected = home
+            .path()
+            .join("memory")
+            .join("dream")
+            .join(format!("{}.md", today.format("%Y-%m-%d")));
+        assert!(
+            expected.exists(),
+            "expected dream memory at {}",
+            expected.display()
+        );
     }
 }

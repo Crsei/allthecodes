@@ -197,13 +197,25 @@ pub fn build_system_prompt_with_memory_contexts(
                 mcp_instructions_section,
                 "MCP servers connect/disconnect between turns",
             ),
-            cached_section("brief_mode", brief_mode_section),
-            cached_section("proactive_mode", proactive_mode_section),
-            cached_section("external_channels", external_channels_section),
             uncached_section(
                 "coordinator_mode",
                 coordinator_prompt_section,
                 "coordinator mode can be toggled for the current session",
+            ),
+            uncached_section(
+                "kairos_brief",
+                kairos_brief_section,
+                "KAIROS and Brief gates can be toggled for the current session",
+            ),
+            uncached_section(
+                "kairos_proactive",
+                kairos_proactive_section,
+                "KAIROS and proactive gates can be toggled for the current session",
+            ),
+            uncached_section(
+                "external_channels",
+                external_channels_section,
+                "KAIROS channel gates can be toggled for the current session",
             ),
             cached_section("subsystem_status", build_subsystem_status_reminder),
         ];
