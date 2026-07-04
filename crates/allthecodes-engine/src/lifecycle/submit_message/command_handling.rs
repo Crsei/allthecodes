@@ -45,7 +45,7 @@ pub(super) async fn handle_parsed_command(
     };
 
     let command_name = command_dispatcher
-        .command_name(parsed_command.index)
+        .command_name_for_cwd(parsed_command.index, std::path::Path::new(&config.cwd))
         .unwrap_or_else(|| format!("#{}", parsed_command.index));
 
     let mut ctx = CommandContext {

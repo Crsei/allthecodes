@@ -59,7 +59,8 @@ pub(super) async fn try_execute_command(
         return Some(CmdAction::Handled);
     }
 
-    let dispatcher = slash_commands::DefaultCommandDispatcher::for_full_registry();
+    let cwd = std::path::PathBuf::from(engine.cwd());
+    let dispatcher = slash_commands::DefaultCommandDispatcher::for_cwd(&cwd);
     let parsed = dispatcher.parse_command_input(trimmed)?;
     let args = parsed.args.clone();
     let command_name = dispatcher
@@ -69,7 +70,7 @@ pub(super) async fn try_execute_command(
 
     let mut ctx = CommandContext {
         messages: original_messages.clone(),
-        cwd: std::path::PathBuf::from(engine.cwd()),
+        cwd,
         app_state: engine.app_state(),
         session_id: engine.current_session_id(),
     };

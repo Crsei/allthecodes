@@ -272,6 +272,31 @@ WorkflowContext 内部调用 `agent_tool.call()` 或直接调用 `AgentRuntime::
 - 子 agent 获得与 `AgentTool` 相同的工具集和权限策略
 - 结果通过 `agent_result` 回传
 
+### 已知剩余缺口：文件型 workflow 动态 slash command
+
+记录日期：2026-07-04。
+
+当前已补齐的 file-script 兼容层包括：
+
+- `Workflow`/`workflow` 工具在输入含 `workflow` 或 `run_id` 时进入文件型 workflow mode。
+- 文件发现路径使用 `.allthecodes/workflows`，run 状态持久化到 `.allthecodes/workflow-runs`。
+- 支持 `.md`、`.yaml`、`.yml` parser 和 `/workflows` 列表命令。
+
+仍未落地的上游兼容能力是：把 `.allthecodes/workflows/release.md` 自动注册为 `/release` 这类动态 slash command。
+
+原因不是 parser 或工具层缺失，而是当前 Rust command metadata/dispatcher 仍是全局快照：
+
+- `DefaultCommandDispatcher::for_full_registry()` 只从 builtin + global `DYNAMIC_REGISTRY` 读取 metadata。
+- workflow 文件发现依赖当前 `cwd`，但现有 command metadata provider 没有 `cwd` 参数。
+- dynamic registry 的 `ExecutionStrategy::Inline` 没有 handler，不能直接承载“读取 cwd 下 workflow 文件并返回 `CommandResult::Query`”的执行语义。
+
+后续实现建议拆成独立任务：
+
+1. 新增 cwd-aware command metadata 路径，例如 `DefaultCommandDispatcher::for_cwd(cwd)` 或 command metadata provider 增加 `cwd` 参数。
+2. 扫描 `.allthecodes/workflows/*.md|*.yaml|*.yml`，生成 workflow command metadata；遇到 builtin command 冲突时 builtin 优先。
+3. 执行 `/release args` 时读取对应 workflow 文件，返回模型查询消息，文本等价于上游：`Execute this workflow:\n\n{content}\n\nArguments: {args}`。
+4. 保持默认持久化路径隔离，不读取或写入 `.claude/workflows` / `.claude/workflow-runs`。
+
 ---
 
 ## 6. 实现步骤

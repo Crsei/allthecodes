@@ -1,6 +1,6 @@
 ---
 source: crates/allthecodes/src/ui/tasks/mod.rs
-assertion_line: 138
+assertion_line: 187
 expression: rendered
 ---
 ## row
@@ -67,6 +67,41 @@ Workflow: ui-port
 - cargo test         running   running tests
 - remote deploy      failed    connection lost
 - review worker      succeeded reported findings
+
+## workflow-running
+Workflow: Workflow: release
+Run id: workflow-run-1
+State: running
+Summary: running - step 2/3: Publish release
+Progress: 1/3 steps
+
+Recent output:
+- Workflow file: release.md
+- /repo/.allthecodes/workflows/release.md
+- Current step: 2/3 Publish release
+- Progress: 1/3 completed
+
+## workflow-completed
+Workflow: Workflow: docs
+Run id: workflow-run-2
+State: succeeded
+Summary: completed - 2/2 steps
+Progress: 2/2 steps
+
+Recent output:
+- Workflow file: docs.yaml
+- Progress: 2/2 completed
+
+## workflow-cancelled
+Workflow: Workflow: cleanup
+Run id: workflow-run-3
+State: canceled
+Summary: cancelled - 0/2 steps
+Progress: 0/2 steps
+
+Recent output:
+- Workflow file: cleanup.yml
+- Current step: none
 
 ## activity
   ● cargo test(shell) | [running] | worked for 12.4s | 3/5 [██████    ] | running tests | 2 output lines

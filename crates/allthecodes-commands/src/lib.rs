@@ -82,8 +82,11 @@ pub mod terminal_env;
 pub mod terminal_setup;
 pub mod version;
 pub mod voice_cmd;
+pub mod workflows;
 
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use anyhow::Result;
@@ -91,7 +94,7 @@ use async_trait::async_trait;
 
 use allthecodes_bootstrap::SessionId;
 use allthecodes_engine::{command_runtime, types::app_state::AppState};
-use allthecodes_types::message::Message;
+use allthecodes_types::message::{Message, MessageContent, UserMessage};
 
 pub mod runtime {
     use std::future::Future;
@@ -618,6 +621,60 @@ pub fn get_dynamic_metadata() -> Vec<CommandMetadata> {
     metadata
 }
 
+/// Get command metadata visible from a project cwd.
+///
+/// This includes builtin and global dynamic command metadata plus project-local
+/// workflow scripts from `.allthecodes/workflows`. Project workflow commands are
+/// intentionally not inserted into [`DYNAMIC_REGISTRY`].
+pub fn get_dynamic_metadata_for_cwd(cwd: &Path) -> Vec<CommandMetadata> {
+    let mut metadata = get_dynamic_metadata();
+    extend_with_workflow_command_metadata(cwd, &mut metadata);
+    metadata
+}
+
+fn extend_with_workflow_command_metadata(cwd: &Path, metadata: &mut Vec<CommandMetadata>) {
+    let reserved_names = metadata
+        .iter()
+        .flat_map(|command| {
+            std::iter::once(command.name.clone()).chain(command.aliases.iter().cloned())
+        })
+        .collect::<HashSet<_>>();
+    let dir = allthecodes_tools::workflow::file_workflow::workflow_scripts_dir(cwd);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+
+    let mut by_stem: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for entry in entries.filter_map(std::result::Result::ok) {
+        let path = entry.path();
+        if !allthecodes_tools::workflow::file_workflow::is_valid_workflow_file(&path) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if stem.trim().is_empty() {
+            continue;
+        }
+        by_stem.entry(stem.to_string()).or_default().push(path);
+    }
+
+    for (name, paths) in by_stem {
+        if paths.len() != 1 || reserved_names.contains(&name) {
+            continue;
+        }
+        let file = paths[0]
+            .file_name()
+            .and_then(|file| file.to_str())
+            .unwrap_or(name.as_str());
+        metadata.push(CommandMetadata {
+            name: name.clone(),
+            aliases: Vec::new(),
+            description: format!("Execute project workflow script {file}"),
+        });
+    }
+}
+
 pub fn command_metadata(commands: &[Command]) -> Vec<CommandMetadata> {
     commands.iter().map(Command::metadata).collect()
 }
@@ -787,6 +844,12 @@ pub fn get_all_commands() -> Vec<Command> {
             &[],
             "Enter plan mode and show or edit the plan file",
             plan::PlanHandler,
+        ),
+        command(
+            "workflows",
+            &[],
+            "List project workflow scripts from .allthecodes/workflows",
+            workflows::WorkflowsHandler,
         ),
         command(
             "login",
@@ -1156,15 +1219,29 @@ pub fn parse_command_input(input: &str) -> Option<(usize, String)> {
 /// Concrete [`allthecodes_types::commands::CommandDispatcher`] backed by command metadata.
 pub struct DefaultCommandDispatcher {
     commands: Vec<CommandMetadata>,
+    cwd_scoped: bool,
 }
 
 impl DefaultCommandDispatcher {
     pub fn new(commands: Vec<CommandMetadata>) -> Self {
-        Self { commands }
+        Self {
+            commands,
+            cwd_scoped: false,
+        }
     }
 
     pub fn for_full_registry() -> Self {
-        Self::new(get_dynamic_metadata())
+        Self {
+            commands: get_dynamic_metadata(),
+            cwd_scoped: true,
+        }
+    }
+
+    pub fn for_cwd(cwd: &Path) -> Self {
+        Self {
+            commands: get_dynamic_metadata_for_cwd(cwd),
+            cwd_scoped: false,
+        }
     }
 
     pub fn from_commands(commands: &[Command]) -> Self {
@@ -1183,6 +1260,24 @@ impl allthecodes_types::commands::CommandDispatcher for DefaultCommandDispatcher
 
     fn command_name(&self, index: usize) -> Option<String> {
         self.commands.get(index).map(|cmd| cmd.name.clone())
+    }
+
+    fn parse_command_input_for_cwd(
+        &self,
+        input: &str,
+        cwd: &Path,
+    ) -> Option<allthecodes_types::commands::ParsedCommand> {
+        if self.cwd_scoped {
+            return Self::for_cwd(cwd).parse_command_input(input);
+        }
+        self.parse_command_input(input)
+    }
+
+    fn command_name_for_cwd(&self, index: usize, cwd: &Path) -> Option<String> {
+        if self.cwd_scoped {
+            return Self::for_cwd(cwd).command_name(index);
+        }
+        self.command_name(index)
     }
 }
 
@@ -1210,12 +1305,12 @@ impl command_runtime::CommandExecutor for EngineCommandExecutor {
                 .execute(&parsed.args, &mut command_ctx)
                 .await?
         } else {
-            let entry = DYNAMIC_REGISTRY
-                .lock()
-                .find(&command_name)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Unknown command: /{}", command_name))?;
-            execute_dynamic_command(&entry, &parsed.args, &mut command_ctx).await?
+            let entry = DYNAMIC_REGISTRY.lock().find(&command_name).cloned();
+            if let Some(entry) = entry {
+                execute_dynamic_command(&entry, &parsed.args, &mut command_ctx).await?
+            } else {
+                execute_workflow_command(&command_name, &parsed.args, &mut command_ctx)?
+            }
         };
         ctx.messages = command_ctx.messages;
         ctx.cwd = command_ctx.cwd;
@@ -1243,6 +1338,73 @@ impl command_runtime::CommandExecutor for EngineCommandExecutor {
 
 pub fn install_engine_command_executor() {
     command_runtime::set_global_command_executor(std::sync::Arc::new(EngineCommandExecutor));
+}
+
+fn execute_workflow_command(
+    command_name: &str,
+    args: &str,
+    ctx: &mut CommandContext,
+) -> anyhow::Result<CommandResult> {
+    let path = resolve_workflow_command_script(&ctx.cwd, command_name)
+        .ok_or_else(|| anyhow::anyhow!("Unknown command: /{}", command_name))??;
+    let file_content = fs::read_to_string(&path)
+        .map_err(|err| anyhow::anyhow!("failed to read workflow {}: {}", path.display(), err))?;
+    let body = format!(
+        "Execute this workflow:\n\n{}\n\nArguments: {}",
+        file_content,
+        args.trim()
+    );
+    Ok(CommandResult::Query(vec![Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        role: "user".to_string(),
+        content: MessageContent::Text(body),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    })]))
+}
+
+fn resolve_workflow_command_script(
+    cwd: &Path,
+    command_name: &str,
+) -> Option<anyhow::Result<PathBuf>> {
+    let metadata = get_dynamic_metadata_for_cwd(cwd);
+    if !metadata.iter().any(|command| command.name == command_name) {
+        return None;
+    }
+    let dir = allthecodes_tools::workflow::file_workflow::workflow_scripts_dir(cwd);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            return Some(Err(anyhow::anyhow!(
+                "failed to read {}: {}",
+                dir.display(),
+                err
+            )))
+        }
+    };
+    let mut matches = entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| allthecodes_tools::workflow::file_workflow::is_valid_workflow_file(path))
+        .filter(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| stem == command_name)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    match matches.len() {
+        0 => None,
+        1 => Some(Ok(matches.remove(0))),
+        _ => Some(Err(anyhow::anyhow!(
+            "workflow command /{} is ambiguous in {}",
+            command_name,
+            dir.display()
+        ))),
+    }
 }
 
 async fn execute_dynamic_command(
@@ -1298,7 +1460,10 @@ async fn execute_dynamic_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allthecodes_engine::command_runtime::CommandExecutor;
     use allthecodes_types::commands::CommandDispatcher;
+    use allthecodes_types::message::{Message, MessageContent};
+    use std::fs;
 
     fn sample_commands() -> Vec<Command> {
         let mut commands = vec![
@@ -1360,5 +1525,107 @@ mod tests {
             allthecodes_tools::runtime_capability::RuntimeCapabilityVisibility::Hidden
         );
         assert!(!advisor.discoverable);
+    }
+
+    #[test]
+    fn builtin_registry_includes_workflows_command() {
+        let metadata = command_metadata(&get_all_commands());
+        assert!(metadata.iter().any(|cmd| cmd.name == "workflows"));
+    }
+
+    fn write_workflow(cwd: &std::path::Path, file: &str, content: &str) {
+        let workflows_dir = cwd.join(".allthecodes").join("workflows");
+        fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        fs::write(workflows_dir.join(file), content).expect("write workflow");
+    }
+
+    #[test]
+    fn workflows_for_cwd_registers_project_command() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_workflow(temp.path(), "release.md", "- Prepare\n- Publish");
+
+        let dispatcher = DefaultCommandDispatcher::for_cwd(temp.path());
+        let parsed = dispatcher
+            .parse_command_input("/release v1.2.3")
+            .expect("workflow slash command parses");
+
+        assert_eq!(parsed.args, "v1.2.3");
+        assert_eq!(
+            dispatcher.command_name(parsed.index).as_deref(),
+            Some("release")
+        );
+    }
+
+    #[test]
+    fn workflows_full_registry_does_not_include_cwd_commands() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_workflow(temp.path(), "release.md", "- Prepare\n- Publish");
+
+        let dispatcher = DefaultCommandDispatcher::for_full_registry();
+
+        assert!(dispatcher.parse_command_input("/release v1.2.3").is_none());
+    }
+
+    #[test]
+    fn workflows_for_cwd_filters_non_commands_and_ambiguous_stems() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_workflow(temp.path(), "release.md", "- Prepare\n");
+        write_workflow(temp.path(), ".hidden.md", "- Hidden\n");
+        write_workflow(temp.path(), "static.json", "{}");
+        write_workflow(temp.path(), "help.md", "- Shadow builtin\n");
+        write_workflow(temp.path(), "dup.md", "- Markdown\n");
+        write_workflow(temp.path(), "dup.yaml", "steps:\n  - name: YAML\n");
+
+        let dispatcher = DefaultCommandDispatcher::for_cwd(temp.path());
+
+        assert!(dispatcher.parse_command_input("/release").is_some());
+        assert!(dispatcher.parse_command_input("/hidden").is_none());
+        assert!(dispatcher.parse_command_input("/static").is_none());
+        assert!(dispatcher.parse_command_input("/dup").is_none());
+
+        let help = dispatcher
+            .parse_command_input("/help workflows")
+            .expect("builtin command still parses");
+        assert_eq!(dispatcher.command_name(help.index).as_deref(), Some("help"));
+    }
+
+    #[tokio::test]
+    async fn workflows_command_executor_returns_query_with_file_content_and_args() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workflow_content = "# Release\n\n- Prepare\n- Publish";
+        write_workflow(temp.path(), "release.md", workflow_content);
+        let dispatcher = DefaultCommandDispatcher::for_cwd(temp.path());
+        let parsed = dispatcher
+            .parse_command_input("/release v1.2.3")
+            .expect("workflow command parses");
+        let command_name = dispatcher
+            .command_name(parsed.index)
+            .expect("workflow command name");
+        let mut ctx = allthecodes_engine::command_runtime::CommandContext {
+            messages: Vec::new(),
+            cwd: temp.path().to_path_buf(),
+            app_state: AppState::default(),
+            session_id: SessionId::from_string("workflow-command-test"),
+        };
+
+        let result = EngineCommandExecutor
+            .execute(parsed, command_name, &mut ctx)
+            .await
+            .expect("execute workflow command");
+
+        let allthecodes_engine::command_runtime::CommandResult::Query(messages) = result else {
+            panic!("expected query result");
+        };
+        assert_eq!(messages.len(), 1);
+        let Message::User(user) = &messages[0] else {
+            panic!("expected user message");
+        };
+        let MessageContent::Text(body) = &user.content else {
+            panic!("expected text content");
+        };
+        assert_eq!(
+            body,
+            "Execute this workflow:\n\n# Release\n\n- Prepare\n- Publish\n\nArguments: v1.2.3"
+        );
     }
 }

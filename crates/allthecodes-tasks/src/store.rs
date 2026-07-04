@@ -122,6 +122,98 @@ impl TaskStore {
         Ok(entry)
     }
 
+    pub fn try_upsert_with_id(
+        &self,
+        id: &str,
+        subject: &str,
+        description: &str,
+        status: TaskStatus,
+        output: &str,
+        options: TaskCreateOptions,
+    ) -> Result<TaskEntry> {
+        let id = id.trim();
+        if id.is_empty() {
+            anyhow::bail!("task id must not be empty");
+        }
+
+        let _guard = self.acquire_task_list_lock("upsert task")?;
+        let mut tasks = self.load_repository_tasks_strict()?;
+        let now = chrono::Utc::now().timestamp();
+        let status = normalize_new_status(status);
+        let entry = if let Some(entry) = tasks.get_mut(id) {
+            entry.kind = sanitize_kind(options.kind.as_deref().unwrap_or("tool"));
+            entry.subject = subject.to_string();
+            entry.description = description.to_string();
+            entry.status = status;
+            entry.output = output.to_string();
+            entry.output_truncated = false;
+            entry.parent_id = options.parent_id.filter(|s| !s.trim().is_empty());
+            entry.depends_on = normalize_dependencies(options.depends_on);
+            entry.owner = normalize_optional_string(options.owner);
+            entry.active_form = normalize_optional_string(options.active_form);
+            entry.metadata = options.metadata.filter(|value| !value.is_null());
+            entry.tool_use_id = normalize_optional_string(options.tool_use_id);
+            entry.agent_id = normalize_optional_string(options.agent_id);
+            entry.supervisor_id = normalize_optional_string(options.supervisor_id);
+            entry.isolation = normalize_optional_string(options.isolation);
+            entry.worktree_path = normalize_optional_string(options.worktree_path);
+            entry.worktree_branch = normalize_optional_string(options.worktree_branch);
+            entry.remote_task_type = normalize_remote_task_type(options.remote_task_type);
+            entry.remote_session_id = normalize_optional_string(options.remote_session_id);
+            entry.remote_task_metadata = options
+                .remote_task_metadata
+                .filter(|value| !value.is_null());
+            entry.poll_started_at = options.poll_started_at;
+            if status == TaskStatus::Cancelled && entry.cancel_requested_at.is_none() {
+                entry.cancel_requested_at = Some(now);
+            }
+            entry.updated_at = now;
+            refresh_output_metadata(entry);
+            entry.clone()
+        } else {
+            let mut entry = TaskEntry {
+                id: id.to_string(),
+                kind: sanitize_kind(options.kind.as_deref().unwrap_or("tool")),
+                subject: subject.to_string(),
+                description: description.to_string(),
+                status,
+                output: output.to_string(),
+                output_summary: String::new(),
+                output_bytes: 0,
+                output_truncated: false,
+                parent_id: options.parent_id.filter(|s| !s.trim().is_empty()),
+                depends_on: normalize_dependencies(options.depends_on),
+                owner: normalize_optional_string(options.owner),
+                active_form: normalize_optional_string(options.active_form),
+                metadata: options.metadata.filter(|value| !value.is_null()),
+                tool_use_id: normalize_optional_string(options.tool_use_id),
+                agent_id: normalize_optional_string(options.agent_id),
+                supervisor_id: normalize_optional_string(options.supervisor_id),
+                isolation: normalize_optional_string(options.isolation),
+                worktree_path: normalize_optional_string(options.worktree_path),
+                worktree_branch: normalize_optional_string(options.worktree_branch),
+                remote_task_type: normalize_remote_task_type(options.remote_task_type),
+                remote_session_id: normalize_optional_string(options.remote_session_id),
+                remote_task_metadata: options
+                    .remote_task_metadata
+                    .filter(|value| !value.is_null()),
+                poll_started_at: options.poll_started_at,
+                cancel_requested_at: (status == TaskStatus::Cancelled).then_some(now),
+                recovered_at: None,
+                previous_status: None,
+                created_at: now,
+                updated_at: now,
+            };
+            refresh_output_metadata(&mut entry);
+            tasks.insert(id.to_string(), entry.clone());
+            entry
+        };
+
+        self.persist_entry_strict(&entry)?;
+        self.replace_tasks(tasks);
+        Ok(entry)
+    }
+
     pub fn get(&self, id: &str) -> Option<TaskEntry> {
         self.refresh_from_repository();
         self.refresh_remote_review_timeout(id)

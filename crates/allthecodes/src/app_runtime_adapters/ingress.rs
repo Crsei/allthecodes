@@ -543,7 +543,8 @@ async fn handle_slash_command(
         return;
     }
 
-    let dispatcher = allthecodes_commands::DefaultCommandDispatcher::for_full_registry();
+    let cwd = std::path::PathBuf::from(engine.cwd());
+    let dispatcher = allthecodes_commands::DefaultCommandDispatcher::for_cwd(&cwd);
     let Some(parsed) = dispatcher.parse_command_input(trimmed) else {
         let _ = sink.send(&BackendMessage::Error {
             message: format!("unknown command: {}", trimmed),
@@ -562,7 +563,7 @@ async fn handle_slash_command(
 
     let mut ctx = CommandContext {
         messages: original_messages.clone(),
-        cwd: std::path::PathBuf::from(engine.cwd()),
+        cwd,
         app_state: original_app_state,
         session_id: engine.current_session_id(),
     };

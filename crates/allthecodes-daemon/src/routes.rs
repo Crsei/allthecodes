@@ -7,6 +7,7 @@
 
 use std::sync::atomic::Ordering;
 
+use allthecodes_engine::command_runtime::{CommandContext, CommandResult};
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_server::RootProbeResponse;
@@ -19,7 +20,6 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::protocol::{DaemonCommandKind, DaemonCommandStatus};
-use allthecodes_commands::{CommandContext, CommandResult};
 use allthecodes_types::message::CompactMetadata;
 use allthecodes_types::plan_workflow::PlanWorkflowRecord;
 use allthecodes_types::sdk::SdkMessage;
@@ -395,31 +395,41 @@ async fn command(
         return response;
     }
     let raw = body.raw.trim().to_string();
-    let all_commands = match crate::runtime::commands() {
-        Ok(commands) => commands,
+    let dispatcher = match crate::runtime::command_dispatcher() {
+        Ok(dispatcher) => dispatcher,
         Err(err) => {
             return Json(json!({ "status": "error", "message": err.to_string() }));
         }
     };
-    let metadata = allthecodes_commands::command_metadata(&all_commands);
-    let Some((cmd_idx, args)) = allthecodes_commands::parse_command_input_in(&raw, &metadata)
-    else {
+    let command_executor = match crate::runtime::command_executor() {
+        Ok(executor) => executor,
+        Err(err) => {
+            return Json(json!({ "status": "error", "message": err.to_string() }));
+        }
+    };
+    let cwd = std::path::PathBuf::from(state.engine.cwd());
+    let Some(parsed) = dispatcher.parse_command_input_for_cwd(&raw, &cwd) else {
         return Json(json!({ "status": "error", "message": format!("unknown command: {raw}") }));
     };
+    let command_name = dispatcher
+        .command_name_for_cwd(parsed.index, &cwd)
+        .unwrap_or_else(|| raw.trim_start_matches('/').to_string());
 
-    let cmd = &all_commands[cmd_idx];
     let original_app_state = state.engine.app_state();
     let original_plan = original_app_state.plan_workflow.clone();
     let original_mode = original_app_state.tool_permission_context.mode.clone();
 
     let mut ctx = CommandContext {
         messages: state.engine.messages(),
-        cwd: std::path::PathBuf::from(state.engine.cwd()),
+        cwd,
         app_state: original_app_state,
         session_id: state.engine.current_session_id(),
     };
 
-    match cmd.handler.execute(&args, &mut ctx).await {
+    match command_executor
+        .execute(parsed, command_name.clone(), &mut ctx)
+        .await
+    {
         Ok(result) => {
             let plan_changed = ctx.app_state.plan_workflow != original_plan
                 || ctx.app_state.tool_permission_context.mode != original_mode;
