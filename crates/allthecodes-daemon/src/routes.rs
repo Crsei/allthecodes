@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use crate::protocol::{DaemonCommandKind, DaemonCommandStatus};
+use crate::protocol::{DaemonCommandKind, DaemonCommandStatus, DaemonEvent, DaemonEventKind};
 use allthecodes_commands::{CommandContext, CommandResult};
 use allthecodes_types::message::CompactMetadata;
 use allthecodes_types::plan_workflow::PlanWorkflowRecord;
@@ -85,6 +85,12 @@ pub struct CommandRequest {
 pub struct PermissionRequest {
     pub tool_use_id: String,
     pub decision: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResizeRequest {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Debug, Serialize)]
@@ -596,6 +602,23 @@ pub(super) fn assistant_command_active() -> bool {
         .unwrap_or(false)
 }
 
+fn history_snapshots_from_events(events: &[DaemonEvent]) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|event| event.event_type == DaemonEventKind::HistorySnapshot.as_str())
+        .map(|event| event.data.clone())
+        .collect()
+}
+
+fn latest_history_messages(history_snapshots: &[Value]) -> Vec<Value> {
+    history_snapshots
+        .last()
+        .and_then(|snapshot| snapshot.get("messages"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
 /// `POST /api/attach` -- re-attach a client and return missed events.
 async fn attach(State(state): State<DaemonState>, Json(body): Json<AttachRequest>) -> Json<Value> {
     info!(client_id = body.client_id, "client attach");
@@ -615,21 +638,42 @@ async fn detach(State(state): State<DaemonState>, Json(body): Json<DetachRequest
     Json(json!({ "status": "ok" }))
 }
 
-/// `POST /api/resize` -- terminal resize notification (stub).
-async fn resize(headers: HeaderMap) -> Json<Value> {
+/// `POST /api/resize` -- enqueue a terminal resize notification for the assistant worker.
+async fn resize(headers: HeaderMap, Json(body): Json<ResizeRequest>) -> Json<Value> {
     if let Err(response) = require_control_token(&headers) {
         return response;
     }
-    Json(json!({ "status": "noop", "message": "resize forwarding is not implemented yet" }))
+    let command = match super::protocol_store().enqueue_command(
+        ASSISTANT_WORKER_ID,
+        DaemonCommandKind::Resize,
+        json!({
+            "cols": body.cols,
+            "rows": body.rows,
+            "source": "http",
+        }),
+        None,
+    ) {
+        Ok(command) => command,
+        Err(err) => {
+            return Json(json!({
+                "status": "error",
+                "message": err.to_string(),
+            }));
+        }
+    };
+    Json(json!({ "status": "queued", "command_id": command.command_id }))
 }
 
-/// `GET /api/history` -- return conversation history (stub).
+/// `GET /api/history` -- return worker-owned conversation history and durable events.
 async fn history(State(state): State<DaemonState>) -> Json<Value> {
     let daemon_events = super::protocol_store()
         .read_worker_events(ASSISTANT_WORKER_ID)
         .unwrap_or_default();
+    let history_snapshots = history_snapshots_from_events(&daemon_events);
+    let history = latest_history_messages(&history_snapshots);
     Json(json!({
-        "history": [],
+        "history": history,
+        "history_snapshots": history_snapshots,
         "sse_events": state.events_since("0"),
         "daemon_events": daemon_events,
     }))
@@ -688,17 +732,22 @@ pub async fn startupz() -> Json<RootProbeResponse> {
 mod tests {
     use std::sync::Arc;
 
+    use allthecodes_config::features::FeatureFlags;
+    use allthecodes_engine::types::config::QueryEngineConfig;
     use uuid::Uuid;
 
     use super::*;
+    use crate::protocol::DaemonEventKind;
     use crate::webhook::webhook_github;
     use allthecodes_types::message::CompactMetadata;
     use allthecodes_types::sdk::{
         SdkApiRetry, SdkCompactBoundary, SdkGoalUpdated, SdkToolUseSummary,
     };
-    use axum::body::Bytes;
+    use axum::body::{to_bytes, Body, Bytes};
+    use axum::http::{header, Method, Request, StatusCode};
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
+    use tower::ServiceExt;
 
     struct EnvGuard {
         key: &'static str,
@@ -720,6 +769,59 @@ mod tests {
                 None => std::env::remove_var(self.key),
             }
         }
+    }
+
+    fn make_daemon_state() -> DaemonState {
+        let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
+            cwd: ".".to_string(),
+            tools: vec![],
+            custom_system_prompt: None,
+            append_system_prompt: None,
+            user_specified_model: None,
+            fallback_model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            task_budget: None,
+            verbose: false,
+            initial_messages: None,
+            commands: vec![],
+            thinking_config: None,
+            json_schema: None,
+            replay_user_messages: false,
+            persist_session: false,
+            resolved_model: None,
+            auto_save_session: false,
+            agent_context: None,
+        }));
+        DaemonState::new(engine, Arc::new(FeatureFlags::all_disabled()), 19836)
+    }
+
+    async fn response_json(response: axum::response::Response) -> (StatusCode, Value) {
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body");
+        (status, serde_json::from_slice(&body).expect("json body"))
+    }
+
+    async fn post_json(app: Router, uri: &str, token: &str, body: Value) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-allthecodes-daemon-token", token)
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .expect("request");
+        response_json(app.oneshot(request).await.expect("response")).await
+    }
+
+    async fn get_json(app: Router, uri: &str) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request");
+        response_json(app.oneshot(request).await.expect("response")).await
     }
 
     fn github_signature(secret: &str, body: &[u8]) -> String {
@@ -755,6 +857,103 @@ mod tests {
             matched: 1,
             delivered: 1,
         }))
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn permission_endpoint_queues_worker_permission_response() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let token = crate::process_state::write_control_token().unwrap();
+        let app = api_routes().with_state(make_daemon_state());
+
+        let (status, body) = post_json(
+            app,
+            "/api/permission",
+            &token.token,
+            json!({
+                "tool_use_id": "toolu_1",
+                "decision": "allow",
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "queued");
+        let commands = crate::protocol_store()
+            .read_worker_commands(ASSISTANT_WORKER_ID)
+            .unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].kind, DaemonCommandKind::PermissionResponse);
+        assert_eq!(commands[0].payload["tool_use_id"], "toolu_1");
+        assert_eq!(commands[0].payload["decision"], "allow");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn resize_endpoint_queues_worker_resize_command() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let token = crate::process_state::write_control_token().unwrap();
+        let app = api_routes().with_state(make_daemon_state());
+
+        let (status, body) = post_json(
+            app,
+            "/api/resize",
+            &token.token,
+            json!({
+                "cols": 120,
+                "rows": 40,
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "queued");
+        let commands = crate::protocol_store()
+            .read_worker_commands(ASSISTANT_WORKER_ID)
+            .unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].kind, DaemonCommandKind::Resize);
+        assert_eq!(commands[0].payload["cols"], 120);
+        assert_eq!(commands[0].payload["rows"], 40);
+        assert_eq!(commands[0].payload["source"], "http");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn history_endpoint_returns_worker_history_snapshots() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        crate::protocol_store()
+            .append_event(
+                ASSISTANT_WORKER_ID,
+                None,
+                DaemonEventKind::HistorySnapshot.as_str(),
+                json!({
+                    "session_id": "session-1",
+                    "messages": [
+                        { "role": "user", "content": "hello" },
+                        { "role": "assistant", "content": "hi" }
+                    ],
+                    "cursor": "2",
+                }),
+            )
+            .unwrap();
+        let app = api_routes().with_state(make_daemon_state());
+
+        let (status, body) = get_json(app, "/api/history").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["history"],
+            json!([
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": "hi" }
+            ])
+        );
+        assert_eq!(body["history_snapshots"][0]["session_id"], "session-1");
+        assert_eq!(body["daemon_events"][0]["event_type"], "history_snapshot");
     }
 
     #[test]

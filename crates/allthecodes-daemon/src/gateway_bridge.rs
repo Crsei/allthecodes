@@ -4,6 +4,7 @@
 //! the daemon-side adapter that maps gateway-neutral commands onto existing
 //! worker command files without making `gateway` depend on `allthecodes`.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,11 +12,16 @@ use allthecodes_gateway::{
     GatewayCommand, GatewayCommandKind, GatewayCommandReceipt, GatewayCommandSink,
     GatewayDiagnostic, GatewayError, RunEventKind, RunStatus,
 };
+use allthecodes_types::callbacks::{
+    AskUserRequestPayload, PermissionRequestPayload, PermissionResponsePayload,
+};
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 use serde_json::{json, Value};
+use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 
-use crate::protocol::{self, DaemonCommandKind};
+use crate::protocol::{self, DaemonCommandKind, DaemonEventKind};
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::{QueryEngineConfig, QuerySource};
 
@@ -130,6 +136,133 @@ fn enqueue_error(command: &GatewayCommand, error: anyhow::Error) -> GatewayError
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteractionDelivery {
+    Delivered,
+    StoredForReplay,
+}
+
+#[derive(Default)]
+struct AssistantInteractionState {
+    inner: Mutex<AssistantInteractionStateInner>,
+}
+
+#[derive(Default)]
+struct AssistantInteractionStateInner {
+    pending_permissions: HashMap<String, oneshot::Sender<PermissionResponsePayload>>,
+    replay_permissions: HashMap<String, PermissionResponsePayload>,
+    pending_questions: HashMap<String, oneshot::Sender<String>>,
+    replay_questions: HashMap<String, String>,
+}
+
+impl AssistantInteractionState {
+    async fn request_permission(
+        &self,
+        worker_id: &str,
+        request: PermissionRequestPayload,
+    ) -> PermissionResponsePayload {
+        let tool_use_id = request.tool_use_id.clone();
+        let _ = super::protocol_store().append_event(
+            worker_id,
+            None,
+            DaemonEventKind::PermissionRequest.as_str(),
+            json!({
+                "request_id": tool_use_id,
+                "tool_use_id": request.tool_use_id,
+                "tool_name": request.tool_name,
+                "input": request.tool_input,
+                "message": request.message,
+                "options": request.options,
+                "operation": request.operation,
+            }),
+        );
+
+        let (tx, rx) = oneshot::channel();
+        let replay = {
+            let mut inner = self.inner.lock();
+            if let Some(response) = inner.replay_permissions.remove(&tool_use_id) {
+                Some(response)
+            } else {
+                inner.pending_permissions.insert(tool_use_id.clone(), tx);
+                None
+            }
+        };
+        if let Some(response) = replay {
+            return response;
+        }
+
+        rx.await.unwrap_or_else(|_| PermissionResponsePayload::deny())
+    }
+
+    async fn ask_user(&self, worker_id: &str, request: AskUserRequestPayload) -> String {
+        let question_id = uuid::Uuid::new_v4().to_string();
+        let _ = super::protocol_store().append_event(
+            worker_id,
+            None,
+            DaemonEventKind::AskUserQuestion.as_str(),
+            json!({
+                "request_id": question_id,
+                "id": question_id,
+                "question": request.question,
+                "choices": request.choices,
+                "allow_free_text": request.allow_free_text,
+            }),
+        );
+
+        let (tx, rx) = oneshot::channel();
+        let replay = {
+            let mut inner = self.inner.lock();
+            if let Some(answer) = inner.replay_questions.remove(&question_id) {
+                Some(answer)
+            } else {
+                inner.pending_questions.insert(question_id.clone(), tx);
+                None
+            }
+        };
+        if let Some(answer) = replay {
+            return answer;
+        }
+
+        rx.await.unwrap_or_default()
+    }
+
+    fn complete_permission(
+        &self,
+        tool_use_id: String,
+        response: PermissionResponsePayload,
+    ) -> InteractionDelivery {
+        let mut inner = self.inner.lock();
+        if let Some(tx) = inner.pending_permissions.remove(&tool_use_id) {
+            match tx.send(response) {
+                Ok(()) => InteractionDelivery::Delivered,
+                Err(response) => {
+                    inner.replay_permissions.insert(tool_use_id, response);
+                    InteractionDelivery::StoredForReplay
+                }
+            }
+        } else {
+            inner.replay_permissions.insert(tool_use_id, response);
+            InteractionDelivery::StoredForReplay
+        }
+    }
+
+    fn complete_question(&self, question_id: String, answer: String) -> InteractionDelivery {
+        let mut inner = self.inner.lock();
+        if let Some(tx) = inner.pending_questions.remove(&question_id) {
+            match tx.send(answer) {
+                Ok(()) => InteractionDelivery::Delivered,
+                Err(answer) => {
+                    inner.replay_questions.insert(question_id, answer);
+                    InteractionDelivery::StoredForReplay
+                }
+            }
+        } else {
+            inner.replay_questions.insert(question_id, answer);
+            InteractionDelivery::StoredForReplay
+        }
+    }
+}
+
 pub async fn handle_worker_command(
     worker_id: &str,
     runtime: &mut AssistantWorkerRuntime,
@@ -178,8 +311,22 @@ pub async fn handle_worker_command(
             Ok(false)
         }
         protocol::DaemonCommandKind::PermissionResponse
-        | protocol::DaemonCommandKind::AskUserResponse
+        | protocol::DaemonCommandKind::Resize
         | protocol::DaemonCommandKind::ReloadConfig => {
+            if command.kind == protocol::DaemonCommandKind::PermissionResponse {
+                runtime.handle_permission_response(&command)?;
+            }
+            let command = store.mark_command_handled(command)?;
+            store.append_event(
+                worker_id,
+                Some(&command.command_id),
+                "command_handled",
+                json!({ "kind": command.kind.as_str() }),
+            )?;
+            Ok(false)
+        }
+        protocol::DaemonCommandKind::AskUserResponse => {
+            runtime.handle_ask_user_response(&command)?;
             let command = store.mark_command_handled(command)?;
             store.append_event(
                 worker_id,
@@ -204,6 +351,7 @@ pub async fn handle_worker_command(
 
 pub struct AssistantWorkerRuntime {
     engine: Arc<QueryEngine>,
+    interactions: Arc<AssistantInteractionState>,
 }
 
 impl AssistantWorkerRuntime {
@@ -236,10 +384,58 @@ impl AssistantWorkerRuntime {
         engine.set_hook_runner(Arc::new(allthecodes_tools::hooks::ShellHookRunner::new()));
         engine.set_command_dispatcher(crate::runtime::command_dispatcher()?);
         engine.set_command_executor(crate::runtime::command_executor()?);
+        let interactions = Arc::new(AssistantInteractionState::default());
+        install_interaction_callbacks(&engine, ASSISTANT_WORKER_ID, interactions.clone());
 
         Ok(Self {
             engine: Arc::new(engine),
+            interactions,
         })
+    }
+
+    fn handle_permission_response(&self, command: &protocol::DaemonCommand) -> Result<()> {
+        let tool_use_id = payload_string(
+            &command.payload,
+            &["tool_use_id", "toolUseId", "request_id", "id"],
+        )
+        .context("permission response payload missing tool_use_id")?;
+        let decision = payload_string(&command.payload, &["decision"])
+            .unwrap_or_else(|| "deny".to_string());
+        let feedback = payload_string(&command.payload, &["feedback", "reason"]);
+        let delivery = self.interactions.complete_permission(
+            tool_use_id.clone(),
+            PermissionResponsePayload::new(decision, feedback),
+        );
+        super::protocol_store().append_event(
+            &command.target_worker_id,
+            Some(&command.command_id),
+            "permission_response",
+            json!({
+                "tool_use_id": tool_use_id,
+                "delivery": interaction_delivery_name(delivery),
+            }),
+        )?;
+        Ok(())
+    }
+
+    fn handle_ask_user_response(&self, command: &protocol::DaemonCommand) -> Result<()> {
+        let question_id =
+            payload_string(&command.payload, &["request_id", "id", "question_id"])
+                .context("ask-user response payload missing request_id")?;
+        let answer = payload_string(&command.payload, &["text", "answer"]).unwrap_or_default();
+        let delivery = self
+            .interactions
+            .complete_question(question_id.clone(), answer);
+        super::protocol_store().append_event(
+            &command.target_worker_id,
+            Some(&command.command_id),
+            "ask_user_response",
+            json!({
+                "request_id": question_id,
+                "delivery": interaction_delivery_name(delivery),
+            }),
+        )?;
+        Ok(())
     }
 
     async fn execute_submit(
@@ -313,6 +509,44 @@ impl AssistantWorkerRuntime {
 
     fn abort(&self) {
         self.engine.abort();
+    }
+}
+
+fn install_interaction_callbacks(
+    engine: &QueryEngine,
+    worker_id: &str,
+    interactions: Arc<AssistantInteractionState>,
+) {
+    let permission_worker_id = worker_id.to_string();
+    let permission_interactions = interactions.clone();
+    engine.set_permission_callback(Arc::new(move |request| {
+        let worker_id = permission_worker_id.clone();
+        let interactions = permission_interactions.clone();
+        Box::pin(async move { interactions.request_permission(&worker_id, request).await })
+    }));
+
+    let question_worker_id = worker_id.to_string();
+    let question_interactions = interactions;
+    engine.set_ask_user_callback(Arc::new(move |request| {
+        let worker_id = question_worker_id.clone();
+        let interactions = question_interactions.clone();
+        Box::pin(async move { interactions.ask_user(&worker_id, request).await })
+    }));
+}
+
+fn payload_string(payload: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        payload
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn interaction_delivery_name(delivery: InteractionDelivery) -> &'static str {
+    match delivery {
+        InteractionDelivery::Delivered => "delivered",
+        InteractionDelivery::StoredForReplay => "stored_for_replay",
     }
 }
 
@@ -426,5 +660,150 @@ mod tests {
             RunEventKind::Custom { name, .. } if name == "stream_delta"
         )));
         assert_eq!(store.load_run(&run_id).unwrap().status, RunStatus::Running);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn interaction_state_delivers_live_permission_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let interactions = Arc::new(AssistantInteractionState::default());
+        let task = {
+            let interactions = interactions.clone();
+            tokio::spawn(async move {
+                interactions
+                    .request_permission(
+                        "assistant-session-1",
+                        PermissionRequestPayload {
+                            tool_use_id: "tool-1".to_string(),
+                            tool_name: "Bash".to_string(),
+                            tool_input: json!({ "command": "cargo test" }),
+                            message: "Allow Bash?".to_string(),
+                            options: vec!["allow".to_string(), "deny".to_string()],
+                            operation: None,
+                        },
+                    )
+                    .await
+            })
+        };
+
+        wait_until(|| {
+            interactions
+                .inner
+                .lock()
+                .pending_permissions
+                .contains_key("tool-1")
+        })
+        .await;
+
+        let delivery = interactions.complete_permission(
+            "tool-1".to_string(),
+            PermissionResponsePayload::decision("allow"),
+        );
+
+        assert_eq!(delivery, InteractionDelivery::Delivered);
+        assert_eq!(
+            task.await.unwrap(),
+            PermissionResponsePayload::decision("allow")
+        );
+        assert!(crate::protocol_store()
+            .read_worker_events("assistant-session-1")
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "permission_request"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn interaction_state_replays_permission_response_arriving_before_waiter() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let interactions = AssistantInteractionState::default();
+
+        let delivery = interactions.complete_permission(
+            "tool-1".to_string(),
+            PermissionResponsePayload::new("deny", Some("not now".to_string())),
+        );
+        let response = interactions
+            .request_permission(
+                "assistant-session-1",
+                PermissionRequestPayload {
+                    tool_use_id: "tool-1".to_string(),
+                    tool_name: "Bash".to_string(),
+                    tool_input: json!({ "command": "cargo test" }),
+                    message: "Allow Bash?".to_string(),
+                    options: vec!["allow".to_string(), "deny".to_string()],
+                    operation: None,
+                },
+            )
+            .await;
+
+        assert_eq!(delivery, InteractionDelivery::StoredForReplay);
+        assert_eq!(
+            response,
+            PermissionResponsePayload::new("deny", Some("not now".to_string()))
+        );
+        assert!(interactions.inner.lock().replay_permissions.is_empty());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn interaction_state_delivers_live_ask_user_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let interactions = Arc::new(AssistantInteractionState::default());
+        let task = {
+            let interactions = interactions.clone();
+            tokio::spawn(async move {
+                interactions
+                    .ask_user(
+                        "assistant-session-1",
+                        AskUserRequestPayload {
+                            question: "Which branch?".to_string(),
+                            choices: vec!["main".to_string(), "feature".to_string()],
+                            allow_free_text: true,
+                        },
+                    )
+                    .await
+            })
+        };
+
+        let question_id = wait_for_question_id(&interactions).await;
+        let delivery = interactions.complete_question(question_id, "feature".to_string());
+
+        assert_eq!(delivery, InteractionDelivery::Delivered);
+        assert_eq!(task.await.unwrap(), "feature");
+        assert!(crate::protocol_store()
+            .read_worker_events("assistant-session-1")
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "ask_user_question"));
+    }
+
+    async fn wait_for_question_id(interactions: &AssistantInteractionState) -> String {
+        for _ in 0..50 {
+            if let Some(id) = interactions
+                .inner
+                .lock()
+                .pending_questions
+                .keys()
+                .next()
+                .cloned()
+            {
+                return id;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("question waiter was not registered");
+    }
+
+    async fn wait_until(mut predicate: impl FnMut() -> bool) {
+        for _ in 0..50 {
+            if predicate() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("condition was not met");
     }
 }
