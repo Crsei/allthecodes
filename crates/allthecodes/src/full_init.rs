@@ -89,7 +89,7 @@ pub(crate) async fn run_server_mode(
                     Router::new(),
                 )
                 .await?;
-            wait_for_server_shutdown(&manager, web_handle, daemon_handle).await?;
+            wait_for_server_shutdown(&manager, web_handle, daemon_handle, false).await?;
             Ok(ExitCode::SUCCESS)
         }
         allthecodes_server::ServerMode::Daemon { .. }
@@ -171,7 +171,7 @@ async fn run_daemon_with_server(
 
     // --- Start servers ---
     let (web_handle, daemon_handle) = manager.start(web_router, daemon_router).await?;
-    let server_result = wait_for_server_shutdown(&manager, web_handle, daemon_handle).await;
+    let server_result = wait_for_server_shutdown(&manager, web_handle, daemon_handle, true).await;
 
     drop(supervisor_handle);
 
@@ -213,6 +213,7 @@ async fn wait_for_server_shutdown(
     manager: &allthecodes_server::ServerManager,
     mut web_handle: Option<allthecodes_server::ServerHandle>,
     mut daemon_handle: Option<allthecodes_server::ServerHandle>,
+    watch_daemon_shutdown_request: bool,
 ) -> anyhow::Result<()> {
     let cancel = manager.shutdown_token();
     let mut first_server_error: Option<anyhow::Error> = None;
@@ -223,6 +224,10 @@ async fn wait_for_server_shutdown(
         }
         signal = wait_for_process_shutdown_signal() => {
             tracing::info!(signal, "server shutdown requested");
+            manager.shutdown();
+        }
+        reason = wait_for_daemon_shutdown_request(), if watch_daemon_shutdown_request => {
+            tracing::info!(reason, "server shutdown requested");
             manager.shutdown();
         }
         (label, result) = wait_optional_server("web", &mut web_handle) => {
@@ -263,6 +268,15 @@ async fn wait_for_server_shutdown(
         Err(err)
     } else {
         Ok(())
+    }
+}
+
+async fn wait_for_daemon_shutdown_request() -> &'static str {
+    loop {
+        if allthecodes_daemon::process_state::shutdown_requested() {
+            return "daemon-stop";
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 
