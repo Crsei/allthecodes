@@ -108,7 +108,44 @@ mod tests {
         agent.summary = "reported findings".to_string();
         agent.output_lines = vec!["no blocking issues".to_string()];
 
+        let mut workflow_running =
+            TaskStatus::new("workflow-run-1", "Workflow: release", TaskKind::Workflow);
+        workflow_running.state = TaskState::Running;
+        workflow_running.progress = Some((1, 3));
+        workflow_running.summary = "running - step 2/3: Publish release".to_string();
+        workflow_running.output_lines = vec![
+            "Workflow file: release.md".to_string(),
+            "/repo/.allthecodes/workflows/release.md".to_string(),
+            "Current step: 2/3 Publish release".to_string(),
+            "Progress: 1/3 completed".to_string(),
+        ];
+
+        let mut workflow_completed =
+            TaskStatus::new("workflow-run-2", "Workflow: docs", TaskKind::Workflow);
+        workflow_completed.state = TaskState::Succeeded;
+        workflow_completed.progress = Some((2, 2));
+        workflow_completed.summary = "completed - 2/2 steps".to_string();
+        workflow_completed.output_lines = vec![
+            "Workflow file: docs.yaml".to_string(),
+            "Progress: 2/2 completed".to_string(),
+        ];
+
+        let mut workflow_cancelled =
+            TaskStatus::new("workflow-run-3", "Workflow: cleanup", TaskKind::Workflow);
+        workflow_cancelled.state = TaskState::Canceled;
+        workflow_cancelled.progress = Some((0, 2));
+        workflow_cancelled.summary = "cancelled - 0/2 steps".to_string();
+        workflow_cancelled.output_lines = vec![
+            "Workflow file: cleanup.yml".to_string(),
+            "Current step: none".to_string(),
+        ];
+
         let tasks = vec![shell.clone(), remote.clone(), agent.clone()];
+        let workflow_tasks = vec![
+            workflow_running.clone(),
+            workflow_completed.clone(),
+            workflow_cancelled.clone(),
+        ];
         let rendered = [
             section("row", render_background_task(&shell, true)),
             section("status", render_background_task_status(&tasks, true)),
@@ -131,6 +168,18 @@ mod tests {
             ),
             section("dream", render_dream_detail_dialog(&agent)),
             section("workflow", render_workflow_detail_dialog(&tasks, "ui-port")),
+            section(
+                "workflow-running",
+                render_workflow_detail_dialog(&workflow_tasks, &workflow_running.title),
+            ),
+            section(
+                "workflow-completed",
+                render_workflow_detail_dialog(&workflow_tasks, &workflow_completed.title),
+            ),
+            section(
+                "workflow-cancelled",
+                render_workflow_detail_dialog(&workflow_tasks, &workflow_cancelled.title),
+            ),
             section("activity", render_task_tool_activity(&tasks)),
         ]
         .join("\n\n");

@@ -7,6 +7,8 @@
 //!
 //! See issue #74 (`[workspace-split] Phase 5`, sub-task 5c).
 
+use std::path::Path;
+
 /// Minimal view of a parsed slash command.
 ///
 /// Mirrors the `(usize, String)` tuple historically returned by the main
@@ -33,10 +35,23 @@ pub trait CommandDispatcher: Send + Sync {
     /// Otherwise returns `None` (including for non-slash input).
     fn parse_command_input(&self, input: &str) -> Option<ParsedCommand>;
 
+    /// Parse a raw user input string against the commands visible from `cwd`.
+    ///
+    /// Dispatchers without project-scoped command sources can use the default
+    /// snapshot behavior.
+    fn parse_command_input_for_cwd(&self, input: &str, _cwd: &Path) -> Option<ParsedCommand> {
+        self.parse_command_input(input)
+    }
+
     /// Canonical name of the command at the given registry index.
     ///
     /// Returns `None` if the index is out of range.
     fn command_name(&self, index: usize) -> Option<String>;
+
+    /// Canonical name for an index parsed from the commands visible at `cwd`.
+    fn command_name_for_cwd(&self, index: usize, _cwd: &Path) -> Option<String> {
+        self.command_name(index)
+    }
 }
 
 // ---------------------------------------------------------------------------

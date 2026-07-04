@@ -2,6 +2,7 @@ use crate::ui::command_surface::surfaces::tasks::{TaskSurfaceItem, TaskSurfaceSo
 use crate::ui::tasks::{
     TaskKind as UiTaskKind, TaskState as UiTaskState, TaskStatus as UiTaskStatus,
 };
+use serde_json::Value;
 pub(crate) fn first_non_empty<const N: usize>(values: [&str; N]) -> String {
     values
         .into_iter()
@@ -34,6 +35,10 @@ pub(crate) fn task_surface_items() -> Vec<TaskSurfaceItem> {
 }
 
 pub(crate) fn tool_task_surface_item(task: allthecodes_tasks::TaskEntry) -> TaskSurfaceItem {
+    if task.kind == allthecodes_tasks::TASK_KIND_LOCAL_WORKFLOW {
+        return workflow_task_surface_item(task);
+    }
+
     let title = if task.subject.trim().is_empty() {
         task.id.clone()
     } else {
@@ -65,6 +70,101 @@ pub(crate) fn tool_task_surface_item(task: allthecodes_tasks::TaskEntry) -> Task
         },
         source: TaskSurfaceSource::Tool,
     }
+}
+
+fn workflow_task_surface_item(task: allthecodes_tasks::TaskEntry) -> TaskSurfaceItem {
+    let metadata = task.metadata.as_ref();
+    let workflow_name = metadata_string(metadata, "workflow_name");
+    let workflow_file = metadata_string(metadata, "workflow_file");
+    let workflow_path = metadata_string(metadata, "workflow_path");
+    let run_status =
+        metadata_string(metadata, "run_status").unwrap_or_else(|| task.status.as_str().to_string());
+    let total_steps = metadata_usize(metadata, "total_steps").unwrap_or_default();
+    let completed_steps = metadata_usize(metadata, "completed_steps").unwrap_or_default();
+    let current_step_number = metadata_usize(metadata, "current_step_number");
+    let current_step_name = metadata_string(metadata, "current_step_name");
+
+    let title = workflow_name
+        .as_deref()
+        .map(|name| format!("Workflow: {name}"))
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| {
+            if task.subject.trim().is_empty() {
+                task.id.clone()
+            } else {
+                task.subject.clone()
+            }
+        });
+    let summary = if let (Some(step_number), Some(step_name)) =
+        (current_step_number, current_step_name.as_deref())
+    {
+        format!("{run_status} - step {step_number}/{total_steps}: {step_name}")
+    } else if total_steps > 0 {
+        format!("{run_status} - {completed_steps}/{total_steps} steps")
+    } else {
+        first_non_empty([
+            task.output_summary.as_str(),
+            task.description.as_str(),
+            task.status.as_str(),
+        ])
+    };
+    let mut output_lines = vec![
+        format!("Run id: {}", task.id),
+        format!("Status: {run_status}"),
+    ];
+    if let Some(file) = workflow_file {
+        output_lines.push(format!("Workflow file: {file}"));
+    }
+    if let Some(path) = workflow_path {
+        output_lines.push(format!("Workflow path: {path}"));
+    }
+    if let (Some(step_number), Some(step_name)) = (current_step_number, current_step_name) {
+        output_lines.push(format!(
+            "Current step: {step_number}/{total_steps} {step_name}"
+        ));
+    }
+    if total_steps > 0 {
+        output_lines.push(format!(
+            "Progress: {completed_steps}/{total_steps} completed"
+        ));
+    }
+    output_lines.extend(
+        task.output
+            .lines()
+            .take(20)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+    );
+
+    TaskSurfaceItem {
+        task: UiTaskStatus {
+            id: task.id,
+            title,
+            kind: UiTaskKind::Workflow,
+            state: ui_task_state_from_tool_status(task.status),
+            progress: (total_steps > 0).then_some((completed_steps.min(total_steps), total_steps)),
+            summary,
+            elapsed_ms: elapsed_ms_since_timestamp(task.created_at),
+            output_lines,
+        },
+        source: TaskSurfaceSource::Tool,
+    }
+}
+
+fn metadata_string(metadata: Option<&Value>, key: &str) -> Option<String> {
+    metadata?
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn metadata_usize(metadata: Option<&Value>, key: &str) -> Option<usize> {
+    metadata?
+        .get(key)?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
 }
 
 pub(crate) fn team_task_surface_item(
@@ -136,5 +236,67 @@ pub(crate) fn ui_task_state_from_team_status(
         allthecodes_teams::types::TaskStatus::Running => UiTaskState::Running,
         allthecodes_teams::types::TaskStatus::Stopped => UiTaskState::Canceled,
         allthecodes_teams::types::TaskStatus::Completed => UiTaskState::Succeeded,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn workflow_task_surfaces_adapter_uses_local_workflow_metadata() {
+        let task = allthecodes_tasks::TaskEntry {
+            id: "workflow-run-1".to_string(),
+            kind: allthecodes_tasks::TASK_KIND_LOCAL_WORKFLOW.to_string(),
+            subject: "Workflow: release".to_string(),
+            description: "/repo/.allthecodes/workflows/release.md".to_string(),
+            status: allthecodes_tasks::TaskStatus::InProgress,
+            output: "Current step: 2/3 Publish release".to_string(),
+            output_summary: String::new(),
+            output_bytes: 0,
+            output_truncated: false,
+            parent_id: None,
+            depends_on: Vec::new(),
+            owner: None,
+            active_form: None,
+            metadata: Some(json!({
+                "workflow_name": "release",
+                "workflow_file": "release.md",
+                "workflow_path": "/repo/.allthecodes/workflows/release.md",
+                "current_step_number": 2,
+                "current_step_name": "Publish release",
+                "total_steps": 3,
+                "completed_steps": 1,
+                "run_status": "running",
+            })),
+            tool_use_id: None,
+            agent_id: None,
+            supervisor_id: None,
+            isolation: None,
+            worktree_path: None,
+            worktree_branch: None,
+            remote_task_type: None,
+            remote_session_id: None,
+            remote_task_metadata: None,
+            poll_started_at: None,
+            cancel_requested_at: None,
+            recovered_at: None,
+            previous_status: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        let item = tool_task_surface_item(task);
+        assert_eq!(item.task.kind, UiTaskKind::Workflow);
+        assert_eq!(item.task.state, UiTaskState::Running);
+        assert_eq!(item.task.title, "Workflow: release");
+        assert_eq!(item.task.progress, Some((1, 3)));
+        assert_eq!(item.task.summary, "running - step 2/3: Publish release");
+        assert!(item
+            .task
+            .output_lines
+            .iter()
+            .any(|line| line == "Workflow file: release.md"));
     }
 }

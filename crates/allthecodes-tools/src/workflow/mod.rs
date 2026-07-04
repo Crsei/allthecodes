@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+pub mod file_workflow;
 pub mod plan;
 
 use crate::common::{current_dir, string_param, task_list_id_for_context, validate_enum};
@@ -308,6 +309,65 @@ fn workflow_action(input: &Value) -> Result<&str> {
     Ok(action.or(mode).unwrap_or("start"))
 }
 
+fn is_file_workflow_input(input: &Value) -> bool {
+    input
+        .get("workflow_script")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || input.get("workflow").is_some()
+        || input.get("run_id").is_some()
+}
+
+fn validate_file_workflow_input(input: &Value) -> ValidationResult {
+    if let Some(result) = validate_enum(
+        input,
+        "action",
+        &["start", "status", "advance", "cancel", "list"],
+    ) {
+        return result;
+    }
+    if let Some(result) = validate_enum(
+        input,
+        "mode",
+        &["start", "status", "advance", "cancel", "list"],
+    ) {
+        return result;
+    }
+    if let Some(result) = validate_enum(
+        input,
+        "applied_status",
+        &["completed", "failed", "cancelled"],
+    ) {
+        return result;
+    }
+    if let Some(result) = validate_enum(input, "step_status", &["completed", "failed", "cancelled"])
+    {
+        return result;
+    }
+    let action = match file_workflow::file_workflow_action(input) {
+        Ok(action) => action,
+        Err(err) => {
+            return ValidationResult::Error {
+                message: err.to_string(),
+                error_code: 400,
+            }
+        }
+    };
+    match action {
+        "start" if string_param(input, "workflow").is_none() => ValidationResult::Error {
+            message: "workflow is required when action=start in file workflow mode".into(),
+            error_code: 400,
+        },
+        "status" | "advance" | "cancel" if string_param(input, "run_id").is_none() => {
+            ValidationResult::Error {
+                message: "run_id is required when action is status, advance, or cancel in file workflow mode".into(),
+                error_code: 400,
+            }
+        }
+        _ => ValidationResult::Ok,
+    }
+}
+
 fn workflow_step_ids(input: &Value) -> Vec<String> {
     input
         .get("steps")
@@ -442,6 +502,11 @@ impl Tool for WorkflowTool {
             "properties": {
                 "action": {"type": "string", "enum": ["start", "status", "advance", "cancel", "list"], "description": "Preferred compatibility field."},
                 "mode": {"type": "string", "enum": ["start", "status", "advance", "cancel", "list"], "description": "Legacy allthecodes alias for action."},
+                "workflow_script": {"type": "boolean", "description": "When true, list project workflow script files from .allthecodes/workflows."},
+                "workflow": {"type": "string", "description": "File workflow script stem, such as release for .allthecodes/workflows/release.md."},
+                "run_id": {"type": "string", "description": "File workflow run id returned from action=start."},
+                "args": {"type": "object", "description": "Optional arguments persisted with a file workflow run."},
+                "applied_status": {"type": "string", "enum": ["completed", "failed", "cancelled"], "description": "File workflow status to apply to the current step when advancing."},
                 "workflow_id": {"type": "string"},
                 "name": {"type": "string"},
                 "goal": {"type": "string"},
@@ -467,14 +532,26 @@ impl Tool for WorkflowTool {
     }
 
     fn is_read_only(&self, input: &Value) -> bool {
+        if is_file_workflow_input(input) {
+            return matches!(
+                file_workflow::file_workflow_action(input).unwrap_or("start"),
+                "list" | "status"
+            );
+        }
         matches!(workflow_action(input).unwrap_or("start"), "list" | "status")
     }
 
     fn is_destructive(&self, input: &Value) -> bool {
+        if is_file_workflow_input(input) {
+            return file_workflow::file_workflow_action(input).unwrap_or("start") == "cancel";
+        }
         workflow_action(input).unwrap_or("start") == "cancel"
     }
 
     async fn validate_input(&self, input: &Value, _ctx: &ToolUseContext) -> ValidationResult {
+        if is_file_workflow_input(input) {
+            return validate_file_workflow_input(input);
+        }
         if let Some(result) = validate_enum(
             input,
             "action",
@@ -536,6 +613,47 @@ impl Tool for WorkflowTool {
     }
 
     async fn check_permissions(&self, input: &Value, _ctx: &ToolUseContext) -> PermissionResult {
+        if is_file_workflow_input(input) {
+            return match file_workflow::file_workflow_action(input) {
+                Ok("list" | "status") => PermissionResult::Allow {
+                    updated_input: input.clone(),
+                },
+                Ok("start") => PermissionResult::Ask {
+                    message: format!(
+                        "Allow Workflow start for script '{}'{}?",
+                        string_param(input, "workflow").unwrap_or("<missing workflow>"),
+                        if input.get("args").is_some() {
+                            " with args"
+                        } else {
+                            ""
+                        }
+                    ),
+                },
+                Ok("advance") => PermissionResult::Ask {
+                    message: format!(
+                        "Allow Workflow advance for run {} to {}?",
+                        string_param(input, "run_id").unwrap_or("<missing run_id>"),
+                        string_param(input, "applied_status")
+                            .or_else(|| string_param(input, "step_status"))
+                            .or_else(|| string_param(input, "status"))
+                            .unwrap_or("completed")
+                    ),
+                },
+                Ok("cancel") => PermissionResult::Ask {
+                    message: format!(
+                        "Allow Workflow cancel for run {}?",
+                        string_param(input, "run_id").unwrap_or("<missing run_id>")
+                    ),
+                },
+                Ok(other) => PermissionResult::Deny {
+                    message: format!("unsupported workflow action: {other}"),
+                },
+                Err(err) => PermissionResult::Deny {
+                    message: err.to_string(),
+                },
+            };
+        }
+
         match workflow_action(input) {
             Ok("list" | "status") => PermissionResult::Allow {
                 updated_input: input.clone(),
@@ -580,6 +698,19 @@ impl Tool for WorkflowTool {
     }
 
     fn to_auto_classifier_input(&self, input: &Value) -> Value {
+        if is_file_workflow_input(input) {
+            return json!({
+                "operation": "workflow",
+                "workflow_script": true,
+                "action": file_workflow::file_workflow_action(input).unwrap_or("start"),
+                "workflow": string_param(input, "workflow"),
+                "run_id": string_param(input, "run_id"),
+                "has_args": input.get("args").is_some(),
+                "applied_status": string_param(input, "applied_status")
+                    .or_else(|| string_param(input, "step_status"))
+                    .or_else(|| string_param(input, "status")),
+            });
+        }
         let action = workflow_action(input).unwrap_or("start");
         let step_ids = workflow_step_ids(input);
         json!({
@@ -603,6 +734,9 @@ impl Tool for WorkflowTool {
         _parent: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
+        if is_file_workflow_input(&input) {
+            return file_workflow::call_file_workflow(&input, &current_dir());
+        }
         match workflow_action(&input)? {
             "list" => {
                 let records = list_project_workflows()?;
@@ -792,7 +926,7 @@ impl Tool for WorkflowTool {
     }
 
     async fn prompt(&self) -> String {
-        "Use workflow action=start/status/advance/cancel/list for durable project-local workflows stored under .allthecodes/workflows and .allthecodes/workflow-runs."
+        "Use workflow action=start/status/advance/cancel/list. Inputs with workflow/run_id run file workflow scripts from .allthecodes/workflows (*.md, *.yaml, *.yml) and persist runs under .allthecodes/workflow-runs. Inputs with name/goal/steps/workflow_id keep the legacy allthecodes static workflow mode."
             .into()
     }
 }

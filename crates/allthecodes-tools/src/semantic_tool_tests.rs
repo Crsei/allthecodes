@@ -30,7 +30,10 @@ mod tests {
     use crate::tasks::{TaskCreateTool, TaskListTool, TaskOutputTool, TaskUpdateTool};
     use crate::tool::{FileCacheEntry, FileStateCache, ToolAppState, ToolUseOptions};
     use crate::tool::{PermissionResult, Tool, ToolUseContext, Tools, ValidationResult};
-    use crate::workflow::{VerifyPlanExecutionTool, WorkflowAliasTool, WorkflowTool};
+    use crate::workflow::{
+        file_workflow::{MarkdownWorkflowParser, YamlWorkflowParser},
+        VerifyPlanExecutionTool, WorkflowAliasTool, WorkflowTool,
+    };
     use allthecodes_types::message::{AssistantMessage, ContentBlock, ToolResultContent};
     use allthecodes_types::sdk::UsageTracking;
 
@@ -703,6 +706,345 @@ mod tests {
             .unwrap();
         assert_eq!(status.data["workflow"]["status"], "completed");
         assert_eq!(status.data["run"]["status"], "completed");
+    }
+
+    #[test]
+    fn semantic_file_workflow_parsers_handle_markdown_and_yaml_steps() {
+        let markdown = r#"
+# Release
+- [ ] Prepare release
+- [x] Already complete
+- Publish release
+1. Verify package
+2) Publish package
+note. not a numbered step
+"#;
+
+        let parsed_markdown = MarkdownWorkflowParser::parse(markdown).expect("markdown parses");
+        let step_names = parsed_markdown
+            .steps
+            .iter()
+            .map(|step| step.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            step_names,
+            vec![
+                "Prepare release",
+                "Publish release",
+                "Verify package",
+                "Publish package"
+            ]
+        );
+
+        let yaml = r#"
+steps:
+  - name: Inspect
+    prompt: Check the current code first.
+  - name: Build
+    run: cargo check -p allthecodes-tools
+"#;
+
+        let parsed_yaml = YamlWorkflowParser::parse(yaml).expect("yaml parses");
+        assert_eq!(parsed_yaml.steps.len(), 2);
+        assert_eq!(parsed_yaml.steps[0].name, "Inspect");
+        assert_eq!(parsed_yaml.steps[0].prompt, "Check the current code first.");
+        assert_eq!(parsed_yaml.steps[1].name, "Build");
+        assert_eq!(
+            parsed_yaml.steps[1].run.as_deref(),
+            Some("cargo check -p allthecodes-tools")
+        );
+        assert_eq!(parsed_yaml.steps[1].prompt, "Build");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn semantic_file_workflow_lifecycle_uses_project_local_paths_and_run_ids() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _cwd_guard = CurrentDirGuard::set(temp.path());
+
+        let workflows_dir = temp.path().join(".allthecodes").join("workflows");
+        fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        fs::write(
+            workflows_dir.join("release.md"),
+            "# Release\n\n- [ ] Prepare release\n- [x] Already done\n- Publish release\n",
+        )
+        .expect("write workflow script");
+
+        let ctx = test_context("file-workflow-lifecycle");
+        let parent = parent_message();
+        let tool = WorkflowAliasTool;
+
+        let start_input = json!({
+            "action": "start",
+            "workflow": "release",
+            "args": { "version": "0.1.5" }
+        });
+        assert!(matches!(
+            tool.validate_input(&start_input, &ctx).await,
+            ValidationResult::Ok
+        ));
+
+        let start_result = tool
+            .call(start_input, &ctx, &parent, None)
+            .await
+            .expect("start");
+        assert_eq!(start_result.data["workflow_script"], true);
+        assert_eq!(start_result.data["workflow"], "release");
+        assert_eq!(start_result.data["status"], "running");
+        assert_eq!(start_result.data["current_step"]["name"], "Prepare release");
+        let run_id = start_result.data["run_id"]
+            .as_str()
+            .expect("run id")
+            .to_string();
+        assert_ne!(run_id, "release");
+
+        let run_path = temp
+            .path()
+            .join(".allthecodes")
+            .join("workflow-runs")
+            .join(format!("{run_id}.json"));
+        assert!(run_path.exists(), "run record should be project-local");
+        assert!(
+            !temp.path().join(".claude").exists(),
+            "file workflows must not create .claude paths"
+        );
+
+        let status_input = json!({ "action": "status", "run_id": run_id });
+        assert!(matches!(
+            tool.validate_input(&status_input, &ctx).await,
+            ValidationResult::Ok
+        ));
+        let status_result = tool
+            .call(status_input, &ctx, &parent, None)
+            .await
+            .expect("status");
+        assert_eq!(
+            status_result.data["current_step"]["name"],
+            "Prepare release"
+        );
+
+        let advance_input = json!({
+            "action": "advance",
+            "run_id": status_result.data["run_id"].as_str().expect("run id")
+        });
+        let advance_result = tool
+            .call(advance_input, &ctx, &parent, None)
+            .await
+            .expect("advance");
+        assert_eq!(advance_result.data["status"], "running");
+        assert_eq!(
+            advance_result.data["current_step"]["name"],
+            "Publish release"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn semantic_file_workflow_tasks_track_run_metadata_and_status() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+        let _cwd_guard = CurrentDirGuard::set(temp.path());
+
+        let workflows_dir = temp.path().join(".allthecodes").join("workflows");
+        fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        let workflow_path = workflows_dir.join("release.md");
+        fs::write(
+            &workflow_path,
+            "# Release\n\n- Prepare release\n- Publish release\n",
+        )
+        .expect("write workflow script");
+
+        let ctx = test_context("file-workflow-task-observability");
+        let parent = parent_message();
+        let tool = WorkflowAliasTool;
+        let task_store = allthecodes_tasks::global_store();
+
+        let start_result = tool
+            .call(
+                json!({
+                    "action": "start",
+                    "workflow": "release",
+                    "args": { "version": "0.1.5" }
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .expect("start");
+        let run_id = start_result.data["run_id"]
+            .as_str()
+            .expect("run id")
+            .to_string();
+        let started_task = task_store
+            .get(&run_id)
+            .expect("workflow start should create task");
+        assert_eq!(started_task.id, run_id);
+        assert_eq!(
+            started_task.kind,
+            allthecodes_tasks::TASK_KIND_LOCAL_WORKFLOW
+        );
+        assert_eq!(
+            started_task.status,
+            allthecodes_tasks::TaskStatus::InProgress
+        );
+        let started_metadata = started_task.metadata.as_ref().expect("metadata");
+        assert_eq!(started_metadata["workflow_name"], "release");
+        assert_eq!(started_metadata["workflow_file"], "release.md");
+        assert_eq!(
+            started_metadata["workflow_path"],
+            workflow_path.display().to_string()
+        );
+        assert_eq!(started_metadata["current_step_index"], 0);
+        assert_eq!(started_metadata["total_steps"], 2);
+        assert_eq!(started_metadata["completed_steps"], 0);
+        assert_eq!(started_metadata["run_status"], "running");
+        assert!(started_task
+            .output
+            .contains("Current step: 1/2 Prepare release"));
+
+        let first_advance = tool
+            .call(
+                json!({
+                    "action": "advance",
+                    "run_id": &run_id
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .expect("advance first step");
+        assert_eq!(first_advance.data["status"], "running");
+        let running_task = task_store
+            .get(&run_id)
+            .expect("workflow advance should update task");
+        assert_eq!(
+            running_task.status,
+            allthecodes_tasks::TaskStatus::InProgress
+        );
+        let running_metadata = running_task.metadata.as_ref().expect("metadata");
+        assert_eq!(running_metadata["current_step_index"], 1);
+        assert_eq!(running_metadata["completed_steps"], 1);
+        assert_eq!(running_metadata["run_status"], "running");
+
+        tool.call(
+            json!({
+                "action": "advance",
+                "run_id": &run_id
+            }),
+            &ctx,
+            &parent,
+            None,
+        )
+        .await
+        .expect("advance final step");
+        let completed_task = task_store
+            .get(&run_id)
+            .expect("workflow completion should update task");
+        assert_eq!(
+            completed_task.status,
+            allthecodes_tasks::TaskStatus::Completed
+        );
+        let completed_metadata = completed_task.metadata.as_ref().expect("metadata");
+        assert_eq!(completed_metadata["completed_steps"], 2);
+        assert_eq!(completed_metadata["total_steps"], 2);
+        assert_eq!(completed_metadata["run_status"], "completed");
+
+        let failed_start = tool
+            .call(
+                json!({
+                    "action": "start",
+                    "workflow": "release"
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .expect("start failed run");
+        let failed_run_id = failed_start.data["run_id"].as_str().expect("run id");
+        tool.call(
+            json!({
+                "action": "advance",
+                "run_id": failed_run_id,
+                "applied_status": "failed"
+            }),
+            &ctx,
+            &parent,
+            None,
+        )
+        .await
+        .expect("fail run");
+        assert_eq!(
+            task_store.get(failed_run_id).expect("failed task").status,
+            allthecodes_tasks::TaskStatus::Failed
+        );
+
+        let cancelled_start = tool
+            .call(
+                json!({
+                    "action": "start",
+                    "workflow": "release"
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .expect("start cancelled run");
+        let cancelled_run_id = cancelled_start.data["run_id"].as_str().expect("run id");
+        tool.call(
+            json!({
+                "action": "cancel",
+                "run_id": cancelled_run_id
+            }),
+            &ctx,
+            &parent,
+            None,
+        )
+        .await
+        .expect("cancel run");
+        assert_eq!(
+            task_store
+                .get(cancelled_run_id)
+                .expect("cancelled task")
+                .status,
+            allthecodes_tasks::TaskStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn semantic_file_workflow_list_ignores_json_static_records() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _cwd_guard = CurrentDirGuard::set(temp.path());
+
+        let workflows_dir = temp.path().join(".allthecodes").join("workflows");
+        fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        fs::write(workflows_dir.join("release.md"), "- Prepare release\n")
+            .expect("write markdown workflow");
+        fs::write(workflows_dir.join("static.json"), "{}").expect("write static record");
+
+        let ctx = test_context("file-workflow-list");
+        let parent = parent_message();
+        let list_result = WorkflowAliasTool
+            .call(
+                json!({ "action": "list", "workflow_script": true }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .expect("list");
+        let scripts = list_result.data["workflow_scripts"]
+            .as_array()
+            .expect("workflow scripts");
+
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0]["name"], "release");
+        assert_eq!(scripts[0]["file"], "release.md");
     }
 
     #[tokio::test]

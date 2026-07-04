@@ -96,7 +96,7 @@ impl Default for ProcessedInput {
 pub fn process_user_input(
     input: &str,
     _messages: &[Message],
-    _cwd: &str,
+    cwd: &str,
     dispatcher: &dyn CommandDispatcher,
 ) -> ProcessedInput {
     let trimmed = input.trim();
@@ -119,7 +119,9 @@ pub fn process_user_input(
 
     // -- Slash-command path ------------------------------------------------
     if let Some(stripped) = trimmed.strip_prefix('/') {
-        if let Some(parsed) = dispatcher.parse_command_input(trimmed) {
+        if let Some(parsed) =
+            dispatcher.parse_command_input_for_cwd(trimmed, std::path::Path::new(cwd))
+        {
             return ProcessedInput {
                 messages: Vec::new(),
                 should_query: false,
