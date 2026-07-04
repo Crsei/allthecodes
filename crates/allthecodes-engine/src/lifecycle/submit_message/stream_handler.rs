@@ -10,8 +10,8 @@ use crate::session::record_replay::types::{
 };
 use crate::types::config::QueryEngineConfig;
 use crate::types::message::{
-    Attachment, Message, MessageContent, QueryYield, RequestStartEvent, StreamEvent, SystemSubtype,
-    Usage,
+    Attachment, ContentBlock, Message, MessageContent, QueryYield, RequestStartEvent, StreamEvent,
+    SystemSubtype, ToolResultContent, Usage,
 };
 
 use super::super::types::AbortReason;
@@ -396,6 +396,192 @@ pub(super) fn prime_goal_runtime_for_session(
     }
 }
 
+pub(super) fn maybe_stage_background_review_after_turn(
+    config: &QueryEngineConfig,
+    state_ref: &Arc<parking_lot::RwLock<QueryEngineState>>,
+    session_id: &crate::bootstrap::SessionId,
+    turn_count_this_submit: usize,
+    result_text: &str,
+    is_error: bool,
+) -> Vec<String> {
+    let review_config = crate::services::background_review::BackgroundReviewConfig::from_env();
+    let settings = state_ref.read().app_state.settings.clone();
+    if !background_review_enabled_by_hermes(&settings, &review_config) {
+        return Vec::new();
+    }
+
+    let (observed_turn_count, recent_summary) = {
+        let state = state_ref.read();
+        let user_message_count = state
+            .transcript
+            .messages
+            .iter()
+            .filter(|message| matches!(message, Message::User(_)))
+            .count();
+        let observed_turn_count = state
+            .transcript
+            .total_turn_count
+            .max(turn_count_this_submit)
+            .max(user_message_count);
+        (
+            observed_turn_count,
+            build_review_summary(&state.transcript.messages, result_text, is_error),
+        )
+    };
+
+    let similar_session_hits = if observed_turn_count >= review_config.turn_threshold {
+        similar_session_ids(&config.cwd, &recent_summary, session_id.as_str())
+    } else {
+        Vec::new()
+    };
+
+    let input = crate::services::background_review::BackgroundReviewInput {
+        source_session_id: session_id.to_string(),
+        cwd: config.cwd.clone(),
+        turn_count: observed_turn_count,
+        replay_seq_start: None,
+        replay_seq_end: None,
+        recent_summary,
+        tool_errors: Vec::new(),
+        similar_session_hits,
+    };
+
+    match crate::services::background_review::stage_background_review_if_due(input, &review_config)
+    {
+        Ok(Some(proposal)) => vec![proposal.id],
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            warn!(session_id = %session_id, %error, "failed to stage background review proposal");
+            Vec::new()
+        }
+    }
+}
+
+fn background_review_enabled_by_hermes(
+    settings: &crate::types::app_state::SettingsJson,
+    config: &crate::services::background_review::BackgroundReviewConfig,
+) -> bool {
+    config.enabled && settings.hermes_enabled.unwrap_or(false)
+}
+
+fn similar_session_ids(cwd: &str, summary: &str, current_session_id: &str) -> Vec<String> {
+    let query = summary
+        .split_whitespace()
+        .take(12)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    allthecodes_session::storage::search_workspace_sessions(std::path::Path::new(cwd), &query, 3)
+        .map(|hits| {
+            hits.into_iter()
+                .map(|hit| hit.session_id)
+                .filter(|id| id != current_session_id)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn build_review_summary(messages: &[Message], result_text: &str, is_error: bool) -> String {
+    let mut lines = messages
+        .iter()
+        .rev()
+        .take(6)
+        .map(message_preview)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    if !result_text.trim().is_empty() {
+        lines.push(format!(
+            "result{}: {}",
+            if is_error { " error" } else { "" },
+            truncate_chars(result_text, 180)
+        ));
+    }
+    truncate_chars(&lines.join("\n"), 500)
+}
+
+fn message_preview(message: &Message) -> String {
+    match message {
+        Message::User(user) => format!("user: {}", content_preview(&user.content)),
+        Message::Assistant(assistant) => {
+            format!("assistant: {}", blocks_preview(&assistant.content))
+        }
+        Message::System(system) => format!("system: {}", truncate_chars(&system.content, 120)),
+        Message::Progress(progress) => {
+            format!(
+                "progress: {} {}",
+                progress.tool_use_id,
+                truncate_chars(&progress.data.to_string(), 80)
+            )
+        }
+        Message::Attachment(attachment) => {
+            format!(
+                "attachment: {}",
+                truncate_chars(&format!("{:?}", attachment.attachment), 120)
+            )
+        }
+    }
+}
+
+fn content_preview(content: &MessageContent) -> String {
+    match content {
+        MessageContent::Text(text) => truncate_chars(text, 160),
+        MessageContent::Blocks(blocks) => blocks_preview(blocks),
+    }
+}
+
+fn blocks_preview(blocks: &[ContentBlock]) -> String {
+    truncate_chars(
+        &blocks
+            .iter()
+            .map(block_preview)
+            .collect::<Vec<_>>()
+            .join(" "),
+        180,
+    )
+}
+
+fn block_preview(block: &ContentBlock) -> String {
+    match block {
+        ContentBlock::Text { text } => truncate_chars(text, 120),
+        ContentBlock::ToolUse { name, input, .. }
+        | ContentBlock::ServerToolUse { name, input, .. } => {
+            format!("tool_use {name} {}", truncate_chars(&input.to_string(), 80))
+        }
+        ContentBlock::ToolResult {
+            content, is_error, ..
+        } => {
+            let prefix = if *is_error {
+                "tool_result_error"
+            } else {
+                "tool_result"
+            };
+            format!("{prefix} {}", tool_result_preview(content))
+        }
+        ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {
+            "[thinking]".to_string()
+        }
+        ContentBlock::ConnectorText { connector_text, .. } => truncate_chars(connector_text, 120),
+        ContentBlock::Image { .. } => "[image]".to_string(),
+    }
+}
+
+fn tool_result_preview(content: &ToolResultContent) -> String {
+    match content {
+        ToolResultContent::Text(text) => truncate_chars(text, 120),
+        ToolResultContent::Blocks(blocks) => blocks_preview(blocks),
+    }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut out = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
+}
+
 fn goal_status_event(status: &allthecodes_tools::goals::GoalStatus) -> &'static str {
     match status {
         allthecodes_tools::goals::GoalStatus::Active => "runtime_updated",
@@ -764,6 +950,41 @@ mod tests {
             auto_save_session: false,
             agent_context: None,
         }
+    }
+
+    #[test]
+    fn background_review_gate_requires_hermes_enabled_setting() {
+        let enabled_config = crate::services::background_review::BackgroundReviewConfig {
+            enabled: true,
+            turn_threshold: 1,
+        };
+        let mut settings = crate::types::app_state::SettingsJson::default();
+
+        assert!(!background_review_enabled_by_hermes(
+            &settings,
+            &enabled_config
+        ));
+
+        settings.hermes_enabled = Some(false);
+        assert!(!background_review_enabled_by_hermes(
+            &settings,
+            &enabled_config
+        ));
+
+        settings.hermes_enabled = Some(true);
+        assert!(background_review_enabled_by_hermes(
+            &settings,
+            &enabled_config
+        ));
+
+        let disabled_config = crate::services::background_review::BackgroundReviewConfig {
+            enabled: false,
+            turn_threshold: 1,
+        };
+        assert!(!background_review_enabled_by_hermes(
+            &settings,
+            &disabled_config
+        ));
     }
 
     #[test]

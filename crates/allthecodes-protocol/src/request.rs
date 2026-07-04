@@ -85,6 +85,11 @@ crate::api_definitions! {
     SessionList => "GET /api/sessions" {
         response: v1::SessionListResponse,
     },
+    /// Search saved session messages.
+    SessionSearch => "GET /api/sessions/search" {
+        params: v1::SessionSearchParams,
+        response: v1::SessionSearchResponse,
+    },
     /// Create a new session.
     SessionCreate => "POST /api/sessions/new" {
         params: v1::SessionCreateParams,
@@ -1039,6 +1044,7 @@ mod tests {
     fn endpoint_metadata_contains_core_session_definitions_in_order() {
         let endpoints = [
             (ApiMethod::SessionList, "GET", "/api/sessions"),
+            (ApiMethod::SessionSearch, "GET", "/api/sessions/search"),
             (ApiMethod::SessionCreate, "POST", "/api/sessions/new"),
             (ApiMethod::SessionDetail, "GET", "/api/sessions/{id}"),
             (
@@ -1062,6 +1068,14 @@ mod tests {
             assert_eq!(endpoint.path, path);
             assert_eq!(operation.endpoint(), *endpoint);
         }
+    }
+
+    #[test]
+    fn session_search_endpoint_metadata_is_declared() {
+        let endpoint = ApiMethod::SessionSearch.endpoint();
+
+        assert_eq!(endpoint.http_method, "GET");
+        assert_eq!(endpoint.path, "/api/sessions/search");
     }
 
     #[test]

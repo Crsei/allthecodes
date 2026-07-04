@@ -307,15 +307,18 @@ fn filter_sessions_for_workspace(mut sessions: Vec<SessionInfo>, cwd: &Path) -> 
 
 mod file_store;
 mod serialization;
+mod session_search;
 #[cfg(feature = "sqlite-storage")]
 mod sqlite_store;
 
 pub(crate) use serialization::serializable_to_messages;
+pub use session_search::SessionSearchResult;
 
 pub use file_store::{
     archive_session, list_sessions, list_sessions_page, list_workspace_sessions,
-    list_workspace_sessions_page, load_session, load_session_info, save_session,
-    set_session_chat_mode_override, set_session_title, truncate_session, MAX_CUSTOM_TITLE_LEN,
+    list_workspace_sessions_page, load_session, load_session_info, save_session, search_sessions,
+    search_sessions_by_workspace_key, search_workspace_sessions, set_session_chat_mode_override,
+    set_session_title, truncate_session, MAX_CUSTOM_TITLE_LEN,
 };
 pub(crate) use file_store::{
     load_session_info_from_file, save_session_to_file, set_session_title_in_file,
@@ -1094,6 +1097,79 @@ mod tests {
             .map(|session| session.session_id)
             .collect();
         assert_eq!(ids, vec!["json-list-fallback"]);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_search_sessions_finds_saved_message_text() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+
+        save_session(
+            "hermes-search-one",
+            &[user_message("remember hermes runtime planning details")],
+            "/proj",
+        )
+        .unwrap();
+
+        let hits = search_sessions("hermes runtime", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "hermes-search-one");
+        assert_eq!(hits[0].message_index, 0);
+        assert!(hits[0].snippet.contains("hermes runtime"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_search_workspace_sessions_filters_by_workspace() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        let project = temp.path().join("project");
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+
+        save_session(
+            "hermes-workspace-hit",
+            &[user_message("gateway cron memory")],
+            project.to_str().unwrap(),
+        )
+        .unwrap();
+        save_session(
+            "hermes-workspace-miss",
+            &[user_message("gateway cron memory")],
+            other.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let hits = search_workspace_sessions(&project, "gateway", 10).unwrap();
+        let ids = hits
+            .iter()
+            .map(|hit| hit.session_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["hermes-workspace-hit"]);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_search_sessions_uses_json_fallback_when_sqlite_is_blocked() {
+        let temp = tempdir().unwrap();
+        let _g = HomeGuard::set(temp.path());
+        std::fs::create_dir_all(temp.path().join("state").join("state_5.sqlite")).unwrap();
+
+        write_fixture_session(
+            "hermes-json-fallback",
+            vec![user_sm(
+                "json fallback searchable memory",
+                "00000000-0000-0000-0000-000000000701",
+            )],
+            "/proj",
+        )
+        .unwrap();
+
+        let hits = search_sessions("searchable memory", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "hermes-json-fallback");
     }
 
     #[cfg(feature = "sqlite-storage")]

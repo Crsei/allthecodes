@@ -360,6 +360,7 @@ mod submit_transaction_tests {
                 abort_reason: None,
                 error: None,
                 usage: None,
+                review_proposal_ids: Vec::new(),
             })],
         );
         transaction.flush_recorder_after_commit();

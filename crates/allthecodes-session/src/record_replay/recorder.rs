@@ -463,6 +463,7 @@ mod tests {
                     abort_reason: None,
                     error: None,
                     usage: None,
+                    review_proposal_ids: Vec::new(),
                 }),
             ])
             .await

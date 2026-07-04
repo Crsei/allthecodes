@@ -12,6 +12,7 @@ pub enum RemoteTransport {
     Webhook,
     Telegram,
     Lark,
+    Scheduled,
     Local,
     Other(String),
 }
@@ -23,6 +24,7 @@ impl RemoteTransport {
             Self::Webhook => "webhook".to_string(),
             Self::Telegram => "telegram".to_string(),
             Self::Lark => "lark".to_string(),
+            Self::Scheduled => "scheduled".to_string(),
             Self::Local => "local".to_string(),
             Self::Other(value) => normalize_key_part(value),
         }

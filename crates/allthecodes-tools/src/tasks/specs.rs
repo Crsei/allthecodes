@@ -8,6 +8,7 @@ pub const TASK_UPDATE_NAME: &str = "TaskUpdate";
 pub const TASK_LIST_NAME: &str = "TaskList";
 pub const TASK_STOP_NAME: &str = "TaskStop";
 pub const TASK_OUTPUT_NAME: &str = "TaskOutput";
+pub const DELEGATE_TASK_NAME: &str = "DelegateTask";
 
 pub const TASK_OUTPUT_DEFAULT_TIMEOUT_MS: u64 = 30_000;
 pub const TASK_OUTPUT_MAX_TIMEOUT_MS: u64 = 600_000;
@@ -241,6 +242,40 @@ pub fn task_output_schema() -> Value {
     })
 }
 
+pub fn delegate_task_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "role": {
+                "type": "string",
+                "description": "Agent role or subagent type to delegate to"
+            },
+            "prompt": {
+                "type": "string",
+                "description": "Task prompt for the child agent"
+            },
+            "cwd": {
+                "type": "string",
+                "description": "Optional working directory for the delegated task"
+            },
+            "worktree": {
+                "type": "string",
+                "description": "Optional worktree slug. When present, the child task is marked for worktree isolation."
+            },
+            "max_turns": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional maximum child-agent turns"
+            },
+            "verification_policy": {
+                "type": "string",
+                "description": "Optional verification expectation for the child task"
+            }
+        },
+        "required": ["role", "prompt"]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +290,7 @@ mod tests {
             task_list_schema(),
             task_stop_schema(),
             task_output_schema(),
+            delegate_task_schema(),
         ] {
             assert_eq!(schema.get("type").and_then(Value::as_str), Some("object"));
             assert!(schema.get("properties").is_some());

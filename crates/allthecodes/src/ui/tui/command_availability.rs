@@ -103,6 +103,7 @@ fn is_available_during_task(command: &str) -> bool {
             | "team"
             | "terminal-setup"
             | "voice"
+            | "hermes"
             | "statusline"
             | "recap"
     )
@@ -127,6 +128,10 @@ mod tests {
         );
         assert_eq!(
             slash_command_availability_during_task("/diff --stat"),
+            TaskCommandAvailability::Allowed
+        );
+        assert_eq!(
+            slash_command_availability_during_task("/hermes status"),
             TaskCommandAvailability::Allowed
         );
     }

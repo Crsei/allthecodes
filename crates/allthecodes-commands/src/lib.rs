@@ -37,11 +37,13 @@ pub mod files;
 pub mod gbranch;
 pub mod goal;
 pub mod help;
+pub mod hermes;
 pub mod hooks_cmd;
 pub mod ide_cmd;
 pub mod init;
 pub mod insights;
 pub mod keybindings_cmd;
+pub mod learn;
 pub mod login;
 pub mod login_code;
 pub mod logout;
@@ -771,6 +773,12 @@ pub fn get_all_commands() -> Vec<Command> {
             coordinator::CoordinatorHandler,
         ),
         command(
+            "hermes",
+            &[],
+            "Enable or inspect Hermes autonomous runtime",
+            hermes::HermesHandler,
+        ),
+        command(
             "chat-mode",
             &["mode"],
             "List, select, enable, disable, or set the default chat mode",
@@ -848,6 +856,12 @@ pub fn get_all_commands() -> Vec<Command> {
             &[],
             "List available skills",
             skills_cmd::SkillsHandler,
+        ),
+        command(
+            "learn",
+            &[],
+            "Stage a learnable skill proposal for approval",
+            learn::LearnHandler,
         ),
         command(
             "init",

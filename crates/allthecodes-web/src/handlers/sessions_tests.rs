@@ -167,6 +167,108 @@ async fn session_detail_handler_returns_current_storage_baseline() {
 
 #[tokio::test]
 #[serial]
+async fn session_search_handler_returns_matching_hits() {
+    let (_home, _guard) = temp_home();
+    let state = make_web_state();
+
+    allthecodes_session::storage::save_session(
+        "web-session-search-hit",
+        &[user_message(
+            "30000000-0000-0000-0000-000000000041",
+            41,
+            "hermes web search target",
+        )],
+        ".",
+    )
+    .expect("seed matching session");
+    allthecodes_session::storage::save_session(
+        "web-session-search-miss",
+        &[user_message(
+            "30000000-0000-0000-0000-000000000042",
+            42,
+            "unrelated retained context",
+        )],
+        ".",
+    )
+    .expect("seed non-matching session");
+
+    let response = session_search_handler(
+        State(state),
+        axum::extract::Query(SessionSearchParams {
+            query: "hermes web".to_string(),
+            limit: Some(10),
+            workspace_key: None,
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["query"], json!("hermes web"));
+    let hits = body["hits"].as_array().expect("hits array");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["session_id"], json!("web-session-search-hit"));
+    assert!(hits[0]["snippet"].as_str().unwrap().contains("hermes web"));
+}
+
+#[tokio::test]
+#[serial]
+async fn session_search_handler_filters_by_workspace_key() {
+    let (home, _guard) = temp_home();
+    let state = make_web_state();
+    let project = home.path().join("project");
+    let other = home.path().join("other");
+    std::fs::create_dir_all(&project).expect("project dir");
+    std::fs::create_dir_all(&other).expect("other dir");
+    git2::Repository::init(&project).expect("project repo");
+    git2::Repository::init(&other).expect("other repo");
+
+    allthecodes_session::storage::save_session(
+        "web-session-search-workspace-hit",
+        &[user_message(
+            "30000000-0000-0000-0000-000000000043",
+            43,
+            "shared gateway memory",
+        )],
+        project.to_str().unwrap(),
+    )
+    .expect("seed project session");
+    allthecodes_session::storage::save_session(
+        "web-session-search-workspace-miss",
+        &[user_message(
+            "30000000-0000-0000-0000-000000000044",
+            44,
+            "shared gateway memory",
+        )],
+        other.to_str().unwrap(),
+    )
+    .expect("seed other session");
+
+    let response = session_search_handler(
+        State(state),
+        axum::extract::Query(SessionSearchParams {
+            query: "gateway memory".to_string(),
+            limit: Some(10),
+            workspace_key: Some(allthecodes_session::storage::workspace_key(&project)),
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let ids = body["hits"]
+        .as_array()
+        .expect("hits array")
+        .iter()
+        .map(|hit| hit["session_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["web-session-search-workspace-hit"]);
+}
+
+#[tokio::test]
+#[serial]
 async fn session_detail_handler_returns_replay_status_fields() {
     let (_home, _guard) = temp_home();
     let state = make_web_state();

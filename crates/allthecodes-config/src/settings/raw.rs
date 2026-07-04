@@ -124,6 +124,7 @@ pub struct RawSettings {
     pub hashline_mode: Option<bool>,
 
     // -- Modes / integrations ------------------------------------------
+    pub hermes_enabled: Option<bool>,
     pub teammate_mode: Option<bool>,
     #[serde(rename = "claudeInChromeDefaultEnabled")]
     pub claude_in_chrome_default_enabled: Option<bool>,
@@ -337,6 +338,13 @@ impl RawSettings {
         merge_opt!(compact_threshold, "compactThreshold");
         merge_opt!(keep_recent_messages, "keepRecentMessages");
         merge_opt!(hashline_mode, "hashlineMode");
+        merge_on_wins_bool(
+            &mut self.hermes_enabled,
+            other.hermes_enabled,
+            source,
+            sources,
+            "hermesEnabled",
+        );
         merge_opt!(teammate_mode, "teammateMode");
         merge_opt!(
             claude_in_chrome_default_enabled,
@@ -398,6 +406,22 @@ impl RawSettings {
             merge_json_value(self.extra.entry(k.clone()).or_insert(Value::Null), v);
             sources.insert(k, source);
         }
+    }
+}
+
+fn merge_on_wins_bool(
+    slot: &mut Option<bool>,
+    incoming: Option<bool>,
+    source: SettingsSource,
+    sources: &mut SourceMap,
+    key: &str,
+) {
+    let Some(value) = incoming else {
+        return;
+    };
+    if value || *slot != Some(true) {
+        *slot = Some(value);
+        sources.insert(key.to_string(), source);
     }
 }
 

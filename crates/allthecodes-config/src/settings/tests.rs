@@ -69,6 +69,48 @@ fn project_overrides_global() {
 }
 
 #[test]
+fn hermes_enabled_uses_on_wins_merge() {
+    let global = RawSettings {
+        hermes_enabled: Some(true),
+        ..Default::default()
+    };
+    let project = RawSettings {
+        hermes_enabled: Some(false),
+        ..Default::default()
+    };
+
+    let merged = merge_configs(&global, &project);
+    assert_eq!(merged.hermes_enabled, Some(true));
+
+    let global = RawSettings {
+        hermes_enabled: Some(false),
+        ..Default::default()
+    };
+    let project = RawSettings {
+        hermes_enabled: Some(true),
+        ..Default::default()
+    };
+
+    let merged = merge_configs(&global, &project);
+    assert_eq!(merged.hermes_enabled, Some(true));
+}
+
+#[test]
+fn hermes_enabled_is_false_when_all_layers_are_false_or_unset() {
+    let global = RawSettings {
+        hermes_enabled: Some(false),
+        ..Default::default()
+    };
+    let project = RawSettings::default();
+
+    let merged = merge_configs(&global, &project);
+    assert_eq!(merged.hermes_enabled, Some(false));
+
+    let merged = merge_configs(&RawSettings::default(), &RawSettings::default());
+    assert_eq!(merged.hermes_enabled, None);
+}
+
+#[test]
 fn allowed_tools_dedup_merges() {
     let base: Vec<String> = vec!["Bash".into(), "FileRead".into()];
     let over: Vec<String> = vec!["FileRead".into(), "Grep".into()];
@@ -1321,6 +1363,7 @@ fn settings_projection_domainizes_runtime_settings() {
             "claude-opus-4-20250514".to_string(),
         )]),
         language: Some("zh-CN".to_string()),
+        hermes_enabled: Some(true),
         auto_memory_enabled: Some(true),
         web_search_provider: Some("tavily".to_string()),
         speech_enabled: Some(true),
@@ -1346,6 +1389,7 @@ fn settings_projection_domainizes_runtime_settings() {
         Some("claude-opus-4-20250514")
     );
     assert_eq!(runtime.ui.language.as_deref(), Some("zh-CN"));
+    assert_eq!(runtime.integrations.hermes_enabled, Some(true));
     assert_eq!(runtime.memory.auto_memory_enabled, Some(true));
     assert_eq!(
         runtime.network.web_search_provider.as_deref(),
@@ -1362,6 +1406,7 @@ fn settings_projection_domainizes_runtime_settings() {
     assert_eq!(settings.model.as_deref(), Some("claude-opus-4-20250514"));
     assert_eq!(settings.backend.as_deref(), Some("codex"));
     assert_eq!(settings.permission_mode.as_deref(), Some("auto"));
+    assert_eq!(settings.hermes_enabled, Some(true));
     assert_eq!(
         settings.env.get("ANTHROPIC_MODEL").map(String::as_str),
         Some("claude-opus-4-20250514")
@@ -1399,6 +1444,7 @@ fn schema_has_known_keys() {
         "fastMode",
         "env",
         "mcpBindings",
+        "hermesEnabled",
     ] {
         assert!(props.contains_key(key), "missing schema key: {}", key);
     }

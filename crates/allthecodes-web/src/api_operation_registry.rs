@@ -57,6 +57,7 @@ pub(crate) const DISPATCHED_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::Health,
     ApiMethod::Capabilities,
     ApiMethod::SessionList,
+    ApiMethod::SessionSearch,
     ApiMethod::SessionCreate,
     ApiMethod::SessionDetail,
     ApiMethod::SessionResume,

@@ -1,6 +1,6 @@
 # cc-rust 未完备项与全量构建 TODO
 
-> 更新日期: 2026-05-21 | 当前阶段: 全量构建 / Full Build
+> 更新日期: 2026-07-04 | 当前阶段: 全量构建 / Full Build
 
 本文只登记仍未补齐、仍需重评或明确 intentional crop 的内容。已确认实现或已关闭的历史记录已迁移到：
 
@@ -19,6 +19,7 @@
 | API providers | 基线完成，真实凭据证据部分收口 | Bedrock 原生 AWS EventStream、Vertex direct service-account JWT exchange、provider capability DTO、Azure/OpenAI/Foundry 命名诊断、Foundry fail early、Anthropic-compatible bearer/custom base URL、SOTA/MOTA/FOTA 默认值和 provider smoke matrix 已接入；2026-05-21 真实 smoke 已通过 direct bearer、compatible custom base URL bearer、prompt-cache default 与 TTL/global gates，direct API key、Bedrock、Vertex 因缺少对应凭据跳过。 |
 | Team Memory 客户端同步 | 代码已接通，待验证/文档收口 | `ui/team-memory-server/sync.ts` / `watcher.ts` 与 Rust daemon spawn 参数已接通；仍需同步、断线恢复、冲突处理 e2e。 |
 | TaskTools remote/multi-type runtime | 本地与 UI production 完成，remote runtime parity 未完 | 持久化、依赖字段、输出保留、`TaskOutput` 阻塞/超时、task taxonomy、remote metadata、recoverable marker、restore timer reset、remote review timeout guard、local-agent 取消已完成；`/tasks` production surface 已接入 BackendMessage、task list/detail、shell/remote/agent/team/MCP/dream/workflow detail renderers、stop/delete/refresh actions。仍需 remote/multi-type poller/reconnect runtime parity。 |
+| Hermes runtime execution bridge | 基础层完成，child/runtime execution parity 未完 | `session_search` warm memory、`/session search`、Web/API search、模型可见 `SessionSearch`、审批式 memory/skill proposals、background review proposals、scheduled task registry/daemon dispatch 和 `DelegateTask` delegation envelope 已落地。剩余缺口：scheduled task 的 `cwd` 目前只进入 source/event/system prompt metadata，尚未作为 `QueryEngine` 执行 cwd override；`DelegateTask` 会创建 child session、task 记录、worktree metadata 和 searchable bootstrap transcript，但尚未直接启动 caller-provided child `QueryEngine` runtime。 |
 | PlanMode auto-mode parity | 基础完成，classifier parity 未完 | 保守 classifier、计划持久化、approval lifecycle、实现任务关联、团队审批 mailbox、plan file 写入白名单已落地；仍需 full auto-mode LLM classifier parity 和 `allowedPrompts` 语义分类收口。 |
 | WebFetch browser-grade 能力 | HTTP-only release scope | redirect budget / cross-host diagnostic、Content-Type 分发、环境代理/`NO_PROXY`、Cookie/credential 边界已完成；browser-grade JS rendering 已登记为 §6 intentional crop，本次发布不承诺。 |
 | Daemon supervisor/worker ownership | submit/abort worker-owned，仍有 parity residual | `/api/submit`、`/api/abort`、`/api/permission` 已写入 `cc-daemon` command/event protocol，assistant worker 执行 submit 并回写事件；permission response 仍只是 durable ack，resize/history 仍缺 worker-owned 语义。 |
@@ -98,6 +99,7 @@
 - WebFetch browser-grade JS rendering: 本次发布只承诺 HTTP fetch 能力，包括 redirect/MIME/proxy/`NO_PROXY`、credential URL 拒绝和无 cookie store 边界；不内置浏览器运行时，不执行页面 JavaScript，避免把 cookie/session/DOM 执行面引入普通 WebFetch。需要 JS 渲染的工作流应走外置 Browser MCP 或后续 native browser host 方案。 | Codex | 2026-05-17 | 外置 Browser MCP 升级为默认发布支持面、用户明确要求 JS-rendered page fetch，或安全模型允许受控浏览器 profile/session 隔离。
 - Voice dictation audio/STT backend: cc-rust 当前只保留 `/voice`、`voiceEnabled`、keybinding 和 language normalization 兼容面；不声明真实 microphone capture、waveform UI、streaming transcription 或 Claude.ai voice STT。 | Codex | 2026-05-17 | 项目新增受支持 audio backend、STT client、local/SSH/WSL/auth 矩阵测试，并决定把 voice 纳入发布支持面。
 - Telegram/Lark inbound channel sessions and remote triggers: 本轮只承诺 gateway-backed outbound adapter status/control、connect health check 和 allowlisted test-message；不承诺入站 Telegram/Lark conversation、schedule remote triggers 或完整远程会话 parity。 | Codex | 2026-05-17 | 产品定义入站 channel session contract、gateway runner 注入语义和安全/审计策略，并补 e2e。
+- Additional Hermes-style platform adapters (Slack/Discord/Matrix/etc.): Hermes runtime slice only adds shared source/session/task abstractions, scheduled tasks, and existing gateway-backed adapter status/control. New platform adapters are not implemented without a product/runtime contract for inbound identity, authorization, audit, delivery retry, and session ownership. | Codex | 2026-07-04 | 产品定义对应 platform adapter contract，并要求纳入 Hermes-like runtime release scope。
 
 新增规则：
 

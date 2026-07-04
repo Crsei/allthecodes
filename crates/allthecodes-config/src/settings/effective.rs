@@ -98,6 +98,7 @@ pub struct EffectiveSettings {
     pub compact_threshold: Option<u8>,
     pub keep_recent_messages: Option<u8>,
     pub hashline_mode: Option<bool>,
+    pub hermes_enabled: Option<bool>,
     pub teammate_mode: Option<bool>,
     /// Auto-memory toggle (issue #45). `None` means "inherit default" (off).
     pub auto_memory_enabled: Option<bool>,
@@ -220,6 +221,7 @@ impl EffectiveSettings {
             compact_threshold: raw.compact_threshold,
             keep_recent_messages: raw.keep_recent_messages,
             hashline_mode: raw.hashline_mode,
+            hermes_enabled: raw.hermes_enabled,
             teammate_mode: raw.teammate_mode,
             auto_memory_enabled: raw.auto_memory_enabled,
             memory_auto_retrieve: raw.memory_auto_retrieve,

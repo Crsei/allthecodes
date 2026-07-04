@@ -11,6 +11,7 @@ json-storage = []
 
 [dependencies]
 allthecodes-db = { workspace = true, optional = true }
+allthecodes-config = { workspace = true }
 allthecodes-types = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -26,3 +27,4 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+serial_test = { workspace = true }

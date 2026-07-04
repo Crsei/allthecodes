@@ -377,6 +377,7 @@ dependencies = [
  "allthecodes-gateway",
  "allthecodes-server",
  "allthecodes-services",
+ "allthecodes-tasks",
  "allthecodes-tools",
  "allthecodes-types",
  "allthecodes-utils",
@@ -473,6 +474,7 @@ name = "allthecodes-gateway"
 version = "0.1.0"
 dependencies = [
  "allthecodes-config",
+ "allthecodes-tasks",
  "allthecodes-types",
  "axum",
  "hex",
@@ -854,6 +856,7 @@ dependencies = [
 name = "allthecodes-tasks"
 version = "0.1.0"
 dependencies = [
+ "allthecodes-config",
  "allthecodes-db",
  "allthecodes-types",
  "anyhow",
@@ -862,6 +865,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "serial_test",
  "sqlx",
  "tempfile",
  "tokio",
@@ -915,6 +919,7 @@ dependencies = [
  "allthecodes-ipc-protocol",
  "allthecodes-permissions",
  "allthecodes-sandbox",
+ "allthecodes-session",
  "allthecodes-skills",
  "allthecodes-tasks",
  "allthecodes-types",
@@ -1013,6 +1018,7 @@ dependencies = [
  "allthecodes-services",
  "allthecodes-session",
  "allthecodes-skills",
+ "allthecodes-tasks",
  "allthecodes-tool-display",
  "allthecodes-types",
  "allthecodes-utils",

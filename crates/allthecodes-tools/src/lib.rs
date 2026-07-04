@@ -40,6 +40,8 @@ pub mod result;
 pub mod runtime;
 pub mod runtime_capability;
 #[cfg(feature = "full")]
+pub mod session_search;
+#[cfg(feature = "full")]
 pub mod skills;
 #[cfg(feature = "full")]
 pub mod tasks;

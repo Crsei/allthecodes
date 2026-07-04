@@ -36,8 +36,9 @@ mod transaction;
 
 use command_handling::{bash_mode_result_message, handle_parsed_command, skill_args_from_prompt};
 use stream_handler::{
-    account_goal_runtime_message, check_budget, prime_goal_runtime_for_session,
-    process_stream_item, QueryTurnEvent, StreamAction, StreamContext,
+    account_goal_runtime_message, check_budget, maybe_stage_background_review_after_turn,
+    prime_goal_runtime_for_session, process_stream_item, QueryTurnEvent, StreamAction,
+    StreamContext,
 };
 use system_prompt_build::build_submit_system_prompt;
 use transaction::{SubmitTransaction, SubmitTransactionOutcome};
@@ -220,11 +221,20 @@ async fn flush_record_best_effort(recorder_ref: &SessionRecorderSlot, session_id
 }
 
 fn turn_finished_item(status: TurnFinishStatus, error: Option<String>) -> RecordItem {
+    turn_finished_item_with_review_ids(status, error, Vec::new())
+}
+
+fn turn_finished_item_with_review_ids(
+    status: TurnFinishStatus,
+    error: Option<String>,
+    review_proposal_ids: Vec<String>,
+) -> RecordItem {
     RecordItem::TurnFinished(TurnFinishedRecord {
         status,
         abort_reason: None,
         error,
         usage: None,
+        review_proposal_ids,
     })
 }
 
@@ -390,6 +400,7 @@ impl QueryEngine {
                                             abort_reason: Some(reason.clone()),
                                             error: None,
                                             usage: None,
+                                            review_proposal_ids: Vec::new(),
                                         }),
                                     ],
                                 );
@@ -1059,15 +1070,24 @@ impl QueryEngine {
             {
                 transaction.emit(goal_update);
             }
+            let review_proposal_ids = maybe_stage_background_review_after_turn(
+                &config,
+                &state_ref,
+                &session_id,
+                submit_turn.turn_count_this_submit,
+                &text_result,
+                !is_success,
+            );
             transaction.record_items(
                 "turn_finished",
-                vec![turn_finished_item(
+                vec![turn_finished_item_with_review_ids(
                     if is_success {
                         TurnFinishStatus::Completed
                     } else {
                         TurnFinishStatus::Errored
                     },
                     (!is_success).then(|| text_result.clone()),
+                    review_proposal_ids,
                 )],
             );
             transaction.flush_recorder_after_commit();

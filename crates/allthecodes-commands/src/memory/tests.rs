@@ -11,6 +11,28 @@ fn test_ctx(cwd: PathBuf) -> CommandContext {
     }
 }
 
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvGuard {
+    fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_memory_show_nonexistent_dir_returns_output() {
     let handler = MemoryHandler;
@@ -277,6 +299,115 @@ async fn test_memory_selector_reflects_auto_state() {
         CommandResult::Output(text) => assert!(text.contains("Auto-memory: ON")),
         _ => panic!("Expected Output"),
     }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_memory_approval_commands_do_not_write_without_proposal() {
+    let tmp = std::env::temp_dir().join(format!(
+        "cc_rust_mem_approval_test_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", &tmp);
+
+    let handler = MemoryHandler;
+    let mut ctx = test_ctx(tmp.clone());
+
+    let pending = handler.execute("pending", &mut ctx).await.unwrap();
+    match pending {
+        CommandResult::Output(text) => assert!(text.contains("No pending memory proposals")),
+        _ => panic!("Expected Output"),
+    }
+
+    let approve = handler
+        .execute("approve missing-proposal", &mut ctx)
+        .await
+        .unwrap();
+    match approve {
+        CommandResult::Output(text) => assert!(text.contains("not found")),
+        _ => panic!("Expected Output"),
+    }
+
+    let reject = handler
+        .execute("reject missing-proposal", &mut ctx)
+        .await
+        .unwrap();
+    match reject {
+        CommandResult::Output(text) => assert!(text.contains("not found")),
+        _ => panic!("Expected Output"),
+    }
+
+    let memories = allthecodes_session::memdir::list_memories(
+        allthecodes_session::memdir::MemoryScope::Project,
+        &tmp,
+    )
+    .unwrap();
+    assert!(memories.is_empty());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_memory_pending_lists_background_review_and_rejects() {
+    let tmp = std::env::temp_dir().join(format!(
+        "cc_rust_mem_review_queue_test_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", &tmp);
+
+    let proposal = allthecodes_engine::services::background_review::stage_background_review_if_due(
+        allthecodes_engine::services::background_review::BackgroundReviewInput {
+            source_session_id: "memory-review-session".to_string(),
+            cwd: tmp.to_string_lossy().to_string(),
+            turn_count: 1,
+            replay_seq_start: None,
+            replay_seq_end: None,
+            recent_summary: "review memory behavior".to_string(),
+            tool_errors: Vec::new(),
+            similar_session_hits: Vec::new(),
+        },
+        &allthecodes_engine::services::background_review::BackgroundReviewConfig {
+            enabled: true,
+            turn_threshold: 1,
+        },
+    )
+    .unwrap()
+    .unwrap();
+
+    let handler = MemoryHandler;
+    let mut ctx = test_ctx(tmp.clone());
+
+    let pending = handler.execute("pending", &mut ctx).await.unwrap();
+    match pending {
+        CommandResult::Output(text) => assert!(text.contains(&proposal.id)),
+        _ => panic!("Expected Output"),
+    }
+
+    let reject = handler
+        .execute(&format!("reject {}", proposal.id), &mut ctx)
+        .await
+        .unwrap();
+    match reject {
+        CommandResult::Output(text) => assert!(text.contains("Rejected memory proposal")),
+        _ => panic!("Expected Output"),
+    }
+
+    let global_memories = allthecodes_session::memdir::list_memories(
+        allthecodes_session::memdir::MemoryScope::Global,
+        &tmp,
+    )
+    .unwrap_or_default();
+    assert!(global_memories.is_empty());
+    assert!(
+        allthecodes_engine::services::background_review::list_background_review_proposals()
+            .unwrap()
+            .is_empty()
+    );
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

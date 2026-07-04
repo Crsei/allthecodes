@@ -26,6 +26,7 @@ pub mod lifecycle;
 pub mod lists;
 pub mod output;
 mod repository;
+pub mod scheduled;
 #[cfg(all(feature = "sqlite-storage", not(feature = "json-storage")))]
 mod sqlite;
 pub mod store;
@@ -56,6 +57,10 @@ pub use output::{
     parse_task_output_limit_bytes, parse_task_output_timeout_ms, task_output_payload,
     task_output_payload_with_events, wait_for_task_output, DEFAULT_TASK_OUTPUT_TIMEOUT_MS,
     MAX_TASK_OUTPUT_LIMIT_BYTES, MAX_TASK_OUTPUT_TIMEOUT_MS,
+};
+pub use scheduled::{
+    claim_due_scheduled_tasks, load_scheduled_tasks, save_scheduled_tasks, scheduled_tasks_path,
+    ScheduleSpec, ScheduledAgentTask,
 };
 pub use store::TaskStore;
 pub use todo::{parse_todo_items, replace_todos_for_key, todo_owner_key, todos_for_key};

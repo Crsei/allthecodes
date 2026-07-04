@@ -7,12 +7,14 @@ use chrono::Utc;
 use tracing::{debug, warn};
 
 use super::serialization::{messages_to_serializable, serializable_to_messages};
+use super::session_search::{json_search_results, SessionSearchResult};
 #[cfg(feature = "sqlite-storage")]
 use super::sqlite_store;
 use super::{
     build_session_info, filter_sessions_for_workspace, get_archived_session_dir,
     get_archived_session_file, get_session_dir, get_session_file, normalize_display_path,
-    stable_workspace_path, SessionFile, SessionInfo, SessionListCursor, SessionListPage,
+    stable_workspace_path, workspace_key, SessionFile, SessionInfo, SessionListCursor,
+    SessionListPage,
 };
 
 // Persistence operations
@@ -403,6 +405,74 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>> {
     sort_session_infos(&mut sessions);
     debug!(count = sessions.len(), "sessions listed from JSON");
     Ok(sessions)
+}
+
+/// Search saved sessions across all workspaces.
+///
+/// SQLite is used when available. If the state database cannot be opened or
+/// queried, this falls back to scanning legacy JSON session files.
+pub fn search_sessions(query: &str, limit: usize) -> Result<Vec<SessionSearchResult>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::search_session_messages(query, limit, None) {
+        Ok(results) => return Ok(results),
+        Err(err) => {
+            warn!(
+                error = %err,
+                "failed to search sessions from sqlite; falling back to JSON session directory"
+            );
+        }
+    }
+
+    json_search_results(query, limit, None, &HashSet::new())
+}
+
+/// Search saved sessions that already belong to `workspace_key`.
+pub fn search_sessions_by_workspace_key(
+    workspace_key: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SessionSearchResult>> {
+    let workspace_key = workspace_key.trim();
+    if workspace_key.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::search_session_messages(query, limit, Some(workspace_key.to_string())) {
+        Ok(results) => return Ok(results),
+        Err(err) => {
+            warn!(
+                error = %err,
+                workspace_key,
+                "failed to search workspace-key sessions from sqlite; falling back to JSON session directory"
+            );
+        }
+    }
+
+    json_search_results(query, limit, Some(workspace_key), &HashSet::new())
+}
+
+/// Search saved sessions in the same workspace/repository as `cwd`.
+pub fn search_workspace_sessions(
+    cwd: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SessionSearchResult>> {
+    let current_workspace = workspace_key(cwd);
+
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::search_session_messages(query, limit, Some(current_workspace.clone())) {
+        Ok(results) => return Ok(results),
+        Err(err) => {
+            warn!(
+                error = %err,
+                cwd = %cwd.display(),
+                "failed to search workspace sessions from sqlite; falling back to JSON session directory"
+            );
+        }
+    }
+
+    json_search_results(query, limit, Some(&current_workspace), &HashSet::new())
 }
 
 /// List one page of active sessions using stable keyset ordering.

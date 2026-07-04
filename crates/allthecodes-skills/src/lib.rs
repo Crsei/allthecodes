@@ -127,6 +127,41 @@ pub struct SkillDefinition {
     pub prompt_body: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillProposalAction {
+    Create,
+    Patch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillProposalScope {
+    User,
+    Project,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillProposalDraft {
+    pub action: SkillProposalAction,
+    pub scope: SkillProposalScope,
+    pub skill_name: String,
+    pub source_session_id: Option<String>,
+    pub markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillProposal {
+    pub id: String,
+    pub action: SkillProposalAction,
+    pub scope: SkillProposalScope,
+    pub skill_name: String,
+    pub source_session_id: Option<String>,
+    pub proposed_path: PathBuf,
+    pub markdown: String,
+    pub created_at: String,
+}
+
 impl SkillDefinition {
     /// Whether this skill is user-invocable (can be called via `/name`).
     pub fn is_user_invocable(&self) -> bool {
@@ -408,6 +443,152 @@ pub fn clear_skills() {
     REGISTRY.lock().clear();
     REGISTRY_DIAGNOSTICS.lock().clear();
     REGISTRY_REVISION.fetch_add(1, Ordering::SeqCst);
+}
+
+type SkillProposalResult<T> =
+    std::result::Result<T, Box<dyn std::error::Error + Send + Sync + 'static>>;
+
+pub fn skill_proposals_dir(scope: SkillProposalScope, cwd: &Path) -> PathBuf {
+    match scope {
+        SkillProposalScope::User => allthecodes_config::paths::data_root().join("skill_proposals"),
+        SkillProposalScope::Project => {
+            allthecodes_config::paths::project_allthecodes_dir(cwd).join("skill_proposals")
+        }
+    }
+}
+
+pub fn proposal_storage_path(id: &str, scope: SkillProposalScope, cwd: &Path) -> PathBuf {
+    skill_proposals_dir(scope, cwd).join(format!("{}.json", sanitize_proposal_id(id)))
+}
+
+pub fn stage_skill_proposal(
+    draft: SkillProposalDraft,
+    cwd: &Path,
+) -> SkillProposalResult<SkillProposal> {
+    let skill_name = draft.skill_name.trim();
+    if !is_valid_skill_name(skill_name) {
+        return Err(format!("invalid skill name '{}'", draft.skill_name).into());
+    }
+    if draft.markdown.trim().is_empty() {
+        return Err("proposal markdown cannot be empty".into());
+    }
+
+    let id = format!("skill-proposal-{}", uuid::Uuid::new_v4());
+    let proposed_path = proposed_skill_path(draft.scope, cwd, skill_name);
+    let proposal = SkillProposal {
+        id: id.clone(),
+        action: draft.action,
+        scope: draft.scope,
+        skill_name: skill_name.to_string(),
+        source_session_id: draft.source_session_id,
+        proposed_path,
+        markdown: draft.markdown,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    let path = proposal_storage_path(&id, draft.scope, cwd);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&proposal)?)?;
+    Ok(proposal)
+}
+
+pub fn list_skill_proposals(cwd: &Path) -> SkillProposalResult<Vec<SkillProposal>> {
+    let mut proposals = Vec::new();
+    for scope in [SkillProposalScope::Project, SkillProposalScope::User] {
+        let dir = skill_proposals_dir(scope, cwd);
+        if !dir.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(proposal) = serde_json::from_str::<SkillProposal>(&raw) {
+                    proposals.push(proposal);
+                }
+            }
+        }
+    }
+    proposals.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| a.skill_name.cmp(&b.skill_name))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(proposals)
+}
+
+pub fn load_skill_proposal(id: &str, cwd: &Path) -> SkillProposalResult<SkillProposal> {
+    for scope in [SkillProposalScope::Project, SkillProposalScope::User] {
+        let path = proposal_storage_path(id, scope, cwd);
+        if path.exists() {
+            let raw = std::fs::read_to_string(path)?;
+            return Ok(serde_json::from_str(&raw)?);
+        }
+    }
+    Err(format!("skill proposal '{}' not found", id).into())
+}
+
+pub fn approve_skill_proposal(id: &str, cwd: &Path) -> SkillProposalResult<PathBuf> {
+    let proposal = load_skill_proposal(id, cwd)?;
+    let allowed_root = skills_root_for_scope(proposal.scope, cwd);
+    if !proposal.proposed_path.starts_with(&allowed_root) {
+        return Err(format!(
+            "proposal '{}' target escapes skills directory {}",
+            proposal.id,
+            allowed_root.display()
+        )
+        .into());
+    }
+
+    if let Some(parent) = proposal.proposed_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&proposal.proposed_path, proposal.markdown.as_bytes())?;
+    let storage = proposal_storage_path(&proposal.id, proposal.scope, cwd);
+    if storage.exists() {
+        std::fs::remove_file(storage)?;
+    }
+    Ok(proposal.proposed_path)
+}
+
+pub fn reject_skill_proposal(id: &str, cwd: &Path) -> SkillProposalResult<SkillProposal> {
+    let proposal = load_skill_proposal(id, cwd)?;
+    let storage = proposal_storage_path(&proposal.id, proposal.scope, cwd);
+    if storage.exists() {
+        std::fs::remove_file(storage)?;
+    }
+    Ok(proposal)
+}
+
+fn proposed_skill_path(scope: SkillProposalScope, cwd: &Path, skill_name: &str) -> PathBuf {
+    skills_root_for_scope(scope, cwd)
+        .join(skill_name)
+        .join("SKILL.md")
+}
+
+fn skills_root_for_scope(scope: SkillProposalScope, cwd: &Path) -> PathBuf {
+    match scope {
+        SkillProposalScope::User => allthecodes_config::paths::skills_dir_global(),
+        SkillProposalScope::Project => allthecodes_config::paths::project_skills_dir(cwd),
+    }
+}
+
+fn sanitize_proposal_id(id: &str) -> String {
+    id.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1276,5 +1457,68 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|d| d.code == "incompatible-app-version"));
+    }
+
+    #[test]
+    fn skill_proposal_approval_writes_project_skill_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let proposal = stage_skill_proposal(
+            SkillProposalDraft {
+                action: SkillProposalAction::Create,
+                scope: SkillProposalScope::Project,
+                skill_name: "hermes-review".to_string(),
+                source_session_id: Some("session-one".to_string()),
+                markdown: "---\ndescription: Review Hermes runtime changes.\n---\nCheck the diff."
+                    .to_string(),
+            },
+            &cwd,
+        )
+        .unwrap();
+
+        assert!(proposal_storage_path(&proposal.id, SkillProposalScope::Project, &cwd).exists());
+        assert!(!proposal.proposed_path.exists());
+        assert!(find_skill("hermes-review").is_none());
+
+        let approved_path = approve_skill_proposal(&proposal.id, &cwd).unwrap();
+
+        assert_eq!(
+            approved_path,
+            allthecodes_config::paths::project_skills_dir(&cwd)
+                .join("hermes-review")
+                .join("SKILL.md")
+        );
+        assert!(approved_path.exists());
+        assert!(!proposal_storage_path(&proposal.id, SkillProposalScope::Project, &cwd).exists());
+        let loaded = loader::load_skill_from_file_path(&approved_path, SkillSource::Project)
+            .expect("approved skill should load");
+        assert_eq!(loaded.name, "hermes-review");
+    }
+
+    #[test]
+    fn skill_proposal_reject_removes_without_active_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let proposal = stage_skill_proposal(
+            SkillProposalDraft {
+                action: SkillProposalAction::Create,
+                scope: SkillProposalScope::Project,
+                skill_name: "discarded-skill".to_string(),
+                source_session_id: None,
+                markdown: "---\ndescription: Discarded skill.\n---\nDo not install.".to_string(),
+            },
+            &cwd,
+        )
+        .unwrap();
+
+        reject_skill_proposal(&proposal.id, &cwd).unwrap();
+
+        assert!(!proposal_storage_path(&proposal.id, SkillProposalScope::Project, &cwd).exists());
+        assert!(!proposal.proposed_path.exists());
+        assert!(find_skill("discarded-skill").is_none());
     }
 }
