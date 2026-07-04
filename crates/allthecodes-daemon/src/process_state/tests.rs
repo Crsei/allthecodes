@@ -42,7 +42,7 @@ fn write_and_read_state_uses_allthecodes_home() {
     fs::create_dir_all(&cwd).unwrap();
 
     let state = write_started(19999, &cwd).unwrap();
-    assert!(state_path().starts_with(temp.path().join(".allthecodes")));
+    assert!(state_path().starts_with(temp.path().join("daemon")));
     let read_back = read_state().unwrap().unwrap();
 
     assert_eq!(state.pid, std::process::id());
@@ -99,13 +99,7 @@ fn read_state_accepts_v1_json_without_process_metadata() {
 fn daemon_state_falls_back_to_json_when_sqlite_path_is_blocked() {
     let temp = tempfile::tempdir().unwrap();
     let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
-    fs::create_dir_all(
-        temp.path()
-            .join(".allthecodes")
-            .join("state")
-            .join("state_5.sqlite"),
-    )
-    .unwrap();
+    fs::create_dir_all(temp.path().join("state").join("state_5.sqlite")).unwrap();
 
     let token = write_control_token().unwrap();
     assert!(control_token_path().exists());

@@ -5,8 +5,6 @@
 //! - **Webhook routes** (`/webhook/*`) -- Phase-3 stubs for GitHub/Slack/generic
 //! - **Health** (`/health`) -- simple liveness probe
 
-use std::sync::atomic::Ordering;
-
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_server::RootProbeResponse;
@@ -18,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use crate::protocol::{DaemonCommandKind, DaemonCommandStatus, DaemonEvent, DaemonEventKind};
+use crate::automation_state::{AutomationState, AutomationStatus};
+use crate::protocol::{DaemonCommandKind, DaemonEvent, DaemonEventKind};
 use allthecodes_commands::{CommandContext, CommandResult};
 use allthecodes_types::message::CompactMetadata;
 use allthecodes_types::plan_workflow::PlanWorkflowRecord;
@@ -102,6 +101,7 @@ pub struct StatusResponse {
     pub sleeping: bool,
     pub daemon_sleep_until: Option<String>,
     pub daemon_sleep_reason: Option<String>,
+    pub automation_state: AutomationState,
     pub permission_mode: String,
     pub plan_workflow: Option<PlanWorkflowRecord>,
     pub supervisor_status: String,
@@ -545,7 +545,7 @@ async fn permission(
 /// `GET /api/status` -- return daemon status.
 async fn status(State(state): State<DaemonState>) -> Json<StatusResponse> {
     let app_state = state.engine.app_state();
-    let daemon_sleep = process_state::active_sleep_state().unwrap_or_default();
+    let automation_state = crate::automation_state::snapshot(&state);
     let (supervisor_status, supervisor_pid, health_url, workers) =
         match process_state::status_snapshot() {
             Ok(DaemonStatusSnapshot::Running(process)) => (
@@ -566,13 +566,15 @@ async fn status(State(state): State<DaemonState>) -> Json<StatusResponse> {
     Json(StatusResponse {
         kairos_active: state.features.kairos,
         proactive: state.features.proactive,
-        query_running: state.is_query_running.load(Ordering::SeqCst) || assistant_command_active(),
+        query_running: automation_state.query_running,
         clients_connected: state.clients.read().len(),
-        sleeping: state.engine.is_sleeping() || daemon_sleep.is_some(),
-        daemon_sleep_until: daemon_sleep
+        sleeping: automation_state.status == AutomationStatus::Sleeping,
+        daemon_sleep_until: automation_state
+            .sleeping_until
             .as_ref()
-            .map(|sleep| sleep.sleeping_until.to_rfc3339()),
-        daemon_sleep_reason: daemon_sleep.and_then(|sleep| sleep.reason),
+            .map(|until| until.to_rfc3339()),
+        daemon_sleep_reason: automation_state.reason.clone(),
+        automation_state,
         permission_mode: app_state.tool_permission_context.mode.as_str().to_string(),
         plan_workflow: app_state.plan_workflow,
         supervisor_status,
@@ -585,21 +587,6 @@ async fn status(State(state): State<DaemonState>) -> Json<StatusResponse> {
             .display()
             .to_string(),
     })
-}
-
-pub(super) fn assistant_command_active() -> bool {
-    super::protocol_store()
-        .read_worker_commands(ASSISTANT_WORKER_ID)
-        .map(|commands| {
-            commands.into_iter().any(|command| {
-                command.kind == DaemonCommandKind::Submit
-                    && matches!(
-                        command.status,
-                        DaemonCommandStatus::Pending | DaemonCommandStatus::Acked
-                    )
-            })
-        })
-        .unwrap_or(false)
 }
 
 fn history_snapshots_from_events(events: &[DaemonEvent]) -> Vec<Value> {
@@ -954,6 +941,24 @@ mod tests {
         );
         assert_eq!(body["history_snapshots"][0]["session_id"], "session-1");
         assert_eq!(body["daemon_events"][0]["event_type"], "history_snapshot");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn status_endpoint_embeds_automation_state() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let app = api_routes().with_state(make_daemon_state());
+
+        let (status, body) = get_json(app, "/api/status").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["automation_state"]["status"], "standby");
+        assert_eq!(body["automation_state"]["query_running"], false);
+        assert_eq!(body["automation_state"]["pending_input"], false);
+        assert_eq!(body["automation_state"]["terminal_focus"], false);
+        assert_eq!(body["query_running"], false);
+        assert_eq!(body["sleeping"], false);
     }
 
     #[test]

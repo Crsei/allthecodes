@@ -8,7 +8,6 @@ use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
 use sha2::Sha256;
 
-use super::routes::assistant_command_active;
 use super::state::DaemonState;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -153,7 +152,10 @@ fn submit_webhook_run(
         policy.clone(),
     );
     let snapshot = allthecodes_gateway::BusySnapshot {
-        running: usize::from(assistant_command_active()),
+        running: usize::from(
+            crate::automation_state::assistant_command_active()
+                || crate::automation_state::pending_input_active(),
+        ),
         queued: 0,
         max_running: policy.max_running,
         max_queued: policy.max_queued,

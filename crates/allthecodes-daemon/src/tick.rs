@@ -6,10 +6,11 @@ use std::time::Duration;
 use chrono::Local;
 use futures::StreamExt;
 use serde_json::json;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use allthecodes_engine::types::config::QuerySource;
 
+use super::automation_state::AutomationStatus;
 use super::memory_log::append_log_entry;
 use super::state::{DaemonState, SseEvent};
 
@@ -28,32 +29,25 @@ pub async fn tick_loop(state: DaemonState) {
     loop {
         interval.tick().await;
 
-        // Skip if query running
-        if state.is_query_running.load(Ordering::SeqCst) {
-            debug!("tick skipped: query running");
+        let automation = super::automation_state::snapshot(&state);
+        if matches!(
+            automation.status,
+            AutomationStatus::Running
+                | AutomationStatus::Sleeping
+                | AutomationStatus::NeedsInput
+                | AutomationStatus::Blocked
+        ) {
+            debug!(
+                status = automation.status.as_str(),
+                sleeping_until = ?automation.sleeping_until.map(|until| until.to_rfc3339()),
+                reason = ?automation.reason,
+                "tick skipped: automation state is not idle"
+            );
             continue;
-        }
-
-        // Skip if sleeping
-        if state.engine.is_sleeping() {
-            debug!("tick skipped: sleeping");
-            continue;
-        }
-        match super::process_state::active_sleep_state() {
-            Ok(Some(sleep)) => {
-                debug!(
-                    sleeping_until = %sleep.sleeping_until.to_rfc3339(),
-                    reason = ?sleep.reason,
-                    "tick skipped: daemon sleep state active"
-                );
-                continue;
-            }
-            Ok(None) => {}
-            Err(err) => warn!(error = %err, "failed to read daemon sleep state"),
         }
 
         let now = Local::now();
-        let focus = state.terminal_focus();
+        let focus = automation.terminal_focus;
         let today_log = super::memory_log::read_today_log();
         let tick_prompt = format!(
             "<tick_tag>\nLocal time: {}\nTerminal focus: {}\n</tick_tag>{}",

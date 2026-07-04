@@ -8,15 +8,10 @@ pub(crate) fn daily_log_path(now: DateTime<Local>) -> PathBuf {
     let year = now.format("%Y").to_string();
     let month = now.format("%m").to_string();
     let filename = now.format("%Y-%m-%d.md").to_string();
-    data_root()
-        .map(|root| root.join("logs").join(year).join(month).join(filename))
-        .unwrap_or_else(|| allthecodes_config::paths::daily_log_path(now))
+    data_root().join("logs").join(year).join(month).join(filename)
 }
 
 pub(crate) fn team_memory_dir(cwd: &Path) -> PathBuf {
-    let Some(root) = data_root() else {
-        return allthecodes_config::paths::team_memory_dir(cwd);
-    };
     let sanitized: String = cwd
         .to_string_lossy()
         .chars()
@@ -28,16 +23,15 @@ pub(crate) fn team_memory_dir(cwd: &Path) -> PathBuf {
             }
         })
         .collect();
-    root.join("projects")
+    data_root()
+        .join("projects")
         .join(sanitized)
         .join("memory")
         .join("team")
 }
 
 pub fn daemon_dir() -> PathBuf {
-    data_root()
-        .map(|root| root.join("daemon"))
-        .unwrap_or_else(allthecodes_config::paths::daemon_dir)
+    data_root().join("daemon")
 }
 
 pub fn state_path() -> PathBuf {

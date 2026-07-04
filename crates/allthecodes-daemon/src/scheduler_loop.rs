@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 use allthecodes_engine::types::config::QuerySource;
 use allthecodes_services::scheduler::{SchedulerStore, TaskPayload};
 
+use super::automation_state::AutomationStatus;
 use super::state::{DaemonState, SseEvent};
 
 const SCHEDULER_TICK_INTERVAL_MS: u64 = 15_000;
@@ -26,12 +27,20 @@ pub async fn scheduler_loop(state: DaemonState) {
     loop {
         interval.tick().await;
 
-        if state.is_query_running.load(Ordering::SeqCst) {
-            debug!("scheduled task tick skipped: query running");
-            continue;
-        }
-        if state.engine.is_sleeping() {
-            debug!("scheduled task tick skipped: engine sleeping");
+        let automation = super::automation_state::snapshot(&state);
+        if matches!(
+            automation.status,
+            AutomationStatus::Running
+                | AutomationStatus::Sleeping
+                | AutomationStatus::NeedsInput
+                | AutomationStatus::Blocked
+        ) {
+            debug!(
+                status = automation.status.as_str(),
+                sleeping_until = ?automation.sleeping_until.map(|until| until.to_rfc3339()),
+                reason = ?automation.reason,
+                "scheduled task tick skipped: automation state is not idle"
+            );
             continue;
         }
 

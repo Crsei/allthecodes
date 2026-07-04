@@ -36,13 +36,8 @@ pub use types::{
     DaemonWorkerSummary, ProcessIdentityStatus, StaleStateCleanupReport,
 };
 
-pub(crate) fn data_root() -> Option<std::path::PathBuf> {
-    let home = std::env::var("ALLTHECODES_HOME").ok()?;
-    let home = home.trim();
-    if home.is_empty() {
-        return None;
-    }
-    Some(std::path::PathBuf::from(home).join(".allthecodes"))
+pub(crate) fn data_root() -> std::path::PathBuf {
+    allthecodes_config::paths::data_root()
 }
 
 pub(crate) fn atomic_write_json<T: serde::Serialize>(
