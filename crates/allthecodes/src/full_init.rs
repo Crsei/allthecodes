@@ -162,22 +162,9 @@ async fn run_daemon_with_server(
     };
 
     // --- Start background loops ---
-    let tick_enabled = features::enabled(Feature::Proactive);
     let supervisor_cwd = std::path::PathBuf::from(&cwd);
     let _notification_handle = start_notification_consumer_if_enabled(&mut daemon_state);
 
-    if tick_enabled {
-        let tick_state = daemon_state.clone();
-        tokio::spawn(async move {
-            allthecodes_daemon::tick::tick_loop(tick_state).await;
-        });
-    }
-    {
-        let scheduler_state = daemon_state.clone();
-        tokio::spawn(async move {
-            allthecodes_daemon::scheduler_loop::scheduler_loop(scheduler_state).await;
-        });
-    }
     let supervisor_handle = tokio::spawn(async move {
         allthecodes_daemon::supervisor::run_supervisor_loop(supervisor_cwd, daemon_port).await
     });

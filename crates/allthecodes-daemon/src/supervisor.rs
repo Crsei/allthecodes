@@ -12,7 +12,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{Local, Utc};
 use tracing::{info, warn};
 
 use allthecodes_config::features::{self, Feature};
@@ -25,6 +25,8 @@ use super::{
 
 pub const ASSISTANT_WORKER_ID: &str = "assistant-session-1";
 pub const BRIDGE_WORKER_ID: &str = "bridge-sync-1";
+pub const PROACTIVE_WORKER_ID: &str = "proactive-1";
+pub const SCHEDULER_WORKER_ID: &str = "scheduler-1";
 const REGISTRY_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const WORKER_STALE_AFTER: Duration = Duration::from_secs(10);
@@ -33,6 +35,8 @@ const WORKER_STALE_AFTER: Duration = Duration::from_secs(10);
 pub enum WorkerKind {
     AssistantSession,
     BridgeSync,
+    Proactive,
+    Scheduler,
 }
 
 impl WorkerKind {
@@ -40,6 +44,8 @@ impl WorkerKind {
         match raw {
             "assistant-session" => Ok(Self::AssistantSession),
             "bridge-sync" => Ok(Self::BridgeSync),
+            "proactive" => Ok(Self::Proactive),
+            "scheduler" => Ok(Self::Scheduler),
             other => anyhow::bail!("unknown daemon worker kind: {other}"),
         }
     }
@@ -48,6 +54,8 @@ impl WorkerKind {
         match self {
             Self::AssistantSession => "assistant-session",
             Self::BridgeSync => "bridge-sync",
+            Self::Proactive => "proactive",
+            Self::Scheduler => "scheduler",
         }
     }
 }
@@ -98,6 +106,30 @@ impl WorkerSpec {
             cwd: cwd.to_path_buf(),
             env: Vec::new(),
             log_path: process_state::worker_log_path(BRIDGE_WORKER_ID),
+            restart_policy: RestartPolicy::default(),
+            required: false,
+        }
+    }
+
+    fn proactive(cwd: &Path) -> Self {
+        Self {
+            worker_id: PROACTIVE_WORKER_ID.to_string(),
+            kind: WorkerKind::Proactive,
+            cwd: cwd.to_path_buf(),
+            env: Vec::new(),
+            log_path: process_state::worker_log_path(PROACTIVE_WORKER_ID),
+            restart_policy: RestartPolicy::default(),
+            required: false,
+        }
+    }
+
+    fn scheduler(cwd: &Path) -> Self {
+        Self {
+            worker_id: SCHEDULER_WORKER_ID.to_string(),
+            kind: WorkerKind::Scheduler,
+            cwd: cwd.to_path_buf(),
+            env: Vec::new(),
+            log_path: process_state::worker_log_path(SCHEDULER_WORKER_ID),
             restart_policy: RestartPolicy::default(),
             required: false,
         }
@@ -257,6 +289,10 @@ pub fn default_worker_specs(cwd: &Path) -> Vec<WorkerSpec> {
     let mut specs = vec![WorkerSpec::assistant_session(cwd)];
     if features::enabled(Feature::Kairos) {
         specs.push(WorkerSpec::bridge_sync(cwd));
+        specs.push(WorkerSpec::scheduler(cwd));
+    }
+    if features::enabled(Feature::Proactive) {
+        specs.push(WorkerSpec::proactive(cwd));
     }
     specs
 }
@@ -285,6 +321,8 @@ pub async fn run_worker_mode(kind: &str, worker_id: &str, cwd: PathBuf) -> Resul
     match kind {
         WorkerKind::AssistantSession => run_assistant_worker_mode(kind, worker_id, cwd).await,
         WorkerKind::BridgeSync => run_bridge_worker_mode(kind, worker_id, cwd).await,
+        WorkerKind::Proactive => run_proactive_worker_mode(kind, worker_id, cwd).await,
+        WorkerKind::Scheduler => run_scheduler_worker_mode(kind, worker_id, cwd).await,
     }
 }
 
@@ -342,6 +380,88 @@ async fn run_bridge_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf)
                 last_cursor = ?outcome.last_cursor,
                 "bridge worker processed work items"
             );
+        }
+    }
+}
+
+async fn run_proactive_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf) -> Result<()> {
+    ensure_worker_state(kind, worker_id, &cwd)?;
+
+    let mut heartbeat = tokio::time::interval(WORKER_HEARTBEAT_INTERVAL);
+    let mut proactive_tick =
+        tokio::time::interval(Duration::from_millis(super::tick::DEFAULT_TICK_INTERVAL_MS));
+    proactive_tick.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                if process_state::shutdown_requested() {
+                    process_state::write_worker_stopped(worker_id, None)?;
+                    return Ok(());
+                }
+                process_state::write_worker_heartbeat(worker_id)?;
+            }
+            _ = proactive_tick.tick() => {
+                if process_state::shutdown_requested() {
+                    process_state::write_worker_stopped(worker_id, None)?;
+                    return Ok(());
+                }
+                match super::tick::enqueue_proactive_tick_once(Local::now(), false)? {
+                    Some(command) => info!(
+                        worker_id,
+                        command_id = %command.command_id,
+                        "proactive worker queued assistant command"
+                    ),
+                    None => {
+                        tracing::debug!(worker_id, "proactive worker tick skipped");
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn run_scheduler_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf) -> Result<()> {
+    ensure_worker_state(kind, worker_id, &cwd)?;
+
+    let mut heartbeat = tokio::time::interval(WORKER_HEARTBEAT_INTERVAL);
+    let mut scheduler_tick = tokio::time::interval(Duration::from_millis(
+        super::scheduler_loop::SCHEDULER_TICK_INTERVAL_MS,
+    ));
+    scheduler_tick.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                if process_state::shutdown_requested() {
+                    process_state::write_worker_stopped(worker_id, None)?;
+                    return Ok(());
+                }
+                process_state::write_worker_heartbeat(worker_id)?;
+            }
+            _ = scheduler_tick.tick() => {
+                if process_state::shutdown_requested() {
+                    process_state::write_worker_stopped(worker_id, None)?;
+                    return Ok(());
+                }
+                if !super::automation_state::autonomous_worker_blocked() {
+                    if let Err(err) = super::scheduler_loop::run_kairos_dream_tick_for_date(
+                        Local::now().date_naive(),
+                    ) {
+                        warn!(worker_id, error = %err, "scheduler worker dream tick failed");
+                    }
+                }
+                match super::scheduler_loop::enqueue_due_scheduled_task_once()? {
+                    Some(command) => info!(
+                        worker_id,
+                        command_id = %command.command_id,
+                        "scheduler worker queued assistant command"
+                    ),
+                    None => {
+                        tracing::debug!(worker_id, "scheduler worker tick skipped");
+                    }
+                }
+            }
         }
     }
 }
@@ -577,6 +697,8 @@ mod tests {
             WorkerKind::parse("bridge-sync").unwrap(),
             WorkerKind::BridgeSync
         );
+        assert!(WorkerKind::parse("proactive").is_ok());
+        assert!(WorkerKind::parse("scheduler").is_ok());
         assert!(WorkerKind::parse("unknown").is_err());
     }
 
@@ -593,7 +715,6 @@ mod tests {
 
         let specs = default_worker_specs(temp.path());
 
-        assert_eq!(specs.len(), 2);
         assert!(specs
             .iter()
             .any(|spec| spec.kind == WorkerKind::AssistantSession));
@@ -603,5 +724,32 @@ mod tests {
             .expect("bridge-sync spec");
         assert_eq!(bridge.worker_id, "bridge-sync-1");
         assert!(bridge.log_path.starts_with(temp.path()));
+    }
+
+    #[test]
+    #[serial]
+    fn default_worker_specs_include_proactive_and_scheduler_when_kairos_enabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let _features = FeatureOverrideGuard::set(FeatureFlags {
+            kairos: true,
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+
+        let specs = default_worker_specs(temp.path());
+        let kinds = specs
+            .iter()
+            .map(|spec| spec.kind.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(kinds.contains(&"assistant-session"));
+        assert!(kinds.contains(&"bridge-sync"));
+        assert!(kinds.contains(&"proactive"));
+        assert!(kinds.contains(&"scheduler"));
+        assert!(specs
+            .iter()
+            .filter(|spec| !spec.required)
+            .all(|spec| spec.log_path.starts_with(temp.path())));
     }
 }

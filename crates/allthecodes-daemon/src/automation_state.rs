@@ -79,6 +79,12 @@ pub(crate) fn assistant_command_active() -> bool {
     active_submit_count() > 0
 }
 
+pub(crate) fn autonomous_worker_blocked() -> bool {
+    process_state::active_sleep_state().ok().flatten().is_some()
+        || assistant_command_active()
+        || pending_input_active()
+}
+
 pub(crate) fn active_submit_count() -> usize {
     crate::protocol_store()
         .read_worker_commands(ASSISTANT_WORKER_ID)
