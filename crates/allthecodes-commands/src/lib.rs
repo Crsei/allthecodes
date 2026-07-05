@@ -59,6 +59,7 @@ pub mod plan;
 pub mod plan_workflow;
 pub mod plugin_cmd;
 pub mod plugin_commands;
+pub mod proactive_cmd;
 pub mod rate_limit;
 pub mod recap;
 pub mod reload_plugins_cmd;
@@ -1031,6 +1032,12 @@ pub fn get_all_commands() -> Vec<Command> {
             sleep_cmd::SleepCmdHandler,
         ),
         command(
+            "proactive",
+            &[],
+            "Toggle proactive autonomous mode",
+            proactive_cmd::ProactiveCmdHandler,
+        ),
+        command(
             "assistant",
             &["kairos"],
             "View assistant mode status",
@@ -1552,6 +1559,12 @@ mod tests {
     fn builtin_registry_includes_workflows_command() {
         let metadata = command_metadata(&get_all_commands());
         assert!(metadata.iter().any(|cmd| cmd.name == "workflows"));
+    }
+
+    #[test]
+    fn builtin_registry_includes_proactive_command() {
+        let metadata = command_metadata(&get_all_commands());
+        assert!(metadata.iter().any(|cmd| cmd.name == "proactive"));
     }
 
     #[test]
