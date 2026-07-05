@@ -75,9 +75,13 @@ pub(super) async fn try_execute_command(
         session_id: engine.current_session_id(),
     };
 
-    if let Some(surface) =
-        CommandSurface::for_slash_command(&command_name, &args, &ctx.app_state, &ctx.cwd)
-    {
+    if let Some(surface) = CommandSurface::for_slash_command_with_session(
+        &command_name,
+        &args,
+        &ctx.app_state,
+        &ctx.cwd,
+        Some(ctx.session_id.as_str()),
+    ) {
         app.open_command_surface(surface);
         return Some(CmdAction::Handled);
     }

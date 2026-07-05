@@ -139,6 +139,7 @@ pub fn all_api_handlers() -> HandlerRegistry {
         .extend(backend_service_handlers())
         .extend(handlers::queue::handlers())
         .extend(handlers::tasks::handlers())
+        .extend(handlers::agent_runtime::handlers())
         .extend(handlers::mentions::handlers())
         .extend(handlers::sidebar::handlers())
         .extend(handlers::messaging::handlers())

@@ -126,9 +126,7 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
 
     let shutdown_token = crate::shutdown::register_shutdown_handler();
 
-    let mut dashboard_companion = if allthecodes_config::features::enabled(
-        allthecodes_config::features::Feature::SubagentDashboard,
-    ) {
+    let mut dashboard_companion = if subagent_dashboard_companion_enabled() {
         match crate::dashboard::DashboardCompanion::spawn(
             crate::dashboard::DashboardConfig::default(),
         )
@@ -164,4 +162,10 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+fn subagent_dashboard_companion_enabled() -> bool {
+    std::env::var("FEATURE_SUBAGENT_DASHBOARD_COMPANION")
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
 }

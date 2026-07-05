@@ -241,6 +241,7 @@ enum SurfaceKind {
     Resume,
     Sandbox,
     Skills,
+    Subagents,
     Tasks,
     Team,
 }
@@ -261,6 +262,7 @@ fn surface_kind(surface: &CommandSurface) -> SurfaceKind {
         CommandSurface::Resume(_) => SurfaceKind::Resume,
         CommandSurface::Sandbox(_) => SurfaceKind::Sandbox,
         CommandSurface::Skills(_) => SurfaceKind::Skills,
+        CommandSurface::Subagents(_) => SurfaceKind::Subagents,
         CommandSurface::Tasks(_) => SurfaceKind::Tasks,
         CommandSurface::Team(_) => SurfaceKind::Team,
         CommandSurface::LspRecommendation(_) => {
@@ -290,6 +292,8 @@ fn surface_entry_matrix_matches_expected_aliases() {
         ("resume", SurfaceKind::Resume),
         ("sandbox", SurfaceKind::Sandbox),
         ("skills", SurfaceKind::Skills),
+        ("subagents", SurfaceKind::Subagents),
+        ("agent-runtime", SurfaceKind::Subagents),
         ("tasks", SurfaceKind::Tasks),
         ("team", SurfaceKind::Team),
         ("perms", SurfaceKind::Permissions),
@@ -315,6 +319,29 @@ fn surface_entry_matrix_matches_expected_aliases() {
             "/{command} is not a CommandSurface alias"
         );
     }
+}
+
+#[test]
+#[serial_test::serial]
+fn subagents_surface_routes_summary_print() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _home = EnvGuard::set("ALLTHECODES_HOME", temp.path().to_str().unwrap());
+    let state = AppState::default();
+    let cwd = std::env::current_dir().expect("current dir");
+    let mut surface = CommandSurface::for_slash_command_with_session(
+        "subagents",
+        "",
+        &state,
+        &cwd,
+        Some("surface-test-session"),
+    )
+    .expect("subagents surface");
+
+    assert!(surface.render().contains("Subagents"));
+    assert_eq!(
+        surface.handle_key(key(KeyCode::Enter)),
+        CommandSurfaceOutcome::Submit("/subagents summary".to_string())
+    );
 }
 
 #[test]

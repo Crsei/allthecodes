@@ -8,6 +8,7 @@ use super::form_navigation::{FormOption, FormTab, TabbedFormEvent, TabbedFormSta
 pub enum FeaturePanelKind {
     Mcp,
     Agents,
+    Subagents,
     Teams,
     Lsp,
     Settings,
@@ -22,6 +23,7 @@ impl FeaturePanelKind {
         match self {
             FeaturePanelKind::Mcp => "MCP",
             FeaturePanelKind::Agents => "Agents",
+            FeaturePanelKind::Subagents => "Subagents",
             FeaturePanelKind::Teams => "Teams",
             FeaturePanelKind::Lsp => "LSP",
             FeaturePanelKind::Settings => "Settings",
@@ -40,6 +42,8 @@ impl std::str::FromStr for FeaturePanelKind {
         match value {
             "mcp" => Ok(FeaturePanelKind::Mcp),
             "agents" => Ok(FeaturePanelKind::Agents),
+            "subagents" => Ok(FeaturePanelKind::Subagents),
+            "agent-runtime" => Ok(FeaturePanelKind::Subagents),
             "teams" => Ok(FeaturePanelKind::Teams),
             "lsp" => Ok(FeaturePanelKind::Lsp),
             "settings" => Ok(FeaturePanelKind::Settings),
@@ -103,6 +107,7 @@ pub fn default_panels() -> Vec<FeaturePanel> {
     [
         FeaturePanelKind::Mcp,
         FeaturePanelKind::Agents,
+        FeaturePanelKind::Subagents,
         FeaturePanelKind::Teams,
         FeaturePanelKind::Lsp,
         FeaturePanelKind::Settings,
@@ -166,6 +171,7 @@ fn panel_kind_id(kind: FeaturePanelKind) -> &'static str {
     match kind {
         FeaturePanelKind::Mcp => "mcp",
         FeaturePanelKind::Agents => "agents",
+        FeaturePanelKind::Subagents => "subagents",
         FeaturePanelKind::Teams => "teams",
         FeaturePanelKind::Lsp => "lsp",
         FeaturePanelKind::Settings => "settings",
@@ -193,7 +199,11 @@ mod tests {
     #[test]
     fn feature_panel_form_uses_tab_and_selection_keys() {
         let mut panels = default_panels();
-        panels[3].state = PanelState::NeedsConfig;
+        let lsp_index = panels
+            .iter()
+            .position(|panel| panel.kind == FeaturePanelKind::Lsp)
+            .expect("lsp panel");
+        panels[lsp_index].state = PanelState::NeedsConfig;
         let mut form = FeaturePanelFormState::new(panels);
 
         assert_eq!(
@@ -203,6 +213,7 @@ mod tests {
                 tab_id: "agents".to_string(),
             }
         );
+        form.handle_key(key(KeyCode::Right));
         form.handle_key(key(KeyCode::Right));
         form.handle_key(key(KeyCode::Right));
         form.handle_key(key(KeyCode::Down));

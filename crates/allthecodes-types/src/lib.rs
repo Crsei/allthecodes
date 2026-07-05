@@ -10,10 +10,16 @@
 #[cfg(feature = "runtime-types")]
 pub mod agent_channel;
 pub mod agent_events;
+pub mod agent_runtime_dashboard;
 pub mod agent_runtime_record;
 pub mod agent_types;
 pub mod bash_result;
 pub mod brief;
+pub use agent_runtime_dashboard::{
+    AgentRuntimeAgentStatus, AgentRuntimeAgentSummary, AgentRuntimeDashboardQuery,
+    AgentRuntimeDashboardResponse, AgentRuntimeDashboardSummary,
+    AgentRuntimeEventItem, AgentRuntimeExecutionRecordItem,
+};
 pub use agent_runtime_record::{AgentRuntimeExecutionRecord, AgentRuntimePermissionDecision};
 pub use bash_result::{BashResult, ShellExecutionOutput};
 pub mod callbacks;

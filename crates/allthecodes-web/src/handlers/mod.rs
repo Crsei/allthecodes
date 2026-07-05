@@ -7,6 +7,7 @@
 
 pub mod activity_recorder;
 pub mod admin;
+pub mod agent_runtime;
 pub mod agents;
 pub mod appshots;
 pub mod auth;
@@ -62,6 +63,7 @@ pub(crate) mod test_support;
 pub use crate::api_errors::{api_error_body, ApiError};
 pub use activity_recorder::*;
 pub use admin::*;
+pub use agent_runtime::*;
 pub use agents::*;
 pub use appshots::*;
 pub use auth::*;

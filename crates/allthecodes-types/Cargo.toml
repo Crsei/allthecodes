@@ -7,10 +7,12 @@ description = "Pure leaf types for cc-rust: message, state, transitions (no runt
 [features]
 default = ["runtime-types"]
 runtime-types = ["dep:anyhow", "dep:async-trait", "dep:tokio"]
+schema = ["dep:schemars"]
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true, optional = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 uuid = { workspace = true }

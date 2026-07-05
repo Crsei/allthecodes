@@ -102,6 +102,7 @@ pub(crate) const DISPATCHED_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::GatewayStatus,
     ApiMethod::GatewaysList,
     ApiMethod::ModelsList,
+    ApiMethod::AgentRuntimeDashboard,
     ApiMethod::WorktreeSessionsList,
     ApiMethod::WorktreeSessionsCurrent,
     ApiMethod::WorktreeSessionsBySession,

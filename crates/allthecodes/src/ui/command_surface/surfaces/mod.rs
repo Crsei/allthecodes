@@ -13,5 +13,6 @@ pub(super) mod remote;
 pub(super) mod resume;
 pub(super) mod sandbox;
 pub(super) mod skills;
+pub(super) mod subagents;
 pub(super) mod tasks;
 pub(super) mod team;

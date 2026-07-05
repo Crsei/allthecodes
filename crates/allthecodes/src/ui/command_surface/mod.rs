@@ -25,6 +25,7 @@ pub use surfaces::remote::RemoteSurface;
 pub use surfaces::resume::ResumeSurface;
 pub use surfaces::sandbox::SandboxSurface;
 pub use surfaces::skills::SkillsSurface;
+pub use surfaces::subagents::SubagentsSurface;
 pub(crate) use surfaces::tasks::TaskSurfaceItem;
 #[cfg(test)]
 pub(crate) use surfaces::tasks::TaskSurfaceSource;
@@ -70,6 +71,7 @@ pub enum CommandSurface {
     Resume(ResumeSurface),
     Sandbox(SandboxSurface),
     Skills(SkillsSurface),
+    Subagents(SubagentsSurface),
     Tasks(TasksSurface),
     Team(TeamSurface),
     LspRecommendation(LspRecommendationSurface),
@@ -77,6 +79,16 @@ pub enum CommandSurface {
 
 impl CommandSurface {
     pub fn for_slash_command(name: &str, args: &str, state: &AppState, cwd: &Path) -> Option<Self> {
+        Self::for_slash_command_with_session(name, args, state, cwd, None)
+    }
+
+    pub fn for_slash_command_with_session(
+        name: &str,
+        args: &str,
+        state: &AppState,
+        cwd: &Path,
+        session_id: Option<&str>,
+    ) -> Option<Self> {
         if !args.trim().is_empty() {
             return None;
         }
@@ -97,6 +109,7 @@ impl CommandSurface {
             "resume" => Some(Self::Resume(ResumeSurface::new(cwd))),
             "sandbox" => Some(Self::Sandbox(SandboxSurface::new(state))),
             "skills" => Some(Self::Skills(SkillsSurface::new())),
+            "subagents" | "agent-runtime" => Some(Self::Subagents(SubagentsSurface::new(session_id))),
             "tasks" => Some(Self::Tasks(TasksSurface::new())),
             "team" | "teams" => Some(Self::Team(TeamSurface::new(state))),
             _ => None,
@@ -123,6 +136,7 @@ impl CommandSurface {
             Self::Resume(_) => "Resume",
             Self::Sandbox(_) => "Sandbox",
             Self::Skills(_) => "Skills",
+            Self::Subagents(_) => "Subagents",
             Self::Tasks(_) => "Tasks",
             Self::Team(_) => "Team",
             Self::LspRecommendation(_) => "LSP Plugin Recommendation",
@@ -145,6 +159,7 @@ impl CommandSurface {
             Self::Resume(surface) => surface.render(),
             Self::Sandbox(surface) => surface.render(),
             Self::Skills(surface) => surface.render(),
+            Self::Subagents(surface) => surface.render(),
             Self::Tasks(surface) => surface.render(),
             Self::Team(surface) => surface.render(),
             Self::LspRecommendation(surface) => surface.render(),
@@ -180,6 +195,7 @@ impl CommandSurface {
             Self::Resume(surface) => surface.handle_key(key),
             Self::Sandbox(surface) => surface.handle_key(key),
             Self::Skills(surface) => surface.handle_key(key),
+            Self::Subagents(surface) => surface.handle_key(key),
             Self::Tasks(surface) => surface.handle_key(key),
             Self::Team(surface) => surface.handle_key(key),
             Self::LspRecommendation(surface) => surface.handle_key(key),

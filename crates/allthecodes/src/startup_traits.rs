@@ -3,6 +3,9 @@ use std::sync::Arc;
 use allthecodes_engine::agent_runtime::{AgentToolRegistry, DashboardEmitter};
 use allthecodes_engine::types::tool::Tool;
 use allthecodes_mcp::McpBindingContext;
+use allthecodes_services::agent_runtime_history::{
+    persist_execution_record, persist_subagent_event_for_session, RuntimeSubagentEvent,
+};
 use allthecodes_startup as startup;
 use allthecodes_types::agent_runtime_record::AgentRuntimeExecutionRecord;
 use serde_json::Value;
@@ -53,8 +56,9 @@ impl DashboardEmitter for RootDashboardEmitter {
         background: bool,
         payload: Option<Value>,
     ) -> anyhow::Result<()> {
-        if let Err(error) = crate::runtime_history::persist_subagent_event(
-            crate::runtime_history::RuntimeSubagentEvent {
+        if let Err(error) = persist_subagent_event_for_session(
+            crate::dashboard::current_session_id(),
+            RuntimeSubagentEvent {
                 kind,
                 agent_id,
                 parent_agent_id,
@@ -81,7 +85,7 @@ impl DashboardEmitter for RootDashboardEmitter {
     }
 
     fn emit_execution_record(&self, record: &AgentRuntimeExecutionRecord) -> anyhow::Result<()> {
-        if let Err(error) = crate::runtime_history::persist_execution_record(record) {
+        if let Err(error) = persist_execution_record(record) {
             tracing::debug!(
                 %error,
                 agent_id = %record.agent_id,

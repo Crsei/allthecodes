@@ -663,6 +663,7 @@ dependencies = [
 name = "allthecodes-protocol"
 version = "0.1.0"
 dependencies = [
+ "allthecodes-types",
  "async-trait",
  "schemars 0.8.22",
  "serde",
@@ -963,6 +964,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "hex",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2",

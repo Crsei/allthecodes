@@ -11,6 +11,8 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "schema")]
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -22,6 +24,7 @@ use serde::{Deserialize, Serialize};
 /// Serde uses lower_snake_case so the wire format stays the existing string
 /// contract while Rust call sites use typed variants.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntimePermissionDecision {
     AllowedByPolicy,
@@ -52,6 +55,7 @@ impl AgentRuntimePermissionDecision {
 /// Optional fields are still serialized as `null` so external consumers can
 /// rely on a stable schema across shell and non-shell tools.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub struct AgentRuntimeExecutionRecord {
     /// Opaque session identifier shared across all events in a session.

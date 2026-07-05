@@ -200,6 +200,7 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::ProvidersDelete - legacy REST handler, ProviderProcessor target.
 // ClientRequest::ProvidersRefreshModels - legacy REST handler, ProviderProcessor target.
 // ClientRequest::ModelsList - dispatched.
+// ClientRequest::AgentRuntimeDashboard - dispatched.
 // ClientRequest::ModelsUpdate - legacy REST handler, ModelProcessor target.
 // ClientRequest::ModelsSetDefault - legacy REST handler, ModelProcessor target.
 // ClientRequest::Credentials - legacy REST handler, AuthProcessor target.
@@ -824,6 +825,16 @@ pub async fn dispatch(
             .await?;
             Ok(ClientResponse::ModelsList(response))
         }
+        ClientRequest::AgentRuntimeDashboard(params) => {
+            let response = dispatch_tracked_processor::<handlers::AgentRuntimeDashboardProcessor>(
+                state,
+                context,
+                ApiMethod::AgentRuntimeDashboard,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::AgentRuntimeDashboard(response))
+        }
         ClientRequest::WorktreeSessionsList(params) => {
             let response = dispatch_tracked_processor::<handlers::WorktreeSessionsListProcessor>(
                 state,
@@ -1153,7 +1164,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 51);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 52);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

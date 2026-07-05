@@ -952,6 +952,13 @@ crate::api_definitions! {
         errors: [NotFound],
     },
 
+    // ── Agent runtime dashboard ──────────────────────────────────────────
+    /// Fetch recent subagent runtime events and execution records.
+    AgentRuntimeDashboard => "GET /api/agent-runtime/dashboard" {
+        params: v1::agent_runtime::AgentRuntimeDashboardQuery,
+        response: v1::agent_runtime::AgentRuntimeDashboardResponse,
+    },
+
     // ── Mentions ─────────────────────────────────────────────────────────
     /// Autocomplete @mention chips (sessions, files, skills).
     MentionAutocomplete => "GET /api/mentions/autocomplete" {

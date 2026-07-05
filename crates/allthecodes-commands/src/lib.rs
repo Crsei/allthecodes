@@ -78,6 +78,7 @@ pub mod skills_cmd;
 pub mod sleep_cmd;
 pub mod status;
 pub mod statusline_cmd;
+pub mod subagents_cmd;
 pub mod tasks_cmd;
 pub mod team_cmd;
 pub mod team_onboarding;
@@ -1155,6 +1156,12 @@ pub fn get_all_commands() -> Vec<Command> {
             &[],
             "List and drill into background tasks (tool + team)",
             tasks_cmd::TasksHandler,
+        ),
+        command(
+            "subagents",
+            &["agent-runtime"],
+            "Inspect subagent runtime events and tool executions",
+            subagents_cmd::SubagentsHandler,
         ),
         command(
             "btw",
