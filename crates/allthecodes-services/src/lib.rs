@@ -8,6 +8,7 @@ pub mod file_search;
 pub mod langfuse;
 pub mod lsp_lifecycle;
 pub mod onboarding;
+pub mod proactive;
 pub mod prompt_suggestion;
 pub mod scheduler;
 pub mod scheduler_tools;
