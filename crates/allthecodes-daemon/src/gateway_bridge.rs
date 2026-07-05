@@ -957,6 +957,53 @@ mod tests {
         );
     }
 
+    #[test]
+    #[serial]
+    fn daemon_submit_producer_payloads_resolve_to_expected_query_sources() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+
+        let tick = crate::tick::enqueue_proactive_tick_once(chrono::Local::now(), false)
+            .unwrap()
+            .expect("proactive tick should enqueue");
+        assert_eq!(
+            query_source_from_submit_payload(&tick.payload),
+            QuerySource::ProactiveTick
+        );
+
+        let mcp_event = crate::channels::ChannelEvent {
+            source: "slack".into(),
+            sender: Some("alice".into()),
+            content: "triage incident".into(),
+            meta: serde_json::Value::Null,
+            origin: crate::channels::ChannelOrigin::Mcp {
+                server_name: "slack-mcp".into(),
+            },
+        };
+        assert_eq!(
+            query_source_from_submit_payload(&crate::channels::channel_submit_payload(
+                &mcp_event
+            )),
+            QuerySource::ChannelNotification
+        );
+
+        let webhook_event = crate::channels::ChannelEvent {
+            source: "github".into(),
+            sender: None,
+            content: "pull request opened".into(),
+            meta: serde_json::Value::Null,
+            origin: crate::channels::ChannelOrigin::Webhook {
+                endpoint: "/hooks/github".into(),
+            },
+        };
+        assert_eq!(
+            query_source_from_submit_payload(&crate::channels::channel_submit_payload(
+                &webhook_event
+            )),
+            QuerySource::WebhookEvent
+        );
+    }
+
     #[tokio::test]
     #[serial]
     async fn execute_submit_records_mapped_query_source_for_proactive_tick() {
