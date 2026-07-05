@@ -239,7 +239,7 @@ pub async fn dispatch_request(
 ) -> Option<DispatchOutcome> {
     match method {
         "initialize" => {
-            let result = handle_initialize(params, capabilities, ctx).await;
+            let result = handle_initialize(params, capabilities, session_manager, ctx).await;
             Some(DispatchOutcome::Response(result))
         }
         "auth/login" => {
@@ -482,6 +482,7 @@ fn send_session_update(sink: &AcpSink, session_id: v2::SessionId, update: v2::Se
 async fn handle_initialize(
     params: Option<&serde_json::value::RawValue>,
     capabilities: &AcpCapabilities,
+    session_manager: &Arc<AcpSessionManager>,
     ctx: &RuntimeContext,
 ) -> Result<serde_json::Value, v2::Error> {
     let raw = params.ok_or_else(|| v2::Error::invalid_params().data("missing params"))?;
@@ -492,6 +493,12 @@ async fn handle_initialize(
         return Err(v2::Error::invalid_params()
             .data("unsupported protocol version; only version 2 is accepted"));
     }
+
+    session_manager
+        .set_client_capabilities(
+            crate::capabilities::AcpClientCapabilities::from_initialize_request(&req),
+        )
+        .await;
 
     let mut agent_caps = v2::AgentCapabilities::default();
 
@@ -518,7 +525,8 @@ async fn handle_initialize(
         v2::Implementation::new("allthecodes", env!("CARGO_PKG_VERSION")),
     )
     .capabilities(agent_caps)
-    .auth_methods(auth_methods);
+    .auth_methods(auth_methods)
+    .meta(crate::capabilities::agent_extension_meta());
 
     serde_json::to_value(response)
         .map_err(|e| v2::Error::internal_error().data(format!("serialization error: {e}")))
@@ -854,10 +862,10 @@ async fn handle_session_prompt(
         let sink = sink_clone;
         let session = session_clone;
         let _session_mgr = session_manager_clone;
-        let mapper = Arc::new(tokio::sync::Mutex::new(AcpUpdateMapper::new(
-            sid.clone(),
-            session.cwd.clone(),
-        )));
+        let mapper = Arc::new(tokio::sync::Mutex::new(
+            AcpUpdateMapper::new(sid.clone(), session.cwd.clone())
+                .with_client_capabilities(session.client_capabilities),
+        ));
         {
             let progress_mapper = mapper.clone();
             let progress_sink = sink.clone();

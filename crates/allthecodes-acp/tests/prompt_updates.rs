@@ -10,11 +10,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_client_protocol_schema::v2::{self, SessionUpdate, StopReason};
+use allthecodes_acp::capabilities::{AcpClientCapabilities, STRUCTURED_BRIEF_UPDATE};
 use allthecodes_acp::engine_factory::AcpEngineFactory;
 use allthecodes_acp::updates::AcpUpdateMapper;
 use allthecodes_acp::AcpEngineParams;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::QueryEngineConfig;
+use allthecodes_types::brief::{BriefMessageLevel, BriefMessagePayload, BriefMessageStatus};
 use allthecodes_types::message::{
     AssistantMessage, ContentBlock as InternalContentBlock, StreamEvent, ToolResultContent, Usage,
 };
@@ -125,6 +127,29 @@ fn test_cwd() -> PathBuf {
 
 fn mapper() -> AcpUpdateMapper {
     AcpUpdateMapper::new(v2::SessionId::new("session-1"), test_cwd())
+}
+
+fn structured_brief_mapper() -> AcpUpdateMapper {
+    AcpUpdateMapper::new_with_client_capabilities(
+        v2::SessionId::new("session-1"),
+        test_cwd(),
+        AcpClientCapabilities {
+            structured_brief: true,
+        },
+    )
+}
+
+fn brief_msg() -> SdkMessage {
+    SdkMessage::BriefMessage(BriefMessagePayload {
+        message: "Build finished.".into(),
+        status: BriefMessageStatus::Proactive,
+        attachments: vec!["report.md".into()],
+        level: Some(BriefMessageLevel::Warning),
+        source_tool_name: Some("Brief".into()),
+        tool_use_id: Some("toolu_brief".into()),
+        session_id: Some("allthecodes-session-id".into()),
+        timestamp: Some(1_783_273_215_000),
+    })
 }
 
 fn stream_msg(event: StreamEvent) -> SdkMessage {
@@ -512,4 +537,55 @@ fn tombstone_maps_to_kinded_thought() {
         value["_meta"]["abandonedMessageId"],
         message_uuid.to_string()
     );
+}
+
+#[test]
+fn brief_message_without_client_opt_in_keeps_text_fallback() {
+    let mut mapper = mapper();
+    let updates = mapper.map_message(&brief_msg());
+    let value = json(&updates[0]);
+
+    assert_eq!(value["sessionUpdate"], "agent_message");
+    assert_eq!(value["messageId"], "agent-msg-1");
+    assert_eq!(value["content"][0]["type"], "text");
+    assert_eq!(value["content"][0]["text"], "Build finished.");
+    assert!(
+        value.get("_meta").is_none(),
+        "legacy fallback must not send structured Brief metadata: {value:?}"
+    );
+}
+
+#[test]
+fn brief_message_with_client_opt_in_preserves_structured_payload() {
+    let mut mapper = structured_brief_mapper();
+    let updates = mapper.map_message(&brief_msg());
+    let value = json(&updates[0]);
+
+    assert_eq!(value["sessionUpdate"], STRUCTURED_BRIEF_UPDATE);
+    assert_eq!(value["messageId"], "brief-msg-1");
+    assert_eq!(value["sessionId"], "session-1");
+    assert_eq!(value["message"], "Build finished.");
+    assert_eq!(value["status"], "proactive");
+    assert_eq!(value["attachments"][0], "report.md");
+    assert_eq!(value["level"], "warning");
+    assert_eq!(value["sourceToolName"], "Brief");
+    assert_eq!(value["toolUseId"], "toolu_brief");
+    assert_eq!(value["sourceSessionId"], "allthecodes-session-id");
+    assert_eq!(value["timestamp"], 1_783_273_215_000_i64);
+    assert!(
+        value.get("content").is_none(),
+        "structured Brief update must not degrade to text content: {value:?}"
+    );
+}
+
+#[test]
+fn structured_brief_message_ids_do_not_consume_agent_message_ids() {
+    let mut mapper = structured_brief_mapper();
+    let brief = mapper.map_message(&brief_msg());
+    let agent = mapper.map_message(&assistant_msg(vec![InternalContentBlock::Text {
+        text: "normal text".into(),
+    }]));
+
+    assert_eq!(json(&brief[0])["messageId"], "brief-msg-1");
+    assert_eq!(json(&agent[0])["messageId"], "agent-msg-1");
 }

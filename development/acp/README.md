@@ -34,6 +34,7 @@ Verified on 2026-07-03 in `.worktrees/acp-adapter`:
 | `$/cancel_request` | Cancels pending prompt ACKs and pending permission requests. |
 | `session/request_permission` client request | Round-trips engine permission callbacks through ACP client requests, including cancellation and disconnect denial. |
 | `session/update` notifications | Covers state, usage, text chunks, thinking, tool calls, tool progress, plan updates, tombstones, retries, summaries, available commands, and config option updates. |
+| Structured Brief extension | Clients that send `capabilities._meta["allthecodes.structuredBrief"] = true` receive `_allthecodes_structured_brief` session updates with Brief metadata; non-opted-in clients continue receiving the legacy `agent_message` text fallback. |
 | Binary stdio smoke | `cargo test -p allthecodes --test acp_stdio_smoke` verifies `allthecodes --acp` emits only JSON-RPC frames on stdout for initialize/new/close. |
 
 Focused verification run during the review-fix pass:
@@ -67,7 +68,6 @@ These capabilities are out of scope for this branch and must remain absent from 
 ## Known Remaining Limitations
 
 - The real-model binary smoke exists as `acp_stdio_real_model_prompt_smoke` and uses the normal allthecodes config, auth, model, and provider path. It is ignored by default because it requires usable credentials, provider access, and network. On this machine, explicit runs against the current `backend=codex` config timed out after 300 seconds after only `available_commands_update` and `state_update: running`; no model content or idle frame arrived.
-- Structured KAIROS Brief output currently degrades to plain `AgentMessage` text over ACP because the ACP wire mapping does not preserve Brief metadata. Track the required protocol extension in [structured-brief-wire-protocol-plan.md](structured-brief-wire-protocol-plan.md).
 - `session.prompt.image`, `session.prompt.audio`, `session.prompt.embeddedContext`, and `session.mcp.*` remain separate feature work, not partial support.
 - ACP mode uses the Rust backend/TUI-era runtime only. It does not alter legacy `--headless` JSONL IPC behavior.
 
@@ -79,3 +79,4 @@ These capabilities are out of scope for this branch and must remain absent from 
 - Prompt content supports text and `file://` resource links (`file://` becomes `@/path`).
 - Request cancellation uses `$/cancel_request` with `requestId`; active turn cancellation uses `session/cancel` with `sessionId`.
 - Config options currently exposed are `model`, `thought_level`, and `mode`.
+- Structured Brief support is opt-in through `initialize.capabilities._meta["allthecodes.structuredBrief"] = true`. Opted-in clients should handle `sessionUpdate: "_allthecodes_structured_brief"` with `sessionId`, `messageId`, `message`, `status`, `attachments`, `level`, `sourceToolName`, `toolUseId`, `sourceSessionId`, and `timestamp`.

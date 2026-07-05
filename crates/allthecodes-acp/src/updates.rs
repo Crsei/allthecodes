@@ -3,14 +3,14 @@
 //! Converts engine stream events into ACP v2 SessionUpdate notifications
 //! that the ACP client can consume.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol_schema::v2::{
-    AgentMessage, AgentThought, ContentBlock, ContentChunk, IdleStateUpdate, MessageId, PlanEntry,
-    PlanEntryPriority, PlanEntryStatus, PlanUpdate, PlanUpdateContent, RunningStateUpdate,
-    SessionId, SessionUpdate, StateUpdate, StopReason, TextContent, ToolCallStatus, ToolCallUpdate,
-    UsageUpdate, UserMessage,
+    AgentMessage, AgentThought, ContentBlock, ContentChunk, IdleStateUpdate, MessageId,
+    OtherSessionUpdate, PlanEntry, PlanEntryPriority, PlanEntryStatus, PlanUpdate,
+    PlanUpdateContent, RunningStateUpdate, SessionId, SessionUpdate, StateUpdate, StopReason,
+    TextContent, ToolCallStatus, ToolCallUpdate, UsageUpdate, UserMessage,
 };
 use allthecodes_types::brief::BriefMessagePayload;
 use allthecodes_types::message::{
@@ -22,6 +22,7 @@ use allthecodes_types::sdk::{
     SdkStreamEvent, SdkTombstone, SdkToolUseSummary, SdkUserReplay,
 };
 
+use crate::capabilities::{AcpClientCapabilities, STRUCTURED_BRIEF_UPDATE};
 use crate::tool_calls::ToolCallContextCache;
 
 /// Message counter for generating deterministic message IDs.
@@ -30,6 +31,7 @@ pub struct MessageCounter {
     next_user_msg: u64,
     next_agent_msg: u64,
     next_thought_msg: u64,
+    next_brief_msg: u64,
 }
 
 impl MessageCounter {
@@ -46,6 +48,11 @@ impl MessageCounter {
     pub fn next_thought_message_id(&mut self) -> MessageId {
         self.next_thought_msg += 1;
         MessageId::new(format!("thought-{}", self.next_thought_msg))
+    }
+
+    pub fn next_brief_message_id(&mut self) -> MessageId {
+        self.next_brief_msg += 1;
+        MessageId::new(format!("brief-msg-{}", self.next_brief_msg))
     }
 }
 
@@ -69,6 +76,10 @@ impl MessageIdState {
         self.counter.next_thought_message_id()
     }
 
+    fn next_brief_message_id(&mut self) -> MessageId {
+        self.counter.next_brief_message_id()
+    }
+
     fn agent_message_id_for_block(&mut self, index: usize) -> MessageId {
         self.agent_by_block
             .entry(index)
@@ -90,6 +101,7 @@ pub struct AcpUpdateMapper {
     session_id: SessionId,
     message_ids: MessageIdState,
     tool_cache: ToolCallContextCache,
+    client_capabilities: AcpClientCapabilities,
 }
 
 impl AcpUpdateMapper {
@@ -98,7 +110,21 @@ impl AcpUpdateMapper {
             session_id,
             message_ids: MessageIdState::default(),
             tool_cache: ToolCallContextCache::new(cwd),
+            client_capabilities: AcpClientCapabilities::default(),
         }
+    }
+
+    pub fn new_with_client_capabilities(
+        session_id: SessionId,
+        cwd: impl Into<PathBuf>,
+        client_capabilities: AcpClientCapabilities,
+    ) -> Self {
+        Self::new(session_id, cwd).with_client_capabilities(client_capabilities)
+    }
+
+    pub fn with_client_capabilities(mut self, client_capabilities: AcpClientCapabilities) -> Self {
+        self.client_capabilities = client_capabilities;
+        self
     }
 
     pub fn map_message(&mut self, msg: &SdkMessage) -> Vec<SessionUpdate> {
@@ -393,11 +419,19 @@ impl AcpUpdateMapper {
     }
 
     fn brief_message_update(&mut self, brief: &BriefMessagePayload) -> SessionUpdate {
-        SessionUpdate::AgentMessage(
-            AgentMessage::new(self.message_ids.next_agent_message_id()).content(vec![
-                ContentBlock::Text(TextContent::new(brief.message.clone())),
-            ]),
-        )
+        if !self.client_capabilities.structured_brief {
+            return SessionUpdate::AgentMessage(
+                AgentMessage::new(self.message_ids.next_agent_message_id()).content(vec![
+                    ContentBlock::Text(TextContent::new(brief.message.clone())),
+                ]),
+            );
+        }
+
+        let message_id = self.message_ids.next_brief_message_id();
+        SessionUpdate::Other(OtherSessionUpdate::new(
+            STRUCTURED_BRIEF_UPDATE,
+            structured_brief_fields(&self.session_id, &message_id, brief),
+        ))
     }
 
     fn kinded_thought(
@@ -435,10 +469,66 @@ pub fn sdk_message_to_updates(
             thought_by_block: HashMap::new(),
         },
         tool_cache: ToolCallContextCache::new(std::env::current_dir().unwrap_or_default()),
+        client_capabilities: AcpClientCapabilities::default(),
     };
     let updates = mapper.map_message(msg);
     *counter = mapper.message_ids.counter;
     updates
+}
+
+fn structured_brief_fields(
+    session_id: &SessionId,
+    message_id: &MessageId,
+    brief: &BriefMessagePayload,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "sessionId".into(),
+        serde_json::json!(session_id.to_string()),
+    );
+    fields.insert(
+        "messageId".into(),
+        serde_json::json!(message_id.to_string()),
+    );
+    fields.insert("message".into(), serde_json::json!(brief.message.clone()));
+    fields.insert("status".into(), serde_json::json!(brief.status.as_str()));
+    fields.insert(
+        "attachments".into(),
+        serde_json::json!(brief.attachments.clone()),
+    );
+    fields.insert(
+        "level".into(),
+        brief
+            .level
+            .map(|level| serde_json::json!(level.as_str()))
+            .unwrap_or(serde_json::Value::Null),
+    );
+    fields.insert(
+        "sourceToolName".into(),
+        brief
+            .source_tool_name
+            .as_ref()
+            .map(|value| serde_json::json!(value))
+            .unwrap_or(serde_json::Value::Null),
+    );
+    fields.insert(
+        "toolUseId".into(),
+        brief
+            .tool_use_id
+            .as_ref()
+            .map(|value| serde_json::json!(value))
+            .unwrap_or(serde_json::Value::Null),
+    );
+    fields.insert(
+        "sourceSessionId".into(),
+        brief
+            .session_id
+            .as_ref()
+            .map(|value| serde_json::json!(value))
+            .unwrap_or(serde_json::Value::Null),
+    );
+    fields.insert("timestamp".into(), serde_json::json!(brief.timestamp));
+    fields
 }
 
 /// Convert a loaded transcript message into deterministic ACP replay updates.

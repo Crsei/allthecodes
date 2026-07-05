@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use agent_client_protocol_schema::v2;
 use agent_client_protocol_schema::ProtocolVersion;
+use allthecodes_acp::capabilities::STRUCTURED_BRIEF_CAPABILITY;
 use allthecodes_acp::engine_factory::AcpEngineFactory;
 use allthecodes_acp::AcpEngineParams;
 use allthecodes_engine::lifecycle::QueryEngine;
@@ -192,6 +193,19 @@ fn initialize_params() -> serde_json::Value {
         ProtocolVersion::V2,
         v2::Implementation::new("test-client", "0.0.0"),
     ))
+    .unwrap()
+}
+
+fn initialize_params_with_structured_brief() -> serde_json::Value {
+    let mut meta = serde_json::Map::new();
+    meta.insert(STRUCTURED_BRIEF_CAPABILITY.into(), serde_json::json!(true));
+    serde_json::to_value(
+        v2::InitializeRequest::new(
+            ProtocolVersion::V2,
+            v2::Implementation::new("test-client", "0.0.0"),
+        )
+        .capabilities(v2::ClientCapabilities::new().meta(meta)),
+    )
     .unwrap()
 }
 
@@ -434,5 +448,100 @@ async fn capability_initialize_omits_prompt_multimodal_until_enabled() {
             .pointer("/result/capabilities/session/prompt/embeddedContext")
             .is_none(),
         "prompt.embeddedContext must remain unadvertised: {response:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn initialize_advertises_structured_brief_extension_support() {
+    let response = initialize_response().await;
+
+    assert_eq!(
+        response.pointer("/result/_meta/allthecodes.structuredBrief"),
+        Some(&serde_json::json!(true)),
+        "initialize response should advertise implemented structured Brief support: {response:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn initialize_without_structured_brief_opt_in_creates_legacy_sessions() {
+    let _env = isolated_auth_env();
+    let mut harness = RuntimeHarness::new_with_factory(
+        std::env::current_dir().unwrap(),
+        Arc::new(TestEngineFactory),
+    );
+
+    harness
+        .send_request_and_capture("initialize", Some(initialize_params()))
+        .await
+        .0
+        .expect("initialize should write a response");
+
+    let new_params = serde_json::json!({
+        "cwd": std::env::current_dir().unwrap(),
+        "additionalDirectories": [],
+        "mcpServers": {},
+    });
+    let (new_resp, _pre) = harness
+        .send_request_and_capture("session/new", Some(new_params))
+        .await;
+    let session_id = new_resp
+        .as_ref()
+        .and_then(|response| response.pointer("/result/sessionId"))
+        .and_then(|value| value.as_str())
+        .expect("session/new response should include sessionId");
+    let session = harness
+        .session_manager
+        .get_session(session_id)
+        .await
+        .expect("session should be stored");
+
+    assert!(
+        !session.client_capabilities.structured_brief,
+        "sessions must default to legacy Brief mapping without opt-in"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn initialize_with_structured_brief_opt_in_creates_structured_sessions() {
+    let _env = isolated_auth_env();
+    let mut harness = RuntimeHarness::new_with_factory(
+        std::env::current_dir().unwrap(),
+        Arc::new(TestEngineFactory),
+    );
+
+    harness
+        .send_request_and_capture(
+            "initialize",
+            Some(initialize_params_with_structured_brief()),
+        )
+        .await
+        .0
+        .expect("initialize should write a response");
+
+    let new_params = serde_json::json!({
+        "cwd": std::env::current_dir().unwrap(),
+        "additionalDirectories": [],
+        "mcpServers": {},
+    });
+    let (new_resp, _pre) = harness
+        .send_request_and_capture("session/new", Some(new_params))
+        .await;
+    let session_id = new_resp
+        .as_ref()
+        .and_then(|response| response.pointer("/result/sessionId"))
+        .and_then(|value| value.as_str())
+        .expect("session/new response should include sessionId");
+    let session = harness
+        .session_manager
+        .get_session(session_id)
+        .await
+        .expect("session should be stored");
+
+    assert!(
+        session.client_capabilities.structured_brief,
+        "client opt-in should be copied into new sessions"
     );
 }

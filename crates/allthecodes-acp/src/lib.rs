@@ -14,6 +14,7 @@
 //! stdout.
 
 pub mod auth;
+pub mod capabilities;
 pub mod commands;
 pub mod config_options;
 pub mod content;

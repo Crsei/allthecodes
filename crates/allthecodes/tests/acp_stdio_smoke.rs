@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 const REAL_MODEL_PROMPT: &str =
     include_str!("../../allthecodes-acp/tests/fixtures/acp_smoke_prompt.txt");
+const STRUCTURED_BRIEF_CAPABILITY: &str = "allthecodes.structuredBrief";
 
 struct AcpProcess {
     child: Child,
@@ -193,6 +194,21 @@ fn initialize_params() -> Value {
     })
 }
 
+fn initialize_params_with_structured_brief() -> Value {
+    json!({
+        "protocolVersion": 2,
+        "info": {
+            "name": "allthecodes-acp-smoke",
+            "version": "0.0.0"
+        },
+        "capabilities": {
+            "_meta": {
+                (STRUCTURED_BRIEF_CAPABILITY): true
+            }
+        }
+    })
+}
+
 fn new_session_params(project: &std::path::Path) -> Value {
     json!({
         "cwd": project,
@@ -337,6 +353,23 @@ fn acp_stdio_stdout_contains_only_jsonrpc_frames() {
     acp.send_request(3, "session/close", close_params(&session_id));
     let close = acp.read_response(3, Duration::from_secs(30));
     response_result(&close);
+
+    acp.shutdown();
+}
+
+#[test]
+fn acp_stdio_structured_brief_initialize_remains_jsonrpc() {
+    let project = tempfile::tempdir().expect("project tempdir");
+    let mut acp = AcpProcess::spawn(project.path(), true);
+
+    acp.send_request(1, "initialize", initialize_params_with_structured_brief());
+    let initialize = acp.read_response(1, Duration::from_secs(30));
+    response_result(&initialize);
+    assert_eq!(
+        initialize.pointer("/result/_meta/allthecodes.structuredBrief"),
+        Some(&json!(true)),
+        "initialize response should advertise structured Brief support: {initialize:?}"
+    );
 
     acp.shutdown();
 }
