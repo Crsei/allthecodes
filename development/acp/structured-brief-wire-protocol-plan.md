@@ -18,12 +18,13 @@
 
 ## Proposed Wire Shape
 
-If the ACP schema provides an extension or metadata slot that survives client parsing, prefer that over adding a local forked schema type.
+Implemented using ACP v2's custom `SessionUpdate::Other` extension slot, so the schema remains `agent-client-protocol-schema = "=1.2.0"` and no local fork is needed. The negotiated update discriminator is `_allthecodes_structured_brief`.
 
 Required payload fields:
 
 ```json
 {
+  "sessionUpdate": "_allthecodes_structured_brief",
   "sessionId": "session-id",
   "messageId": "brief-msg-1",
   "message": "Build finished.",
@@ -41,22 +42,22 @@ Use `sourceSessionId` for the Brief payload's internal allthecodes session id so
 
 ## Implementation Tasks
 
-- [ ] Inspect `agent-client-protocol-schema` v2 generated types and identify whether `SessionUpdate`, `ContentBlock`, or `_meta` can carry a structured allthecodes extension without forking the schema.
-- [ ] Define the negotiated client capability name. Suggested private capability: `allthecodes.structuredBrief`.
-- [ ] Add ACP runtime capability negotiation storage so each session knows whether structured Brief updates are allowed.
-- [ ] Add a structured Brief conversion path in `crates/allthecodes-acp/src/updates.rs`.
-- [ ] Keep the current `AgentMessage` text fallback when the client does not advertise `allthecodes.structuredBrief`.
-- [ ] Ensure structured Brief updates preserve `message`, `status`, `attachments`, `level`, `source_tool_name`, `tool_use_id`, `session_id`, and `timestamp`.
-- [ ] Add deterministic message ids for Brief updates, separate from normal `agent-msg-*` ids.
-- [ ] Update `development/acp/README.md` only after implementation is verified.
+- [x] Inspect `agent-client-protocol-schema` v2 generated types and identify whether `SessionUpdate`, `ContentBlock`, or `_meta` can carry a structured allthecodes extension without forking the schema.
+- [x] Define the negotiated client capability name. Suggested private capability: `allthecodes.structuredBrief`.
+- [x] Add ACP runtime capability negotiation storage so each session knows whether structured Brief updates are allowed.
+- [x] Add a structured Brief conversion path in `crates/allthecodes-acp/src/updates.rs`.
+- [x] Keep the current `AgentMessage` text fallback when the client does not advertise `allthecodes.structuredBrief`.
+- [x] Ensure structured Brief updates preserve `message`, `status`, `attachments`, `level`, `source_tool_name`, `tool_use_id`, `session_id`, and `timestamp`.
+- [x] Add deterministic message ids for Brief updates, separate from normal `agent-msg-*` ids.
+- [x] Update `development/acp/README.md` only after implementation is verified.
 
 ## Test Plan
 
-- [ ] Add mapper tests proving `SdkMessage::BriefMessage` emits the structured ACP update when `allthecodes.structuredBrief` is negotiated.
-- [ ] Add mapper tests proving old clients still receive the existing `AgentMessage` text fallback.
-- [ ] Add JSON serialization tests for the exact wire payload field names.
-- [ ] Add runtime negotiation tests for supported and unsupported clients.
-- [ ] Add stdio smoke coverage proving the new update remains valid JSON-RPC on stdout.
+- [x] Add mapper tests proving `SdkMessage::BriefMessage` emits the structured ACP update when `allthecodes.structuredBrief` is negotiated.
+- [x] Add mapper tests proving old clients still receive the existing `AgentMessage` text fallback.
+- [x] Add JSON serialization tests for the exact wire payload field names.
+- [x] Add runtime negotiation tests for supported and unsupported clients.
+- [x] Add stdio smoke coverage proving the new update remains valid JSON-RPC on stdout.
 
 ## Verification
 

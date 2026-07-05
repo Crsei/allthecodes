@@ -14,6 +14,7 @@ use allthecodes_types::message::Message;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, timeout, Duration};
 
+use crate::capabilities::AcpClientCapabilities;
 use crate::engine_factory::AcpEngineFactory;
 use crate::jsonrpc;
 use crate::permissions::AcpPermissionManager;
@@ -32,6 +33,7 @@ pub struct AcpSession {
     pub session_id: agent_client_protocol_schema::v2::SessionId,
     pub cwd: std::path::PathBuf,
     pub additional_directories: Vec<std::path::PathBuf>,
+    pub client_capabilities: AcpClientCapabilities,
     pub engine: Arc<QueryEngine>,
     pub active_turn: Mutex<Option<AcpTurnHandle>>,
 }
@@ -50,6 +52,7 @@ impl std::fmt::Debug for AcpSession {
 pub struct AcpSessionManager {
     sessions: RwLock<HashMap<String, Arc<AcpSession>>>,
     engine_factory: Arc<dyn AcpEngineFactory>,
+    client_capabilities: RwLock<AcpClientCapabilities>,
 }
 
 impl std::fmt::Debug for AcpSessionManager {
@@ -68,7 +71,12 @@ impl AcpSessionManager {
         Self {
             sessions: RwLock::new(HashMap::new()),
             engine_factory,
+            client_capabilities: RwLock::new(AcpClientCapabilities::default()),
         }
+    }
+
+    pub async fn set_client_capabilities(&self, capabilities: AcpClientCapabilities) {
+        *self.client_capabilities.write().await = capabilities;
     }
 
     /// Create a new session.
@@ -106,6 +114,7 @@ impl AcpSessionManager {
             session_id: session_id.clone(),
             cwd,
             additional_directories,
+            client_capabilities: *self.client_capabilities.read().await,
             engine,
             active_turn: Mutex::new(None),
         });
