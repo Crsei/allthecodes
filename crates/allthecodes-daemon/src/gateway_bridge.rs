@@ -613,7 +613,7 @@ impl AssistantWorkerRuntime {
             "submit_started",
             json!({
                 "message_id": message_id,
-                "source": command.payload.get("source").cloned().unwrap_or_else(|| json!("worker")),
+                "source": command.payload.get("source").cloned().unwrap_or(Value::Null),
                 "query_source": query_source_label,
                 "gateway": command.payload.get("gateway").cloned(),
             }),
@@ -942,6 +942,29 @@ mod tests {
     }
 
     #[test]
+    fn submit_payload_source_maps_unknown_top_level_source_to_repl_main_thread() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({
+                "source": "unexpected_source"
+            })),
+            QuerySource::ReplMainThread
+        );
+    }
+
+    #[test]
+    fn submit_payload_source_maps_channel_without_origin_type_to_channel_notification() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({
+                "source": "channel",
+                "channel": {
+                    "origin": {}
+                }
+            })),
+            QuerySource::ChannelNotification
+        );
+    }
+
+    #[test]
     fn submit_payload_source_maps_http_as_interactive() {
         assert_eq!(
             query_source_from_submit_payload(&json!({ "source": "http" })),
@@ -1031,6 +1054,33 @@ mod tests {
 
         assert_eq!(submit_started.data["source"], "proactive_tick");
         assert_eq!(submit_started.data["query_source"], "proactive_tick");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn execute_submit_records_null_source_when_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let runtime = test_runtime(temp.path());
+        let command = submit_command(json!({
+            "text": "hello"
+        }));
+
+        runtime
+            .execute_submit("assistant-session-1", &command)
+            .await
+            .unwrap();
+
+        let events = crate::protocol_store()
+            .read_worker_events("assistant-session-1")
+            .unwrap();
+        let submit_started = events
+            .iter()
+            .find(|event| event.event_type == "submit_started")
+            .expect("submit_started event should be recorded");
+
+        assert!(submit_started.data["source"].is_null());
+        assert_eq!(submit_started.data["query_source"], "repl_main_thread");
     }
 
     #[test]
