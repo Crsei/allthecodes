@@ -36,6 +36,16 @@ mod tests {
     use allthecodes_bootstrap::SessionId;
     use std::path::PathBuf;
 
+    struct ProactiveControllerResetGuard(
+        &'static allthecodes_services::proactive::ProactiveController,
+    );
+
+    impl Drop for ProactiveControllerResetGuard {
+        fn drop(&mut self) {
+            self.0.deactivate("test-reset");
+        }
+    }
+
     fn test_ctx() -> CommandContext {
         CommandContext {
             messages: Vec::new(),
@@ -48,6 +58,7 @@ mod tests {
     #[tokio::test]
     async fn proactive_command_toggles_active_state() {
         let controller = allthecodes_services::proactive::global_controller();
+        let _reset_guard = ProactiveControllerResetGuard(controller);
         controller.deactivate("test-reset");
 
         let handler = ProactiveCmdHandler;

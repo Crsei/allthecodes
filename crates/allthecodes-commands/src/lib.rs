@@ -1564,7 +1564,14 @@ mod tests {
     #[test]
     fn builtin_registry_includes_proactive_command() {
         let metadata = command_metadata(&get_all_commands());
-        assert!(metadata.iter().any(|cmd| cmd.name == "proactive"));
+        let proactive = metadata
+            .iter()
+            .find(|cmd| cmd.name == "proactive")
+            .expect("proactive command is registered");
+        assert_eq!(
+            proactive.description.as_str(),
+            "Toggle proactive autonomous mode"
+        );
     }
 
     #[test]
