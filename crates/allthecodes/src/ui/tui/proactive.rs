@@ -84,9 +84,35 @@ pub(super) fn decide_tick(
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
+    use serial_test::serial;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
+    #[serial]
     fn tick_decision_requires_active_idle_and_due() {
+        let home = tempfile::tempdir().expect("allthecodes home");
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
         let due = Utc::now() - Duration::seconds(1);
         let snapshot = allthecodes_services::proactive::ProactiveSnapshot {
             status: allthecodes_services::proactive::ProactiveStatus::Active,
@@ -108,5 +134,30 @@ mod tests {
             decide_tick(&snapshot, false, true, false, Utc::now()),
             ProactiveTickDecision::BlockedByPendingInput
         );
+    }
+
+    #[test]
+    #[serial]
+    fn mark_tick_submitted_reschedules_next_tick() {
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("test");
+        let before = controller
+            .snapshot()
+            .next_tick_at
+            .expect("active controller has next tick");
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        ProactiveTickDriver::new().mark_tick_submitted();
+
+        let after_snapshot = controller.snapshot();
+        let after = after_snapshot.next_tick_at.expect("rescheduled next tick");
+        controller.deactivate("test_cleanup");
+
+        assert_eq!(
+            after_snapshot.status,
+            allthecodes_services::proactive::ProactiveStatus::Active
+        );
+        assert_eq!(after_snapshot.source.as_deref(), Some("test"));
+        assert!(after > before, "next_tick_at should advance after submit");
     }
 }

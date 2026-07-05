@@ -6,8 +6,8 @@ use super::engine_events::{
     create_user_message, handle_sdk_message, handle_tool_progress, now_ts,
     progress_message_from_tool_progress, StreamingState,
 };
-use super::reject_unavailable_streaming_command;
 use super::subsystem_events::handle_subsystem_event;
+use super::{clear_proactive_sleep_for_user_submit, reject_unavailable_streaming_command};
 use crate::ui::app::App;
 use allthecodes_config::features::{self, FeatureFlags};
 use allthecodes_engine::types::tool::ToolProgress;
@@ -44,6 +44,28 @@ fn last_assistant_blocks(app: &App) -> &[ContentBlock] {
 }
 
 struct FeatureGuard;
+
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 impl FeatureGuard {
     fn set(flags: FeatureFlags) -> Self {
@@ -173,6 +195,24 @@ fn streaming_ordinary_text_and_available_slash_command_are_not_rejected() {
         slash_command_availability_during_task("/diff"),
         TaskCommandAvailability::Allowed
     );
+}
+
+#[test]
+#[serial]
+fn user_submit_clears_proactive_sleep_state() {
+    let home = tempfile::tempdir().expect("allthecodes home");
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+
+    allthecodes_services::proactive::write_sleep_state(60, "waiting").unwrap();
+    assert!(allthecodes_services::proactive::active_sleep_state()
+        .unwrap()
+        .is_some());
+
+    clear_proactive_sleep_for_user_submit();
+
+    assert!(allthecodes_services::proactive::active_sleep_state()
+        .unwrap()
+        .is_none());
 }
 
 #[test]

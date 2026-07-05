@@ -441,6 +441,7 @@ pub async fn run_tui(
 
     // ── Handle initial prompt ──────────────────────────────────────
     if let Some(ref prompt) = initial_prompt {
+        clear_proactive_sleep_for_user_submit();
         app.add_message(create_user_message(prompt));
         app.push_history(prompt.clone());
         app.set_streaming(true);
@@ -899,6 +900,10 @@ fn reject_unavailable_streaming_command(text: String, app: &mut App) -> bool {
     true
 }
 
+fn clear_proactive_sleep_for_user_submit() {
+    let _ = allthecodes_services::proactive::clear_sleep_state("user_submit");
+}
+
 async fn submit_prompt_to_engine(
     text: String,
     engine: &Arc<QueryEngine>,
@@ -906,7 +911,7 @@ async fn submit_prompt_to_engine(
     engine_tx: &mpsc::UnboundedSender<EngineEvent>,
 ) -> bool {
     app.push_history(text.clone());
-    let _ = allthecodes_services::proactive::clear_sleep_state("user_submit");
+    clear_proactive_sleep_for_user_submit();
 
     if let Some(action) = try_execute_command(&text, engine, app).await {
         match action {
