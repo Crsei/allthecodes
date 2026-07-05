@@ -9,15 +9,22 @@ use super::engine_events::{
 use super::reject_unavailable_streaming_command;
 use super::subsystem_events::handle_subsystem_event;
 use crate::ui::app::App;
+use allthecodes_config::features::{self, FeatureFlags};
 use allthecodes_engine::types::tool::ToolProgress;
 use allthecodes_ipc_protocol::subsystem_events::{LspEvent, SubsystemEvent};
+use allthecodes_services::skill_search_prefetch::{
+    collect_skill_discovery_prefetch, start_skill_discovery_prefetch, SkillPrefetchContext,
+};
+use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
 use allthecodes_types::message::{
     ContentBlock, InfoLevel, Message, MessageContent, StreamEvent, SystemMessage, SystemSubtype,
     ToolResultContent, UserMessage,
 };
 use allthecodes_types::sdk::{
-    SdkAssistantMessage, SdkMessage, SdkStreamEvent, SdkTombstone, SdkUserReplay,
+    ResultSubtype, SdkAssistantMessage, SdkMessage, SdkResult, SdkStreamEvent, SdkTombstone,
+    SdkUserReplay, UsageTracking,
 };
+use serial_test::serial;
 use serde_json::json;
 fn stream_event(event: StreamEvent) -> SdkMessage {
     SdkMessage::StreamEvent(SdkStreamEvent {
@@ -31,6 +38,54 @@ fn last_assistant_blocks(app: &App) -> &[ContentBlock] {
     match app.messages().last().expect("message exists") {
         Message::Assistant(assistant) => &assistant.content,
         other => panic!("expected assistant message, got {:?}", other),
+    }
+}
+
+struct FeatureGuard;
+
+impl FeatureGuard {
+    fn set(flags: FeatureFlags) -> Self {
+        features::set_runtime_override(flags);
+        Self
+    }
+}
+
+impl Drop for FeatureGuard {
+    fn drop(&mut self) {
+        features::clear_runtime_override();
+    }
+}
+
+struct SkillRegistryGuard;
+
+impl SkillRegistryGuard {
+    fn new(skills: Vec<SkillDefinition>) -> Self {
+        allthecodes_skills::clear_skills();
+        for skill in skills {
+            allthecodes_skills::register_skill(skill);
+        }
+        Self
+    }
+}
+
+impl Drop for SkillRegistryGuard {
+    fn drop(&mut self) {
+        allthecodes_skills::clear_skills();
+    }
+}
+
+fn make_skill(name: &str, description: &str) -> SkillDefinition {
+    SkillDefinition {
+        name: name.to_string(),
+        source: SkillSource::User,
+        base_dir: None,
+        frontmatter: SkillFrontmatter {
+            name: Some(name.to_string()),
+            description: description.to_string(),
+            when_to_use: Some(format!("Use {name} locally")),
+            ..Default::default()
+        },
+        prompt_body: "local prompt body".to_string(),
     }
 }
 
@@ -436,6 +491,73 @@ fn tui_tool_progress_updates_existing_progress_message() {
     assert_eq!(
         progress.data["message"],
         "Bash running 3s; 2 lines; hello world"
+    );
+}
+
+#[test]
+#[serial]
+fn tui_suggestions_include_turn_zero_skill_discovery_tip() {
+    let mut flags = FeatureFlags::all_disabled();
+    flags.proactive = true;
+    flags.experimental_skill_search = true;
+    let _features = FeatureGuard::set(flags);
+    let _skills = SkillRegistryGuard::new(vec![make_skill(
+        "rust-review",
+        "Review Rust code without remote fetch",
+    )]);
+    collect_skill_discovery_prefetch(start_skill_discovery_prefetch(
+        SkillPrefetchContext {
+            session_id: "test-session".to_string(),
+            query: "rust".to_string(),
+        },
+    ));
+    let mut app = App::new();
+    app.set_session_id("test-session".to_string());
+    app.add_message(create_user_message("I need help with Rust code"));
+    app.add_message(Message::Assistant(
+        allthecodes_types::message::AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: now_ts(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "I can help inspect the implementation.".to_string(),
+            }],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        },
+    ));
+    let mut state = StreamingState::new();
+
+    handle_sdk_message(
+        &mut app,
+        SdkMessage::Result(SdkResult {
+            subtype: ResultSubtype::Success,
+            is_error: false,
+            duration_ms: 0,
+            duration_api_ms: 0,
+            num_turns: 1,
+            result: "ok".to_string(),
+            stop_reason: Some("end_turn".to_string()),
+            session_id: "test-session".to_string(),
+            total_cost_usd: 0.0,
+            usage: UsageTracking::default(),
+            permission_denials: vec![],
+            structured_output: None,
+            uuid: uuid::Uuid::new_v4(),
+            errors: vec![],
+        }),
+        &mut state,
+    );
+
+    assert!(
+        app.suggestions()
+            .unwrap_or_default()
+            .iter()
+            .any(|suggestion| suggestion.text.contains("/skills rust-review")),
+        "TUI suggestions should include turn-zero skill discovery"
     );
 }
 

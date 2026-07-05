@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ui::better_view_panel::{plain_row, selected_row, BetterViewPanel};
 use crate::ui::command_surface::{cycle_index, CommandSurfaceOutcome};
@@ -67,7 +67,7 @@ impl SkillsSurface {
             .sections(vec!["All skills".to_string()], 0)
             .detail_title("Skill details")
             .detail_lines(detail_lines)
-            .footer("Type filter | Backspace edit | Up/Down skill | Enter details | Esc close")
+            .footer("Type filter | Ctrl+S search | Up/Down skill | Enter details | Esc close")
             .render()
     }
 
@@ -85,6 +85,12 @@ impl SkillsSurface {
                 .selected_item()
                 .map(|item| CommandSurfaceOutcome::Submit(format!("/skills {}", item.name)))
                 .unwrap_or(CommandSurfaceOutcome::None),
+            KeyCode::Char('s')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !self.filter.trim().is_empty() =>
+            {
+                CommandSurfaceOutcome::Submit(format!("/skills search {}", self.filter.trim()))
+            }
             KeyCode::Backspace => {
                 self.filter.pop();
                 self.selected_index = 0;

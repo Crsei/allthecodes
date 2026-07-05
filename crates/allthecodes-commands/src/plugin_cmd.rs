@@ -21,6 +21,7 @@
 //! - `/plugin uninstall <plugin-id>`      — drop from installed_plugins.json
 //! - `/plugin uninstall <id> --purge`     — also delete the cache dir
 //! - `/plugin install <source>`           — install plugin from marketplace/source
+//! - `/plugin search <query>`             — search installed/active/cache plugins
 //! - `/plugin marketplace [list|refresh|search <q>]` — browse/refresh marketplace
 //! - `/plugin update [id]`                — update plugin(s)
 //! - `/plugin validate [id]`              — validate installed plugin(s)
@@ -30,7 +31,9 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use std::sync::{OnceLock, RwLock};
 
-use crate::{CommandContext, CommandHandler, CommandResult};
+use crate::{
+    search_format::format_discovery_search_results, CommandContext, CommandHandler, CommandResult,
+};
 use allthecodes_plugins::{PluginEntry, PluginStatus};
 
 #[derive(Clone, Copy)]
@@ -107,6 +110,14 @@ impl CommandHandler for PluginHandler {
                 let scope = parts.get(2).copied();
                 handle_install(source, scope)
             }
+            Some("search") => {
+                let query = args
+                    .trim()
+                    .strip_prefix("search")
+                    .map(str::trim)
+                    .unwrap_or_default();
+                handle_search(query)
+            }
             Some("marketplace") | Some("mp") => {
                 let sub = parts.get(1).copied().unwrap_or("list");
                 match sub {
@@ -156,6 +167,7 @@ fn usage_block() -> &'static str {
        /plugin uninstall <plugin-id>    -- remove from installed_plugins.json\n  \
        /plugin uninstall <id> --purge   -- also delete the cache directory\n  \
        /plugin install <source>         -- install plugin from source/marketplace\n  \
+       /plugin search <query>           -- search installed/active/marketplace-cache plugins\n  \
        /plugin marketplace              -- list marketplace sources\n  \
        /plugin marketplace refresh      -- refresh marketplace cache\n  \
        /plugin marketplace search <q>   -- search marketplace\n  \
@@ -516,6 +528,46 @@ fn handle_install(source: &str, scope: Option<&str>) -> Result<CommandResult> {
     }
 }
 
+fn handle_search(query: &str) -> Result<CommandResult> {
+    if query.trim().is_empty() {
+        return Ok(CommandResult::Output(
+            "Usage: /plugin search <query>".to_string(),
+        ));
+    }
+
+    match allthecodes_tools::discovery_search::run_plugin_search(
+        allthecodes_tools::discovery_search::DiscoverySearchInput {
+            query: query.to_string(),
+            source_filter: None,
+            max_results: 10,
+            include_summaries: true,
+        },
+    ) {
+        Ok(output) => {
+            let mut notes = vec![
+                "Use /plugin status for installed/enabled/active state.",
+                "Use ToolSearch source=plugin for exact callable tool schemas.",
+            ];
+            if let Some(preview) = output.display_preview.as_deref() {
+                notes.push(preview);
+            }
+            let results = serde_json::from_value::<Vec<
+                allthecodes_tools::discovery_search::DiscoverySearchResult,
+            >>(output.data["results"].clone())
+            .unwrap_or_default();
+            Ok(CommandResult::Output(format_discovery_search_results(
+                "Plugin search results",
+                query,
+                &results,
+                &notes,
+            )))
+        }
+        Err(error) => Ok(CommandResult::Output(format!(
+            "Plugin search failed: {error}"
+        ))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Marketplace
 // ---------------------------------------------------------------------------
@@ -648,6 +700,10 @@ mod tests {
     use super::*;
     use allthecodes_bootstrap::SessionId;
     use allthecodes_plugins::{PluginEntry, PluginSource, PluginStatus};
+    use allthecodes_tools::discovery_search::{
+        install_discovery_search_runtime, DiscoveryNextAction, DiscoveryResultKind,
+        DiscoverySearchResult, DiscoverySearchRuntime, DiscoveryStatusSummary,
+    };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
 
@@ -682,6 +738,21 @@ mod tests {
             mcp_servers: vec![],
             installed_at: None,
             updated_at: None,
+        }
+    }
+
+    struct DiscoveryRuntimeGuard;
+
+    impl DiscoveryRuntimeGuard {
+        fn install(runtime: DiscoverySearchRuntime) -> Self {
+            install_discovery_search_runtime(runtime);
+            Self
+        }
+    }
+
+    impl Drop for DiscoveryRuntimeGuard {
+        fn drop(&mut self) {
+            install_discovery_search_runtime(DiscoverySearchRuntime::new());
         }
     }
 
@@ -903,6 +974,59 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("Usage: /plugin uninstall"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn plugin_search_outputs_reasons_actions_and_schema_boundary() {
+        let _runtime = DiscoveryRuntimeGuard::install(
+            DiscoverySearchRuntime::new().with_plugin_items_provider(|| {
+                vec![
+                    DiscoverySearchResult::new(DiscoveryResultKind::Plugin, "rust-tools")
+                        .with_id("rust-tools")
+                        .with_source("active")
+                        .with_description("Rust formatting and cargo diagnostics")
+                        .with_status(DiscoveryStatusSummary::new("installed"))
+                        .with_tools(["plugin__rust_tools__fmt"])
+                        .with_skills(["rust-review"])
+                        .with_next_action(DiscoveryNextAction::new(
+                            "Inspect plugin",
+                            "/plugin info rust-tools",
+                        )),
+                ]
+            }),
+        );
+        let handler = PluginHandler;
+        let mut ctx = test_ctx();
+
+        let result = handler.execute("search rust", &mut ctx).await.unwrap();
+
+        match result {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Plugin search results for 'rust'"), "{text}");
+                assert!(text.contains("rust-tools"), "{text}");
+                assert!(text.contains("matches:"), "{text}");
+                assert!(text.contains("Next:"), "{text}");
+                assert!(text.contains("/plugin info rust-tools"), "{text}");
+                assert!(text.contains("ToolSearch"), "{text}");
+            }
+            _ => panic!("Expected Output result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_search_empty_query_shows_usage() {
+        let handler = PluginHandler;
+        let mut ctx = test_ctx();
+
+        let result = handler.execute("search", &mut ctx).await.unwrap();
+
+        match result {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Usage: /plugin search <query>"), "{text}");
+            }
+            _ => panic!("Expected Output result"),
+        }
     }
 
     /// Synchronously run a handler's async execute — used inside a blocking

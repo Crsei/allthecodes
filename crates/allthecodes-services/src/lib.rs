@@ -13,6 +13,8 @@ pub mod scheduler;
 pub mod scheduler_tools;
 pub mod session_analytics;
 pub mod session_memory;
+pub mod search_tips;
+pub mod skill_search_prefetch;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 pub mod tool_use_summary;

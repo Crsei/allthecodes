@@ -5,6 +5,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::search_tips::{SearchTipCandidate, SearchTipContext, SearchTipService};
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -67,6 +69,7 @@ pub struct PromptSuggestionService {
     enabled: bool,
     last_generation_time: Option<Instant>,
     min_interval: Duration,
+    search_tip_service: SearchTipService,
 }
 
 impl PromptSuggestionService {
@@ -76,6 +79,7 @@ impl PromptSuggestionService {
             enabled,
             last_generation_time: None,
             min_interval: Duration::from_secs(30),
+            search_tip_service: SearchTipService::new(),
         }
     }
 
@@ -213,6 +217,46 @@ impl PromptSuggestionService {
             Some(suggestions)
         }
     }
+
+    /// Generate ordinary prompt suggestions and append search-discovery tips.
+    ///
+    /// Search tips have their own feature gates and cooldowns; the outer
+    /// service's `enabled` flag still suppresses the combined output.
+    pub fn try_generate_with_search_tips(
+        &mut self,
+        messages_summary: &str,
+        tool_names: &[String],
+        search_context: Option<SearchTipContext>,
+        search_candidates: &[SearchTipCandidate],
+    ) -> Option<Vec<PromptSuggestion>> {
+        if !self.enabled {
+            return None;
+        }
+
+        let mut suggestions = self
+            .try_generate(messages_summary, tool_names)
+            .unwrap_or_default();
+
+        if let Some(context) = search_context {
+            if let Some(mut tips) = self
+                .search_tip_service
+                .try_generate(context, search_candidates)
+            {
+                suggestions.append(&mut tips);
+            }
+        }
+
+        if suggestions.is_empty() {
+            None
+        } else {
+            suggestions.sort_by(|a, b| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            Some(suggestions)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +266,24 @@ impl PromptSuggestionService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search_tips::{SearchTipCandidate, SearchTipContext, SearchTipKind};
+    use allthecodes_config::features::{self, FeatureFlags};
+    use serial_test::serial;
+
+    struct FeatureGuard;
+
+    impl FeatureGuard {
+        fn set(flags: FeatureFlags) -> Self {
+            features::set_runtime_override(flags);
+            Self
+        }
+    }
+
+    impl Drop for FeatureGuard {
+        fn drop(&mut self) {
+            features::clear_runtime_override();
+        }
+    }
 
     #[test]
     fn disabled_service_suppresses() {
@@ -397,5 +459,38 @@ mod tests {
         assert!(enabled.should_enable());
         let disabled = PromptSuggestionService::new(false);
         assert!(!disabled.should_enable());
+    }
+
+    #[test]
+    #[serial]
+    fn search_tip_candidates_are_merged_with_prompt_suggestions() {
+        let mut flags = FeatureFlags::all_disabled();
+        flags.proactive = true;
+        let _features = FeatureGuard::set(flags);
+        let mut svc = PromptSuggestionService::new(true);
+        let candidates = vec![SearchTipCandidate {
+            kind: SearchTipKind::Skill,
+            id: "rust-review".to_string(),
+            label: "rust-review".to_string(),
+            description: "Review Rust code".to_string(),
+            confidence: 0.91,
+            next_action: "/skills rust-review".to_string(),
+        }];
+
+        let suggestions = svc
+            .try_generate_with_search_tips(
+                "no ordinary heuristic should fire",
+                &[],
+                Some(SearchTipContext {
+                    session_id: "session-search-tip".to_string(),
+                    now_ms: 1_000,
+                }),
+                &candidates,
+            )
+            .expect("search tip should produce a prompt suggestion");
+
+        assert!(suggestions
+            .iter()
+            .any(|suggestion| suggestion.text.contains("/skills rust-review")));
     }
 }

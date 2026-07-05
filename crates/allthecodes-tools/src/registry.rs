@@ -208,6 +208,7 @@ pub fn allthecodes_tools_base_tools() -> Tools {
     tools.push(Arc::new(SleepTool));
     tools.extend(crate::tasks::tools());
     tools.extend(crate::deferred_tools::tools());
+    tools.extend(crate::discovery_search::tools());
     tools.extend(crate::product::tools());
     tools.extend(crate::skills::tools());
     tools.extend(crate::media::tools());

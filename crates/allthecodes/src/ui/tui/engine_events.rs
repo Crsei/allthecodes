@@ -5,6 +5,10 @@ use allthecodes_engine::types::config::{QuerySource, SubmitMessageOverrides};
 use allthecodes_engine::types::tool::ToolProgress;
 use allthecodes_services::chat_modes;
 use allthecodes_services::prompt_suggestion::PromptSuggestionService;
+use allthecodes_services::search_tips::{SearchTipCandidate, SearchTipContext};
+use allthecodes_services::skill_search_prefetch::{
+    candidates_from_prefetch, ensure_turn_zero_skill_discovery,
+};
 use allthecodes_types::callbacks::{
     AskUserRequestPayload, PermissionEventPayload, PermissionRequestPayload,
     PermissionResponsePayload,
@@ -669,9 +673,31 @@ fn generate_suggestions(app: &mut App) {
         .collect::<Vec<_>>()
         .join("\n");
 
-    if let Some(suggestions) = svc.try_generate(&summary, &tool_names) {
+    let session_id = app.session_id().to_string();
+    let search_candidates = skill_prefetch_candidates_for_session(&session_id);
+    let search_context = (!search_candidates.is_empty()).then(|| SearchTipContext {
+        session_id,
+        now_ms: current_time_ms(),
+    });
+
+    if let Some(suggestions) =
+        svc.try_generate_with_search_tips(&summary, &tool_names, search_context, &search_candidates)
+    {
         app.set_suggestions(suggestions);
     }
+}
+
+fn skill_prefetch_candidates_for_session(session_id: &str) -> Vec<SearchTipCandidate> {
+    if session_id.is_empty() {
+        return Vec::new();
+    }
+
+    let result = ensure_turn_zero_skill_discovery(session_id, "");
+    candidates_from_prefetch(&result)
+}
+
+fn current_time_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
 /// Current UTC timestamp in seconds.

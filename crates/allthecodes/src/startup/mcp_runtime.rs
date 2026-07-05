@@ -116,21 +116,25 @@ impl McpRuntimeBuilder {
                 tool_catalog.tools.extend(mcp_tools);
             }
 
-            let (mcp_skills, mcp_skill_diagnostics) =
-                allthecodes_engine::mcp_tool_adapter::discover_mcp_skill_resources_for_context(
-                    &mgr,
-                    &startup_context,
-                )
-                .await;
-            if !mcp_skills.is_empty() || !mcp_skill_diagnostics.is_empty() {
-                let report = allthecodes_skills::register_skills_resolved_with_diagnostics(
-                    mcp_skills,
-                    mcp_skill_diagnostics,
-                    allthecodes_skills::SkillLoadOptions::for_app_version(env!(
-                        "CARGO_PKG_VERSION"
-                    )),
-                );
-                log_skill_report("mcp", &report);
+            if allthecodes_config::features::enabled(
+                allthecodes_config::features::Feature::McpSkills,
+            ) {
+                let (mcp_skills, mcp_skill_diagnostics) =
+                    allthecodes_engine::mcp_tool_adapter::discover_mcp_skill_resources_for_context(
+                        &mgr,
+                        &startup_context,
+                    )
+                    .await;
+                if !mcp_skills.is_empty() || !mcp_skill_diagnostics.is_empty() {
+                    let report = allthecodes_skills::register_skills_resolved_with_diagnostics(
+                        mcp_skills,
+                        mcp_skill_diagnostics,
+                        allthecodes_skills::SkillLoadOptions::for_app_version(env!(
+                            "CARGO_PKG_VERSION"
+                        )),
+                    );
+                    log_skill_report("mcp", &report);
+                }
             }
         }
 

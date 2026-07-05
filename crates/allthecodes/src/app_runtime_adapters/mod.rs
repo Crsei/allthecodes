@@ -434,6 +434,47 @@ impl HeadlessRuntimeHost for RootHeadlessHost {
     }
 }
 
+fn schedule_mcp_skill_resource_refresh(server_name: String) {
+    if !allthecodes_config::features::enabled(allthecodes_config::features::Feature::McpSkills) {
+        return;
+    }
+    tokio::spawn(async move {
+        let Some(manager) = allthecodes_mcp::runtime::current_manager() else {
+            return;
+        };
+        let project_path = std::env::current_dir()
+            .ok()
+            .map(|cwd| allthecodes_mcp::bindings::canonical_workspace_root(&cwd));
+        let binding_context = allthecodes_mcp::McpBindingContext::startup(project_path);
+        let manager = manager.lock().await;
+        let (skills, diagnostics) =
+            allthecodes_engine::mcp_tool_adapter::discover_mcp_skill_resources_for_server_context(
+                &manager,
+                &binding_context,
+                &server_name,
+            )
+            .await;
+        drop(manager);
+
+        let report = allthecodes_skills::replace_mcp_skills_for_server(
+            &server_name,
+            skills,
+            diagnostics,
+            allthecodes_skills::SkillLoadOptions::for_app_version(env!("CARGO_PKG_VERSION")),
+        );
+        if report.error_count() > 0 || report.warning_count() > 0 {
+            tracing::warn!(
+                server = %server_name,
+                loaded = report.loaded,
+                skipped = report.skipped,
+                errors = report.error_count(),
+                warnings = report.warning_count(),
+                "MCP skill resource refresh completed with diagnostics"
+            );
+        }
+    });
+}
+
 fn install_root_subsystem_event_sinks(event_tx: tokio::sync::broadcast::Sender<SubsystemEvent>) {
     let (lsp_tx, mut lsp_rx) = tokio::sync::broadcast::channel(128);
     allthecodes_lsp_service::set_event_sender(lsp_tx);
@@ -497,21 +538,29 @@ fn install_root_subsystem_event_sinks(event_tx: tokio::sync::broadcast::Sender<S
             allthecodes_mcp::McpSubsystemEvent::ResourcesDiscovered {
                 server_name,
                 resources,
-            } => SubsystemEvent::Mcp(
-                allthecodes_ipc_protocol::subsystem_events::McpEvent::ResourcesDiscovered {
-                    server_name,
-                    resources: resources
-                        .into_iter()
-                        .map(
-                            |r| allthecodes_ipc_protocol::subsystem_types::McpResourceInfo {
-                                uri: r.uri,
-                                name: Some(r.name),
-                                mime_type: r.mime_type,
-                            },
-                        )
-                        .collect(),
-                },
-            ),
+            } => {
+                if resources
+                    .iter()
+                    .any(|resource| resource.uri.starts_with("skill://"))
+                {
+                    schedule_mcp_skill_resource_refresh(server_name.clone());
+                }
+                SubsystemEvent::Mcp(
+                    allthecodes_ipc_protocol::subsystem_events::McpEvent::ResourcesDiscovered {
+                        server_name,
+                        resources: resources
+                            .into_iter()
+                            .map(
+                                |r| allthecodes_ipc_protocol::subsystem_types::McpResourceInfo {
+                                    uri: r.uri,
+                                    name: Some(r.name),
+                                    mime_type: r.mime_type,
+                                },
+                            )
+                            .collect(),
+                    },
+                )
+            }
             allthecodes_mcp::McpSubsystemEvent::ChannelNotification {
                 server_name,
                 content,

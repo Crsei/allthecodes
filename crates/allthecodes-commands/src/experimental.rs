@@ -108,6 +108,10 @@ mod tests {
         assert!(text.contains("ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS"));
         assert!(text.contains("coordinator"));
         assert!(text.contains("ALLTHECODES_COORDINATOR_MODE"));
+        assert!(text.contains("mcp_skills"));
+        assert!(text.contains("FEATURE_MCP_SKILLS"));
+        assert!(text.contains("experimental_skill_search"));
+        assert!(text.contains("FEATURE_EXPERIMENTAL_SKILL_SEARCH"));
     }
 
     #[test]

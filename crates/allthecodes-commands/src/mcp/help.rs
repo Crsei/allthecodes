@@ -3,6 +3,7 @@ pub(super) fn help_text() -> String {
      Usage:\n  \
        /mcp list                       list discovered MCP servers grouped by scope\n  \
        /mcp status                     show live connection status\n  \
+       /mcp search <query>             search MCP servers/resources/capabilities\n  \
        /mcp add <name> [flags]         create a new stdio config (user scope by default)\n  \
        /mcp edit <name> [flags]        update an existing config (auto-detects scope)\n  \
        /mcp remove <name> [--scope=..] delete a config from an editable scope\n  \
@@ -41,6 +42,9 @@ pub(super) fn help_text() -> String {
      Discovery sources (low -> high precedence):\n\
      - plugin-contributed MCP servers\n\
      - ~/.allthecodes/settings.json (user scope)\n\
-     - .allthecodes/settings.json in the current project (project scope)\n"
+     - .allthecodes/settings.json in the current project (project scope)\n\n\
+     Search boundary:\n\
+     - /mcp search returns concise discovery summaries, not callable schemas\n\
+     - /mcp status shows health; ToolSearch source=mcp returns exact tool schemas\n"
         .to_string()
 }

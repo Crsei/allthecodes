@@ -3,6 +3,10 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use allthecodes_config::features::{self, Feature};
+use allthecodes_services::skill_search_prefetch::{
+    collect_skill_discovery_prefetch, start_skill_discovery_prefetch, SkillPrefetchContext,
+};
 use chrono::{DateTime, Local};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
@@ -75,26 +79,51 @@ pub fn build_tick_payload(now: DateTime<Local>, terminal_focus: bool) -> Result<
             format!("\n<daily_log>\n{}</daily_log>", today_log)
         },
     );
+    let mut proactive = json!({
+        "time": now.to_rfc3339(),
+        "terminal_focus": terminal_focus,
+    });
+    if let Some(skill_discovery) = skill_discovery_tick_summary() {
+        if let Some(proactive) = proactive.as_object_mut() {
+            proactive.insert("skill_discovery".to_string(), skill_discovery);
+        }
+    }
 
     Ok(json!({
         "text": tick_prompt,
         "message_id": format!("proactive-tick-{}", now.timestamp_millis()),
         "source": "proactive_tick",
         "terminal_focus": terminal_focus,
-        "proactive": {
-            "time": now.to_rfc3339(),
-            "terminal_focus": terminal_focus,
+        "proactive": proactive,
+    }))
+}
+
+fn skill_discovery_tick_summary() -> Option<Value> {
+    if !features::enabled(Feature::ExperimentalSkillSearch) {
+        return None;
+    }
+
+    let result = collect_skill_discovery_prefetch(start_skill_discovery_prefetch(
+        SkillPrefetchContext {
+            session_id: ASSISTANT_WORKER_ID.to_string(),
+            query: String::new(),
         },
+    ));
+    Some(json!({
+        "count": result.skills.len(),
+        "remote_state": result.remote_state,
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allthecodes_config::features::{self, FeatureFlags};
+    use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
     use crate::process_state::DaemonSleepState;
     use crate::protocol::DaemonCommandKind;
     use crate::supervisor::ASSISTANT_WORKER_ID;
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
     use serial_test::serial;
 
     struct EnvGuard {
@@ -116,6 +145,54 @@ mod tests {
                 Some(value) => std::env::set_var(self.key, value),
                 None => std::env::remove_var(self.key),
             }
+        }
+    }
+
+    struct FeatureGuard;
+
+    impl FeatureGuard {
+        fn set(flags: FeatureFlags) -> Self {
+            features::set_runtime_override(flags);
+            Self
+        }
+    }
+
+    impl Drop for FeatureGuard {
+        fn drop(&mut self) {
+            features::clear_runtime_override();
+        }
+    }
+
+    struct SkillRegistryGuard;
+
+    impl SkillRegistryGuard {
+        fn new(skills: Vec<SkillDefinition>) -> Self {
+            allthecodes_skills::clear_skills();
+            for skill in skills {
+                allthecodes_skills::register_skill(skill);
+            }
+            Self
+        }
+    }
+
+    impl Drop for SkillRegistryGuard {
+        fn drop(&mut self) {
+            allthecodes_skills::clear_skills();
+        }
+    }
+
+    fn make_skill(name: &str, description: &str) -> SkillDefinition {
+        SkillDefinition {
+            name: name.to_string(),
+            source: SkillSource::User,
+            base_dir: None,
+            frontmatter: SkillFrontmatter {
+                name: Some(name.to_string()),
+                description: description.to_string(),
+                when_to_use: Some(format!("Use {name} locally")),
+                ..Default::default()
+            },
+            prompt_body: "local prompt body".to_string(),
         }
     }
 
@@ -171,5 +248,31 @@ mod tests {
             .read_worker_commands(ASSISTANT_WORKER_ID)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn proactive_tick_payload_includes_skill_discovery_state_when_enabled() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let mut flags = FeatureFlags::all_disabled();
+        flags.experimental_skill_search = true;
+        let _features = FeatureGuard::set(flags);
+        let _skills = SkillRegistryGuard::new(vec![make_skill(
+            "rust-review",
+            "Review Rust code without remote fetch",
+        )]);
+        let now = Local.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+
+        let payload = build_tick_payload(now, true).expect("payload");
+
+        assert_eq!(
+            payload["proactive"]["skill_discovery"]["remote_state"],
+            "deferred"
+        );
+        assert_eq!(payload["proactive"]["skill_discovery"]["count"], 1);
+        let body = serde_json::to_string(&payload).unwrap();
+        assert!(!body.contains("http://"));
+        assert!(!body.contains("https://"));
     }
 }

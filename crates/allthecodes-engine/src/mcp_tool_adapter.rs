@@ -356,16 +356,48 @@ pub async fn discover_mcp_skill_resources_for_context(
     Vec<crate::skills::SkillDefinition>,
     Vec<crate::skills::SkillDiagnostic>,
 ) {
+    discover_mcp_skill_resources_for_context_and_server(manager, binding_context, None).await
+}
+
+pub async fn discover_mcp_skill_resources_for_server_context(
+    manager: &McpManager,
+    binding_context: &McpBindingContext,
+    server_name: &str,
+) -> (
+    Vec<crate::skills::SkillDefinition>,
+    Vec<crate::skills::SkillDiagnostic>,
+) {
+    discover_mcp_skill_resources_for_context_and_server(manager, binding_context, Some(server_name))
+        .await
+}
+
+async fn discover_mcp_skill_resources_for_context_and_server(
+    manager: &McpManager,
+    binding_context: &McpBindingContext,
+    server: Option<&str>,
+) -> (
+    Vec<crate::skills::SkillDefinition>,
+    Vec<crate::skills::SkillDiagnostic>,
+) {
+    if !allthecodes_config::features::enabled(allthecodes_config::features::Feature::McpSkills) {
+        return (Vec::new(), Vec::new());
+    }
+
     let mut skills = Vec::new();
     let mut diagnostics = Vec::new();
 
-    let resources = match manager.list_resources_for_context(binding_context, None) {
+    let resources = match manager.list_resources_for_context(binding_context, server) {
         Ok(resources) => resources,
         Err(err) => {
-            diagnostics.push(crate::skills::SkillDiagnostic::warning(
+            let mut diagnostic = crate::skills::SkillDiagnostic::warning(
                 "mcp-skill-list-failed",
                 format!("Failed to list MCP skill resources: {err}"),
-            ));
+            );
+            if let Some(server) = server {
+                diagnostic =
+                    diagnostic.with_source(crate::skills::SkillSource::Mcp(server.to_string()));
+            }
+            diagnostics.push(diagnostic);
             return (skills, diagnostics);
         }
     };
@@ -375,12 +407,7 @@ pub async fn discover_mcp_skill_resources_for_context(
         .filter(|resource| resource.uri.starts_with(MCP_SKILL_URI_PREFIX))
     {
         let server_name = resource.server.clone();
-        let raw_name = resource.uri.trim_start_matches(MCP_SKILL_URI_PREFIX);
-        let skill_name = format!(
-            "mcp__{}__{}",
-            normalize_mcp_skill_component(&server_name),
-            normalize_mcp_skill_component(raw_name)
-        );
+        let skill_name = mcp_skill_resource_name(&server_name, &resource.uri);
 
         let read = match manager
             .read_resource_for_context(binding_context, &server_name, &resource.uri)
@@ -425,11 +452,8 @@ pub async fn discover_mcp_skill_resources_for_context(
             continue;
         }
 
-        let (skill, parse_diagnostics) = crate::skills::loader::load_skill_from_content(
-            &text,
-            &skill_name,
-            crate::skills::SkillSource::Mcp(server_name),
-        );
+        let (skill, parse_diagnostics) =
+            mcp_skill_from_resource_text(&server_name, &resource.uri, &text);
         skills.push(skill);
         diagnostics.extend(parse_diagnostics);
     }
@@ -465,6 +489,30 @@ pub fn mcp_binding_context_for_tool_use(ctx: &ToolUseContext) -> McpBindingConte
     }
 }
 
+fn mcp_skill_from_resource_text(
+    server_name: &str,
+    uri: &str,
+    text: &str,
+) -> (
+    crate::skills::SkillDefinition,
+    Vec<crate::skills::SkillDiagnostic>,
+) {
+    crate::skills::loader::load_skill_from_content(
+        text,
+        &mcp_skill_resource_name(server_name, uri),
+        crate::skills::SkillSource::Mcp(server_name.to_string()),
+    )
+}
+
+fn mcp_skill_resource_name(server_name: &str, uri: &str) -> String {
+    let raw_name = uri.trim_start_matches(MCP_SKILL_URI_PREFIX);
+    format!(
+        "mcp__{}__{}",
+        normalize_mcp_skill_component(server_name),
+        normalize_mcp_skill_component(raw_name)
+    )
+}
+
 fn normalize_mcp_skill_component(value: &str) -> String {
     let mut out = String::new();
     let trimmed = value.trim_matches(['/', '\\', ' ', '\t', '\r', '\n']);
@@ -496,6 +544,134 @@ fn normalize_mcp_skill_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FeatureOverrideGuard;
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            allthecodes_config::features::clear_runtime_override();
+        }
+    }
+
+    fn mcp_test_config(name: &str) -> allthecodes_mcp::McpServerConfig {
+        allthecodes_mcp::McpServerConfig {
+            name: name.to_string(),
+            transport: "stdio".to_string(),
+            command: Some("dummy".to_string()),
+            args: None,
+            url: None,
+            headers: None,
+            oauth: None,
+            env: None,
+            browser_mcp: None,
+            disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
+        }
+    }
+
+    fn skill_resource_client(
+        server: &str,
+        supports_resources: bool,
+    ) -> allthecodes_mcp::client::McpClient {
+        let mut client = allthecodes_mcp::client::McpClient::new(mcp_test_config(server));
+        client.state = allthecodes_mcp::McpConnectionState::Connected;
+        client.resources = vec![allthecodes_mcp::McpResource {
+            uri: "skill://review/code".to_string(),
+            name: "Review Code".to_string(),
+            description: Some("Review code from MCP".to_string()),
+            mime_type: Some("text/markdown".to_string()),
+        }];
+        if supports_resources {
+            client.server_capabilities = allthecodes_mcp::ServerCapabilities {
+                resources: Some(json!({})),
+                ..Default::default()
+            };
+        }
+        client
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn discover_mcp_skill_resources_feature_disabled_skips_resource_reads() {
+        let mut flags = allthecodes_config::features::FeatureFlags::all_enabled();
+        flags.mcp_skills = false;
+        allthecodes_config::features::set_runtime_override(flags);
+        let _guard = FeatureOverrideGuard;
+        let mut manager = McpManager::new();
+        manager
+            .clients
+            .insert("alpha".to_string(), skill_resource_client("alpha", true));
+
+        let (skills, diagnostics) =
+            discover_mcp_skill_resources_for_context(&manager, &McpBindingContext::startup(None))
+                .await;
+
+        assert!(skills.is_empty());
+        assert!(diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn discover_mcp_skill_resources_skips_servers_without_resources_support() {
+        let mut flags = allthecodes_config::features::FeatureFlags::all_enabled();
+        flags.mcp_skills = true;
+        allthecodes_config::features::set_runtime_override(flags);
+        let _guard = FeatureOverrideGuard;
+        let mut manager = McpManager::new();
+        manager
+            .clients
+            .insert("alpha".to_string(), skill_resource_client("alpha", false));
+
+        let (skills, diagnostics) =
+            discover_mcp_skill_resources_for_context(&manager, &McpBindingContext::startup(None))
+                .await;
+
+        assert!(skills.is_empty());
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn mcp_skill_resource_text_loads_with_server_provenance() {
+        let (skill, diagnostics) = mcp_skill_from_resource_text(
+            "linear",
+            "skill://review/code",
+            "---\ndescription: Review Linear issues.\n---\nUse this with Linear context.",
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(skill.name, "mcp__linear__review_code");
+        assert_eq!(
+            skill.source,
+            allthecodes_skills::SkillSource::Mcp("linear".to_string())
+        );
+        assert_eq!(skill.frontmatter.description, "Review Linear issues.");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn discover_mcp_skill_resources_reports_read_failure_diagnostics() {
+        let mut flags = allthecodes_config::features::FeatureFlags::all_enabled();
+        flags.mcp_skills = true;
+        allthecodes_config::features::set_runtime_override(flags);
+        let _guard = FeatureOverrideGuard;
+        let mut manager = McpManager::new();
+        manager
+            .clients
+            .insert("alpha".to_string(), skill_resource_client("alpha", true));
+
+        let (skills, diagnostics) =
+            discover_mcp_skill_resources_for_context(&manager, &McpBindingContext::startup(None))
+                .await;
+
+        assert!(skills.is_empty());
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "mcp-skill-read-failed"
+                && diagnostic.source
+                    == Some(allthecodes_skills::SkillSource::Mcp("alpha".to_string()))
+        }));
+    }
 
     #[test]
     fn test_format_tool_call_result_text() {

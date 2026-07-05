@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use std::error::Error;
 use std::sync::{OnceLock, RwLock};
 
-use crate::{CommandContext, CommandHandler, CommandResult};
+use crate::{
+    search_format::format_discovery_search_results, CommandContext, CommandHandler, CommandResult,
+};
 
 pub struct SkillsHandler;
 
@@ -57,6 +59,10 @@ impl CommandHandler for SkillsHandler {
 
         if arg == "diagnostics" {
             return Ok(CommandResult::Output(format_diagnostics()));
+        }
+
+        if let Some(query) = search_query_arg(arg) {
+            return Ok(CommandResult::Output(handle_skill_search(query)));
         }
 
         let all = allthecodes_skills::get_all_skills();
@@ -159,6 +165,46 @@ impl CommandHandler for SkillsHandler {
         lines.push("Use /skills --sort <name|source|usage> to change sort order.".to_string());
 
         Ok(CommandResult::Output(lines.join("\n")))
+    }
+}
+
+fn search_query_arg(arg: &str) -> Option<&str> {
+    let trimmed = arg.trim();
+    if trimmed == "search" {
+        return Some("");
+    }
+    trimmed.strip_prefix("search ").map(str::trim)
+}
+
+fn handle_skill_search(query: &str) -> String {
+    if query.trim().is_empty() {
+        return "Usage: /skills search <query>".to_string();
+    }
+
+    match allthecodes_tools::skills::run_skill_search(
+        allthecodes_tools::discovery_search::DiscoverySearchInput {
+            query: query.to_string(),
+            source_filter: Some("all".to_string()),
+            max_results: 10,
+            include_summaries: true,
+        },
+    ) {
+        Ok(output) => {
+            let results = serde_json::from_value::<Vec<
+                allthecodes_tools::discovery_search::DiscoverySearchResult,
+            >>(output.data["results"].clone())
+            .unwrap_or_default();
+            format_discovery_search_results(
+                "Skill search results",
+                query,
+                &results,
+                &[
+                    "Use /skills <name> for exact skill details.",
+                    "Use SkillSearch for normalized local skill discovery metadata.",
+                ],
+            )
+        }
+        Err(error) => format!("Skill search failed: {error}"),
     }
 }
 
@@ -553,6 +599,7 @@ mod tests {
     use super::*;
     use allthecodes_bootstrap::SessionId;
     use allthecodes_engine::types::app_state::AppState;
+    use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
     use std::path::PathBuf;
 
     fn test_ctx() -> CommandContext {
@@ -583,6 +630,40 @@ mod tests {
                 Some(value) => std::env::set_var(self.key, value),
                 None => std::env::remove_var(self.key),
             }
+        }
+    }
+
+    struct SkillRegistryGuard;
+
+    impl SkillRegistryGuard {
+        fn new(skills: Vec<SkillDefinition>) -> Self {
+            allthecodes_skills::clear_skills();
+            for skill in skills {
+                allthecodes_skills::register_skill(skill);
+            }
+            Self
+        }
+    }
+
+    impl Drop for SkillRegistryGuard {
+        fn drop(&mut self) {
+            allthecodes_skills::clear_skills();
+        }
+    }
+
+    fn make_skill(name: &str, description: &str) -> SkillDefinition {
+        SkillDefinition {
+            name: name.to_string(),
+            source: SkillSource::User,
+            base_dir: None,
+            frontmatter: SkillFrontmatter {
+                name: Some(name.to_string()),
+                description: description.to_string(),
+                when_to_use: Some("Use this skill for focused review workflows".to_string()),
+                user_invocable: true,
+                ..Default::default()
+            },
+            prompt_body: format!("Prompt body for {name}"),
         }
     }
 
@@ -620,6 +701,46 @@ mod tests {
                 assert!(
                     text.contains("Skill Diagnostics") || text.contains("No skill diagnostics")
                 );
+            }
+            _ => panic!("Expected Output"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_skills_search_outputs_reasons_and_next_action() {
+        let _skills = SkillRegistryGuard::new(vec![make_skill(
+            "rust-review",
+            "Review Rust code and cargo test failures",
+        )]);
+        let handler = SkillsHandler;
+        let mut ctx = test_ctx();
+
+        let result = handler.execute("search rust", &mut ctx).await.unwrap();
+
+        match result {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Skill search results for 'rust'"), "{text}");
+                assert!(text.contains("rust-review"), "{text}");
+                assert!(text.contains("matches:"), "{text}");
+                assert!(text.contains("Next:"), "{text}");
+                assert!(text.contains("/skills rust-review"), "{text}");
+                assert!(text.contains("SkillSearch"), "{text}");
+            }
+            _ => panic!("Expected Output"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_skills_search_empty_query_shows_usage() {
+        let handler = SkillsHandler;
+        let mut ctx = test_ctx();
+
+        let result = handler.execute("search", &mut ctx).await.unwrap();
+
+        match result {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Usage: /skills search <query>"), "{text}");
             }
             _ => panic!("Expected Output"),
         }

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::ui::better_view_panel::BetterViewPanel;
 use crate::ui::command_surface::CommandSurfaceOutcome;
@@ -9,7 +9,7 @@ use allthecodes_plugins::{PluginEntry, PluginSource, PluginStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginSurface {
-    picker: SelectionSurface,
+    pub(crate) picker: SelectionSurface,
 }
 
 impl PluginSurface {
@@ -24,7 +24,7 @@ impl PluginSurface {
             .summary("Installed, enabled, active, and error state")
             .detail_title("Plugin selector")
             .detail_lines(self.picker.render_lines(14))
-            .footer("Enter info | e enable | d disable | u uninstall | r reload | Esc close")
+            .footer("Enter info | Ctrl+S search | e enable | d disable | u uninstall | r reload | Esc close")
             .render()
     }
 
@@ -34,6 +34,15 @@ impl PluginSurface {
         }
 
         match key.code {
+            KeyCode::Char('s')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !self.picker.filter.trim().is_empty() =>
+            {
+                CommandSurfaceOutcome::Submit(format!(
+                    "/plugin search {}",
+                    self.picker.filter.trim()
+                ))
+            }
             KeyCode::Char('e') => self.selected_plugin_command("enable"),
             KeyCode::Char('d') => self.selected_plugin_command("disable"),
             KeyCode::Char('u') => self

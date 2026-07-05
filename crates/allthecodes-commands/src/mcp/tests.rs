@@ -1,6 +1,10 @@
 use super::*;
 use allthecodes_bootstrap::SessionId;
 use allthecodes_engine::types::app_state::AppState;
+use allthecodes_tools::discovery_search::{
+    install_discovery_search_runtime, DiscoveryNextAction, DiscoveryResultKind,
+    DiscoverySearchResult, DiscoverySearchRuntime, DiscoveryStatusSummary, DiscoveryToolSummary,
+};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -60,6 +64,21 @@ impl RuntimeMcpGuard {
 impl Drop for RuntimeMcpGuard {
     fn drop(&mut self) {
         allthecodes_mcp::runtime::clear_for_tests();
+    }
+}
+
+struct DiscoveryRuntimeGuard;
+
+impl DiscoveryRuntimeGuard {
+    fn install(runtime: DiscoverySearchRuntime) -> Self {
+        install_discovery_search_runtime(runtime);
+        Self
+    }
+}
+
+impl Drop for DiscoveryRuntimeGuard {
+    fn drop(&mut self) {
+        install_discovery_search_runtime(DiscoverySearchRuntime::new());
     }
 }
 
@@ -535,6 +554,61 @@ async fn mcp_status_reports_server_list() {
                 "unexpected output: {}",
                 text
             );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn mcp_search_outputs_reasons_actions_and_status_boundary() {
+    let _runtime = DiscoveryRuntimeGuard::install(
+        DiscoverySearchRuntime::new().with_mcp_items_provider(|| {
+            vec![
+                DiscoverySearchResult::new(DiscoveryResultKind::McpCapability, "github pull requests")
+                    .with_server_name("github")
+                    .with_source("runtime")
+                    .with_description("Create and review pull requests through GitHub MCP")
+                    .with_status(DiscoveryStatusSummary::new("connected"))
+                    .with_tool_summaries([DiscoveryToolSummary::new(
+                        "mcp__github__create_pull_request",
+                        "Create a pull request",
+                    )])
+                    .with_next_action(DiscoveryNextAction::new(
+                        "Inspect callable schema",
+                        "ToolSearch source=mcp query=select:mcp__github__create_pull_request",
+                    )),
+            ]
+        }),
+    );
+    let handler = McpHandler;
+    let mut ctx = test_ctx(PathBuf::from("/tmp"));
+
+    let res = handler.execute("search github", &mut ctx).await.unwrap();
+
+    match res {
+        CommandResult::Output(text) => {
+            assert!(text.contains("MCP search results for 'github'"), "{text}");
+            assert!(text.contains("github pull requests"), "{text}");
+            assert!(text.contains("matches:"), "{text}");
+            assert!(text.contains("Next:"), "{text}");
+            assert!(text.contains("/mcp status"), "{text}");
+            assert!(text.contains("ToolSearch"), "{text}");
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[tokio::test]
+async fn mcp_search_empty_query_shows_usage() {
+    let handler = McpHandler;
+    let mut ctx = test_ctx(PathBuf::from("/tmp"));
+
+    let res = handler.execute("search", &mut ctx).await.unwrap();
+
+    match res {
+        CommandResult::Output(text) => {
+            assert!(text.contains("Usage: /mcp search <query>"), "{text}");
         }
         _ => panic!("expected Output"),
     }

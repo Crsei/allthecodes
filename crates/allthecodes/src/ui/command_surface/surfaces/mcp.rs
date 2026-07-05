@@ -19,7 +19,7 @@ use crate::ui::mcp::mcp_tool_detail_view::render_mcp_tool_detail_view;
 use crate::ui::mcp::mcp_tool_list_view::render_mcp_tool_list_view;
 use crate::ui::mcp::utils::reconnect_helpers::ReconnectAttempt;
 
-const LIST_ACTION_COUNT: usize = 4;
+const LIST_ACTION_COUNT: usize = 5;
 const VIEW_SERVER_DETAIL: usize = 100;
 const VIEW_SETTINGS: usize = 101;
 const VIEW_TOOL_LIST_BASE: usize = 1_000;
@@ -61,6 +61,7 @@ impl McpSurface {
             "Edit".to_string(),
             "Reconnect".to_string(),
             "Remove".to_string(),
+            "Search".to_string(),
         ];
         let mut detail_lines = self
             .state
@@ -75,6 +76,7 @@ impl McpSurface {
             1 => plain_row("Enter:", "/mcp edit <server>"),
             2 => plain_row("Enter:", "/mcp reconnect <server>"),
             3 => plain_row("Enter:", "/mcp remove <server> direct-execute"),
+            4 => plain_row("Enter:", "/mcp search "),
             _ => plain_row("Enter:", "select"),
         });
         detail_lines.push(plain_row("v:", "server details"));
@@ -444,6 +446,7 @@ impl McpSurface {
             1 => selected_server_command(&self.state, "/mcp edit ", " "),
             2 => selected_server_command(&self.state, "/mcp reconnect ", ""),
             3 => selected_server_command(&self.state, "/mcp remove ", ""),
+            4 => CommandSurfaceOutcome::FillPrompt("/mcp search ".to_string()),
             _ => CommandSurfaceOutcome::None,
         }
     }

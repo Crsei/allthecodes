@@ -622,6 +622,10 @@ impl App {
         self.dirty = true;
     }
 
+    pub fn session_id(&self) -> &str {
+        &self.session_ui.session_id
+    }
+
     pub fn set_cwd(&mut self, cwd: String) {
         self.session_ui.cwd = cwd;
         self.workspace_trust_pending =

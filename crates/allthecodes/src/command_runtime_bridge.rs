@@ -43,6 +43,14 @@ pub(crate) fn install_command_runtime_providers() {
     allthecodes_commands::runtime::set_tool_policy_names_provider(tool_policy_names_for_commands);
     allthecodes_commands::runtime::set_tool_list_provider(all_tools_for_commands);
     allthecodes_commands::runtime::set_fork_runner(fork_runner_for_commands);
+    allthecodes_tools::discovery_search::install_discovery_search_runtime(
+        allthecodes_tools::discovery_search::DiscoverySearchRuntime::new()
+            .with_mcp_items_provider(mcp_discovery_rows_for_tools)
+            .with_plugin_items_provider(plugin_discovery_rows_for_tools),
+    );
+    allthecodes_mcp::runtime::install_mcp_skill_cleanup_hook(|server_name| {
+        let _ = allthecodes_skills::clear_mcp_skills_for_server(server_name);
+    });
 
     allthecodes_commands::copy::set_clipboard_copy_provider(
         crate::ui::clipboard_text::copy_text_to_clipboard,
@@ -765,4 +773,391 @@ pub(crate) fn plugin_dependency_context() -> (
     }
 
     (available, manifests)
+}
+
+fn mcp_discovery_rows_for_tools() -> Vec<allthecodes_tools::discovery_search::DiscoverySearchResult>
+{
+    let mut rows = Vec::new();
+    rows.extend(configured_mcp_discovery_rows_for_tools());
+    if let Some(manager) = allthecodes_mcp::runtime::current_manager() {
+        match manager.try_lock() {
+            Ok(manager) => rows.extend(manager.discovery_search_results()),
+            Err(error) => {
+                tracing::debug!(
+                    error = %error,
+                    "MCP discovery search skipped runtime rows because manager is busy"
+                );
+            }
+        }
+    }
+    if allthecodes_config::features::enabled(allthecodes_config::features::Feature::McpSkills) {
+        rows.extend(mcp_skill_discovery_rows_for_tools());
+    }
+    rows
+}
+
+fn configured_mcp_discovery_rows_for_tools(
+) -> Vec<allthecodes_tools::discovery_search::DiscoverySearchResult> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let scoped = match allthecodes_mcp::discovery::discover_mcp_servers_scoped(&cwd) {
+        Ok(scoped) => scoped,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "MCP discovery search could not read configured servers"
+            );
+            return Vec::new();
+        }
+    };
+
+    scoped
+        .into_iter()
+        .map(|entry| {
+            let source = mcp_discovery_scope_source(&entry.scope);
+            let mut status = if let Some(error) = entry.error {
+                allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("error")
+                    .with_detail(error)
+            } else if entry.config.disabled.unwrap_or(false) {
+                allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("disabled")
+            } else {
+                allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("configured")
+            };
+            if status.state == "configured"
+                && entry.config.command.is_none()
+                && entry.config.url.is_none()
+            {
+                status = status.with_detail("No command or URL configured");
+            }
+
+            allthecodes_tools::discovery_search::DiscoverySearchResult::new(
+                allthecodes_tools::discovery_search::DiscoveryResultKind::McpServer,
+                entry.config.name.clone(),
+            )
+            .with_id(format!("{}:{}", source, entry.config.name))
+            .with_source(source)
+            .with_server_name(entry.config.name.clone())
+            .with_description(mcp_config_description(&entry.config))
+            .with_status(status)
+            .with_capabilities(mcp_config_capabilities(&entry.config))
+            .with_next_action(
+                allthecodes_tools::discovery_search::DiscoveryNextAction::new(
+                    "Inspect MCP server",
+                    format!("/mcp status {}", entry.config.name),
+                ),
+            )
+            .with_signal(allthecodes_tools::discovery_search::DiscoverySignal::ExplicitSearch)
+        })
+        .collect()
+}
+
+fn mcp_discovery_scope_source(scope: &allthecodes_mcp::discovery::DiscoveryScope) -> &'static str {
+    match scope {
+        allthecodes_mcp::discovery::DiscoveryScope::User => "user",
+        allthecodes_mcp::discovery::DiscoveryScope::Project => "project",
+        allthecodes_mcp::discovery::DiscoveryScope::Plugin(_)
+        | allthecodes_mcp::discovery::DiscoveryScope::Ide(_) => "runtime",
+    }
+}
+
+fn mcp_config_description(config: &allthecodes_mcp::McpServerConfig) -> String {
+    match config.transport.as_str() {
+        "stdio" => match (&config.command, &config.args) {
+            (Some(command), Some(args)) if !args.is_empty() => {
+                format!("stdio MCP server: {} {}", command, args.join(" "))
+            }
+            (Some(command), _) => format!("stdio MCP server: {command}"),
+            _ => "stdio MCP server".to_string(),
+        },
+        "sse" | "streamable-http" => config
+            .url
+            .as_ref()
+            .map(|url| format!("{} MCP server: {}", config.transport, url))
+            .unwrap_or_else(|| format!("{} MCP server", config.transport)),
+        other => format!("{other} MCP server"),
+    }
+}
+
+fn mcp_config_capabilities(config: &allthecodes_mcp::McpServerConfig) -> Vec<String> {
+    let mut capabilities = vec![config.transport.clone()];
+    if config.command.is_some() {
+        capabilities.push("command".to_string());
+    }
+    if config.url.is_some() {
+        capabilities.push("url".to_string());
+    }
+    if config.oauth.is_some() {
+        capabilities.push("oauth".to_string());
+    }
+    if config.browser_mcp.unwrap_or(false) {
+        capabilities.push("browser".to_string());
+    }
+    capabilities
+}
+
+fn mcp_skill_discovery_rows_for_tools(
+) -> Vec<allthecodes_tools::discovery_search::DiscoverySearchResult> {
+    allthecodes_skills::get_all_skills()
+        .into_iter()
+        .filter_map(|skill| {
+            let allthecodes_skills::SkillSource::Mcp(server_name) = &skill.source else {
+                return None;
+            };
+            let mut row = allthecodes_tools::discovery_search::DiscoverySearchResult::new(
+                allthecodes_tools::discovery_search::DiscoveryResultKind::McpSkill,
+                skill.display_name().to_string(),
+            )
+            .with_id(skill.name.clone())
+            .with_source("runtime")
+            .with_server_name(server_name.clone())
+            .with_status(
+                allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("available"),
+            )
+            .with_invocation_flags(skill.is_user_invocable(), skill.is_model_invocable())
+            .with_skill_summaries(
+                [allthecodes_tools::discovery_search::DiscoverySkillSummary {
+                    name: skill.name.clone(),
+                    description: (!skill.frontmatter.description.trim().is_empty())
+                        .then(|| skill.frontmatter.description.clone()),
+                    source: Some(format!("mcp:{server_name}")),
+                }],
+            )
+            .with_next_action(
+                allthecodes_tools::discovery_search::DiscoveryNextAction::new(
+                    "Use skill",
+                    format!("/skills {}", skill.name),
+                ),
+            )
+            .with_signal(
+                allthecodes_tools::discovery_search::DiscoverySignal::McpResourceDiscovery,
+            );
+            if !skill.frontmatter.description.trim().is_empty() {
+                row = row.with_description(skill.frontmatter.description.clone());
+            }
+            if let Some(when_to_use) = skill
+                .frontmatter
+                .when_to_use
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                row = row.with_when_to_use(when_to_use.clone());
+            }
+            Some(row)
+        })
+        .collect()
+}
+
+fn plugin_discovery_rows_for_tools(
+) -> Vec<allthecodes_tools::discovery_search::DiscoverySearchResult> {
+    plugin_discovery_rows_from_sources(
+        allthecodes_plugins::loader::load_installed_plugins(),
+        allthecodes_plugins::get_enabled_plugins(),
+        allthecodes_plugins::marketplace::list_all_marketplaces(),
+    )
+}
+
+fn plugin_discovery_rows_from_sources(
+    installed: Vec<allthecodes_plugins::PluginEntry>,
+    active: Vec<allthecodes_plugins::PluginEntry>,
+    marketplace_entries: Vec<allthecodes_plugins::marketplace::MarketplacePluginEntry>,
+) -> Vec<allthecodes_tools::discovery_search::DiscoverySearchResult> {
+    let mut rows = Vec::new();
+    rows.extend(
+        installed
+            .into_iter()
+            .map(|plugin| plugin_discovery_row(plugin, "installed")),
+    );
+    rows.extend(
+        active
+            .into_iter()
+            .map(|plugin| plugin_discovery_row(plugin, "active")),
+    );
+    rows.extend(
+        marketplace_entries
+            .into_iter()
+            .map(marketplace_plugin_discovery_row),
+    );
+    rows
+}
+
+fn plugin_discovery_row(
+    plugin: allthecodes_plugins::PluginEntry,
+    source: &'static str,
+) -> allthecodes_tools::discovery_search::DiscoverySearchResult {
+    let status = plugin_status_summary(&plugin.status, source);
+    let mut row = allthecodes_tools::discovery_search::DiscoverySearchResult::new(
+        allthecodes_tools::discovery_search::DiscoveryResultKind::Plugin,
+        plugin.name.clone(),
+    )
+    .with_id(plugin.id.clone())
+    .with_source(source)
+    .with_version(plugin.version.clone())
+    .with_status(status)
+    .with_skills(plugin.skills.clone())
+    .with_tools(plugin.tools.clone())
+    .with_mcp_servers(plugin.mcp_servers.clone())
+    .with_next_action(
+        allthecodes_tools::discovery_search::DiscoveryNextAction::new(
+            "Inspect plugin",
+            format!("/plugin info {}", plugin.id),
+        ),
+    )
+    .with_signal(allthecodes_tools::discovery_search::DiscoverySignal::PluginMarketplaceCache);
+    if !plugin.description.trim().is_empty() {
+        row = row.with_description(plugin.description.clone());
+    }
+    if let Some(marketplace) = plugin
+        .marketplace
+        .as_ref()
+        .filter(|marketplace| !marketplace.trim().is_empty())
+    {
+        row = row.with_marketplace(marketplace.clone());
+    }
+    row
+}
+
+fn marketplace_plugin_discovery_row(
+    entry: allthecodes_plugins::marketplace::MarketplacePluginEntry,
+) -> allthecodes_tools::discovery_search::DiscoverySearchResult {
+    let mut row = allthecodes_tools::discovery_search::DiscoverySearchResult::new(
+        allthecodes_tools::discovery_search::DiscoveryResultKind::Plugin,
+        entry.name.clone(),
+    )
+    .with_id(entry.id.clone())
+    .with_source("marketplace_cache")
+    .with_version(entry.version.clone())
+    .with_status(allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("available"))
+    .with_marketplace(entry.source_name.clone())
+    .with_next_action(
+        allthecodes_tools::discovery_search::DiscoveryNextAction::new(
+            "Inspect marketplace plugin",
+            format!("/plugin marketplace search {}", entry.id),
+        ),
+    )
+    .with_signal(allthecodes_tools::discovery_search::DiscoverySignal::PluginMarketplaceCache)
+    .with_remote_state_placeholder();
+    if !entry.description.trim().is_empty() {
+        row = row.with_description(entry.description.clone());
+    }
+    if !entry.tags.is_empty() {
+        row = row.with_capabilities(entry.tags.clone());
+    }
+    row
+}
+
+fn plugin_status_summary(
+    status: &allthecodes_plugins::PluginStatus,
+    source: &str,
+) -> allthecodes_tools::discovery_search::DiscoveryStatusSummary {
+    match status {
+        allthecodes_plugins::PluginStatus::NotInstalled => {
+            allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("not_installed")
+        }
+        allthecodes_plugins::PluginStatus::Installed if source == "active" => {
+            allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("active")
+        }
+        allthecodes_plugins::PluginStatus::Installed => {
+            allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("installed")
+        }
+        allthecodes_plugins::PluginStatus::Disabled => {
+            allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("disabled")
+        }
+        allthecodes_plugins::PluginStatus::Error(message) => {
+            allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("error")
+                .with_detail(message.clone())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use allthecodes_plugins::marketplace::MarketplacePluginEntry;
+    use allthecodes_plugins::{PluginEntry, PluginSource, PluginStatus};
+    use allthecodes_tools::discovery_search::DiscoveryResultKind;
+
+    fn plugin_entry(id: &str, status: PluginStatus) -> PluginEntry {
+        PluginEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            version: "1.2.3".to_string(),
+            description: format!("{id} plugin"),
+            source: PluginSource::Local {
+                path: format!("/tmp/{id}"),
+            },
+            status,
+            marketplace: Some("local-marketplace".to_string()),
+            cache_path: None,
+            installed_version: Some("1.2.3".to_string()),
+            official: false,
+            download_url: None,
+            homepage: None,
+            sha256: None,
+            tools: vec![format!("{id}-tool")],
+            skills: vec![format!("{id}-skill")],
+            mcp_servers: vec![format!("{id}-mcp")],
+            installed_at: Some(1),
+            updated_at: None,
+        }
+    }
+
+    fn marketplace_entry(id: &str) -> MarketplacePluginEntry {
+        MarketplacePluginEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: format!("{id} marketplace plugin"),
+            version: "2.0.0".to_string(),
+            author: Some("allthecodes".to_string()),
+            source_name: "cached-marketplace".to_string(),
+            download_url: None,
+            checksum: None,
+            sha256: None,
+            tags: vec!["rust".to_string()],
+            homepage: None,
+            license: None,
+        }
+    }
+
+    #[test]
+    fn plugin_discovery_rows_cover_installed_active_and_marketplace_cache() {
+        let rows = plugin_discovery_rows_from_sources(
+            vec![plugin_entry("disabled-tools", PluginStatus::Disabled)],
+            vec![plugin_entry("rust-tools", PluginStatus::Installed)],
+            vec![marketplace_entry("future-tools")],
+        );
+
+        let disabled = rows
+            .iter()
+            .find(|row| row.id.as_deref() == Some("disabled-tools"))
+            .expect("installed row");
+        assert_eq!(disabled.kind, DiscoveryResultKind::Plugin);
+        assert_eq!(disabled.source.as_deref(), Some("installed"));
+        assert_eq!(
+            disabled
+                .status_summary
+                .as_ref()
+                .map(|status| status.state.as_str()),
+            Some("disabled")
+        );
+
+        let active = rows
+            .iter()
+            .find(|row| row.id.as_deref() == Some("rust-tools"))
+            .expect("active row");
+        assert_eq!(active.source.as_deref(), Some("active"));
+        assert_eq!(active.skills, vec!["rust-tools-skill"]);
+        assert_eq!(active.tools, vec!["rust-tools-tool"]);
+        assert_eq!(active.mcp_servers, vec!["rust-tools-mcp"]);
+
+        let marketplace = rows
+            .iter()
+            .find(|row| row.id.as_deref() == Some("future-tools"))
+            .expect("marketplace cache row");
+        assert_eq!(marketplace.source.as_deref(), Some("marketplace_cache"));
+        assert_eq!(
+            marketplace.marketplace.as_deref(),
+            Some("cached-marketplace")
+        );
+        assert!(marketplace.remote_url_todo);
+        assert_eq!(marketplace.remote_source.as_deref(), Some("deferred"));
+    }
 }

@@ -402,6 +402,65 @@ pub fn register_skills_resolved_with_diagnostics(
     replace_with_resolved(candidates, diagnostics, candidate_total, options)
 }
 
+/// Remove MCP-provided skills owned by one server from the global registry.
+pub fn clear_mcp_skills_for_server(server: &str) -> usize {
+    let removed = {
+        let mut reg = REGISTRY.lock();
+        let before = reg.len();
+        reg.retain(|skill| !skill_from_mcp_server(skill, server));
+        before.saturating_sub(reg.len())
+    };
+    if removed > 0 {
+        REGISTRY_DIAGNOSTICS
+            .lock()
+            .retain(|diagnostic| !diagnostic_from_mcp_server(diagnostic, server));
+        let revision = REGISTRY_REVISION.fetch_add(1, Ordering::SeqCst) + 1;
+        let count = REGISTRY.lock().len();
+        emit_event(SkillSubsystemEvent::SkillsLoaded { count });
+        let mut diagnostics = REGISTRY_DIAGNOSTICS.lock();
+        diagnostics.retain(|d| d.code != "registry-revision");
+        diagnostics.push(
+            SkillDiagnostic::warning(
+                "registry-revision",
+                format!("Registry changed outside package reload at revision {revision}."),
+            )
+            .with_skill("registry"),
+        );
+    }
+    removed
+}
+
+/// Replace MCP-provided skills for one server, dropping stale entries first.
+pub fn replace_mcp_skills_for_server(
+    server: &str,
+    skills: Vec<SkillDefinition>,
+    diagnostics: Vec<SkillDiagnostic>,
+    options: SkillLoadOptions,
+) -> SkillLoadReport {
+    let mut candidates = get_all_skills()
+        .into_iter()
+        .filter(|skill| !skill_from_mcp_server(skill, server))
+        .collect::<Vec<_>>();
+    let candidate_total = candidates.len() + skills.len();
+    candidates.extend(skills);
+
+    let mut merged_diagnostics = get_skill_diagnostics()
+        .into_iter()
+        .filter(|diagnostic| !diagnostic_from_mcp_server(diagnostic, server))
+        .collect::<Vec<_>>();
+    merged_diagnostics.extend(diagnostics);
+
+    replace_with_resolved(candidates, merged_diagnostics, candidate_total, options)
+}
+
+fn skill_from_mcp_server(skill: &SkillDefinition, server: &str) -> bool {
+    matches!(&skill.source, SkillSource::Mcp(source_server) if source_server == server)
+}
+
+fn diagnostic_from_mcp_server(diagnostic: &SkillDiagnostic, server: &str) -> bool {
+    matches!(&diagnostic.source, Some(SkillSource::Mcp(source_server)) if source_server == server)
+}
+
 /// Get all registered skills.
 pub fn get_all_skills() -> Vec<SkillDefinition> {
     REGISTRY.lock().clone()
@@ -1239,6 +1298,8 @@ fn for_req_op(requirement: &str) -> (&'static str, &str) {
 mod tests {
     use super::*;
 
+    static SKILL_REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn make_skill(name: &str) -> SkillDefinition {
         SkillDefinition {
             name: name.to_string(),
@@ -1439,6 +1500,55 @@ mod tests {
 
         assert_eq!(resolved.len(), 1);
         assert!(diagnostics.iter().any(|d| d.code == "version-conflict"));
+    }
+
+    #[test]
+    fn clear_mcp_skills_for_server_only_removes_that_servers_skills() {
+        let _lock = SKILL_REGISTRY_TEST_LOCK.lock().unwrap();
+        clear_skills();
+        let mut alpha = make_skill("alpha-review");
+        alpha.source = SkillSource::Mcp("alpha".to_string());
+        let mut beta = make_skill("beta-review");
+        beta.source = SkillSource::Mcp("beta".to_string());
+        let user = make_skill("user-review");
+        register_skill(alpha);
+        register_skill(beta);
+        register_skill(user);
+
+        let removed = clear_mcp_skills_for_server("alpha");
+
+        assert_eq!(removed, 1);
+        assert!(find_skill("alpha-review").is_none());
+        assert!(find_skill("beta-review").is_some());
+        assert!(find_skill("user-review").is_some());
+        clear_skills();
+    }
+
+    #[test]
+    fn replace_mcp_skills_for_server_drops_stale_entries_before_resolve() {
+        let _lock = SKILL_REGISTRY_TEST_LOCK.lock().unwrap();
+        clear_skills();
+        let mut stale = make_skill("mcp__alpha__old");
+        stale.source = SkillSource::Mcp("alpha".to_string());
+        let mut fresh = make_skill("mcp__alpha__new");
+        fresh.source = SkillSource::Mcp("alpha".to_string());
+        let mut other = make_skill("mcp__beta__keep");
+        other.source = SkillSource::Mcp("beta".to_string());
+        register_skill(stale);
+        register_skill(other);
+
+        let report = replace_mcp_skills_for_server(
+            "alpha",
+            vec![fresh],
+            Vec::new(),
+            SkillLoadOptions::for_app_version("1.0.0"),
+        );
+
+        assert_eq!(report.error_count(), 0, "{:?}", report.diagnostics);
+        assert!(find_skill("mcp__alpha__old").is_none());
+        assert!(find_skill("mcp__alpha__new").is_some());
+        assert!(find_skill("mcp__beta__keep").is_some());
+        clear_skills();
     }
 
     #[test]

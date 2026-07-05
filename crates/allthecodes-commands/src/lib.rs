@@ -73,6 +73,7 @@ pub mod security_review;
 pub mod session;
 pub mod session_export;
 pub mod simplify;
+mod search_format;
 pub mod skills_cmd;
 pub mod sleep_cmd;
 pub mod status;

@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
 
@@ -17,7 +18,12 @@ use tracing::debug;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_ipc::adapters::{extract_tool_result_output, stream_event_to_backend_message};
 use allthecodes_ipc::transport::FrontendSink;
-use allthecodes_services::{cost_ledger, prompt_suggestion::PromptSuggestionService};
+use allthecodes_services::{
+    cost_ledger,
+    prompt_suggestion::PromptSuggestionService,
+    search_tips::{SearchTipCandidate, SearchTipContext},
+    skill_search_prefetch::{candidates_from_prefetch, ensure_turn_zero_skill_discovery},
+};
 use allthecodes_tool_display::ToolClassifier;
 use allthecodes_types::message::{ContentBlock, Message, StreamEvent, ToolResultContent};
 use allthecodes_types::sdk::SdkMessage;
@@ -432,7 +438,16 @@ pub fn generate_and_send_suggestions(
         .collect::<Vec<_>>()
         .join("\n");
 
-    if let Some(suggestions) = svc.try_generate(&summary, &tool_names) {
+    let session_id = engine.current_session_id().to_string();
+    let search_candidates = skill_prefetch_candidates_for_session(&session_id);
+    let search_context = (!search_candidates.is_empty()).then(|| SearchTipContext {
+        session_id,
+        now_ms: current_time_ms(),
+    });
+
+    if let Some(suggestions) =
+        svc.try_generate_with_search_tips(&summary, &tool_names, search_context, &search_candidates)
+    {
         let items: Vec<String> = suggestions
             .into_iter()
             .take(3)
@@ -445,6 +460,22 @@ pub fn generate_and_send_suggestions(
     }
 }
 
+fn skill_prefetch_candidates_for_session(session_id: &str) -> Vec<SearchTipCandidate> {
+    if session_id.is_empty() {
+        return Vec::new();
+    }
+
+    let result = ensure_turn_zero_skill_discovery(session_id, "");
+    candidates_from_prefetch(&result)
+}
+
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -452,10 +483,18 @@ pub fn generate_and_send_suggestions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allthecodes_config::features::{self, FeatureFlags};
     use allthecodes_engine::types::config::QueryEngineConfig;
     use allthecodes_ipc_protocol::ToolResultContentInfo;
-    use allthecodes_types::message::ImageSource;
+    use allthecodes_services::skill_search_prefetch::{
+        collect_skill_discovery_prefetch, start_skill_discovery_prefetch, SkillPrefetchContext,
+    };
+    use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
+    use allthecodes_types::message::{
+        AssistantMessage, ImageSource, MessageContent, UserMessage,
+    };
     use allthecodes_types::sdk::{ResultSubtype, SdkResult};
+    use serial_test::serial;
     use uuid::Uuid;
 
     fn make_engine(cwd: &str) -> Arc<QueryEngine> {
@@ -480,6 +519,82 @@ mod tests {
             auto_save_session: false,
             agent_context: None,
         }))
+    }
+
+    struct FeatureGuard;
+
+    impl FeatureGuard {
+        fn set(flags: FeatureFlags) -> Self {
+            features::set_runtime_override(flags);
+            Self
+        }
+    }
+
+    impl Drop for FeatureGuard {
+        fn drop(&mut self) {
+            features::clear_runtime_override();
+        }
+    }
+
+    struct SkillRegistryGuard;
+
+    impl SkillRegistryGuard {
+        fn new(skills: Vec<SkillDefinition>) -> Self {
+            allthecodes_skills::clear_skills();
+            for skill in skills {
+                allthecodes_skills::register_skill(skill);
+            }
+            Self
+        }
+    }
+
+    impl Drop for SkillRegistryGuard {
+        fn drop(&mut self) {
+            allthecodes_skills::clear_skills();
+        }
+    }
+
+    fn make_skill(name: &str, description: &str) -> SkillDefinition {
+        SkillDefinition {
+            name: name.to_string(),
+            source: SkillSource::User,
+            base_dir: None,
+            frontmatter: SkillFrontmatter {
+                name: Some(name.to_string()),
+                description: description.to_string(),
+                when_to_use: Some(format!("Use {name} locally")),
+                ..Default::default()
+            },
+            prompt_body: "local prompt body".to_string(),
+        }
+    }
+
+    fn user_message(text: &str) -> Message {
+        Message::User(UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1,
+            role: "user".to_string(),
+            content: MessageContent::Text(text.to_string()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        })
+    }
+
+    fn assistant_message(text: &str) -> Message {
+        Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 2,
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        })
     }
 
     #[test]
@@ -692,6 +807,47 @@ mod tests {
             });
 
         assert_eq!(reasoning_tokens, Some(42));
+    }
+
+    #[test]
+    #[serial]
+    fn headless_suggestions_include_turn_zero_skill_discovery_tip() {
+        let mut flags = FeatureFlags::all_disabled();
+        flags.proactive = true;
+        flags.experimental_skill_search = true;
+        let _features = FeatureGuard::set(flags);
+        let _skills = SkillRegistryGuard::new(vec![make_skill(
+            "rust-review",
+            "Review Rust code without remote fetch",
+        )]);
+        let engine = make_engine(env!("CARGO_MANIFEST_DIR"));
+        let session_id = engine.current_session_id().to_string();
+        collect_skill_discovery_prefetch(start_skill_discovery_prefetch(
+            SkillPrefetchContext {
+                session_id: session_id.clone(),
+                query: "rust".to_string(),
+            },
+        ));
+        engine.replace_messages(vec![
+            user_message("I need help with Rust code"),
+            assistant_message("I can help inspect the implementation."),
+        ]);
+        let suggestion_svc = Arc::new(Mutex::new(PromptSuggestionService::new(true)));
+        let sink = FrontendSink::memory();
+
+        generate_and_send_suggestions(&engine, &suggestion_svc, &sink);
+
+        let suggestions = sink.captured().into_iter().find_map(|message| match message {
+            BackendMessage::Suggestions { items } => Some(items),
+            _ => None,
+        });
+        assert!(
+            suggestions
+                .unwrap_or_default()
+                .iter()
+                .any(|item| item.contains("/skills rust-review")),
+            "headless suggestions should include turn-zero skill discovery"
+        );
     }
 
     #[test]

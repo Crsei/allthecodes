@@ -7,6 +7,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use allthecodes_tools::discovery_search::{
+    DiscoveryNextAction, DiscoveryResultKind, DiscoverySearchResult, DiscoverySignal,
+    DiscoveryStatusSummary, DiscoveryToolSummary,
+};
 use allthecodes_tools::runtime_capability::{RuntimeCapability, RuntimeCapabilityRegistry};
 use allthecodes_types::mcp::{McpBinding, McpBindingContext, McpPermission, McpToolScope};
 use anyhow::Result;
@@ -345,6 +349,130 @@ impl McpManager {
         registry
     }
 
+    pub fn discovery_search_results(&self) -> Vec<DiscoverySearchResult> {
+        let mut rows = Vec::new();
+        let mut server_ids = self.clients.keys().cloned().collect::<Vec<_>>();
+        server_ids.sort();
+
+        for server_id in server_ids {
+            let Some(client) = self.clients.get(&server_id) else {
+                continue;
+            };
+            let display_name = self.server_display_name(&server_id);
+            let status_state = self
+                .health
+                .get(&server_id)
+                .map(|snapshot| snapshot.state.clone())
+                .unwrap_or_else(|| mcp_client_state_name(&client.state).to_string());
+            let status_detail = self
+                .health
+                .get(&server_id)
+                .and_then(|snapshot| snapshot.last_error.clone());
+            let mut status = DiscoveryStatusSummary::new(status_state);
+            if let Some(detail) = status_detail.filter(|detail| !detail.trim().is_empty()) {
+                status = status.with_detail(detail);
+            }
+
+            let tool_summaries = client
+                .tools
+                .iter()
+                .map(|tool| {
+                    let tool_server = if tool.server_name.is_empty() {
+                        server_id.as_str()
+                    } else {
+                        tool.server_name.as_str()
+                    };
+                    DiscoveryToolSummary {
+                        name: mcp_exposed_tool_name(tool_server, &tool.name),
+                        description: (!tool.description.trim().is_empty())
+                            .then(|| tool.description.clone()),
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            let mut capabilities = Vec::new();
+            if client.supports_tools() || !client.tools.is_empty() {
+                capabilities.push("tools".to_string());
+            }
+            if client.supports_resources() {
+                capabilities.push("resources".to_string());
+            }
+            if client.server_capabilities.prompts.is_some() {
+                capabilities.push("prompts".to_string());
+            }
+
+            let description = client
+                .instructions
+                .as_ref()
+                .filter(|instructions| !instructions.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| format!("{} MCP server", client.config.transport));
+
+            let mut server_row = DiscoverySearchResult::new(
+                DiscoveryResultKind::McpServer,
+                display_name.to_string(),
+            )
+            .with_id(server_id.clone())
+            .with_source("runtime")
+            .with_server_name(server_id.clone())
+            .with_description(description)
+            .with_status(status.clone())
+            .with_capabilities(capabilities)
+            .with_tool_summaries(tool_summaries)
+            .with_next_action(DiscoveryNextAction::new(
+                "Inspect MCP server",
+                format!("/mcp status {server_id}"),
+            ))
+            .with_signal(DiscoverySignal::McpResourceDiscovery);
+            if display_name != server_id {
+                server_row = server_row.with_display_name(display_name.to_string());
+            }
+            rows.push(server_row);
+
+            if client.supports_resources() {
+                for resource in client
+                    .resources
+                    .iter()
+                    .filter(|resource| !resource.uri.starts_with("skill://"))
+                {
+                    let resource_name = if resource.name.trim().is_empty() {
+                        resource.uri.as_str()
+                    } else {
+                        resource.name.as_str()
+                    };
+                    let mut resource_row =
+                        DiscoverySearchResult::new(DiscoveryResultKind::McpResource, resource_name)
+                            .with_id(resource.uri.clone())
+                            .with_source("runtime")
+                            .with_server_name(server_id.clone())
+                            .with_status(status.clone())
+                            .with_next_action(DiscoveryNextAction::new(
+                                "Read MCP resource",
+                                format!("/mcp resource read {server_id} {}", resource.uri),
+                            ))
+                            .with_signal(DiscoverySignal::McpResourceDiscovery);
+                    if let Some(description) = resource
+                        .description
+                        .as_ref()
+                        .filter(|description| !description.trim().is_empty())
+                    {
+                        resource_row = resource_row.with_description(description.clone());
+                    }
+                    if let Some(mime_type) = resource
+                        .mime_type
+                        .as_ref()
+                        .filter(|mime_type| !mime_type.trim().is_empty())
+                    {
+                        resource_row = resource_row.with_capabilities([mime_type.clone()]);
+                    }
+                    rows.push(resource_row);
+                }
+            }
+        }
+
+        rows
+    }
+
     pub fn tools_for_context(&self, ctx: &McpBindingContext) -> Vec<McpToolDef> {
         self.clients
             .iter()
@@ -357,6 +485,7 @@ impl McpManager {
     pub fn all_resources(&self) -> Vec<McpResource> {
         self.clients
             .values()
+            .filter(|client| client.supports_resources())
             .flat_map(|c| c.resources.iter().cloned())
             .collect()
     }
@@ -367,6 +496,7 @@ impl McpManager {
             .filter(|(server_id, _)| {
                 self.server_allowed(ctx, server_id, McpPermission::ReadResources)
             })
+            .filter(|(_, client)| client.supports_resources())
             .flat_map(|(_, client)| client.resources.iter().cloned())
             .collect()
     }
@@ -378,6 +508,7 @@ impl McpManager {
         let clients = self.clients_for_resource_query(server)?;
         Ok(clients
             .into_iter()
+            .filter(|(_, client)| client.supports_resources())
             .flat_map(|(server_name, client)| {
                 client
                     .resources
@@ -405,6 +536,7 @@ impl McpManager {
             .filter(|(server_name, _)| {
                 self.server_allowed(ctx, server_name, McpPermission::ReadResources)
             })
+            .filter(|(_, client)| client.supports_resources())
             .flat_map(|(server_name, client)| {
                 client
                     .resources
@@ -543,7 +675,7 @@ impl McpManager {
 
     /// Disconnect a single server. Returns `true` if a live client existed.
     pub async fn disconnect_server(&mut self, name: &str) -> bool {
-        if let Some(mut client) = self.clients.remove(name) {
+        let had_client = if let Some(mut client) = self.clients.remove(name) {
             client.disconnect().await;
             if let Some(snapshot) = self.health.get_mut(name) {
                 snapshot.state = "disconnected".to_string();
@@ -552,7 +684,9 @@ impl McpManager {
             true
         } else {
             false
-        }
+        };
+        crate::runtime::clear_mcp_skills_for_server(name);
+        had_client
     }
 
     fn health_entry(&mut self, config: &McpServerConfig) -> &mut McpServerHealthSnapshot {
@@ -657,6 +791,19 @@ pub(crate) fn connect_retry_delay_ms(attempt: usize) -> u64 {
         .min(CONNECT_RETRY_MAX_DELAY_MS)
 }
 
+fn mcp_exposed_tool_name(server_name: &str, tool_name: &str) -> String {
+    format!("mcp__{server_name}__{tool_name}")
+}
+
+fn mcp_client_state_name(state: &super::McpConnectionState) -> &'static str {
+    match state {
+        super::McpConnectionState::Pending => "pending",
+        super::McpConnectionState::Connected => "connected",
+        super::McpConnectionState::Disconnected => "disconnected",
+        super::McpConnectionState::Error(_) => "error",
+    }
+}
+
 fn classify_mcp_connect_error(error: &anyhow::Error) -> &'static str {
     let message = format!("{error:#}");
     if message.contains("failed to spawn MCP server") {
@@ -733,6 +880,24 @@ mod tests {
         client
     }
 
+    fn mcp_test_config(name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            transport: "stdio".to_string(),
+            command: Some("dummy".to_string()),
+            args: None,
+            url: None,
+            headers: None,
+            oauth: None,
+            env: None,
+            browser_mcp: None,
+            disabled: None,
+            bearer_token_env_var: None,
+            env_http_headers: None,
+            auth: None,
+        }
+    }
+
     #[test]
     fn list_resources_includes_server_owner_and_filters() {
         let mut manager = McpManager::new();
@@ -799,6 +964,28 @@ mod tests {
         assert!(err
             .to_string()
             .contains("MCP server 'alpha' does not support resources"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn disconnect_server_invokes_mcp_skill_cleanup_hook() {
+        crate::runtime::clear_for_tests();
+        let cleanup_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cleanup_count_for_hook = cleanup_count.clone();
+        crate::runtime::install_mcp_skill_cleanup_hook(move |server| {
+            if server == "alpha" {
+                cleanup_count_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        let mut manager = McpManager::new();
+        manager
+            .clients
+            .insert("alpha".to_string(), test_client("alpha", Vec::new(), true));
+
+        assert!(manager.disconnect_server("alpha").await);
+        assert_eq!(cleanup_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        crate::runtime::clear_for_tests();
     }
 
     #[test]
@@ -889,6 +1076,81 @@ mod tests {
                 "alpha".to_string()
             )
         );
+    }
+
+    #[test]
+    fn discovery_search_results_include_runtime_server_tools_and_resources() {
+        let mut manager = McpManager::new();
+        let mut client = test_client(
+            "alpha",
+            vec![
+                McpResource {
+                    uri: "file:///alpha/guide.md".to_string(),
+                    name: "Alpha Guide".to_string(),
+                    description: Some("Alpha project guide".to_string()),
+                    mime_type: Some("text/markdown".to_string()),
+                },
+                McpResource {
+                    uri: "skill://review/code".to_string(),
+                    name: "Review Code".to_string(),
+                    description: Some("MCP skill resource".to_string()),
+                    mime_type: Some("text/markdown".to_string()),
+                },
+            ],
+            true,
+        );
+        client.tools = vec![McpToolDef {
+            name: "search_repository".to_string(),
+            description: "Search repository content".to_string(),
+            input_schema: json!({"type": "object"}),
+            server_name: "alpha".to_string(),
+        }];
+        manager.record_health_success(&mcp_test_config("alpha"), &client);
+        manager.clients.insert("alpha".to_string(), client);
+
+        let rows = manager.discovery_search_results();
+
+        let server = rows
+            .iter()
+            .find(|row| {
+                row.kind == allthecodes_tools::discovery_search::DiscoveryResultKind::McpServer
+                    && row.name == "alpha"
+            })
+            .expect("runtime server row");
+        assert_eq!(server.source.as_deref(), Some("runtime"));
+        assert_eq!(
+            server
+                .status_summary
+                .as_ref()
+                .map(|status| status.state.as_str()),
+            Some("connected")
+        );
+        assert_eq!(
+            server.tool_summaries[0].name,
+            "mcp__alpha__search_repository"
+        );
+        assert!(server
+            .capabilities
+            .iter()
+            .any(|capability| capability == "tools"));
+        assert!(server
+            .capabilities
+            .iter()
+            .any(|capability| capability == "resources"));
+
+        let resource = rows
+            .iter()
+            .find(|row| {
+                row.kind == allthecodes_tools::discovery_search::DiscoveryResultKind::McpResource
+                    && row.name == "Alpha Guide"
+            })
+            .expect("resource row");
+        assert_eq!(resource.server_name.as_deref(), Some("alpha"));
+        assert_eq!(resource.source.as_deref(), Some("runtime"));
+        assert!(!rows.iter().any(|row| {
+            row.kind == allthecodes_tools::discovery_search::DiscoveryResultKind::McpResource
+                && row.name == "Review Code"
+        }));
     }
 
     #[tokio::test]

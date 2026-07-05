@@ -10,6 +10,8 @@ mod common;
 #[cfg(feature = "full")]
 pub mod deferred_tools;
 #[cfg(feature = "full")]
+pub mod discovery_search;
+#[cfg(feature = "full")]
 pub mod exec;
 #[cfg(feature = "full")]
 pub mod fs;

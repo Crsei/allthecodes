@@ -1,6 +1,6 @@
 # 工具发现当前实现情况
 
-日期：2026-07-02
+日期：2026-07-05
 
 范围：内置工具、root-owned 工具、MCP 工具、插件工具、技能工具、延迟工具发现和运行时过滤。
 
@@ -144,12 +144,85 @@ runtime snapshot 会汇总 plugin info 和 skill info，供 Web 状态页使用�
 - 标签会标记 read-only、concurrency-safe、destructive 等属性。
 - 查询支持别名、CJK tokenization 和基础 stemming。
 
-ToolSearch 是发现和解释层；延迟工具的实际执行仍通过 `SearchExtraTools`/`ExecuteExtraTool` 管理 discovered 状态和参数调用。
+ToolSearch 是精确可调用工具目录：需要工具名、输入 schema、调用示例或
+`select:<tool-name>` 精确查找时使用它。延迟工具的实际执行仍通过
+`SearchExtraTools`/`ExecuteExtraTool` 管理 discovered 状态和参数调用。
+
+## Domain Discovery 搜索面
+
+本轮新增了和 `ToolSearch` 分开的领域发现面，避免把“找能力”和“取可调用
+schema”混在一起：
+
+- `SkillSearch`：从本地 skill registry 搜索 bundled/user/project/plugin/MCP skill。
+  复用 `DiscoverSkills` 的本地评分 helper，但输出规范化的 `results[]`，包含
+  source、`when_to_use`、match reasons、next action、prefetch/remote-state 占位。
+  `DiscoverSkills` 保持原有 `skills[]` 兼容输出。
+- `McpSearch`：搜索 MCP server/resource/capability/MCP skill 摘要。结果可包含
+  MCP tool 名称和描述摘要，但不返回完整 input schema；精确 schema 仍走
+  `ToolSearch(source=mcp, include_schema=true)`。
+- `PluginSearch`：搜索 installed/active/marketplace-cache plugin 摘要。结果可列
+  plugin skills/tools/MCP contributions，但不返回 plugin tool schema；精确 schema
+  仍走 `ToolSearch(source=plugin, include_schema=true)`。
+
+共享类型和 provider boundary 位于
+`crates/allthecodes-tools/src/discovery_search.rs`。root runtime 在
+`crates/allthecodes/src/command_runtime_bridge.rs` 注入 MCP/plugin discovery
+provider，搜索工具不直接依赖 MCP/plugin 实现 crate。provider panic 或未安装时
+返回空本地结果和解释性 preview，不触发 reconnect、refresh、install、enable 或
+网络请求。
+
+对应 slash command 已接入：
+
+- `/skills search <query>`
+- `/mcp search <query>`
+- `/plugin search <query>`
+
+这些命令渲染简短结果表、match reasons 和 next action，并提示完整诊断仍在
+`/mcp status`、`/plugin status`、`/skills diagnostics`、`SystemStatus`，精确
+callable schema 仍在 `ToolSearch`。
+
+## MCP Skill 与 Skill Prefetch Gates
+
+`allthecodes-config` 现在暴露两个上游 parity gate：
+
+- `FEATURE_MCP_SKILLS` / `Feature::McpSkills`：控制 MCP `skill://` resource
+  ingestion。关闭时不注册 MCP-provided skills，但普通 MCP tools/resources 保持
+  原有发现和执行路径。
+- `FEATURE_EXPERIMENTAL_SKILL_SEARCH` / `Feature::ExperimentalSkillSearch`：
+  控制本地 skill-search prefetch、turn-zero discovery 和 remote-state 占位。关闭
+  时不做 prefetch enrichment，但显式本地 `SkillSearch` 仍可用。
+
+当前 prefetch 只读取本地 skill 元数据（name、description、source、
+`when_to_use`、argument hint/name、paths、assets、entry docs、dependencies 和
+prompt body），remote state 只返回 `not_configured` 或 `deferred`，不会 fetch
+remote URL、刷新远程 registry 或安装任何内容。
+
+## Kairos / Proactive Search Tips
+
+`crates/allthecodes-services/src/search_tips.rs` 提供本地 `SearchTipService`：
+
+- tip kind 覆盖 skill、MCP、plugin。
+- 只有 `FEATURE_KAIROS` 或 `FEATURE_PROACTIVE` 开启时生成。
+- 对同一 session/kind/id 做去重和 cooldown。
+- 输出仍复用现有 `PromptSuggestion` / `BackendMessage::Suggestions`，不会新增
+  IPC message。
+- tip 是 advisory 文本，提示用户运行 `/skills ...`、`/mcp search ...`、
+  `/plugin info ...` 或 `ToolSearch ...`；不会自动安装、启用、连接、重载或执行
+  skill/plugin/MCP 操作。
+
+headless 路径在 `crates/allthecodes/src/app_runtime_adapters/sdk_mapper.rs` 合并
+prefetch-derived skill candidates；Rust TUI 路径在
+`crates/allthecodes/src/ui/tui/engine_events.rs` 做同样合并。daemon proactive tick
+在 `crates/allthecodes-daemon/src/tick.rs` 中仅写入本地 discovery 摘要
+`{ count, remote_state }`，不携带 remote URL。
 
 ## 当前边界与待补齐点
 
 - ToolSearch 的来源和类别推断部分依赖启发式规则，例如 `mcp__` 前缀和描述文本。
+- Domain discovery 搜索面返回摘要和 next action，不返回完整 callable schemas。
 - 重名工具当前是 first wins；不会自动命名空间化后注册冲突。
 - deferred discovered state 主要是运行时状态和 compact metadata，不是独立的长期持久索引。
 - MCP 连接失败不会阻塞会话启动；失败信息通过状态面暴露，工具不会进入可执行集合。
 - 插件/MCP 工具是否可见取决于当前 provider 和 manager 刷新结果；没有把所有外部工具固定写入静态清单。
+- 远程 skill/plugin/MCP URL discovery 仍是显式 deferred TODO；当前实现只保留
+  `remote_url_todo` / `remote_source` 之类占位字段，不做网络访问。

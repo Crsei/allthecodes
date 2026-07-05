@@ -379,6 +379,7 @@ dependencies = [
  "allthecodes-gateway",
  "allthecodes-server",
  "allthecodes-services",
+ "allthecodes-skills",
  "allthecodes-tasks",
  "allthecodes-tools",
  "allthecodes-types",

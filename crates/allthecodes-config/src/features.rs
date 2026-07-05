@@ -27,6 +27,8 @@ pub enum Feature {
     KairosPushNotification,
     KairosGithubWebhooks,
     Proactive,
+    McpSkills,
+    ExperimentalSkillSearch,
     TeamMemory,
     SubagentDashboard,
     AgentTeams,
@@ -81,6 +83,18 @@ const FEATURE_DESCRIPTORS: &[FeatureDescriptor] = &[
         env_var: "FEATURE_PROACTIVE",
         label: "proactive",
         description: "proactive tick and sleep tooling",
+    },
+    FeatureDescriptor {
+        feature: Feature::McpSkills,
+        env_var: "FEATURE_MCP_SKILLS",
+        label: "mcp_skills",
+        description: "MCP skill:// resource ingestion",
+    },
+    FeatureDescriptor {
+        feature: Feature::ExperimentalSkillSearch,
+        env_var: "FEATURE_EXPERIMENTAL_SKILL_SEARCH",
+        label: "experimental_skill_search",
+        description: "local skill search prefetch and turn-zero discovery scaffolding",
     },
     FeatureDescriptor {
         feature: Feature::TeamMemory,
@@ -149,6 +163,8 @@ pub struct FeatureFlags {
     pub kairos_push_notification: bool,
     pub kairos_github_webhooks: bool,
     pub proactive: bool,
+    pub mcp_skills: bool,
+    pub experimental_skill_search: bool,
     pub team_memory: bool,
     pub subagent_dashboard: bool,
     pub agent_teams: bool,
@@ -187,6 +203,8 @@ impl FeatureFlags {
 
         let kairos = read("FEATURE_KAIROS");
         let team_memory = read("FEATURE_TEAMMEM");
+        let mcp_skills = read("FEATURE_MCP_SKILLS");
+        let experimental_skill_search = read("FEATURE_EXPERIMENTAL_SKILL_SEARCH");
         let subagent_dashboard = read("FEATURE_SUBAGENT_DASHBOARD");
         let agent_teams =
             read("FEATURE_AGENT_TEAMS") || read("ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS");
@@ -247,6 +265,8 @@ impl FeatureFlags {
             kairos_push_notification,
             kairos_github_webhooks,
             proactive,
+            mcp_skills,
+            experimental_skill_search,
             team_memory,
             subagent_dashboard,
             agent_teams,
@@ -267,6 +287,8 @@ impl FeatureFlags {
             kairos_push_notification: true,
             kairos_github_webhooks: true,
             proactive: true,
+            mcp_skills: true,
+            experimental_skill_search: true,
             team_memory: true,
             subagent_dashboard: true,
             agent_teams: true,
@@ -292,6 +314,8 @@ impl FeatureFlags {
             Feature::KairosPushNotification => self.kairos_push_notification,
             Feature::KairosGithubWebhooks => self.kairos_github_webhooks,
             Feature::Proactive => self.proactive,
+            Feature::McpSkills => self.mcp_skills,
+            Feature::ExperimentalSkillSearch => self.experimental_skill_search,
             Feature::TeamMemory => self.team_memory,
             Feature::SubagentDashboard => self.subagent_dashboard,
             Feature::AgentTeams => self.agent_teams,
@@ -367,6 +391,8 @@ mod tests {
         assert!(!f.subagent_dashboard);
         assert!(!f.agent_teams);
         assert!(!f.coordinator);
+        assert!(!f.mcp_skills);
+        assert!(!f.experimental_skill_search);
         assert!(
             f.workflow_scripts,
             "full-build workflow tools default enabled"
@@ -452,7 +478,36 @@ mod tests {
         assert!(f.is_enabled(Feature::Kairos));
         assert!(f.is_enabled(Feature::KairosBrief));
         assert!(!f.is_enabled(Feature::KairosChannels));
+        assert!(!f.is_enabled(Feature::McpSkills));
+        assert!(!f.is_enabled(Feature::ExperimentalSkillSearch));
         assert!(f.is_enabled(Feature::Proactive));
+    }
+
+    #[test]
+    fn kairos_does_not_imply_search_feature_gates() {
+        let f = flags(&[("FEATURE_KAIROS", "1")]);
+        assert!(f.kairos);
+        assert!(f.proactive, "kairos should still imply proactive");
+        assert!(
+            !f.mcp_skills,
+            "FEATURE_KAIROS must not imply FEATURE_MCP_SKILLS"
+        );
+        assert!(
+            !f.experimental_skill_search,
+            "FEATURE_KAIROS must not imply FEATURE_EXPERIMENTAL_SKILL_SEARCH"
+        );
+    }
+
+    #[test]
+    fn search_feature_gates_read_env_vars() {
+        let f = flags(&[
+            ("FEATURE_MCP_SKILLS", "1"),
+            ("FEATURE_EXPERIMENTAL_SKILL_SEARCH", "true"),
+        ]);
+        assert!(f.mcp_skills);
+        assert!(f.experimental_skill_search);
+        assert!(f.is_enabled(Feature::McpSkills));
+        assert!(f.is_enabled(Feature::ExperimentalSkillSearch));
     }
 
     #[test]
@@ -484,7 +539,7 @@ mod tests {
     #[test]
     fn feature_descriptors_are_unique_and_complete() {
         let descriptors = feature_descriptors();
-        assert_eq!(descriptors.len(), 14);
+        assert_eq!(descriptors.len(), 16);
 
         let mut labels: Vec<_> = descriptors
             .iter()
@@ -500,6 +555,23 @@ mod tests {
             .expect("github webhook descriptor is exposed");
         assert_eq!(github.env_var, "FEATURE_KAIROS_GITHUB_WEBHOOKS");
         assert!(github.description.contains("webhook"));
+
+        let mcp_skills = descriptors
+            .iter()
+            .find(|descriptor| descriptor.feature == Feature::McpSkills)
+            .expect("mcp skills descriptor is exposed");
+        assert_eq!(mcp_skills.env_var, "FEATURE_MCP_SKILLS");
+        assert_eq!(mcp_skills.label, "mcp_skills");
+
+        let experimental_skill_search = descriptors
+            .iter()
+            .find(|descriptor| descriptor.feature == Feature::ExperimentalSkillSearch)
+            .expect("experimental skill search descriptor is exposed");
+        assert_eq!(
+            experimental_skill_search.env_var,
+            "FEATURE_EXPERIMENTAL_SKILL_SEARCH"
+        );
+        assert_eq!(experimental_skill_search.label, "experimental_skill_search");
     }
 
     #[test]

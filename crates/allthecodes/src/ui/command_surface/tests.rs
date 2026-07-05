@@ -12,6 +12,7 @@ use crate::ui::mcp::mcp_list_panel::McpListPanelState;
 use crate::ui::memory::memory_file_selector::{
     MemoryFileKind, MemoryFileOption, MemoryFileSelectorState,
 };
+use crate::ui::selection_surface::{SelectionItem, SelectionSurface};
 use crate::ui::skills::skills_menu::SkillMenuItem;
 use crate::ui::tasks::{
     TaskKind as UiTaskKind, TaskState as UiTaskState, TaskStatus as UiTaskStatus,
@@ -24,6 +25,15 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent {
         code,
         modifiers: KeyModifiers::NONE,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    }
+}
+
+fn ctrl_key(ch: char) -> KeyEvent {
+    KeyEvent {
+        code: KeyCode::Char(ch),
+        modifiers: KeyModifiers::CONTROL,
         kind: KeyEventKind::Press,
         state: KeyEventState::NONE,
     }
@@ -389,6 +399,28 @@ fn skills_surface_filters_and_opens_selected_skill() {
 
     surface.handle_key(key(KeyCode::Char('m')));
     assert!(surface.render().contains("remember"));
+    assert_eq!(
+        surface.handle_key(key(KeyCode::Enter)),
+        CommandSurfaceOutcome::Submit("/skills remember".to_string())
+    );
+}
+
+#[test]
+fn skills_surface_searches_filter_without_replacing_exact_enter() {
+    let mut surface = CommandSurface::Skills(SkillsSurface {
+        items: vec![
+            SkillMenuItem::new("debug", "diagnose failures"),
+            SkillMenuItem::new("remember", "save memory"),
+        ],
+        selected_index: 0,
+        filter: String::new(),
+    });
+
+    surface.handle_key(key(KeyCode::Char('m')));
+    assert_eq!(
+        surface.handle_key(ctrl_key('s')),
+        CommandSurfaceOutcome::Submit("/skills search m".to_string())
+    );
     assert_eq!(
         surface.handle_key(key(KeyCode::Enter)),
         CommandSurfaceOutcome::Submit("/skills remember".to_string())
@@ -802,8 +834,38 @@ fn mcp_surface_action_tabs_apply_to_selected_server() {
         CommandSurfaceOutcome::Submit("/mcp remove db".to_string())
     );
 
+    surface.handle_key(key(KeyCode::Right));
+    assert!(surface.render().contains("> Search"));
+    assert_eq!(
+        surface.handle_key(key(KeyCode::Enter)),
+        CommandSurfaceOutcome::FillPrompt("/mcp search ".to_string())
+    );
+
     surface.handle_key(key(KeyCode::Char('v')));
     assert!(surface.render().contains("Server details"));
+}
+
+#[test]
+fn plugin_surface_searches_filter_without_replacing_exact_enter() {
+    let mut surface = CommandSurface::Plugin(PluginSurface {
+        picker: SelectionSurface::new(
+            "Plugins",
+            vec![SelectionItem::new("rust-tools", "Rust Tools")],
+        ),
+    });
+
+    if let CommandSurface::Plugin(plugin) = &mut surface {
+        plugin.picker.set_filter("rust");
+    }
+
+    assert_eq!(
+        surface.handle_key(ctrl_key('s')),
+        CommandSurfaceOutcome::Submit("/plugin search rust".to_string())
+    );
+    assert_eq!(
+        surface.handle_key(key(KeyCode::Enter)),
+        CommandSurfaceOutcome::Submit("/plugin info rust-tools".to_string())
+    );
 }
 
 #[test]

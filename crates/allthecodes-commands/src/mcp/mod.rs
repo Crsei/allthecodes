@@ -10,6 +10,7 @@ mod flags;
 mod help;
 mod list_status;
 mod runtime;
+mod search;
 mod settings;
 
 #[cfg(test)]
@@ -27,6 +28,7 @@ use flags::parse_flags;
 use help::help_text;
 use list_status::{handle_list, handle_status};
 use runtime::{handle_connect, handle_disconnect, handle_reconnect};
+use search::handle_search;
 
 /// Handler for the `/mcp` slash command.
 pub struct McpHandler;
@@ -40,6 +42,7 @@ impl CommandHandler for McpHandler {
             Some("help") | Some("-h") | Some("--help") => Ok(CommandResult::Output(help_text())),
             Some("list") | Some("ls") => handle_list(ctx).await,
             Some("status") => handle_status(ctx).await,
+            Some("search") => handle_search(args),
             Some("add") => handle_add(&parts[1..], ctx),
             Some("edit") | Some("update") => handle_edit(&parts[1..], ctx),
             Some("remove") | Some("rm") | Some("delete") => handle_remove(&parts[1..], ctx),
