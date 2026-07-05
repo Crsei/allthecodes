@@ -707,31 +707,6 @@ fn payload_string(payload: &Value, keys: &[&str]) -> Option<String> {
     })
 }
 
-fn query_source_from_submit_payload(payload: &Value) -> QuerySource {
-    match payload.get("source").and_then(Value::as_str) {
-        Some("proactive_tick") => QuerySource::ProactiveTick,
-        Some("scheduled_task") => QuerySource::ScheduledTask,
-        Some("webhook_event") => QuerySource::WebhookEvent,
-        Some("channel_notification") => QuerySource::ChannelNotification,
-        Some("channel") => query_source_from_channel_payload(payload),
-        Some("http") | Some("worker") | None => QuerySource::ReplMainThread,
-        Some(_) => QuerySource::ReplMainThread,
-    }
-}
-
-fn query_source_from_channel_payload(payload: &Value) -> QuerySource {
-    match payload
-        .get("channel")
-        .and_then(|channel| channel.get("origin"))
-        .and_then(|origin| origin.get("type"))
-        .and_then(Value::as_str)
-    {
-        Some("webhook") => QuerySource::WebhookEvent,
-        Some("mcp") | None => QuerySource::ChannelNotification,
-        Some(_) => QuerySource::ChannelNotification,
-    }
-}
-
 fn gateway_payload_string(command: &protocol::DaemonCommand, keys: &[&str]) -> Option<String> {
     command
         .payload
@@ -869,6 +844,31 @@ mod tests {
         })
     }
 
+    fn query_source_from_submit_payload(payload: &Value) -> QuerySource {
+        match payload.get("source").and_then(Value::as_str) {
+            Some("proactive_tick") => QuerySource::ProactiveTick,
+            Some("scheduled_task") => QuerySource::ScheduledTask,
+            Some("webhook_event") => QuerySource::WebhookEvent,
+            Some("channel_notification") => QuerySource::ChannelNotification,
+            Some("channel") => query_source_from_channel_payload(payload),
+            Some("http") | Some("worker") | None => QuerySource::ReplMainThread,
+            Some(_) => QuerySource::ReplMainThread,
+        }
+    }
+
+    fn query_source_from_channel_payload(payload: &Value) -> QuerySource {
+        match payload
+            .get("channel")
+            .and_then(|channel| channel.get("origin"))
+            .and_then(|origin| origin.get("type"))
+            .and_then(Value::as_str)
+        {
+            Some("webhook") => QuerySource::WebhookEvent,
+            Some("mcp") | None => QuerySource::ChannelNotification,
+            Some(_) => QuerySource::ChannelNotification,
+        }
+    }
+
     #[test]
     fn submit_payload_source_maps_proactive_tick() {
         assert_eq!(
@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_payload_source_keeps_http_interactive() {
+    fn submit_payload_source_maps_http_as_interactive() {
         assert_eq!(
             query_source_from_submit_payload(&json!({ "source": "http" })),
             QuerySource::ReplMainThread
@@ -949,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_payload_source_keeps_missing_source_interactive() {
+    fn submit_payload_source_maps_missing_source_as_interactive() {
         assert_eq!(
             query_source_from_submit_payload(&json!({ "text": "hello" })),
             QuerySource::ReplMainThread
