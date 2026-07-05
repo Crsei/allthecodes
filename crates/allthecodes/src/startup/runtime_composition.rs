@@ -54,7 +54,7 @@ impl RuntimeComposition {
     }
 }
 
-fn activate_startup_proactive_if_requested(cli: &crate::cli::Cli) {
+pub(crate) fn activate_startup_proactive_if_requested(cli: &crate::cli::Cli) {
     if !startup_proactive_requested(cli) {
         return;
     }
@@ -89,6 +89,36 @@ mod tests {
 
     use super::activate_startup_proactive_if_requested;
 
+    struct FeatureOverrideGuard;
+
+    impl FeatureOverrideGuard {
+        fn set(flags: FeatureFlags) -> Self {
+            features::set_runtime_override(flags);
+            Self
+        }
+    }
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            features::clear_runtime_override();
+        }
+    }
+
+    struct ProactiveControllerGuard;
+
+    impl ProactiveControllerGuard {
+        fn inactive() -> Self {
+            allthecodes_services::proactive::global_controller().deactivate("test_setup");
+            Self
+        }
+    }
+
+    impl Drop for ProactiveControllerGuard {
+        fn drop(&mut self) {
+            allthecodes_services::proactive::global_controller().deactivate("test_cleanup");
+        }
+    }
+
     struct EnvGuard {
         key: &'static str,
         previous: Option<std::ffi::OsString>,
@@ -115,7 +145,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn startup_proactive_cli_sets_runtime_feature_override() {
-        features::set_runtime_override(FeatureFlags::all_disabled());
+        let _features = FeatureOverrideGuard::set(FeatureFlags::all_disabled());
+        let _controller = ProactiveControllerGuard::inactive();
         let cli = Cli::parse_from(["claude", "--proactive"]);
 
         activate_startup_proactive_if_requested(&cli);
@@ -124,15 +155,14 @@ mod tests {
         let snapshot = allthecodes_services::proactive::global_controller().snapshot();
         assert_eq!(snapshot.status, ProactiveStatus::Active);
         assert_eq!(snapshot.source.as_deref(), Some("startup"));
-        features::clear_runtime_override();
-        allthecodes_services::proactive::global_controller().deactivate("test_cleanup");
     }
 
     #[test]
     #[serial_test::serial]
     fn startup_proactive_env_sets_runtime_feature_override() {
         let _guard = EnvGuard::set("ALLTHECODES_PROACTIVE", "yes");
-        features::set_runtime_override(FeatureFlags::all_disabled());
+        let _features = FeatureOverrideGuard::set(FeatureFlags::all_disabled());
+        let _controller = ProactiveControllerGuard::inactive();
         let cli = Cli::parse_from(["claude"]);
 
         activate_startup_proactive_if_requested(&cli);
@@ -141,7 +171,42 @@ mod tests {
         let snapshot = allthecodes_services::proactive::global_controller().snapshot();
         assert_eq!(snapshot.status, ProactiveStatus::Active);
         assert_eq!(snapshot.source.as_deref(), Some("startup"));
-        features::clear_runtime_override();
-        allthecodes_services::proactive::global_controller().deactivate("test_cleanup");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn startup_proactive_feature_gate_activates_controller() {
+        let _features = FeatureOverrideGuard::set(FeatureFlags::from_env_iter([(
+            "FEATURE_PROACTIVE".to_string(),
+            "1".to_string(),
+        )]));
+        let _controller = ProactiveControllerGuard::inactive();
+        let cli = Cli::parse_from(["claude"]);
+
+        activate_startup_proactive_if_requested(&cli);
+
+        assert!(features::enabled(Feature::Proactive));
+        let snapshot = allthecodes_services::proactive::global_controller().snapshot();
+        assert_eq!(snapshot.status, ProactiveStatus::Active);
+        assert_eq!(snapshot.source.as_deref(), Some("startup"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn startup_kairos_implied_proactive_activates_controller() {
+        let _features = FeatureOverrideGuard::set(FeatureFlags::from_env_iter([(
+            "FEATURE_KAIROS".to_string(),
+            "1".to_string(),
+        )]));
+        let _controller = ProactiveControllerGuard::inactive();
+        let cli = Cli::parse_from(["claude"]);
+
+        activate_startup_proactive_if_requested(&cli);
+
+        assert!(features::enabled(Feature::Kairos));
+        assert!(features::enabled(Feature::Proactive));
+        let snapshot = allthecodes_services::proactive::global_controller().snapshot();
+        assert_eq!(snapshot.status, ProactiveStatus::Active);
+        assert_eq!(snapshot.source.as_deref(), Some("startup"));
     }
 }

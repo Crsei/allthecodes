@@ -32,14 +32,28 @@ fn daemon_allowed_by_features() -> bool {
 mod tests {
     use super::daemon_allowed_by_features;
 
+    struct FeatureOverrideGuard;
+
+    impl FeatureOverrideGuard {
+        fn set(flags: allthecodes_config::features::FeatureFlags) -> Self {
+            allthecodes_config::features::set_runtime_override(flags);
+            Self
+        }
+    }
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            allthecodes_config::features::clear_runtime_override();
+        }
+    }
+
     #[test]
     #[serial_test::serial]
     fn daemon_mode_accepts_standalone_proactive() {
         let mut flags = allthecodes_config::features::FeatureFlags::all_disabled();
         flags.proactive = true;
-        allthecodes_config::features::set_runtime_override(flags);
+        let _guard = FeatureOverrideGuard::set(flags);
         assert!(daemon_allowed_by_features());
-        allthecodes_config::features::clear_runtime_override();
     }
 }
 
