@@ -430,28 +430,59 @@ pub fn clear_control_token() -> Result<()> {
 }
 
 pub fn write_sleep_state(duration_seconds: u64, reason: &str) -> Result<DaemonSleepState> {
-    allthecodes_config::proactive_sleep::write_sleep_state(duration_seconds, reason)
-        .map(map_sleep_state)
+    let state = map_sleep_state(allthecodes_config::proactive_sleep::write_sleep_state(
+        duration_seconds,
+        reason,
+    )?);
+    write_sleep_state_sqlite_backup(&state);
+    Ok(state)
 }
 
 pub fn write_sleep_state_until(
     sleeping_until: DateTime<Utc>,
     reason: &str,
 ) -> Result<DaemonSleepState> {
-    allthecodes_config::proactive_sleep::write_sleep_state_until(sleeping_until, reason)
-        .map(map_sleep_state)
+    let state = map_sleep_state(
+        allthecodes_config::proactive_sleep::write_sleep_state_until(sleeping_until, reason)?,
+    );
+    write_sleep_state_sqlite_backup(&state);
+    Ok(state)
 }
 
 pub fn read_sleep_state() -> Result<Option<DaemonSleepState>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::read_state_value::<DaemonSleepState>("sleep-state") {
+        Ok(Some(state)) => return Ok(Some(state)),
+        Ok(None) => {}
+        Err(err) => warn!(
+            error = %err,
+            "failed to read daemon sleep state from sqlite; falling back to JSON"
+        ),
+    }
+
     allthecodes_config::proactive_sleep::read_sleep_state().map(|state| state.map(map_sleep_state))
 }
 
 pub fn active_sleep_state() -> Result<Option<DaemonSleepState>> {
-    allthecodes_config::proactive_sleep::active_sleep_state()
-        .map(|state| state.map(map_sleep_state))
+    let Some(state) = read_sleep_state()? else {
+        return Ok(None);
+    };
+    if state.sleeping_until <= Utc::now() {
+        clear_sleep_state()?;
+        return Ok(None);
+    }
+    Ok(Some(state))
 }
 
 pub fn clear_sleep_state() -> Result<()> {
+    #[cfg(feature = "sqlite-storage")]
+    if let Err(err) = sqlite_store::remove_state_value("sleep-state") {
+        warn!(
+            key = "sleep-state",
+            error = %err,
+            "failed to remove daemon sleep state from sqlite; removing JSON backup"
+        );
+    }
     allthecodes_config::proactive_sleep::clear_sleep_state("process_state").map(|_| ())
 }
 
@@ -461,6 +492,91 @@ fn map_sleep_state(state: allthecodes_config::proactive_sleep::SleepState) -> Da
         sleeping_until: state.sleeping_until,
         reason: state.reason,
         updated_at: state.updated_at,
+    }
+}
+
+fn write_sleep_state_sqlite_backup(state: &DaemonSleepState) {
+    #[cfg(feature = "sqlite-storage")]
+    if let Err(err) = sqlite_store::write_state_value("sleep-state", state) {
+        warn!(
+            key = "sleep-state",
+            error = %err,
+            "failed to write daemon sleep state to sqlite; keeping JSON backup"
+        );
+    }
+    #[cfg(not(feature = "sqlite-storage"))]
+    let _ = state;
+}
+
+#[cfg(test)]
+mod sleep_tests {
+    use super::*;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn sleep_state_wrapper_writes_canonical_config_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+
+        let state = write_sleep_state(60, " shared config ").unwrap();
+        let shared = allthecodes_config::proactive_sleep::read_sleep_state()
+            .unwrap()
+            .expect("shared config sleep state");
+
+        assert_eq!(
+            state.schema_version,
+            allthecodes_config::proactive_sleep::SLEEP_STATE_SCHEMA_VERSION
+        );
+        assert_eq!(shared.schema_version, state.schema_version);
+        assert_eq!(shared.reason.as_deref(), Some("shared config"));
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial]
+    fn sleep_state_wrapper_reads_sqlite_backup_and_clear_removes_both() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+
+        write_sleep_state(60, " sqlite backup ").unwrap();
+        std::fs::remove_file(sleep_state_path()).unwrap();
+
+        let from_sqlite = read_sleep_state()
+            .unwrap()
+            .expect("sleep state should be readable from sqlite backup");
+        assert_eq!(from_sqlite.reason.as_deref(), Some("sqlite backup"));
+
+        clear_sleep_state().unwrap();
+        assert!(read_sleep_state().unwrap().is_none());
+        assert!(
+            crate::process_state::sqlite_store::read_state_value::<DaemonSleepState>("sleep-state")
+                .unwrap()
+                .is_none()
+        );
     }
 }
 
