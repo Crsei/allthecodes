@@ -564,21 +564,22 @@ async fn mcp_status_reports_server_list() {
 async fn mcp_search_outputs_reasons_actions_and_status_boundary() {
     let _runtime = DiscoveryRuntimeGuard::install(
         DiscoverySearchRuntime::new().with_mcp_items_provider(|| {
-            vec![
-                DiscoverySearchResult::new(DiscoveryResultKind::McpCapability, "github pull requests")
-                    .with_server_name("github")
-                    .with_source("runtime")
-                    .with_description("Create and review pull requests through GitHub MCP")
-                    .with_status(DiscoveryStatusSummary::new("connected"))
-                    .with_tool_summaries([DiscoveryToolSummary::new(
-                        "mcp__github__create_pull_request",
-                        "Create a pull request",
-                    )])
-                    .with_next_action(DiscoveryNextAction::new(
-                        "Inspect callable schema",
-                        "ToolSearch source=mcp query=select:mcp__github__create_pull_request",
-                    )),
-            ]
+            vec![DiscoverySearchResult::new(
+                DiscoveryResultKind::McpCapability,
+                "github pull requests",
+            )
+            .with_server_name("github")
+            .with_source("runtime")
+            .with_description("Create and review pull requests through GitHub MCP")
+            .with_status(DiscoveryStatusSummary::new("connected"))
+            .with_tool_summaries([DiscoveryToolSummary::new(
+                "mcp__github__create_pull_request",
+                "Create a pull request",
+            )])
+            .with_next_action(DiscoveryNextAction::new(
+                "Inspect callable schema",
+                "ToolSearch source=mcp query=select:mcp__github__create_pull_request",
+            ))]
         }),
     );
     let handler = McpHandler;

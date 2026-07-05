@@ -219,10 +219,12 @@ mod tests {
             .try_generate(context(1_050), &[candidate.clone()])
             .is_none());
 
-        assert!(service
-            .try_generate(context(1_200), &[candidate])
-            .expect("cooldown elapsed")
-            .len()
-            == 1);
+        assert!(
+            service
+                .try_generate(context(1_200), &[candidate])
+                .expect("cooldown elapsed")
+                .len()
+                == 1
+        );
     }
 }

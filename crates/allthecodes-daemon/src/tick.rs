@@ -2,11 +2,11 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
 use allthecodes_config::features::{self, Feature};
 use allthecodes_services::skill_search_prefetch::{
     collect_skill_discovery_prefetch, start_skill_discovery_prefetch, SkillPrefetchContext,
 };
+use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
@@ -103,12 +103,11 @@ fn skill_discovery_tick_summary() -> Option<Value> {
         return None;
     }
 
-    let result = collect_skill_discovery_prefetch(start_skill_discovery_prefetch(
-        SkillPrefetchContext {
+    let result =
+        collect_skill_discovery_prefetch(start_skill_discovery_prefetch(SkillPrefetchContext {
             session_id: ASSISTANT_WORKER_ID.to_string(),
             query: String::new(),
-        },
-    ));
+        }));
     Some(json!({
         "count": result.skills.len(),
         "remote_state": result.remote_state,
@@ -118,11 +117,11 @@ fn skill_discovery_tick_summary() -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use allthecodes_config::features::{self, FeatureFlags};
-    use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
     use crate::process_state::DaemonSleepState;
     use crate::protocol::DaemonCommandKind;
     use crate::supervisor::ASSISTANT_WORKER_ID;
+    use allthecodes_config::features::{self, FeatureFlags};
+    use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
     use chrono::{TimeZone, Utc};
     use serial_test::serial;
 

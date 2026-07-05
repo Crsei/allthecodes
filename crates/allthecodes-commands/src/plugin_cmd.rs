@@ -551,9 +551,9 @@ fn handle_search(query: &str) -> Result<CommandResult> {
             if let Some(preview) = output.display_preview.as_deref() {
                 notes.push(preview);
             }
-            let results = serde_json::from_value::<Vec<
-                allthecodes_tools::discovery_search::DiscoverySearchResult,
-            >>(output.data["results"].clone())
+            let results = serde_json::from_value::<
+                Vec<allthecodes_tools::discovery_search::DiscoverySearchResult>,
+            >(output.data["results"].clone())
             .unwrap_or_default();
             Ok(CommandResult::Output(format_discovery_search_results(
                 "Plugin search results",

@@ -190,9 +190,9 @@ fn handle_skill_search(query: &str) -> String {
         },
     ) {
         Ok(output) => {
-            let results = serde_json::from_value::<Vec<
-                allthecodes_tools::discovery_search::DiscoverySearchResult,
-            >>(output.data["results"].clone())
+            let results = serde_json::from_value::<
+                Vec<allthecodes_tools::discovery_search::DiscoverySearchResult>,
+            >(output.data["results"].clone())
             .unwrap_or_default();
             format_discovery_search_results(
                 "Skill search results",
