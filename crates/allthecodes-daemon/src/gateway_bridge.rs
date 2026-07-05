@@ -83,6 +83,20 @@ impl GatewayCommandSink for GatewayDaemonBridge {
             self.bridge_session_id.as_deref(),
             self.assistant_session_id.as_deref(),
         );
+        if command.kind == GatewayCommandKind::Submit && should_wake_sleep_for_payload(&payload) {
+            allthecodes_services::proactive::clear_sleep_state("gateway_submit").map_err(
+                |error| {
+                    GatewayError::new(
+                        GatewayDiagnostic::new(
+                            "daemon_sleep_clear_failed",
+                            "The daemon bridge could not clear proactive sleep before dispatching work.",
+                            "Check daemon state directory permissions and retry the request.",
+                        )
+                        .with_context(format!("run_id={}, error={error:#}", command.run_id)),
+                    )
+                },
+            )?;
+        }
         let queued = super::protocol_store()
             .enqueue_command(
                 &self.target_worker_id,
@@ -97,6 +111,10 @@ impl GatewayCommandSink for GatewayDaemonBridge {
             target: queued.target_worker_id,
         })
     }
+}
+
+fn should_wake_sleep_for_payload(payload: &serde_json::Value) -> bool {
+    payload.get("source").and_then(serde_json::Value::as_str) != Some("proactive_tick")
 }
 
 fn daemon_kind(kind: GatewayCommandKind) -> DaemonCommandKind {
@@ -1199,6 +1217,52 @@ mod tests {
             command.payload["gateway"]["assistantSessionId"],
             "assistant-session-prev"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_submit_clears_active_sleep_for_non_proactive_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        allthecodes_services::proactive::write_sleep_state(300, "waiting").unwrap();
+        let bridge = GatewayDaemonBridge::for_worker("assistant-session-1");
+
+        bridge
+            .dispatch(GatewayCommand {
+                kind: GatewayCommandKind::Submit,
+                run_id: "run_bridge123".to_string(),
+                session_key: "remote:http:abc".to_string(),
+                payload: json!({ "text": "wake up", "source": "remote_user" }),
+                idempotency_key: Some("delivery-1".to_string()),
+            })
+            .unwrap();
+
+        assert!(allthecodes_services::proactive::active_sleep_state()
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_submit_preserves_active_sleep_for_proactive_tick_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        allthecodes_services::proactive::write_sleep_state(300, "waiting").unwrap();
+        let bridge = GatewayDaemonBridge::for_worker("assistant-session-1");
+
+        bridge
+            .dispatch(GatewayCommand {
+                kind: GatewayCommandKind::Submit,
+                run_id: "run_bridge123".to_string(),
+                session_key: "remote:http:abc".to_string(),
+                payload: json!({ "text": "tick", "source": "proactive_tick" }),
+                idempotency_key: Some("delivery-1".to_string()),
+            })
+            .unwrap();
+
+        assert!(allthecodes_services::proactive::active_sleep_state()
+            .unwrap()
+            .is_some());
     }
 
     #[test]

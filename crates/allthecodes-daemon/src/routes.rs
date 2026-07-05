@@ -350,6 +350,12 @@ async fn submit(
 async fn submit_authorized(state: DaemonState, body: SubmitRequest) -> Json<Value> {
     let text = body.text;
     let message_id = body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if let Err(err) = allthecodes_services::proactive::clear_sleep_state("http_submit") {
+        return Json(json!({
+            "status": "error",
+            "message": err.to_string(),
+        }));
+    }
     let command = match super::protocol_store().enqueue_command(
         ASSISTANT_WORKER_ID,
         DaemonCommandKind::Submit,
@@ -1031,6 +1037,29 @@ mod tests {
         assert_eq!(commands[0].kind, DaemonCommandKind::PermissionResponse);
         assert_eq!(commands[0].payload["tool_use_id"], "toolu_1");
         assert_eq!(commands[0].payload["decision"], "allow");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn submit_endpoint_clears_active_sleep_state() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let token = crate::process_state::write_control_token().unwrap();
+        allthecodes_services::proactive::write_sleep_state(300, "waiting").unwrap();
+        let app = api_routes().with_state(make_daemon_state());
+
+        let (_status, body) = post_json(
+            app,
+            "/api/submit",
+            &token.token,
+            json!({ "text": "wake up" }),
+        )
+        .await;
+
+        assert_eq!(body["status"], "ok");
+        assert!(allthecodes_services::proactive::active_sleep_state()
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

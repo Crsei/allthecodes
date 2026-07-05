@@ -7,16 +7,13 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::exec::sleep as sleep_spec;
 use crate::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, ValidationResult};
 use allthecodes_config::features::{self, Feature};
+use allthecodes_config::proactive_sleep::write_sleep_state;
 use allthecodes_types::message::AssistantMessage;
-
-const DAEMON_SLEEP_STATE_SCHEMA_VERSION: u32 = 2;
 
 /// SleepTool -- signal the proactive tick loop to pause.
 pub struct SleepTool;
@@ -96,36 +93,6 @@ impl Tool for SleepTool {
     fn user_facing_name(&self, _input: Option<&Value>) -> String {
         sleep_spec::NAME.to_string()
     }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ToolSleepState {
-    schema_version: u32,
-    sleeping_until: DateTime<Utc>,
-    reason: Option<String>,
-    updated_at: DateTime<Utc>,
-}
-
-fn write_sleep_state(duration_seconds: u64, reason: &str) -> Result<ToolSleepState> {
-    let now = Utc::now();
-    let state = ToolSleepState {
-        schema_version: DAEMON_SLEEP_STATE_SCHEMA_VERSION,
-        sleeping_until: now + chrono::Duration::seconds(duration_seconds as i64),
-        reason: if reason.trim().is_empty() {
-            None
-        } else {
-            Some(reason.trim().to_string())
-        },
-        updated_at: now,
-    };
-    let path = allthecodes_config::paths::daemon_dir().join("sleep-state.json");
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&state)?)?;
-    std::fs::rename(tmp, path)?;
-    Ok(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +211,25 @@ mod tests {
             matches!(result, ValidationResult::Ok),
             "expected Ok for valid input"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sleep_tool_writes_shared_sleep_contract() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+
+        let state = write_sleep_state(60, " waiting ").unwrap();
+        let shared = allthecodes_config::proactive_sleep::active_sleep_state()
+            .unwrap()
+            .expect("shared sleep state");
+
+        assert_eq!(
+            state.schema_version,
+            allthecodes_config::proactive_sleep::SLEEP_STATE_SCHEMA_VERSION
+        );
+        assert_eq!(shared.schema_version, state.schema_version);
+        assert_eq!(shared.reason.as_deref(), Some("waiting"));
     }
 
     #[test]

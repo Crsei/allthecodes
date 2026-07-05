@@ -275,6 +275,7 @@ fn submit_worker_command(args: &[String]) -> Result<()> {
         anyhow::bail!("daemon submit requires text");
     }
 
+    allthecodes_services::proactive::clear_sleep_state("daemon_submit")?;
     let command = crate::protocol_store().enqueue_command(
         crate::supervisor::ASSISTANT_WORKER_ID,
         protocol::DaemonCommandKind::Submit,

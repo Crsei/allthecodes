@@ -430,63 +430,38 @@ pub fn clear_control_token() -> Result<()> {
 }
 
 pub fn write_sleep_state(duration_seconds: u64, reason: &str) -> Result<DaemonSleepState> {
-    let until = Utc::now() + chrono::Duration::seconds(duration_seconds as i64);
-    write_sleep_state_until(until, reason)
+    allthecodes_config::proactive_sleep::write_sleep_state(duration_seconds, reason)
+        .map(map_sleep_state)
 }
 
 pub fn write_sleep_state_until(
     sleeping_until: DateTime<Utc>,
     reason: &str,
 ) -> Result<DaemonSleepState> {
-    ensure_daemon_dir()?;
-    let state = DaemonSleepState {
-        schema_version: SCHEMA_VERSION,
-        sleeping_until,
-        reason: if reason.trim().is_empty() {
-            None
-        } else {
-            Some(reason.trim().to_string())
-        },
-        updated_at: Utc::now(),
-    };
-    write_state_value("sleep-state", &sleep_state_path(), &state)?;
-    Ok(state)
+    allthecodes_config::proactive_sleep::write_sleep_state_until(sleeping_until, reason)
+        .map(map_sleep_state)
 }
 
 pub fn read_sleep_state() -> Result<Option<DaemonSleepState>> {
-    #[cfg(feature = "sqlite-storage")]
-    match sqlite_store::read_state_value::<DaemonSleepState>("sleep-state") {
-        Ok(state) => return Ok(state),
-        Err(err) => warn!(
-            error = %err,
-            "failed to read daemon sleep state from sqlite; falling back to JSON"
-        ),
-    }
-
-    let path = sleep_state_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read daemon sleep state {}", path.display()))?;
-    let state = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse daemon sleep state {}", path.display()))?;
-    Ok(Some(state))
+    allthecodes_config::proactive_sleep::read_sleep_state().map(|state| state.map(map_sleep_state))
 }
 
 pub fn active_sleep_state() -> Result<Option<DaemonSleepState>> {
-    let Some(state) = read_sleep_state()? else {
-        return Ok(None);
-    };
-    if state.sleeping_until <= Utc::now() {
-        clear_sleep_state()?;
-        return Ok(None);
-    }
-    Ok(Some(state))
+    allthecodes_config::proactive_sleep::active_sleep_state()
+        .map(|state| state.map(map_sleep_state))
 }
 
 pub fn clear_sleep_state() -> Result<()> {
-    remove_state_value("sleep-state", &sleep_state_path()).map(|_| ())
+    allthecodes_config::proactive_sleep::clear_sleep_state("process_state").map(|_| ())
+}
+
+fn map_sleep_state(state: allthecodes_config::proactive_sleep::SleepState) -> DaemonSleepState {
+    DaemonSleepState {
+        schema_version: state.schema_version,
+        sleeping_until: state.sleeping_until,
+        reason: state.reason,
+        updated_at: state.updated_at,
+    }
 }
 
 pub fn write_bridge_session_state(

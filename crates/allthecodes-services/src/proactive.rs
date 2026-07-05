@@ -1,16 +1,16 @@
-use std::fs;
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Local, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub use allthecodes_config::proactive_sleep::{
+    active_sleep_state, clear_sleep_state, read_sleep_state, write_sleep_state,
+    write_sleep_state_until, SleepState, SLEEP_STATE_SCHEMA_VERSION,
+};
+
 pub const DEFAULT_TICK_INTERVAL_MS: u64 = 30_000;
-pub const SLEEP_STATE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,14 +28,6 @@ pub struct ProactiveSnapshot {
     pub next_tick_at: Option<DateTime<Utc>>,
     pub paused_reason: Option<String>,
     pub context_blocked: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SleepState {
-    pub schema_version: u32,
-    pub sleeping_until: DateTime<Utc>,
-    pub reason: Option<String>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug)]
@@ -143,72 +135,6 @@ pub fn build_tick_payload(
     })
 }
 
-pub fn write_sleep_state(duration_seconds: u64, reason: &str) -> Result<SleepState> {
-    anyhow::ensure!(
-        (1..=3600).contains(&duration_seconds),
-        "\"duration_seconds\" must be between 1 and 3600, got {}",
-        duration_seconds
-    );
-
-    let now = Utc::now();
-    let state = SleepState {
-        schema_version: SLEEP_STATE_SCHEMA_VERSION,
-        sleeping_until: now + Duration::seconds(duration_seconds as i64),
-        reason: normalized_text(reason),
-        updated_at: now,
-    };
-    write_sleep_state_file(&state)?;
-    Ok(state)
-}
-
-pub fn active_sleep_state() -> Result<Option<SleepState>> {
-    let path = sleep_state_path();
-    let Some(state) = read_sleep_state_from_path(&path, |path| fs::read_to_string(path))? else {
-        return Ok(None);
-    };
-
-    if state.sleeping_until <= Utc::now() {
-        clear_sleep_state("expired")?;
-        return Ok(None);
-    }
-
-    Ok(Some(state))
-}
-
-fn read_sleep_state_from_path<F>(path: &Path, read_to_string: F) -> Result<Option<SleepState>>
-where
-    F: FnOnce(&Path) -> std::io::Result<String>,
-{
-    let text = match read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to read daemon sleep state {}", path.display()))
-        }
-    };
-    let state = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse daemon sleep state {}", path.display()))?;
-    Ok(Some(state))
-}
-
-pub fn clear_sleep_state(reason: &str) -> Result<bool> {
-    let path = sleep_state_path();
-    match fs::remove_file(&path) {
-        Ok(()) => {
-            tracing::debug!(
-                reason = %reason,
-                path = %path.display(),
-                "cleared proactive sleep state"
-            );
-            Ok(true)
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to clear daemon sleep state {}", path.display())),
-    }
-}
-
 fn inactive_snapshot(source: Option<String>) -> ProactiveSnapshot {
     ProactiveSnapshot {
         status: ProactiveStatus::Inactive,
@@ -230,34 +156,6 @@ fn normalized_text(text: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
-}
-
-fn sleep_state_path() -> PathBuf {
-    allthecodes_config::paths::daemon_dir().join("sleep-state.json")
-}
-
-fn write_sleep_state_file(state: &SleepState) -> Result<()> {
-    let path = sleep_state_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create daemon directory {}", parent.display()))?;
-    }
-
-    let tmp = path.with_file_name(format!(
-        "sleep-state.json.{}.{}.tmp",
-        std::process::id(),
-        Utc::now().timestamp_micros()
-    ));
-    fs::write(&tmp, serde_json::to_vec_pretty(state)?)
-        .with_context(|| format!("failed to write daemon sleep state {}", tmp.display()))?;
-    fs::rename(&tmp, &path).with_context(|| {
-        format!(
-            "failed to replace daemon sleep state {} with {}",
-            path.display(),
-            tmp.display()
-        )
-    })?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -359,15 +257,5 @@ mod tests {
         assert!(clear_sleep_state("test cleanup").unwrap());
         assert!(!path.exists());
         assert!(!clear_sleep_state("second cleanup").unwrap());
-    }
-
-    #[test]
-    fn sleep_state_reader_treats_not_found_during_read_as_absent() {
-        let path = std::path::Path::new("sleep-state.json");
-        let state =
-            read_sleep_state_from_path(path, |_| Err(std::io::Error::from(ErrorKind::NotFound)))
-                .unwrap();
-
-        assert!(state.is_none());
     }
 }
