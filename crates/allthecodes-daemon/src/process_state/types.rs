@@ -132,6 +132,19 @@ pub struct DaemonBridgeSessionState {
     pub last_poll_cursor: Option<String>,
     pub last_ack_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    pub workspace_key: String,
+    #[serde(default)]
+    pub terminal_id: Option<String>,
+    #[serde(default)]
+    pub remote_session_key: Option<String>,
+    #[serde(default)]
+    pub assistant_session_id: Option<String>,
+    #[serde(default)]
+    pub last_run_id: Option<String>,
+    #[serde(default)]
+    pub lease_owner: Option<String>,
+    #[serde(default)]
+    pub lease_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

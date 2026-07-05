@@ -9,7 +9,7 @@ use allthecodes_engine::command_runtime::{CommandContext, CommandResult};
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_server::RootProbeResponse;
-use axum::extract::State;
+use axum::extract::{Path as AxumPath, State};
 use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -248,6 +248,16 @@ pub fn api_routes() -> Router<DaemonState> {
         .route("/api/detach", post(detach))
         .route("/api/resize", post(resize))
         .route("/api/history", get(history))
+        .route("/daemon/bridge/sessions", get(bridge_sessions))
+        .route("/daemon/bridge/sessions/{id}", get(bridge_session))
+        .route(
+            "/daemon/bridge/sessions/{id}/resume",
+            post(bridge_session_resume),
+        )
+        .route(
+            "/daemon/bridge/sessions/{id}/release",
+            post(bridge_session_release),
+        )
         .route(
             "/api/account-auth/login/start",
             post(crate::account_auth::login_start),
@@ -362,6 +372,102 @@ async fn submit_authorized(state: DaemonState, body: SubmitRequest) -> Json<Valu
         "message_id": message_id,
         "command_id": command.command_id,
     }))
+}
+
+/// `GET /daemon/bridge/sessions` -- list persisted bridge sessions.
+async fn bridge_sessions() -> Json<Value> {
+    match process_state::list_bridge_session_states() {
+        Ok(sessions) => Json(json!({ "status": "ok", "sessions": sessions })),
+        Err(err) => Json(json!({ "status": "error", "message": err.to_string() })),
+    }
+}
+
+/// `GET /daemon/bridge/sessions/{id}` -- inspect one bridge session.
+async fn bridge_session(AxumPath(session_id): AxumPath<String>) -> Json<Value> {
+    match process_state::read_bridge_session_state(&session_id) {
+        Ok(Some(session)) => Json(json!({ "status": "ok", "session": session })),
+        Ok(None) => Json(json!({
+            "status": "not_found",
+            "message": format!("bridge session not found: {session_id}"),
+        })),
+        Err(err) => Json(json!({ "status": "error", "message": err.to_string() })),
+    }
+}
+
+/// `POST /daemon/bridge/sessions/{id}/resume` -- refresh the selected session lease.
+async fn bridge_session_resume(
+    AxumPath(session_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Json<Value> {
+    if let Err(response) = require_control_token(&headers) {
+        return response;
+    }
+    let session = match process_state::read_bridge_session_state(&session_id) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return Json(json!({
+                "status": "not_found",
+                "message": format!("bridge session not found: {session_id}"),
+            }));
+        }
+        Err(err) => return Json(json!({ "status": "error", "message": err.to_string() })),
+    };
+    let lease_owner = session
+        .lease_owner
+        .clone()
+        .unwrap_or_else(|| format!("daemon-api-pid-{}", std::process::id()));
+    let identity = crate::bridge_session::BridgeSessionIdentity {
+        cwd: session.cwd.clone(),
+        account_id: session.account_id.clone(),
+        profile: session.profile.clone(),
+        terminal_id: session.terminal_id.clone(),
+        remote_session_key: session.remote_session_key.clone(),
+    };
+
+    match crate::bridge_session::select_or_create_bridge_session(
+        identity,
+        crate::bridge_session::BridgeSessionReusePolicy::ExplicitSession(session_id),
+        crate::bridge_session::BridgeSessionLease {
+            owner: lease_owner,
+            ttl: std::time::Duration::from_secs(30),
+            allow_stale_takeover: true,
+        },
+    ) {
+        Ok(session) => Json(json!({ "status": "ok", "session": session })),
+        Err(err) => Json(json!({ "status": "error", "message": err.to_string() })),
+    }
+}
+
+/// `POST /daemon/bridge/sessions/{id}/release` -- clear the selected session lease.
+async fn bridge_session_release(
+    AxumPath(session_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Json<Value> {
+    if let Err(response) = require_control_token(&headers) {
+        return response;
+    }
+    let session = match process_state::read_bridge_session_state(&session_id) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return Json(json!({
+                "status": "not_found",
+                "message": format!("bridge session not found: {session_id}"),
+            }));
+        }
+        Err(err) => return Json(json!({ "status": "error", "message": err.to_string() })),
+    };
+
+    if let Some(owner) = session.lease_owner.as_deref() {
+        if let Err(err) = crate::bridge_session::release_bridge_session_lease(&session_id, owner) {
+            return Json(json!({ "status": "error", "message": err.to_string() }));
+        }
+    }
+
+    match process_state::read_bridge_session_state(&session_id) {
+        Ok(Some(session)) => Json(json!({ "status": "ok", "session": session })),
+        Ok(None) => Json(json!({ "status": "ok", "session": Value::Null })),
+        Err(err) => Json(json!({ "status": "error", "message": err.to_string() })),
+    }
 }
 
 /// `POST /api/abort` -- abort the currently running query.
@@ -817,6 +923,37 @@ mod tests {
         response_json(app.oneshot(request).await.expect("response")).await
     }
 
+    fn bridge_state(
+        cwd: &std::path::Path,
+        session_id: &str,
+    ) -> process_state::DaemonBridgeSessionState {
+        let identity = crate::bridge_session::BridgeSessionIdentity {
+            cwd: cwd.to_path_buf(),
+            account_id: Some("acct_1".to_string()),
+            profile: Some("default".to_string()),
+            terminal_id: None,
+            remote_session_key: Some("remote:http:abc".to_string()),
+        };
+        process_state::DaemonBridgeSessionState {
+            schema_version: 2,
+            session_id: session_id.to_string(),
+            account_id: Some("acct_1".to_string()),
+            profile: Some("default".to_string()),
+            cwd: cwd.to_path_buf(),
+            assistant_worker_id: ASSISTANT_WORKER_ID.to_string(),
+            last_poll_cursor: Some("cursor-1".to_string()),
+            last_ack_at: Some(chrono::Utc::now()),
+            updated_at: chrono::Utc::now(),
+            workspace_key: crate::bridge_session::derive_workspace_key(&identity).unwrap(),
+            terminal_id: None,
+            remote_session_key: Some("remote:http:abc".to_string()),
+            assistant_session_id: Some("assistant-session-1".to_string()),
+            last_run_id: Some("run_bridge123".to_string()),
+            lease_owner: Some("owner-a".to_string()),
+            lease_expires_at: Some(chrono::Utc::now() + chrono::Duration::seconds(60)),
+        }
+    }
+
     fn github_signature(secret: &str, body: &[u8]) -> String {
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
         mac.update(body);
@@ -880,6 +1017,62 @@ mod tests {
         assert_eq!(commands[0].kind, DaemonCommandKind::PermissionResponse);
         assert_eq!(commands[0].payload["tool_use_id"], "toolu_1");
         assert_eq!(commands[0].payload["decision"], "allow");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn bridge_sessions_routes_list_get_resume_and_release() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let token = crate::process_state::write_control_token().unwrap();
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        crate::process_state::write_bridge_session_state(&bridge_state(
+            &workspace,
+            "bridge-session-1",
+        ))
+        .unwrap();
+        let app = api_routes().with_state(make_daemon_state());
+
+        let (status, body) = get_json(app.clone(), "/daemon/bridge/sessions").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["sessions"][0]["session_id"], "bridge-session-1");
+        assert_eq!(
+            body["sessions"][0]["assistant_session_id"],
+            "assistant-session-1"
+        );
+
+        let (status, body) =
+            get_json(app.clone(), "/daemon/bridge/sessions/bridge-session-1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["session"]["remote_session_key"], "remote:http:abc");
+
+        let (status, body) = post_json(
+            app.clone(),
+            "/daemon/bridge/sessions/bridge-session-1/resume",
+            &token.token,
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["session"]["session_id"], "bridge-session-1");
+
+        let (status, body) = post_json(
+            app,
+            "/daemon/bridge/sessions/bridge-session-1/release",
+            &token.token,
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        let released = crate::process_state::read_bridge_session_state("bridge-session-1")
+            .unwrap()
+            .unwrap();
+        assert!(released.lease_owner.is_none());
+        assert!(released.lease_expires_at.is_none());
     }
 
     #[tokio::test]

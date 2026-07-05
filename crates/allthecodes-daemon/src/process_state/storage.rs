@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "sqlite-storage")]
 use tracing::warn;
 
 use super::atomic_write_json;
 use super::paths::{
-    control_token_path, daemon_dir, health_url, logs_dir, shutdown_request_path, sleep_state_path,
-    state_path, worker_state_path, workers_dir,
+    bridge_session_state_path, control_token_path, daemon_dir, health_url, logs_dir,
+    shutdown_request_path, sleep_state_path, state_path, worker_state_path, workers_dir,
 };
 use super::platform::{process_matches_record, process_start_key};
 #[cfg(feature = "sqlite-storage")]
@@ -496,7 +496,7 @@ pub fn write_bridge_session_state(
     let mut state = state.clone();
     state.schema_version = SCHEMA_VERSION;
     state.updated_at = Utc::now();
-    let path = bridge_session_path(&state.session_id);
+    let path = bridge_session_state_path(&state.session_id);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -506,34 +506,127 @@ pub fn write_bridge_session_state(
 }
 
 pub fn read_bridge_session_state(session_id: &str) -> Result<Option<DaemonBridgeSessionState>> {
-    let path = bridge_session_path(session_id);
+    let path = bridge_session_state_path(session_id);
     if !path.exists() {
         return Ok(None);
     }
     let text = fs::read_to_string(&path)
         .with_context(|| format!("failed to read bridge session state {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse bridge session state {}", path.display()))
-        .map(Some)
+    let raw = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse bridge session state {}", path.display()))?;
+    migrate_bridge_session_state(raw).map(Some)
 }
 
-fn bridge_session_path(session_id: &str) -> PathBuf {
-    daemon_dir()
-        .join("bridge")
-        .join("sessions")
-        .join(format!("{}.json", sanitize_bridge_id(session_id)))
+pub fn list_bridge_session_states() -> Result<Vec<DaemonBridgeSessionState>> {
+    let dir = daemon_dir().join("bridge").join("sessions");
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut states = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read bridge session state {}", path.display()))?;
+        let raw = serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse bridge session state {}", path.display()))?;
+        states.push(migrate_bridge_session_state(raw)?);
+    }
+    states.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+    Ok(states)
 }
 
-fn sanitize_bridge_id(raw: &str) -> String {
-    raw.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
+pub fn find_bridge_session_by_workspace_key(
+    workspace_key: &str,
+    account_id: Option<&str>,
+    profile: Option<&str>,
+) -> Result<Option<DaemonBridgeSessionState>> {
+    let mut matches: Vec<_> = list_bridge_session_states()?
+        .into_iter()
+        .filter(|state| state.workspace_key == workspace_key)
+        .filter(|state| state.account_id.as_deref() == account_id)
+        .filter(|state| state.profile.as_deref() == profile)
+        .collect();
+    matches.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.session_id.cmp(&left.session_id))
+    });
+    Ok(matches.into_iter().next())
+}
+
+pub fn migrate_bridge_session_state(raw: serde_json::Value) -> Result<DaemonBridgeSessionState> {
+    #[derive(Debug, Deserialize)]
+    struct RawBridgeSessionState {
+        #[serde(default)]
+        schema_version: u32,
+        session_id: String,
+        #[serde(default)]
+        account_id: Option<String>,
+        #[serde(default)]
+        profile: Option<String>,
+        cwd: PathBuf,
+        assistant_worker_id: String,
+        #[serde(default)]
+        last_poll_cursor: Option<String>,
+        #[serde(default)]
+        last_ack_at: Option<DateTime<Utc>>,
+        updated_at: DateTime<Utc>,
+        #[serde(default)]
+        workspace_key: Option<String>,
+        #[serde(default)]
+        terminal_id: Option<String>,
+        #[serde(default)]
+        remote_session_key: Option<String>,
+        #[serde(default)]
+        assistant_session_id: Option<String>,
+        #[serde(default)]
+        last_run_id: Option<String>,
+        #[serde(default)]
+        lease_owner: Option<String>,
+        #[serde(default)]
+        lease_expires_at: Option<DateTime<Utc>>,
+    }
+
+    let raw: RawBridgeSessionState =
+        serde_json::from_value(raw).context("failed to deserialize bridge session state")?;
+    let _schema_version = raw.schema_version;
+    let workspace_key = match raw.workspace_key {
+        Some(key) if !key.trim().is_empty() => key,
+        _ => crate::bridge_session::derive_workspace_key(
+            &crate::bridge_session::BridgeSessionIdentity {
+                cwd: raw.cwd.clone(),
+                account_id: raw.account_id.clone(),
+                profile: raw.profile.clone(),
+                terminal_id: raw.terminal_id.clone(),
+                remote_session_key: raw.remote_session_key.clone(),
+            },
+        )?,
+    };
+
+    Ok(DaemonBridgeSessionState {
+        schema_version: SCHEMA_VERSION,
+        session_id: raw.session_id,
+        account_id: raw.account_id,
+        profile: raw.profile,
+        cwd: raw.cwd,
+        assistant_worker_id: raw.assistant_worker_id,
+        last_poll_cursor: raw.last_poll_cursor,
+        last_ack_at: raw.last_ack_at,
+        updated_at: raw.updated_at,
+        workspace_key,
+        terminal_id: raw.terminal_id,
+        remote_session_key: raw.remote_session_key,
+        assistant_session_id: raw.assistant_session_id,
+        last_run_id: raw.last_run_id,
+        lease_owner: raw.lease_owner,
+        lease_expires_at: raw.lease_expires_at,
+    })
 }
 
 fn cleanup_worker_state_files(report: &mut StaleStateCleanupReport) -> Result<()> {

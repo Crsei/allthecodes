@@ -1,6 +1,6 @@
 # allthecodes 工作状态总览
 
-> 更新日期: 2026-07-04 | 分支历史名: `rust-lite` | 当前阶段: 全量构建 / Full Build
+> 更新日期: 2026-07-05 | 分支历史名: `rust-lite` | 当前阶段: 全量构建 / Full Build
 
 本文件只保留当前阶段仍需要判断和执行的状态。已经确认实现、已关闭或只具历史价值的阶段记录统一看：
 
@@ -24,7 +24,7 @@ allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默
 - Extensibility：hooks、skills、custom-agent active runtime safety、MCP stdio/local SSE/remote SSE/Streamable HTTP/OAuth/reconnect/tool refresh 已按当前标准面闭环。
 - MCP scope isolation：`mcpBindings` 已支持 `global/project/session/thread` 四级 binding；旧 `mcpServers` 继续生成兼容隐式 binding；engine、agent、skill fork、CLI/IPC/Web/TUI 展示均按 binding context 过滤 MCP tools/resources/calls。TUI 当前可编辑 global/project/session binding，thread binding 由 CLI/IPC/Web 编辑。
 - ACP v2 adapter：`--acp` JSON-RPC stdio server 已完成 review-fix baseline。已验证 `initialize`、auth、session new/load/resume/list/close/delete/prompt/cancel/set_config_option、permission request bridge、prompt/update mapping、stdout purity smoke；`session.prompt.image/audio/embeddedContext` 与 `session.mcp.*` 仍为 intentional unadvertised scope。
-- KAIROS resident assistant / daemon parity：system prompt resident-assistant sections、assistant/bridge/proactive/scheduler worker ownership、automation state DTO、push notification/channel ingress、dream memory distillation、scheduler supervision、HTTP/SSE history replay、daemon CLI submit/sleep/stop E2E 已落地；live provider smoke 仍按需运行。
+- KAIROS resident assistant / daemon parity：system prompt resident-assistant sections、assistant/bridge/proactive/scheduler worker ownership、automation state DTO、push notification/channel ingress、dream memory distillation、scheduler supervision、HTTP/SSE history replay、daemon CLI submit/sleep/stop E2E、bridge session workspace reuse/lease/resume 已落地；live provider smoke 仍按需运行。
 - Ratatui UI：P0/P1 基础面已完成；运行时 residual 见 [KNOWN_ISSUES.md](../development/archive/KNOWN_ISSUES.md)，未跟踪 parity 缺口见 [ratatui-ui-parity-untracked-gap-plan-2026-05-08.md](../development/archive/plan/ratatui-ui-parity-untracked-gap-plan-2026-05-08.md)。
 - Runtime storage：`ALLTHECODES_HOME` / `~/.allthecodes/` 和项目级 `.allthecodes/` 路径隔离已落地，旧计划归档。
 - Crate migration：root binary 已删除旧 `src/engine/**` 与 `src/ipc/**`；engine/agent 实现由 `allthecodes-engine` 拥有，IPC JSONL runtime、agent settings 与共享 protocol/handler facade 由 `allthecodes-ipc` / `allthecodes-ipc-client` / `allthecodes-ipc-protocol` 拥有，root 仅保留 startup、UI 与 runtime adapter glue。
@@ -41,7 +41,7 @@ allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默
 | Hermes runtime follow-ups | 基础层完成，执行桥接仍有残留 | `session_search`、审批队列、learnable skills、background review、scheduled task registry 和 `DelegateTask` envelope 已落地；scheduled task 的 `cwd` 目前作为 source/system prompt metadata 保留，尚未覆盖 `QueryEngine` 实际执行 cwd；`DelegateTask` 已创建 child session/task/worktree metadata 并可由父 session 工具追踪，但尚未直接启动 caller-provided child `QueryEngine`。 |
 | PlanMode | 保守 classifier、持久化、审批和 plan file 白名单已完成 | 补 full auto-mode LLM classifier parity，并覆盖 plan 创建/恢复/审批/e2e。 |
 | WebFetch | HTTP-only release scope | redirect/MIME/proxy/credential 边界已完成；browser-grade JS rendering 已写入 [IMPLEMENTATION_GAPS.md](../development/archive/IMPLEMENTATION_GAPS.md) §6 intentional crop。 |
-| Daemon / KAIROS | resident assistant parity 主线已落地 | 默认验证覆盖 CLI stopped/start/status/submit/sleep/stop、worker IDs、automation state、history DTO 和 graceful shutdown。可选 live smoke 需要真实 provider 凭据和网络；Bridge/GrowthBook 公网行为、Telegram/Lark 入站会话仍按 intentional/deferred scope 处理。 |
+| Daemon / KAIROS | resident assistant parity 主线已落地；bridge session 可按 workspace 默认复用并持久化 assistant session id | 默认验证覆盖 CLI stopped/start/status/submit/sleep/stop、worker IDs、automation state、history DTO、graceful shutdown、bridge session storage/selector/worker/API/slash command。可选 live smoke 需要真实 provider 凭据和网络；GrowthBook 公网行为、Telegram/Lark 入站会话仍按 intentional/deferred scope 处理。 |
 | Session export | schema v2 与 API request snapshots 已接入，projection residual 开放 | 补 context collapse 原生事件、mode/tag 来源和完整 apiView 投影。 |
 | Crate migration | Engine + IPC owner migration landed; verification in progress | IPC envelope version/min-compat 已补；下一步收束剩余 root-style imports、allow attributes、Codex compatibility path hits，并补齐 thin-binary closeout 文档。 |
 | ACP live-provider smoke | Binary/stdout smoke target landed; deterministic ACP runtime tests pass; live real-model smoke is on-demand | `acp_stdio_real_model_prompt_smoke` is ignored by default because it requires configured credentials, provider access, and network. On 2026-07-03, explicit local runs against current `backend=codex` timed out after 300s after `available_commands_update` + `state_update: running`, with no model content or idle. |

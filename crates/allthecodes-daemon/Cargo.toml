@@ -23,6 +23,7 @@ allthecodes-tools = { workspace = true }
 allthecodes-types = { workspace = true }
 allthecodes-utils = { workspace = true }
 allthecodes-server = { workspace = true }
+allthecodes-session = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 allthecodes-gateway = { workspace = true }

@@ -1,6 +1,6 @@
 # Daemon 操作与发布检查
 
-> 状态日期：2026-07-04
+> 状态日期：2026-07-05
 > 范围：`crates/allthecodes-daemon/**`、root `allthecodes` daemon CLI、KAIROS HTTP/SSE 控制面。
 
 ## 当前可用能力
@@ -20,6 +20,8 @@ daemon 状态位于 `{ALLTHECODES_HOME:-~/.allthecodes}/daemon/`：
 - `events/<worker-id>.ndjson`：worker event log，`/events` 连接时会 replay。
 - `control-token.json`：mutating HTTP endpoint token，stop 时清理。
 - `sleep-state.json`：proactive/scheduler sleep state，过期、wake 或 stop 时清理。
+- `bridge/sessions/<session-id>.json`：durable bridge session identity、cursor、assistant session id 和 lease。
+- `bridge/sessions/<session-id>/inbox.ndjson`：bridge worker 的 durable inbox。
 
 固定 worker IDs：
 
@@ -42,6 +44,11 @@ allthecodes daemon submit "hello"
 allthecodes daemon abort
 allthecodes daemon command <command-id> [worker-id]
 allthecodes daemon events [worker-id]
+allthecodes daemon bridge sessions
+allthecodes daemon bridge status [session-id]
+allthecodes daemon bridge resume <session-id>
+allthecodes daemon bridge new
+allthecodes daemon bridge release <session-id>
 allthecodes daemon sleep 60 "pause proactive"
 allthecodes daemon wake
 allthecodes daemon stop
@@ -57,8 +64,27 @@ FEATURE_KAIROS=1 allthecodes --port 19837 daemon restart
 - `/daemon` 或 `/daemon status`：读取跨进程 supervisor/worker 状态。
 - `/daemon stop`：写入 shutdown request，让后台 supervisor 优雅退出。
 - `/daemon start` 与 `/daemon restart`：提示使用 shell 管理命令，不在当前 REPL 内 fork 后台进程。
+- `/daemon bridge sessions` / `status [id]`：查看可复用 bridge session 和 lease 状态。
+- `/daemon bridge resume <id>`：刷新指定 bridge session lease，用于显式恢复。
+- `/daemon bridge new`：在当前 cwd 创建一个新的 bridge session。
+- `/daemon bridge release <id>`：清理指定 bridge session 的 lease。
 
 `/sleep <seconds>` 写入 daemon sleep state；`/api/status`、proactive worker 和 scheduler worker 读取同一份状态。
+
+## Bridge session reuse
+
+KAIROS bridge worker 默认使用 `ReuseWorkspace` 策略：同一 canonical cwd、account 和 profile 会选择最近的可用 bridge session，并从 `last_poll_cursor` 继续处理 inbox，避免 daemon/terminal 重启后重复投递已经 ack 的 work item。
+
+显式控制：
+
+- `ALLTHECODES_BRIDGE_SESSION_ID=<session-id>`：优先选择指定 bridge session。
+- `ALLTHECODES_BRIDGE_SESSION_POLICY=reuse-workspace|new|explicit`：覆盖默认复用策略。
+- `ALLTHECODES_BRIDGE_TERMINAL_ID=<terminal-id>`：记录终端标识，供显式按终端区分时使用。
+- `allthecodes daemon bridge new`：不复用 workspace，创建 UUID session。
+- `allthecodes daemon bridge resume <session-id>`：按指定 id 恢复并刷新 lease。
+- `allthecodes daemon bridge release <session-id>`：释放当前 lease。
+
+lease owner 使用当前 daemon/CLI 进程身份，TTL 为短租约并由 worker poll 刷新。未过期且属于其他 owner 的 lease 会阻止自动复用；过期 lease 可被 takeover。bridge state 还会持久化 `remote_session_key`、`last_run_id` 和本地 `assistant_session_id`，assistant worker 收到 bridge command 时会优先恢复该 allthecodes session；缺失或损坏时创建新 session 并更新 bridge state。
 
 ## HTTP 控制面
 
@@ -73,6 +99,10 @@ daemon 默认监听 `127.0.0.1:19836`，可通过 `--port` 调整。
 - `POST /api/permission`：投递 `PermissionResponse` command，并接回 live permission response path。
 - `POST /api/command`：执行 slash command。
 - `POST /api/resize`：更新 daemon-visible resize DTO。
+- `GET /daemon/bridge/sessions`：列出 durable bridge sessions。
+- `GET /daemon/bridge/sessions/{id}`：读取单个 bridge session。
+- `POST /daemon/bridge/sessions/{id}/resume`：刷新指定 bridge session lease。
+- `POST /daemon/bridge/sessions/{id}/release`：释放指定 bridge session lease。
 - gateway/channel endpoints：通过 allthecodes local gateway/protocol 映射本地 channel、bridge session、remote run 能力；不把 `/api/*` 直接声明为公网 remote-control API。
 
 所有 mutating endpoint 都必须带 token：
@@ -98,6 +128,9 @@ cargo test -p allthecodes-daemon protocol
 cargo test -p allthecodes-daemon routes
 cargo test -p allthecodes-daemon supervisor
 cargo test -p allthecodes-daemon gateway_bridge
+cargo test -p allthecodes-daemon bridge_session
+cargo test -p allthecodes-daemon bridge_worker
+cargo test -p allthecodes-commands daemon_bridge
 cargo test -p allthecodes-engine system_prompt
 cargo test -p allthecodes-tools sleep_tool
 cargo test -p allthecodes --test e2e_cli

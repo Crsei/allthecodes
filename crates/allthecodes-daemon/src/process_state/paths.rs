@@ -69,6 +69,21 @@ pub fn logs_dir() -> PathBuf {
 pub fn worker_log_path(worker_id: &str) -> PathBuf {
     logs_dir().join(format!("{}.log", sanitize_worker_id(worker_id)))
 }
+
+pub fn bridge_session_state_path(session_id: &str) -> PathBuf {
+    bridge_sessions_dir().join(format!("{}.json", sanitize_bridge_id(session_id)))
+}
+
+pub fn bridge_session_inbox_path(session_id: &str) -> PathBuf {
+    bridge_sessions_dir()
+        .join(sanitize_bridge_id(session_id))
+        .join("inbox.ndjson")
+}
+
+fn bridge_sessions_dir() -> PathBuf {
+    daemon_dir().join("bridge").join("sessions")
+}
+
 pub(super) fn health_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/health")
 }
@@ -76,6 +91,18 @@ pub(super) fn health_url(port: u16) -> String {
 fn sanitize_worker_id(worker_id: &str) -> String {
     worker_id
         .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn sanitize_bridge_id(raw: &str) -> String {
+    raw.chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
                 ch

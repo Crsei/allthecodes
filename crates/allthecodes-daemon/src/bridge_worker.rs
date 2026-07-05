@@ -1,6 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use allthecodes_gateway::{GatewayCommand, GatewayCommandKind, GatewayCommandSink};
 use anyhow::{Context, Result};
@@ -8,13 +9,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::bridge_session::{
+    refresh_bridge_session_lease, select_or_create_bridge_session, BridgeSessionIdentity,
+    BridgeSessionLease, BridgeSessionReusePolicy,
+};
 use crate::gateway_bridge::GatewayDaemonBridge;
 use crate::process_state::{self, DaemonBridgeSessionState};
-use crate::supervisor::ASSISTANT_WORKER_ID;
 
 const BRIDGE_WORK_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_BRIDGE_SESSION_ID: &str = "default";
-const BRIDGE_INBOX_FILE: &str = "inbox.ndjson";
+const DEFAULT_BRIDGE_LEASE_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -169,28 +172,68 @@ pub struct PollOutcome {
 pub struct BridgeWorkerRuntime {
     session: DaemonBridgeSessionState,
     sink: GatewayDaemonBridge,
+    lease_owner: String,
+    lease_ttl: Duration,
 }
 
 impl BridgeWorkerRuntime {
     pub fn new(cwd: &Path) -> Result<Self> {
-        let session = process_state::read_bridge_session_state(DEFAULT_BRIDGE_SESSION_ID)?
-            .unwrap_or_else(|| DaemonBridgeSessionState {
-                schema_version: 2,
-                session_id: DEFAULT_BRIDGE_SESSION_ID.to_string(),
-                account_id: None,
-                profile: None,
-                cwd: cwd.to_path_buf(),
-                assistant_worker_id: ASSISTANT_WORKER_ID.to_string(),
-                last_poll_cursor: None,
-                last_ack_at: None,
-                updated_at: Utc::now(),
-            });
-        Ok(Self::for_session(session))
+        let identity = bridge_session_identity_from_env(cwd);
+        let policy = bridge_session_policy_from_env()?;
+        Self::new_with_selection(
+            identity,
+            policy,
+            BridgeSessionLease {
+                owner: bridge_lease_owner(),
+                ttl: DEFAULT_BRIDGE_LEASE_TTL,
+                allow_stale_takeover: true,
+            },
+        )
+    }
+
+    pub fn new_with_selection(
+        identity: BridgeSessionIdentity,
+        policy: BridgeSessionReusePolicy,
+        lease: BridgeSessionLease,
+    ) -> Result<Self> {
+        let lease_owner = lease.owner.clone();
+        let lease_ttl = lease.ttl;
+        let session = select_or_create_bridge_session(identity, policy, lease)?;
+        Ok(Self::for_session_with_lease(
+            session,
+            lease_owner,
+            lease_ttl,
+        ))
     }
 
     pub fn for_session(session: DaemonBridgeSessionState) -> Self {
-        let sink = GatewayDaemonBridge::for_worker(session.assistant_worker_id.clone());
-        Self { session, sink }
+        Self::from_session_state(session)
+    }
+
+    pub fn from_session_state(session: DaemonBridgeSessionState) -> Self {
+        let lease_owner = session
+            .lease_owner
+            .clone()
+            .unwrap_or_else(bridge_lease_owner);
+        Self::for_session_with_lease(session, lease_owner, DEFAULT_BRIDGE_LEASE_TTL)
+    }
+
+    fn for_session_with_lease(
+        session: DaemonBridgeSessionState,
+        lease_owner: String,
+        lease_ttl: Duration,
+    ) -> Self {
+        let sink = GatewayDaemonBridge::for_worker_with_session(
+            session.assistant_worker_id.clone(),
+            Some(session.session_id.clone()),
+            session.assistant_session_id.clone(),
+        );
+        Self {
+            session,
+            sink,
+            lease_owner,
+            lease_ttl,
+        }
     }
 
     pub fn poll_once(&mut self) -> Result<PollOutcome> {
@@ -210,10 +253,14 @@ impl BridgeWorkerRuntime {
             outcome.last_cursor = Some(item.cursor.clone());
             self.session.last_poll_cursor = Some(item.cursor);
             self.session.last_ack_at = Some(Utc::now());
+            self.session.remote_session_key = Some(item.session_key);
+            self.session.last_run_id = Some(item.run_id);
             self.session = process_state::write_bridge_session_state(&self.session)?;
+            self.refresh_lease()?;
         }
         if outcome.processed == 0 {
             self.session = process_state::write_bridge_session_state(&self.session)?;
+            self.refresh_lease()?;
             outcome.last_cursor = self.session.last_poll_cursor.clone();
         }
         Ok(outcome)
@@ -285,27 +332,58 @@ impl BridgeWorkerRuntime {
     }
 
     fn inbox_path(&self) -> PathBuf {
-        bridge_session_dir(&self.session.session_id).join(BRIDGE_INBOX_FILE)
+        process_state::bridge_session_inbox_path(&self.session.session_id)
+    }
+
+    fn refresh_lease(&mut self) -> Result<()> {
+        self.session = refresh_bridge_session_lease(
+            &self.session.session_id,
+            &self.lease_owner,
+            self.lease_ttl,
+        )?;
+        Ok(())
     }
 }
 
-fn bridge_session_dir(session_id: &str) -> PathBuf {
-    process_state::daemon_dir()
-        .join("bridge")
-        .join("sessions")
-        .join(sanitize_bridge_id(session_id))
+fn bridge_session_identity_from_env(cwd: &Path) -> BridgeSessionIdentity {
+    BridgeSessionIdentity {
+        cwd: cwd.to_path_buf(),
+        account_id: None,
+        profile: None,
+        terminal_id: non_empty_env("ALLTHECODES_BRIDGE_TERMINAL_ID"),
+        remote_session_key: None,
+    }
 }
 
-fn sanitize_bridge_id(raw: &str) -> String {
-    raw.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
+fn bridge_session_policy_from_env() -> Result<BridgeSessionReusePolicy> {
+    let explicit_session_id = non_empty_env("ALLTHECODES_BRIDGE_SESSION_ID");
+    let policy = non_empty_env("ALLTHECODES_BRIDGE_SESSION_POLICY")
+        .unwrap_or_else(|| "reuse-workspace".to_string());
+    match policy.trim().to_ascii_lowercase().as_str() {
+        "reuse-workspace" | "reuse" => Ok(explicit_session_id
+            .map(BridgeSessionReusePolicy::ExplicitSession)
+            .unwrap_or(BridgeSessionReusePolicy::ReuseWorkspace)),
+        "new" | "new-session" => Ok(BridgeSessionReusePolicy::NewSession),
+        "explicit" => explicit_session_id
+            .map(BridgeSessionReusePolicy::ExplicitSession)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ALLTHECODES_BRIDGE_SESSION_POLICY=explicit requires ALLTHECODES_BRIDGE_SESSION_ID"
+                )
+            }),
+        other => anyhow::bail!("unsupported ALLTHECODES_BRIDGE_SESSION_POLICY: {other}"),
+    }
+}
+
+fn bridge_lease_owner() -> String {
+    format!("daemon-pid-{}", std::process::id())
+}
+
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]
@@ -315,6 +393,7 @@ mod tests {
     use chrono::Utc;
     use serial_test::serial;
 
+    use crate::bridge_session::derive_workspace_key;
     use crate::process_state::DaemonBridgeSessionState;
     use crate::protocol::DaemonCommandKind;
     use crate::supervisor::ASSISTANT_WORKER_ID;
@@ -332,6 +411,12 @@ mod tests {
             std::env::set_var(key, value);
             Self { key, previous }
         }
+
+        fn set_str(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
     }
 
     impl Drop for EnvGuard {
@@ -344,6 +429,14 @@ mod tests {
     }
 
     fn session(cwd: &Path) -> DaemonBridgeSessionState {
+        let workspace_key = derive_workspace_key(&BridgeSessionIdentity {
+            cwd: cwd.to_path_buf(),
+            account_id: Some("acct_1".to_string()),
+            profile: Some("default".to_string()),
+            terminal_id: None,
+            remote_session_key: None,
+        })
+        .unwrap();
         DaemonBridgeSessionState {
             schema_version: 2,
             session_id: "bridge-session-1".to_string(),
@@ -354,6 +447,13 @@ mod tests {
             last_poll_cursor: None,
             last_ack_at: None,
             updated_at: Utc::now(),
+            workspace_key,
+            terminal_id: None,
+            remote_session_key: None,
+            assistant_session_id: None,
+            last_run_id: None,
+            lease_owner: None,
+            lease_expires_at: None,
         }
     }
 
@@ -453,5 +553,180 @@ mod tests {
         assert_eq!(commands[2].kind, DaemonCommandKind::AskUserResponse);
         assert_eq!(commands[2].payload["request_id"], "question-1");
         assert_eq!(commands[2].payload["answer"], "yes");
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_worker_reuses_selected_session_after_restart() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let cwd = home.path().join("workspace");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let mut first = BridgeWorkerRuntime::new(&cwd).unwrap();
+        first
+            .append_work_item(BridgeWorkItem::remote_message(
+                "work-1",
+                "cursor-1",
+                "run_bridge123",
+                "remote:http:abc",
+                "hello from bridge",
+                Some("delivery-1".to_string()),
+            ))
+            .unwrap();
+        first.poll_once().unwrap();
+        let selected = crate::process_state::list_bridge_session_states()
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        let mut second = BridgeWorkerRuntime::new(&cwd).unwrap();
+        let outcome = second.poll_once().unwrap();
+        let after_restart = crate::process_state::read_bridge_session_state(&selected.session_id)
+            .unwrap()
+            .unwrap();
+        let commands = crate::protocol_store()
+            .read_worker_commands(ASSISTANT_WORKER_ID)
+            .unwrap();
+
+        assert_eq!(after_restart.session_id, selected.session_id);
+        assert_eq!(after_restart.last_poll_cursor.as_deref(), Some("cursor-1"));
+        assert_eq!(outcome.processed, 0);
+        assert_eq!(commands.len(), 1);
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_worker_persists_remote_session_key_and_run_id() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let mut runtime = BridgeWorkerRuntime::from_session_state(session(home.path()));
+        runtime
+            .append_work_item(BridgeWorkItem::remote_message(
+                "work-1",
+                "cursor-1",
+                "run_bridge123",
+                "remote:http:abc",
+                "hello from bridge",
+                Some("delivery-1".to_string()),
+            ))
+            .unwrap();
+
+        runtime.poll_once().unwrap();
+        let stored = crate::process_state::read_bridge_session_state("bridge-session-1")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            stored.remote_session_key.as_deref(),
+            Some("remote:http:abc")
+        );
+        assert_eq!(stored.last_run_id.as_deref(), Some("run_bridge123"));
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_worker_refreshes_lease_on_poll() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let mut state = session(home.path());
+        state.lease_owner = Some("test-owner".to_string());
+        state.lease_expires_at = Some(Utc::now() + chrono::Duration::seconds(1));
+        let previous_expiry = state.lease_expires_at.unwrap();
+        let mut runtime = BridgeWorkerRuntime::from_session_state(state);
+
+        runtime.poll_once().unwrap();
+        let stored = crate::process_state::read_bridge_session_state("bridge-session-1")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(stored.lease_owner.as_deref(), Some("test-owner"));
+        assert!(stored.lease_expires_at.unwrap() > previous_expiry);
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_worker_includes_assistant_session_id_in_queued_gateway_context() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let mut state = session(home.path());
+        state.assistant_session_id = Some("assistant-session-prev".to_string());
+        let mut runtime = BridgeWorkerRuntime::from_session_state(state);
+        runtime
+            .append_work_item(BridgeWorkItem::remote_message(
+                "work-1",
+                "cursor-1",
+                "run_bridge123",
+                "remote:http:abc",
+                "hello from bridge",
+                Some("delivery-1".to_string()),
+            ))
+            .unwrap();
+
+        runtime.poll_once().unwrap();
+        let commands = crate::protocol_store()
+            .read_worker_commands(ASSISTANT_WORKER_ID)
+            .unwrap();
+
+        assert_eq!(
+            commands[0].payload["gateway"]["bridgeSessionId"],
+            "bridge-session-1"
+        );
+        assert_eq!(
+            commands[0].payload["gateway"]["assistantSessionId"],
+            "assistant-session-prev"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_worker_session_id_env_selects_explicit_session() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _session_id = EnvGuard::set_str("ALLTHECODES_BRIDGE_SESSION_ID", "bridge-session-1");
+        let cwd = home.path().join("workspace");
+        std::fs::create_dir_all(&cwd).unwrap();
+        crate::process_state::write_bridge_session_state(&session(&cwd)).unwrap();
+
+        let runtime = BridgeWorkerRuntime::new(&cwd).unwrap();
+
+        assert_eq!(runtime.session.session_id, "bridge-session-1");
+        assert!(runtime.session.lease_owner.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_worker_new_policy_env_creates_distinct_sessions() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _policy = EnvGuard::set_str("ALLTHECODES_BRIDGE_SESSION_POLICY", "new");
+        let _terminal = EnvGuard::set_str("ALLTHECODES_BRIDGE_TERMINAL_ID", "terminal-a");
+        let cwd = home.path().join("workspace");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let first = BridgeWorkerRuntime::new(&cwd).unwrap();
+        let second = BridgeWorkerRuntime::new(&cwd).unwrap();
+
+        assert_ne!(first.session.session_id, second.session.session_id);
+        assert_eq!(first.session.terminal_id.as_deref(), Some("terminal-a"));
+        assert_eq!(second.session.terminal_id.as_deref(), Some("terminal-a"));
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_worker_explicit_policy_env_requires_session_id() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _policy = EnvGuard::set_str("ALLTHECODES_BRIDGE_SESSION_POLICY", "explicit");
+        let cwd = home.path().join("workspace");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let error = BridgeWorkerRuntime::new(&cwd)
+            .expect_err("explicit policy without session id should fail");
+
+        assert!(error
+            .to_string()
+            .contains("ALLTHECODES_BRIDGE_SESSION_POLICY=explicit requires"));
     }
 }

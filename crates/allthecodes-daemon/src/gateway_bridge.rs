@@ -22,6 +22,7 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 
 use crate::protocol::{self, DaemonCommandKind, DaemonEventKind};
+use allthecodes_engine::bootstrap::SessionId;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::{QueryEngineConfig, QuerySource};
 
@@ -34,18 +35,36 @@ use super::supervisor::ASSISTANT_WORKER_ID;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayDaemonBridge {
     target_worker_id: String,
+    bridge_session_id: Option<String>,
+    assistant_session_id: Option<String>,
 }
 
 impl GatewayDaemonBridge {
     pub fn assistant_worker() -> Self {
         Self {
             target_worker_id: ASSISTANT_WORKER_ID.to_string(),
+            bridge_session_id: None,
+            assistant_session_id: None,
         }
     }
 
     pub fn for_worker(target_worker_id: impl Into<String>) -> Self {
         Self {
             target_worker_id: target_worker_id.into(),
+            bridge_session_id: None,
+            assistant_session_id: None,
+        }
+    }
+
+    pub fn for_worker_with_session(
+        target_worker_id: impl Into<String>,
+        bridge_session_id: Option<String>,
+        assistant_session_id: Option<String>,
+    ) -> Self {
+        Self {
+            target_worker_id: target_worker_id.into(),
+            bridge_session_id,
+            assistant_session_id,
         }
     }
 
@@ -57,7 +76,11 @@ impl GatewayDaemonBridge {
 impl GatewayCommandSink for GatewayDaemonBridge {
     fn dispatch(&self, command: GatewayCommand) -> Result<GatewayCommandReceipt, GatewayError> {
         let kind = daemon_kind(command.kind);
-        let payload = daemon_payload(&command);
+        let payload = daemon_payload(
+            &command,
+            self.bridge_session_id.as_deref(),
+            self.assistant_session_id.as_deref(),
+        );
         let queued = super::protocol_store()
             .enqueue_command(
                 &self.target_worker_id,
@@ -83,7 +106,11 @@ fn daemon_kind(kind: GatewayCommandKind) -> DaemonCommandKind {
     }
 }
 
-fn daemon_payload(command: &GatewayCommand) -> Value {
+fn daemon_payload(
+    command: &GatewayCommand,
+    bridge_session_id: Option<&str>,
+    assistant_session_id: Option<&str>,
+) -> Value {
     match command.kind {
         GatewayCommandKind::Submit => {
             let text = command
@@ -99,13 +126,16 @@ fn daemon_payload(command: &GatewayCommand) -> Value {
                     "idempotencyKey".to_string(),
                     json!(command.idempotency_key.clone()),
                 );
-                object.insert("gateway".to_string(), gateway_context(command));
+                object.insert(
+                    "gateway".to_string(),
+                    gateway_context(command, bridge_session_id, assistant_session_id),
+                );
                 payload
             } else {
                 json!({
                     "text": text,
                     "idempotencyKey": command.idempotency_key.clone(),
-                    "gateway": gateway_context(command),
+                    "gateway": gateway_context(command, bridge_session_id, assistant_session_id),
                 })
             }
         }
@@ -125,12 +155,15 @@ fn daemon_payload(command: &GatewayCommand) -> Value {
                         object.insert("answer".to_string(), json!(answer));
                     }
                 }
-                object.insert("gateway".to_string(), gateway_context(command));
+                object.insert(
+                    "gateway".to_string(),
+                    gateway_context(command, bridge_session_id, assistant_session_id),
+                );
                 payload
             } else {
                 json!({
                     "value": payload,
-                    "gateway": gateway_context(command),
+                    "gateway": gateway_context(command, bridge_session_id, assistant_session_id),
                 })
             }
         }
@@ -157,23 +190,42 @@ fn daemon_payload(command: &GatewayCommand) -> Value {
                         }
                     });
                 object.insert("decision".to_string(), json!(decision));
-                object.insert("gateway".to_string(), gateway_context(command));
+                object.insert(
+                    "gateway".to_string(),
+                    gateway_context(command, bridge_session_id, assistant_session_id),
+                );
                 payload
             } else {
                 json!({
                     "value": payload,
-                    "gateway": gateway_context(command),
+                    "gateway": gateway_context(command, bridge_session_id, assistant_session_id),
                 })
             }
         }
     }
 }
 
-fn gateway_context(command: &GatewayCommand) -> Value {
-    json!({
+fn gateway_context(
+    command: &GatewayCommand,
+    bridge_session_id: Option<&str>,
+    assistant_session_id: Option<&str>,
+) -> Value {
+    let mut context = json!({
         "runId": command.run_id.clone(),
         "sessionKey": command.session_key.clone(),
-    })
+    });
+    if let Some(object) = context.as_object_mut() {
+        if let Some(bridge_session_id) = bridge_session_id {
+            object.insert("bridgeSessionId".to_string(), json!(bridge_session_id));
+        }
+        if let Some(assistant_session_id) = assistant_session_id {
+            object.insert(
+                "assistantSessionId".to_string(),
+                json!(assistant_session_id),
+            );
+        }
+    }
+    context
 }
 
 fn enqueue_error(command: &GatewayCommand, error: anyhow::Error) -> GatewayError {
@@ -492,6 +544,49 @@ impl AssistantWorkerRuntime {
         Ok(())
     }
 
+    fn apply_assistant_session_context(
+        &self,
+        worker_id: &str,
+        command: &protocol::DaemonCommand,
+    ) -> Result<()> {
+        let bridge_session_id =
+            gateway_payload_string(command, &["bridgeSessionId", "bridge_session_id"]);
+        let requested_session_id =
+            gateway_payload_string(command, &["assistantSessionId", "assistant_session_id"]);
+
+        let active_session_id = if let Some(requested_session_id) = requested_session_id {
+            match allthecodes_session::resume::resume_session_detail(&requested_session_id) {
+                Ok(resumed) => {
+                    self.engine.replace_messages(resumed.messages);
+                    self.engine
+                        .set_current_session_id(SessionId::from_string(&requested_session_id));
+                    requested_session_id
+                }
+                Err(error) => {
+                    let replacement = self.engine.start_new_session();
+                    super::protocol_store().append_event(
+                        worker_id,
+                        Some(&command.command_id),
+                        "assistant_session_resume_fallback",
+                        json!({
+                            "requested_session_id": requested_session_id,
+                            "replacement_session_id": replacement.to_string(),
+                            "error": error.to_string(),
+                        }),
+                    )?;
+                    replacement.to_string()
+                }
+            }
+        } else {
+            self.engine.current_session_id().to_string()
+        };
+
+        if let Some(bridge_session_id) = bridge_session_id {
+            persist_bridge_assistant_session_id(&bridge_session_id, &active_session_id)?;
+        }
+        Ok(())
+    }
+
     async fn execute_submit(
         &self,
         worker_id: &str,
@@ -507,6 +602,8 @@ impl AssistantWorkerRuntime {
             .get("message_id")
             .and_then(|value| value.as_str())
             .unwrap_or(&command.command_id);
+
+        self.apply_assistant_session_context(worker_id, command)?;
 
         super::protocol_store().append_event(
             worker_id,
@@ -566,6 +663,19 @@ impl AssistantWorkerRuntime {
     }
 }
 
+fn persist_bridge_assistant_session_id(
+    bridge_session_id: &str,
+    assistant_session_id: &str,
+) -> Result<()> {
+    let Some(mut state) = crate::process_state::read_bridge_session_state(bridge_session_id)?
+    else {
+        return Ok(());
+    };
+    state.assistant_session_id = Some(assistant_session_id.to_string());
+    crate::process_state::write_bridge_session_state(&state)?;
+    Ok(())
+}
+
 fn install_interaction_callbacks(
     engine: &QueryEngine,
     worker_id: &str,
@@ -597,6 +707,13 @@ fn payload_string(payload: &Value, keys: &[&str]) -> Option<String> {
     })
 }
 
+fn gateway_payload_string(command: &protocol::DaemonCommand, keys: &[&str]) -> Option<String> {
+    command
+        .payload
+        .get("gateway")
+        .and_then(|gateway| payload_string(gateway, keys))
+}
+
 fn interaction_delivery_name(delivery: InteractionDelivery) -> &'static str {
     match delivery {
         InteractionDelivery::Delivered => "delivered",
@@ -608,8 +725,12 @@ fn interaction_delivery_name(delivery: InteractionDelivery) -> &'static str {
 mod tests {
     use super::*;
     use allthecodes_gateway::{GatewayStore, SessionKeyPolicy};
+    use allthecodes_types::message::{Message, MessageContent, UserMessage};
+    use chrono::Utc;
     use serial_test::serial;
     use std::path::Path;
+    use std::sync::Arc;
+    use uuid::Uuid;
 
     struct EnvGuard {
         key: &'static str,
@@ -632,6 +753,95 @@ mod tests {
                 std::env::remove_var(self.key);
             }
         }
+    }
+
+    fn bridge_state(
+        cwd: &Path,
+        session_id: &str,
+    ) -> crate::process_state::DaemonBridgeSessionState {
+        let identity = crate::bridge_session::BridgeSessionIdentity {
+            cwd: cwd.to_path_buf(),
+            account_id: None,
+            profile: None,
+            terminal_id: None,
+            remote_session_key: None,
+        };
+        crate::process_state::DaemonBridgeSessionState {
+            schema_version: 2,
+            session_id: session_id.to_string(),
+            account_id: None,
+            profile: None,
+            cwd: cwd.to_path_buf(),
+            assistant_worker_id: "assistant-session-1".to_string(),
+            last_poll_cursor: None,
+            last_ack_at: None,
+            updated_at: Utc::now(),
+            workspace_key: crate::bridge_session::derive_workspace_key(&identity).unwrap(),
+            terminal_id: None,
+            remote_session_key: None,
+            assistant_session_id: None,
+            last_run_id: None,
+            lease_owner: None,
+            lease_expires_at: None,
+        }
+    }
+
+    fn test_runtime(cwd: &Path) -> AssistantWorkerRuntime {
+        let engine = QueryEngine::new(QueryEngineConfig {
+            cwd: cwd.to_string_lossy().into_owned(),
+            tools: Vec::new(),
+            custom_system_prompt: None,
+            append_system_prompt: None,
+            user_specified_model: None,
+            fallback_model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            task_budget: None,
+            verbose: false,
+            initial_messages: None,
+            commands: Vec::new(),
+            thinking_config: None,
+            json_schema: None,
+            replay_user_messages: false,
+            persist_session: false,
+            resolved_model: None,
+            auto_save_session: false,
+            agent_context: None,
+        });
+        AssistantWorkerRuntime {
+            engine: Arc::new(engine),
+            interactions: Arc::new(AssistantInteractionState::default()),
+        }
+    }
+
+    fn submit_command(payload: Value) -> protocol::DaemonCommand {
+        let now = Utc::now();
+        protocol::DaemonCommand {
+            schema_version: protocol::SCHEMA_VERSION,
+            command_id: "cmd-1".to_string(),
+            idempotency_key: None,
+            target_worker_id: "assistant-session-1".to_string(),
+            kind: DaemonCommandKind::Submit,
+            payload,
+            status: protocol::DaemonCommandStatus::Acked,
+            created_at: now,
+            updated_at: now,
+            acked_at: Some(now),
+            handled_at: None,
+            error: None,
+        }
+    }
+
+    fn user_message(text: &str) -> Message {
+        Message::User(UserMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: 0,
+            role: "user".into(),
+            content: MessageContent::Text(text.into()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        })
     }
 
     #[test]
@@ -658,6 +868,120 @@ mod tests {
         assert_eq!(command.payload["text"], "hello");
         assert_eq!(command.payload["idempotencyKey"], "delivery-1");
         assert_eq!(command.payload["gateway"]["runId"], "run_bridge123");
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_enqueues_submit_with_assistant_session_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let bridge = GatewayDaemonBridge::for_worker_with_session(
+            "assistant-session-1",
+            Some("bridge-session-1".to_string()),
+            Some("assistant-session-prev".to_string()),
+        );
+
+        let receipt = bridge
+            .dispatch(GatewayCommand {
+                kind: GatewayCommandKind::Submit,
+                run_id: "run_bridge123".to_string(),
+                session_key: "remote:http:abc".to_string(),
+                payload: json!({ "text": "hello" }),
+                idempotency_key: Some("delivery-1".to_string()),
+            })
+            .unwrap();
+
+        let command = crate::protocol_store()
+            .read_command("assistant-session-1", &receipt.command_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            command.payload["gateway"]["bridgeSessionId"],
+            "bridge-session-1"
+        );
+        assert_eq!(
+            command.payload["gateway"]["assistantSessionId"],
+            "assistant-session-prev"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn assistant_context_records_current_session_id_in_bridge_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        crate::process_state::write_bridge_session_state(&bridge_state(
+            temp.path(),
+            "bridge-session-1",
+        ))
+        .unwrap();
+        let runtime = test_runtime(temp.path());
+        let current_session_id = runtime.engine.current_session_id().to_string();
+        let command = submit_command(json!({
+            "text": "hello",
+            "gateway": {
+                "bridgeSessionId": "bridge-session-1",
+                "runId": "run_bridge123",
+                "sessionKey": "remote:http:abc"
+            }
+        }));
+
+        runtime
+            .apply_assistant_session_context("assistant-session-1", &command)
+            .unwrap();
+        let stored = crate::process_state::read_bridge_session_state("bridge-session-1")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            stored.assistant_session_id.as_deref(),
+            Some(current_session_id.as_str())
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn assistant_context_resumes_existing_assistant_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        crate::process_state::write_bridge_session_state(&bridge_state(
+            temp.path(),
+            "bridge-session-1",
+        ))
+        .unwrap();
+        allthecodes_session::storage::save_session(
+            "assistant-session-prev",
+            &[user_message("previous prompt")],
+            temp.path().to_str().unwrap(),
+        )
+        .unwrap();
+        let runtime = test_runtime(temp.path());
+        let command = submit_command(json!({
+            "text": "hello",
+            "gateway": {
+                "bridgeSessionId": "bridge-session-1",
+                "assistantSessionId": "assistant-session-prev",
+                "runId": "run_bridge123",
+                "sessionKey": "remote:http:abc"
+            }
+        }));
+
+        runtime
+            .apply_assistant_session_context("assistant-session-1", &command)
+            .unwrap();
+        let stored = crate::process_state::read_bridge_session_state("bridge-session-1")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            runtime.engine.current_session_id().as_str(),
+            "assistant-session-prev"
+        );
+        assert_eq!(runtime.engine.messages().len(), 1);
+        assert_eq!(
+            stored.assistant_session_id.as_deref(),
+            Some("assistant-session-prev")
+        );
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use std::future::Future;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use allthecodes_commands::CommandContext;
 use allthecodes_gateway::{
@@ -106,6 +108,11 @@ pub(crate) fn install_command_runtime_providers() {
             status_snapshot: daemon_status_snapshot_for_commands,
             state_path: allthecodes_daemon::process_state::state_path,
             request_shutdown: allthecodes_daemon::process_state::request_shutdown,
+            list_bridge_sessions: bridge_sessions_for_commands,
+            get_bridge_session: get_bridge_session_for_commands,
+            resume_bridge_session: resume_bridge_session_for_commands,
+            new_bridge_session: new_bridge_session_for_commands,
+            release_bridge_session: release_bridge_session_for_commands,
         },
     );
     allthecodes_commands::sleep_cmd::set_sleep_command_runtime(
@@ -466,6 +473,124 @@ fn map_daemon_state(
             )
             .collect(),
     }
+}
+
+fn map_bridge_session_state(
+    state: allthecodes_daemon::process_state::DaemonBridgeSessionState,
+) -> allthecodes_commands::daemon_cmd::DaemonBridgeSessionSummary {
+    allthecodes_commands::daemon_cmd::DaemonBridgeSessionSummary {
+        session_id: state.session_id,
+        workspace_key: state.workspace_key,
+        cwd: state.cwd,
+        account_id: state.account_id,
+        profile: state.profile,
+        assistant_session_id: state.assistant_session_id,
+        remote_session_key: state.remote_session_key,
+        last_run_id: state.last_run_id,
+        last_ack_at: state.last_ack_at,
+        lease_owner: state.lease_owner,
+        lease_expires_at: state.lease_expires_at,
+    }
+}
+
+fn bridge_sessions_for_commands(
+) -> anyhow::Result<Vec<allthecodes_commands::daemon_cmd::DaemonBridgeSessionSummary>> {
+    Ok(
+        allthecodes_daemon::process_state::list_bridge_session_states()?
+            .into_iter()
+            .map(map_bridge_session_state)
+            .collect(),
+    )
+}
+
+fn get_bridge_session_for_commands(
+    session_id: &str,
+) -> anyhow::Result<Option<allthecodes_commands::daemon_cmd::DaemonBridgeSessionSummary>> {
+    Ok(
+        allthecodes_daemon::process_state::read_bridge_session_state(session_id)?
+            .map(map_bridge_session_state),
+    )
+}
+
+fn resume_bridge_session_for_commands(
+    session_id: &str,
+) -> anyhow::Result<allthecodes_commands::daemon_cmd::DaemonBridgeSessionSummary> {
+    let state = allthecodes_daemon::process_state::read_bridge_session_state(session_id)?
+        .ok_or_else(|| anyhow::anyhow!("bridge session not found: {session_id}"))?;
+    let lease_owner = state
+        .lease_owner
+        .clone()
+        .unwrap_or_else(bridge_command_lease_owner);
+    let selected = allthecodes_daemon::bridge_session::select_or_create_bridge_session(
+        bridge_identity_from_state(&state),
+        allthecodes_daemon::bridge_session::BridgeSessionReusePolicy::ExplicitSession(
+            session_id.to_string(),
+        ),
+        allthecodes_daemon::bridge_session::BridgeSessionLease {
+            owner: lease_owner,
+            ttl: bridge_command_lease_ttl(),
+            allow_stale_takeover: true,
+        },
+    )?;
+    Ok(map_bridge_session_state(selected))
+}
+
+fn new_bridge_session_for_commands(
+    cwd: &Path,
+) -> anyhow::Result<allthecodes_commands::daemon_cmd::DaemonBridgeSessionSummary> {
+    let identity = allthecodes_daemon::bridge_session::BridgeSessionIdentity {
+        cwd: cwd.to_path_buf(),
+        account_id: None,
+        profile: None,
+        terminal_id: None,
+        remote_session_key: None,
+    };
+    let selected = allthecodes_daemon::bridge_session::select_or_create_bridge_session(
+        identity,
+        allthecodes_daemon::bridge_session::BridgeSessionReusePolicy::NewSession,
+        allthecodes_daemon::bridge_session::BridgeSessionLease {
+            owner: bridge_command_lease_owner(),
+            ttl: bridge_command_lease_ttl(),
+            allow_stale_takeover: true,
+        },
+    )?;
+    Ok(map_bridge_session_state(selected))
+}
+
+fn release_bridge_session_for_commands(
+    session_id: &str,
+) -> anyhow::Result<Option<allthecodes_commands::daemon_cmd::DaemonBridgeSessionSummary>> {
+    let Some(state) = allthecodes_daemon::process_state::read_bridge_session_state(session_id)?
+    else {
+        return Ok(None);
+    };
+    if let Some(owner) = state.lease_owner.as_deref() {
+        allthecodes_daemon::bridge_session::release_bridge_session_lease(session_id, owner)?;
+    }
+    Ok(
+        allthecodes_daemon::process_state::read_bridge_session_state(session_id)?
+            .map(map_bridge_session_state),
+    )
+}
+
+fn bridge_identity_from_state(
+    state: &allthecodes_daemon::process_state::DaemonBridgeSessionState,
+) -> allthecodes_daemon::bridge_session::BridgeSessionIdentity {
+    allthecodes_daemon::bridge_session::BridgeSessionIdentity {
+        cwd: state.cwd.clone(),
+        account_id: state.account_id.clone(),
+        profile: state.profile.clone(),
+        terminal_id: state.terminal_id.clone(),
+        remote_session_key: state.remote_session_key.clone(),
+    }
+}
+
+fn bridge_command_lease_owner() -> String {
+    format!("daemon-command-pid-{}", std::process::id())
+}
+
+fn bridge_command_lease_ttl() -> Duration {
+    Duration::from_secs(30)
 }
 
 fn sleep_state_for_commands(

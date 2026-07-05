@@ -10,10 +10,13 @@ use crate::{operation_lock, protocol, readiness};
 use super::paths::{daemon_dir, health_url, state_path, worker_log_path};
 use super::platform::{configure_detached, process_matches_record};
 use super::storage::{
-    cleanup_stale_state_before_start, clear_sleep_state, ensure_daemon_dir, read_control_token,
-    read_worker_state, request_shutdown, status_snapshot, tail_log, write_sleep_state,
+    cleanup_stale_state_before_start, clear_sleep_state, ensure_daemon_dir,
+    list_bridge_session_states, read_bridge_session_state, read_control_token, read_worker_state,
+    request_shutdown, status_snapshot, tail_log, write_sleep_state,
 };
-use super::types::{DaemonProcessState, DaemonStatusSnapshot, StaleStateCleanupReport};
+use super::types::{
+    DaemonBridgeSessionState, DaemonProcessState, DaemonStatusSnapshot, StaleStateCleanupReport,
+};
 
 const SHUTDOWN_REQUEST_GRACE_PERIOD: Duration = Duration::from_secs(60);
 const TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(5);
@@ -48,6 +51,7 @@ pub fn try_run_management_command(args: &[String], cwd: &Path, port: u16) -> Opt
         "command" => print_result(print_worker_command(args)),
         "events" => print_result(print_worker_events(args)),
         "token" => print_result(print_control_token()),
+        "bridge" => print_result(run_bridge_command(args, cwd)),
         "sleep" => print_result(operation_lock::with_operation_lock("sleep", cwd, || {
             schedule_sleep_command(args)
         })),
@@ -363,6 +367,186 @@ fn wake_daemon_command() -> Result<()> {
     Ok(())
 }
 
+fn run_bridge_command(args: &[String], cwd: &Path) -> Result<()> {
+    let subcommand = args.get(2).map(String::as_str).unwrap_or("sessions");
+    match subcommand {
+        "sessions" => print_bridge_sessions(),
+        "status" => {
+            if let Some(session_id) = args.get(3) {
+                print_bridge_session_status(session_id)
+            } else {
+                print_bridge_sessions()
+            }
+        }
+        "resume" => {
+            let session_id = args
+                .get(3)
+                .with_context(|| "daemon bridge resume requires a session id")?;
+            let session = resume_bridge_session_command(session_id)?;
+            println!("bridge session resumed: {}", session.session_id);
+            print_bridge_session_detail(&session);
+            Ok(())
+        }
+        "new" => {
+            let session = new_bridge_session_command(cwd)?;
+            println!("bridge session created: {}", session.session_id);
+            print_bridge_session_detail(&session);
+            Ok(())
+        }
+        "release" => {
+            let session_id = args
+                .get(3)
+                .with_context(|| "daemon bridge release requires a session id")?;
+            release_bridge_session_command(session_id)?;
+            println!("bridge session released: {session_id}");
+            if let Some(session) = read_bridge_session_state(session_id)? {
+                print_bridge_session_detail(&session);
+            }
+            Ok(())
+        }
+        "help" | "--help" | "-h" => {
+            print_bridge_usage();
+            Ok(())
+        }
+        other => {
+            anyhow::bail!("unknown daemon bridge subcommand: {other}");
+        }
+    }
+}
+
+fn print_bridge_sessions() -> Result<()> {
+    let sessions = list_bridge_session_states()?;
+    println!("bridge sessions: {}", sessions.len());
+    for session in &sessions {
+        println!(
+            "  {} cwd={} assistant={} remote={} run={} lease={}",
+            session.session_id,
+            session.cwd.display(),
+            optional_bridge_value(session.assistant_session_id.as_deref()),
+            optional_bridge_value(session.remote_session_key.as_deref()),
+            optional_bridge_value(session.last_run_id.as_deref()),
+            bridge_lease_summary(session),
+        );
+    }
+    Ok(())
+}
+
+fn print_bridge_session_status(session_id: &str) -> Result<()> {
+    let session = read_bridge_session_state(session_id)?
+        .with_context(|| format!("bridge session not found: {session_id}"))?;
+    print_bridge_session_detail(&session);
+    Ok(())
+}
+
+fn resume_bridge_session_command(session_id: &str) -> Result<DaemonBridgeSessionState> {
+    let state = read_bridge_session_state(session_id)?
+        .with_context(|| format!("bridge session not found: {session_id}"))?;
+    let lease_owner = state
+        .lease_owner
+        .clone()
+        .unwrap_or_else(bridge_management_lease_owner);
+    crate::bridge_session::select_or_create_bridge_session(
+        bridge_identity_from_state(&state),
+        crate::bridge_session::BridgeSessionReusePolicy::ExplicitSession(session_id.to_string()),
+        crate::bridge_session::BridgeSessionLease {
+            owner: lease_owner,
+            ttl: Duration::from_secs(30),
+            allow_stale_takeover: true,
+        },
+    )
+}
+
+fn new_bridge_session_command(cwd: &Path) -> Result<DaemonBridgeSessionState> {
+    crate::bridge_session::select_or_create_bridge_session(
+        crate::bridge_session::BridgeSessionIdentity {
+            cwd: cwd.to_path_buf(),
+            account_id: None,
+            profile: None,
+            terminal_id: None,
+            remote_session_key: None,
+        },
+        crate::bridge_session::BridgeSessionReusePolicy::NewSession,
+        crate::bridge_session::BridgeSessionLease {
+            owner: bridge_management_lease_owner(),
+            ttl: Duration::from_secs(30),
+            allow_stale_takeover: true,
+        },
+    )
+}
+
+fn release_bridge_session_command(session_id: &str) -> Result<()> {
+    let state = read_bridge_session_state(session_id)?
+        .with_context(|| format!("bridge session not found: {session_id}"))?;
+    if let Some(owner) = state.lease_owner.as_deref() {
+        crate::bridge_session::release_bridge_session_lease(session_id, owner)?;
+    }
+    Ok(())
+}
+
+fn bridge_identity_from_state(
+    state: &DaemonBridgeSessionState,
+) -> crate::bridge_session::BridgeSessionIdentity {
+    crate::bridge_session::BridgeSessionIdentity {
+        cwd: state.cwd.clone(),
+        account_id: state.account_id.clone(),
+        profile: state.profile.clone(),
+        terminal_id: state.terminal_id.clone(),
+        remote_session_key: state.remote_session_key.clone(),
+    }
+}
+
+fn print_bridge_session_detail(session: &DaemonBridgeSessionState) {
+    println!("bridge session: {}", session.session_id);
+    println!("  workspace_key: {}", session.workspace_key);
+    println!("  cwd: {}", session.cwd.display());
+    println!(
+        "  account: {}",
+        optional_bridge_value(session.account_id.as_deref())
+    );
+    println!(
+        "  profile: {}",
+        optional_bridge_value(session.profile.as_deref())
+    );
+    println!(
+        "  assistant_session_id: {}",
+        optional_bridge_value(session.assistant_session_id.as_deref())
+    );
+    println!(
+        "  remote_session_key: {}",
+        optional_bridge_value(session.remote_session_key.as_deref())
+    );
+    println!(
+        "  last_run_id: {}",
+        optional_bridge_value(session.last_run_id.as_deref())
+    );
+    println!(
+        "  last_ack_at: {}",
+        session
+            .last_ack_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!("  lease: {}", bridge_lease_summary(session));
+}
+
+fn bridge_lease_summary(session: &DaemonBridgeSessionState) -> String {
+    match (&session.lease_owner, session.lease_expires_at) {
+        (Some(owner), Some(expires_at)) => {
+            format!("owner={} expires={}", owner, expires_at.to_rfc3339())
+        }
+        (Some(owner), None) => format!("owner={owner}"),
+        (None, _) => "none".to_string(),
+    }
+}
+
+fn optional_bridge_value(value: Option<&str>) -> &str {
+    value.filter(|value| !value.is_empty()).unwrap_or("-")
+}
+
+fn bridge_management_lease_owner() -> String {
+    format!("daemon-cli-pid-{}", std::process::id())
+}
+
 fn print_stale_cleanup_report(report: &StaleStateCleanupReport) {
     if let Some(pid) = report.supervisor_pid {
         if report.supervisor_state_removed {
@@ -495,6 +679,12 @@ fn print_result(result: Result<()>) -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "Usage:\n  allthecodes daemon [status]\n  allthecodes daemon start [--port <port>]\n  allthecodes daemon stop\n  allthecodes daemon restart [--if-version-changed] [--port <port>]\n  allthecodes daemon logs [supervisor|worker-id] [--tail-bytes N]\n  allthecodes daemon submit <text>\n  allthecodes daemon abort\n  allthecodes daemon command <id> [worker-id]\n  allthecodes daemon events [worker-id]\n  allthecodes daemon token\n  allthecodes daemon sleep <seconds> [reason]\n  allthecodes daemon wake"
+        "Usage:\n  allthecodes daemon [status]\n  allthecodes daemon start [--port <port>]\n  allthecodes daemon stop\n  allthecodes daemon restart [--if-version-changed] [--port <port>]\n  allthecodes daemon logs [supervisor|worker-id] [--tail-bytes N]\n  allthecodes daemon submit <text>\n  allthecodes daemon abort\n  allthecodes daemon command <id> [worker-id]\n  allthecodes daemon events [worker-id]\n  allthecodes daemon token\n  allthecodes daemon bridge sessions|status|resume|new|release\n  allthecodes daemon sleep <seconds> [reason]\n  allthecodes daemon wake"
+    );
+}
+
+fn print_bridge_usage() {
+    eprintln!(
+        "Usage:\n  allthecodes daemon bridge sessions\n  allthecodes daemon bridge status [session-id]\n  allthecodes daemon bridge resume <session-id>\n  allthecodes daemon bridge new\n  allthecodes daemon bridge release <session-id>"
     );
 }

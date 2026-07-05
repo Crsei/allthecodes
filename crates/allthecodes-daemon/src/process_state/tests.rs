@@ -33,6 +33,32 @@ impl Drop for EnvGuard {
     }
 }
 
+fn bridge_state(
+    session_id: &str,
+    cwd: &Path,
+    workspace_key: &str,
+    updated_at: chrono::DateTime<Utc>,
+) -> DaemonBridgeSessionState {
+    DaemonBridgeSessionState {
+        schema_version: SCHEMA_VERSION,
+        session_id: session_id.to_string(),
+        account_id: Some("acct_1".to_string()),
+        profile: Some("default".to_string()),
+        cwd: cwd.to_path_buf(),
+        assistant_worker_id: "assistant-session".to_string(),
+        last_poll_cursor: None,
+        last_ack_at: None,
+        updated_at,
+        workspace_key: workspace_key.to_string(),
+        terminal_id: None,
+        remote_session_key: None,
+        assistant_session_id: None,
+        last_run_id: None,
+        lease_owner: None,
+        lease_expires_at: None,
+    }
+}
+
 #[test]
 #[serial]
 fn write_and_read_state_uses_allthecodes_home() {
@@ -434,4 +460,109 @@ fn stale_cleanup_removes_dead_worker_and_retains_live_worker() {
         "live-worker"
     );
     assert_eq!(report.worker_states_removed.len(), 2);
+}
+
+#[test]
+#[serial]
+fn bridge_session_v1_migrates_to_v2_with_workspace_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let now = Utc::now();
+
+    let raw = serde_json::json!({
+        "schema_version": 1,
+        "session_id": "legacy-session",
+        "account_id": "acct_1",
+        "profile": "default",
+        "cwd": cwd,
+        "assistant_worker_id": "assistant-session",
+        "last_poll_cursor": "cursor-1",
+        "last_ack_at": now,
+        "updated_at": now,
+    });
+
+    let migrated = migrate_bridge_session_state(raw).unwrap();
+
+    assert_eq!(migrated.schema_version, SCHEMA_VERSION);
+    assert_eq!(migrated.session_id, "legacy-session");
+    assert_eq!(migrated.last_poll_cursor.as_deref(), Some("cursor-1"));
+    assert!(migrated.workspace_key.contains("acct_1"));
+    assert!(migrated.workspace_key.contains("default"));
+    assert!(migrated.terminal_id.is_none());
+    assert!(migrated.remote_session_key.is_none());
+    assert!(migrated.assistant_session_id.is_none());
+    assert!(migrated.last_run_id.is_none());
+    assert!(migrated.lease_owner.is_none());
+    assert!(migrated.lease_expires_at.is_none());
+}
+
+#[test]
+#[serial]
+fn list_bridge_session_states_returns_all_valid_sessions() {
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let now = Utc::now();
+
+    write_bridge_session_state(&bridge_state("session-a", &cwd, "workspace-a", now)).unwrap();
+    write_bridge_session_state(&bridge_state("session-b", &cwd, "workspace-b", now)).unwrap();
+
+    let sessions = list_bridge_session_states().unwrap();
+
+    let ids: Vec<_> = sessions
+        .iter()
+        .map(|session| session.session_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["session-a", "session-b"]);
+}
+
+#[test]
+#[serial]
+fn find_bridge_session_by_workspace_key_returns_newest_match() {
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let older = Utc::now() - chrono::Duration::minutes(5);
+    let newer = Utc::now();
+
+    write_bridge_session_state(&bridge_state("old", &cwd, "workspace-key", older)).unwrap();
+    write_bridge_session_state(&bridge_state("new", &cwd, "workspace-key", newer)).unwrap();
+    write_bridge_session_state(&bridge_state("other", &cwd, "other-key", newer)).unwrap();
+
+    let matched =
+        find_bridge_session_by_workspace_key("workspace-key", Some("acct_1"), Some("default"))
+            .unwrap()
+            .unwrap();
+
+    assert_eq!(matched.session_id, "new");
+}
+
+#[test]
+#[serial]
+fn bridge_session_state_paths_stay_under_allthecodes_daemon_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+
+    write_bridge_session_state(&bridge_state(
+        "session/with:unsafe chars",
+        &cwd,
+        "workspace-key",
+        Utc::now(),
+    ))
+    .unwrap();
+
+    let bridge_root = daemon_dir().join("bridge");
+    assert!(bridge_session_state_path("session/with:unsafe chars").starts_with(&bridge_root));
+    assert!(bridge_session_inbox_path("session/with:unsafe chars").starts_with(&bridge_root));
+    assert!(bridge_session_state_path("session/with:unsafe chars").exists());
+    assert!(bridge_session_inbox_path("session/with:unsafe chars")
+        .parent()
+        .unwrap()
+        .starts_with(&bridge_root));
 }
