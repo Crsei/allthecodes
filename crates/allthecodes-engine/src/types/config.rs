@@ -316,6 +316,49 @@ mod tests {
         );
         assert!(!legacy.deferred_tool_loading);
     }
+
+    #[test]
+    fn autonomous_sources_are_non_interactive() {
+        let sources = [
+            QuerySource::ProactiveTick,
+            QuerySource::ScheduledTask,
+            QuerySource::WebhookEvent,
+            QuerySource::ChannelNotification,
+        ];
+
+        for source in sources {
+            assert!(source.is_autonomous(), "{source:?} should be autonomous");
+            assert!(
+                source.is_non_interactive(),
+                "{source:?} should be non-interactive"
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_sources_are_not_autonomous() {
+        let sources = [
+            QuerySource::ReplMainThread,
+            QuerySource::Sdk,
+            QuerySource::Compact,
+            QuerySource::SessionMemory,
+        ];
+
+        for source in sources {
+            assert!(!source.is_autonomous(), "{source:?} should not be autonomous");
+        }
+    }
+
+    #[test]
+    fn autonomous_source_labels_match_daemon_payload_contract() {
+        assert_eq!(QuerySource::ProactiveTick.as_label(), "proactive_tick");
+        assert_eq!(QuerySource::ScheduledTask.as_label(), "scheduled_task");
+        assert_eq!(QuerySource::WebhookEvent.as_label(), "webhook_event");
+        assert_eq!(
+            QuerySource::ChannelNotification.as_label(),
+            "channel_notification"
+        );
+    }
 }
 
 /// QueryEngine 配置
