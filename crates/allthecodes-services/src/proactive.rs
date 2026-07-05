@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
@@ -163,20 +163,32 @@ pub fn write_sleep_state(duration_seconds: u64, reason: &str) -> Result<SleepSta
 
 pub fn active_sleep_state() -> Result<Option<SleepState>> {
     let path = sleep_state_path();
-    if !path.exists() {
+    let Some(state) = read_sleep_state_from_path(&path, |path| fs::read_to_string(path))? else {
         return Ok(None);
-    }
-
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read daemon sleep state {}", path.display()))?;
-    let state: SleepState = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse daemon sleep state {}", path.display()))?;
+    };
 
     if state.sleeping_until <= Utc::now() {
         clear_sleep_state("expired")?;
         return Ok(None);
     }
 
+    Ok(Some(state))
+}
+
+fn read_sleep_state_from_path<F>(path: &Path, read_to_string: F) -> Result<Option<SleepState>>
+where
+    F: FnOnce(&Path) -> std::io::Result<String>,
+{
+    let text = match read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read daemon sleep state {}", path.display()))
+        }
+    };
+    let state = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse daemon sleep state {}", path.display()))?;
     Ok(Some(state))
 }
 
@@ -347,5 +359,15 @@ mod tests {
         assert!(clear_sleep_state("test cleanup").unwrap());
         assert!(!path.exists());
         assert!(!clear_sleep_state("second cleanup").unwrap());
+    }
+
+    #[test]
+    fn sleep_state_reader_treats_not_found_during_read_as_absent() {
+        let path = std::path::Path::new("sleep-state.json");
+        let state =
+            read_sleep_state_from_path(path, |_| Err(std::io::Error::from(ErrorKind::NotFound)))
+                .unwrap();
+
+        assert!(state.is_none());
     }
 }
