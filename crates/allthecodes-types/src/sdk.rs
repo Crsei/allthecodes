@@ -7,6 +7,7 @@
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::brief::BriefMessagePayload;
 use crate::message::{AssistantMessage, CompactMetadata, ContentBlock, StreamEvent, Usage};
 
 /// Usage tracking accumulated across API calls in a session.
@@ -73,6 +74,8 @@ pub enum SdkMessage {
     ToolUseSummary(SdkToolUseSummary),
     /// Durable session goal state changed.
     GoalUpdated(SdkGoalUpdated),
+    /// Structured brief message intended for the user.
+    BriefMessage(BriefMessagePayload),
     /// Tombstone for an assistant message abandoned by fallback retry.
     Tombstone(SdkTombstone),
     /// Final result. Every submit call ends with exactly one result.
@@ -90,6 +93,7 @@ impl SdkMessage {
             SdkMessage::ApiRetry(_) => "api_retry",
             SdkMessage::ToolUseSummary(_) => "tool_use_summary",
             SdkMessage::GoalUpdated(_) => "goal_updated",
+            SdkMessage::BriefMessage(_) => "brief_message",
             SdkMessage::Tombstone(_) => "tombstone",
             SdkMessage::Result(_) => "result",
         }
@@ -243,6 +247,27 @@ mod tests {
         assert_eq!(value["tools"][0], "Read");
         assert_eq!(value["permission_mode"], "default");
         assert_eq!(msg.event_name(), "system_init");
+    }
+
+    #[test]
+    fn sdk_brief_message_uses_stable_type_tag() {
+        let msg = SdkMessage::BriefMessage(crate::brief::BriefMessagePayload {
+            message: "short update".to_string(),
+            status: crate::brief::BriefMessageStatus::Proactive,
+            attachments: vec!["docs/brief.md".to_string()],
+            level: None,
+            source_tool_name: Some(crate::brief::BRIEF_TOOL_NAME.to_string()),
+            tool_use_id: Some("toolu-brief".to_string()),
+            session_id: Some("session-1".to_string()),
+            timestamp: Some(100),
+        });
+
+        let value = serde_json::to_value(&msg).unwrap();
+        assert_eq!(value["type"], "brief_message");
+        assert_eq!(value["message"], "short update");
+        assert_eq!(value["status"], "proactive");
+        assert_eq!(value["attachments"], serde_json::json!(["docs/brief.md"]));
+        assert_eq!(msg.event_name(), "brief_message");
     }
 
     #[test]

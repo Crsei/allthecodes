@@ -12,6 +12,7 @@ use agent_client_protocol_schema::v2::{
     SessionId, SessionUpdate, StateUpdate, StopReason, TextContent, ToolCallStatus, ToolCallUpdate,
     UsageUpdate, UserMessage,
 };
+use allthecodes_types::brief::BriefMessagePayload;
 use allthecodes_types::message::{
     ContentBlock as InternalContentBlock, Message, MessageContent, StreamEvent, SystemSubtype,
     ToolResultContent,
@@ -106,6 +107,7 @@ impl AcpUpdateMapper {
             SdkMessage::Assistant(assistant) => {
                 self.map_assistant_blocks(&assistant.message.content)
             }
+            SdkMessage::BriefMessage(brief) => vec![self.brief_message_update(brief)],
             SdkMessage::StreamEvent(event) => self.map_stream_event(event),
             SdkMessage::Result(result) => self.map_result(result, None),
             SdkMessage::SystemInit(_) => Vec::new(),
@@ -387,6 +389,14 @@ impl AcpUpdateMapper {
             "tombstone",
             "Assistant message abandoned during retry".to_string(),
             Some(tombstone.message.uuid.to_string()),
+        )
+    }
+
+    fn brief_message_update(&mut self, brief: &BriefMessagePayload) -> SessionUpdate {
+        SessionUpdate::AgentMessage(
+            AgentMessage::new(self.message_ids.next_agent_message_id()).content(vec![
+                ContentBlock::Text(TextContent::new(brief.message.clone())),
+            ]),
         )
     }
 

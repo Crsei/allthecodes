@@ -25,6 +25,8 @@ use crate::protocol::{self, DaemonCommandKind, DaemonEventKind};
 use allthecodes_engine::bootstrap::SessionId;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::{QueryEngineConfig, QuerySource};
+use allthecodes_types::brief::BriefMessagePayload;
+use allthecodes_types::sdk::SdkMessage;
 
 use super::gateway_run_events::{
     append_gateway_event, append_gateway_sdk_event, update_gateway_status,
@@ -631,6 +633,7 @@ impl AssistantWorkerRuntime {
         let stream = self.engine.submit_message(text, query_source);
         tokio::pin!(stream);
         while let Some(sdk_msg) = stream.next().await {
+            append_brief_memory_log_if_needed(&sdk_msg);
             if let Some(event) = sdk_message_to_sse(&sdk_msg, message_id) {
                 append_gateway_sdk_event(command, &event.event_type, event.data.clone())?;
                 super::protocol_store().append_event(
@@ -662,6 +665,40 @@ impl AssistantWorkerRuntime {
     fn abort(&self) {
         self.engine.abort();
     }
+}
+
+fn append_brief_memory_log_if_needed(sdk_msg: &SdkMessage) {
+    if let SdkMessage::BriefMessage(brief) = sdk_msg {
+        super::memory_log::append_log_entry(&brief_memory_log_entry(brief));
+    }
+}
+
+fn brief_memory_log_entry(brief: &BriefMessagePayload) -> String {
+    let mut meta = vec![format!("status={}", brief.status.as_str())];
+    if let Some(level) = brief.level {
+        meta.push(format!("level={}", level.as_str()));
+    }
+    if let Some(session_id) = brief
+        .session_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        meta.push(format!("session={session_id}"));
+    }
+    if let Some(tool_use_id) = brief
+        .tool_use_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        meta.push(format!("tool_use={tool_use_id}"));
+    }
+
+    let mut entry = format!("brief output [{}]: {}", meta.join(", "), brief.message);
+    if !brief.attachments.is_empty() {
+        entry.push_str("\nattachments: ");
+        entry.push_str(&brief.attachments.join(", "));
+    }
+    entry
 }
 
 fn persist_bridge_assistant_session_id(
@@ -981,6 +1018,28 @@ mod tests {
     }
 
     #[test]
+    fn brief_memory_log_entry_includes_structured_context() {
+        let entry = brief_memory_log_entry(&BriefMessagePayload {
+            message: "Build finished.".to_string(),
+            status: allthecodes_types::brief::BriefMessageStatus::Proactive,
+            attachments: vec!["target/report.txt".to_string()],
+            level: Some(allthecodes_types::brief::BriefMessageLevel::Warning),
+            source_tool_name: Some("Brief".to_string()),
+            tool_use_id: Some("toolu_brief".to_string()),
+            session_id: Some("session-1".to_string()),
+            timestamp: Some(100),
+        });
+
+        assert!(entry.contains("brief output"));
+        assert!(entry.contains("status=proactive"));
+        assert!(entry.contains("level=warning"));
+        assert!(entry.contains("session=session-1"));
+        assert!(entry.contains("tool_use=toolu_brief"));
+        assert!(entry.contains("Build finished."));
+        assert!(entry.contains("attachments: target/report.txt"));
+    }
+
+    #[test]
     #[serial]
     fn daemon_submit_producer_payloads_resolve_to_expected_query_sources() {
         let home = tempfile::tempdir().unwrap();
@@ -1004,9 +1063,7 @@ mod tests {
             },
         };
         assert_eq!(
-            query_source_from_submit_payload(&crate::channels::channel_submit_payload(
-                &mcp_event
-            )),
+            query_source_from_submit_payload(&crate::channels::channel_submit_payload(&mcp_event)),
             QuerySource::ChannelNotification
         );
 

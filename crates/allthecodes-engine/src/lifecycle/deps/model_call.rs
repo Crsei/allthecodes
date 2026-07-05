@@ -15,6 +15,7 @@ pub(crate) fn tool_execution_result_to_exec_result(result: ToolExecutionResult) 
         hook_stopped_continuation: result.hook_stopped_continuation,
         duration_ms: None,
         permission_decision: None,
+        brief_message: None,
     }
 }
 

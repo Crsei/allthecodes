@@ -69,11 +69,11 @@ pub mod review;
 pub mod rewind;
 pub mod sandbox_cmd;
 pub mod schedule;
+mod search_format;
 pub mod security_review;
 pub mod session;
 pub mod session_export;
 pub mod simplify;
-mod search_format;
 pub mod skills_cmd;
 pub mod sleep_cmd;
 pub mod status;
@@ -1037,6 +1037,12 @@ pub fn get_all_commands() -> Vec<Command> {
             assistant::AssistantHandler,
         ),
         command(
+            "brief",
+            &[],
+            "Toggle KAIROS structured Brief output mode",
+            brief::BriefHandler,
+        ),
+        command(
             "daemon",
             &[],
             "View/control daemon process",
@@ -1546,6 +1552,27 @@ mod tests {
     fn builtin_registry_includes_workflows_command() {
         let metadata = command_metadata(&get_all_commands());
         assert!(metadata.iter().any(|cmd| cmd.name == "workflows"));
+    }
+
+    #[test]
+    fn builtin_registry_includes_hidden_brief_command() {
+        let commands = get_all_commands();
+        let metadata = command_metadata(&commands);
+        let brief = metadata
+            .iter()
+            .find(|cmd| cmd.name == "brief")
+            .expect("brief command is registered");
+        assert!(is_hidden_command(&brief.name));
+
+        let dispatcher = DefaultCommandDispatcher::from_commands(&commands);
+        let parsed = dispatcher
+            .parse_command_input("/brief on")
+            .expect("brief slash command parses");
+        assert_eq!(
+            dispatcher.command_name(parsed.index).as_deref(),
+            Some("brief")
+        );
+        assert_eq!(parsed.args, "on");
     }
 
     fn write_workflow(cwd: &std::path::Path, file: &str, content: &str) {

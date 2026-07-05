@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use allthecodes_types::agent_events::AgentEvent;
 use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
+use allthecodes_types::brief::BriefMessagePayload;
 
 use crate::types::app_state::AppState;
 use crate::types::message::{AssistantMessage, Message, StreamEvent, Usage};
@@ -44,6 +45,7 @@ pub struct ToolExecResult {
     pub hook_stopped_continuation: bool,
     pub duration_ms: Option<u64>,
     pub permission_decision: Option<AgentRuntimePermissionDecision>,
+    pub brief_message: Option<BriefMessagePayload>,
 }
 
 impl ToolExecResult {

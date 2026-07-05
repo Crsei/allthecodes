@@ -155,6 +155,20 @@ pub fn sdk_message_to_sse(msg: &SdkMessage, message_id: &str) -> Option<SseEvent
                 "session_id": am.session_id,
             }),
         ),
+        SdkMessage::BriefMessage(brief) => (
+            "brief_message".to_string(),
+            json!({
+                "message_id": message_id,
+                "message": brief.message,
+                "status": brief.status.as_str(),
+                "attachments": brief.attachments,
+                "level": brief.level.map(|level| level.as_str()),
+                "source_tool_name": brief.source_tool_name,
+                "tool_use_id": brief.tool_use_id,
+                "session_id": brief.session_id,
+                "timestamp": brief.timestamp,
+            }),
+        ),
         SdkMessage::UserReplay(ur) => (
             "user_replay".to_string(),
             json!({
@@ -1313,6 +1327,35 @@ mod tests {
         assert_eq!(event.data["summary"], "Read finished");
         assert_eq!(event.data["preceding_tool_use_ids"][0], "toolu_1");
         assert_eq!(event.data["session_id"], "session-1");
+    }
+
+    #[test]
+    fn daemon_sse_broadcasts_brief_messages() {
+        let event = sdk_message_to_sse(
+            &SdkMessage::BriefMessage(allthecodes_types::brief::BriefMessagePayload {
+                message: "brief body".to_string(),
+                status: allthecodes_types::brief::BriefMessageStatus::Proactive,
+                attachments: vec!["docs/brief.md".to_string()],
+                level: Some(allthecodes_types::brief::BriefMessageLevel::Error),
+                source_tool_name: Some("Brief".to_string()),
+                tool_use_id: Some("toolu-brief".to_string()),
+                session_id: Some("session-1".to_string()),
+                timestamp: Some(100),
+            }),
+            "message-1",
+        )
+        .expect("brief message should be broadcast");
+
+        assert_eq!(event.event_type, "brief_message");
+        assert_eq!(event.data["message_id"], "message-1");
+        assert_eq!(event.data["message"], "brief body");
+        assert_eq!(event.data["status"], "proactive");
+        assert_eq!(event.data["attachments"], json!(["docs/brief.md"]));
+        assert_eq!(event.data["level"], "error");
+        assert_eq!(event.data["source_tool_name"], "Brief");
+        assert_eq!(event.data["tool_use_id"], "toolu-brief");
+        assert_eq!(event.data["session_id"], "session-1");
+        assert_eq!(event.data["timestamp"], 100);
     }
 
     #[test]

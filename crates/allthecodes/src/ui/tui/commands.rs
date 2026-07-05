@@ -181,6 +181,7 @@ fn sync_app_runtime_from_state(
         engine_state.tool_permission_context = state.tool_permission_context.clone();
         engine_state.thinking_enabled = state.thinking_enabled;
         engine_state.fast_mode = state.fast_mode;
+        engine_state.is_brief_only = state.is_brief_only;
         engine_state.effort_value = state.effort_value.clone();
         engine_state.keybindings = state.keybindings.clone();
     });

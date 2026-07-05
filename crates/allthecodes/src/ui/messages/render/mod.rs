@@ -871,6 +871,7 @@ mod tests {
             false,
             super::MessageRenderOptions {
                 verbose: false,
+                brief_only: false,
                 is_transcript_mode: true,
                 show_all_in_transcript: true,
                 thinking_animation_frame: None,
@@ -1362,6 +1363,76 @@ mod tests {
         assert!(rendered.contains("[x] Inspect app state"));
         assert!(rendered.contains("[*] Patch todo renderer"));
         assert!(rendered.contains("[ ] Run focused tests"));
+    }
+
+    #[test]
+    fn brief_only_filters_tool_chatter_but_keeps_user_and_brief_text() {
+        let tool_id = "toolu_bash".to_string();
+        let messages = vec![
+            Message::User(UserMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 0,
+                role: "user".to_string(),
+                content: MessageContent::Text("build it".to_string()),
+                is_meta: false,
+                tool_use_result: None,
+                source_tool_assistant_uuid: None,
+            }),
+            Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 1,
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: tool_id.clone(),
+                    name: "Bash".to_string(),
+                    input: json!({ "command": "cargo test" }),
+                }],
+                usage: None,
+                stop_reason: Some("tool_use".to_string()),
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.0,
+            }),
+            Message::User(UserMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 2,
+                role: "user".to_string(),
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: tool_id,
+                    content: ToolResultContent::Text("tests passed".to_string()),
+                    is_error: false,
+                }]),
+                is_meta: true,
+                tool_use_result: Some("tests passed".to_string()),
+                source_tool_assistant_uuid: None,
+            }),
+            Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 3,
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Build finished.".to_string(),
+                }],
+                usage: None,
+                stop_reason: None,
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.0,
+            }),
+        ];
+
+        let rendered = render_pipeline_text(
+            &messages,
+            super::MessageRenderOptions {
+                brief_only: true,
+                ..super::MessageRenderOptions::default()
+            },
+        );
+
+        assert!(rendered.contains("build it"));
+        assert!(rendered.contains("Build finished."));
+        assert!(!rendered.contains("cargo test"));
+        assert!(!rendered.contains("tests passed"));
     }
 
     #[test]

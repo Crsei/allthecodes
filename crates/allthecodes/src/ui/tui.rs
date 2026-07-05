@@ -47,8 +47,8 @@ use commands::{query_prompt_text, try_execute_command, CmdAction};
 use engine_events::{
     create_user_message, handle_sdk_message, handle_tool_progress, install_tui_ask_user_callback,
     install_tui_permission_callback, install_tui_permission_event_callback,
-    install_tui_tool_progress_callback, permission_choice_to_response, spawn_engine_query,
-    EngineEvent, StreamingState,
+    install_tui_tool_progress_callback, make_assistant_text, normalize_message_timestamp,
+    permission_choice_to_response, spawn_engine_query, EngineEvent, StreamingState,
 };
 use export::{export_to_editor, open_reference_in_editor};
 use subsystem_events::{
@@ -226,6 +226,14 @@ fn handle_agent_backend_messages(app: &mut App, messages: Vec<BackendMessage>) {
                 "error" => add_system_error(app, &text),
                 _ => add_system_info(app, &text),
             },
+            BackendMessage::BriefMessage {
+                message, timestamp, ..
+            } => {
+                app.add_message(make_assistant_text(
+                    message,
+                    timestamp.map(normalize_message_timestamp),
+                ));
+            }
             BackendMessage::AgentEvent { .. }
             | BackendMessage::TeamEvent { .. }
             | BackendMessage::NotificationSent { .. }

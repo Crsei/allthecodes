@@ -629,6 +629,18 @@ fn sdk_to_backend_messages(
                 cost_usd: assistant.message.cost_usd,
             }]
         }
+        SdkMessage::BriefMessage(brief) => {
+            vec![BackendMessage::BriefMessage {
+                message: brief.message,
+                status: brief.status.as_str().to_string(),
+                attachments: brief.attachments,
+                level: brief.level.map(|level| level.as_str().to_string()),
+                source_tool_name: brief.source_tool_name,
+                tool_use_id: brief.tool_use_id,
+                session_id: brief.session_id,
+                timestamp: brief.timestamp,
+            }]
+        }
         SdkMessage::Result(result) => {
             let mut msgs: Vec<BackendMessage> = Vec::new();
             if result.is_error || !result.errors.is_empty() {
@@ -1083,6 +1095,44 @@ mod tests {
         assert!(encoded.contains(r#""session_id":"session-1""#));
         assert!(!encoded.contains("payload"));
         assert!(!encoded.contains("kind"));
+    }
+
+    #[test]
+    fn websocket_sdk_mapper_forwards_brief_messages() {
+        let mut draft_id = None;
+        let mut tool_use_cache = ToolUseContextCache::new();
+        let messages = sdk_to_backend_messages(
+            SdkMessage::BriefMessage(allthecodes_types::brief::BriefMessagePayload {
+                message: "brief body".into(),
+                status: allthecodes_types::brief::BriefMessageStatus::Normal,
+                attachments: vec![],
+                level: Some(allthecodes_types::brief::BriefMessageLevel::Info),
+                source_tool_name: Some("SendUserMessage".into()),
+                tool_use_id: Some("toolu-message".into()),
+                session_id: Some("session-1".into()),
+                timestamp: Some(100),
+            }),
+            &mut draft_id,
+            &mut tool_use_cache,
+        );
+
+        assert!(matches!(
+            messages.as_slice(),
+            [BackendMessage::BriefMessage {
+                message,
+                status,
+                level: Some(level),
+                source_tool_name: Some(source_tool_name),
+                tool_use_id: Some(tool_use_id),
+                session_id: Some(session_id),
+                ..
+            }] if message == "brief body"
+                && status == "normal"
+                && level == "info"
+                && source_tool_name == "SendUserMessage"
+                && tool_use_id == "toolu-message"
+                && session_id == "session-1"
+        ));
     }
 
     #[test]

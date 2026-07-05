@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 use crate::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, ValidationResult};
 use allthecodes_config::features::{self, Feature};
+use allthecodes_types::brief::BRIEF_TOOL_NAME;
 use allthecodes_types::message::AssistantMessage;
 
 /// BriefTool -- send a structured brief message to the user.
@@ -18,7 +19,7 @@ pub struct BriefTool;
 #[async_trait]
 impl Tool for BriefTool {
     fn name(&self) -> &str {
-        "Brief"
+        BRIEF_TOOL_NAME
     }
 
     async fn description(&self, _input: &Value) -> String {
@@ -119,6 +120,7 @@ impl Tool for BriefTool {
                 "status": status,
                 "attachments": attachments,
             }),
+            display_preview: Some(message),
             new_messages: vec![],
             ..Default::default()
         })
@@ -150,7 +152,9 @@ mod tests {
     use super::*;
     use crate::tool::ToolAppState as AppState;
     use crate::tool::{FileStateCache, ToolUseOptions};
+    use allthecodes_types::message::ContentBlock;
     use std::sync::Arc;
+    use uuid::Uuid;
 
     fn create_test_context() -> ToolUseContext {
         let (_tx, rx) = tokio::sync::watch::channel(false);
@@ -182,6 +186,20 @@ mod tests {
             command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
             available_tools: vec![],
             execute_deferred_tool: None,
+        }
+    }
+
+    fn parent_message() -> AssistantMessage {
+        AssistantMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: 0,
+            role: "assistant".to_string(),
+            content: Vec::<ContentBlock>::new(),
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
         }
     }
 
@@ -248,5 +266,31 @@ mod tests {
     fn test_brief_tool_user_facing_name() {
         let tool = BriefTool;
         assert_eq!(tool.user_facing_name(None), "Brief");
+    }
+
+    #[tokio::test]
+    async fn test_brief_tool_returns_structured_payload_and_preview() {
+        let tool = BriefTool;
+        let ctx = create_test_context();
+        let parent = parent_message();
+        let result = tool
+            .call(
+                json!({
+                    "message": "brief body",
+                    "status": "proactive",
+                    "attachments": ["docs/brief.md"],
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .expect("brief tool call should succeed");
+
+        assert_eq!(result.data["is_brief_message"], true);
+        assert_eq!(result.data["message"], "brief body");
+        assert_eq!(result.data["status"], "proactive");
+        assert_eq!(result.data["attachments"], json!(["docs/brief.md"]));
+        assert_eq!(result.display_preview.as_deref(), Some("brief body"));
     }
 }

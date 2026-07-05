@@ -543,6 +543,35 @@ pub(super) fn tool_exec_result(
     duration_ms: Option<u64>,
     permission_decision: Option<AgentRuntimePermissionDecision>,
 ) -> ToolExecResult {
+    let brief_message = allthecodes_types::brief::brief_payload_from_tool_result(
+        &request.tool_name,
+        &request.tool_use_id,
+        "",
+        &result.data,
+    );
+    tool_exec_result_with_brief(
+        request,
+        result,
+        is_error,
+        hook_stopped_continuation,
+        effective_input,
+        duration_ms,
+        permission_decision,
+        brief_message,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tool_exec_result_with_brief(
+    request: &ToolExecRequest,
+    result: crate::types::tool::ToolResult,
+    is_error: bool,
+    hook_stopped_continuation: bool,
+    effective_input: serde_json::Value,
+    duration_ms: Option<u64>,
+    permission_decision: Option<AgentRuntimePermissionDecision>,
+    brief_message: Option<allthecodes_types::brief::BriefMessagePayload>,
+) -> ToolExecResult {
     ToolExecResult {
         tool_use_id: request.tool_use_id.clone(),
         tool_name: request.tool_name.clone(),
@@ -552,6 +581,7 @@ pub(super) fn tool_exec_result(
         hook_stopped_continuation,
         duration_ms,
         permission_decision,
+        brief_message,
     }
 }
 
@@ -767,6 +797,46 @@ mod tests {
         assert!(rule.starts_with("Bash(exact-hex:"));
         assert!(rule.ends_with(")"));
         assert!(rule.len() > "Bash(exact-hex:)".len() + 1);
+    }
+
+    #[test]
+    fn tool_exec_result_extracts_brief_payload() {
+        let request = ToolExecRequest {
+            tool_use_id: "toolu-brief".to_string(),
+            tool_name: allthecodes_types::brief::BRIEF_TOOL_NAME.to_string(),
+            input: json!({"message": "brief body"}),
+            langfuse_batch_span: None,
+        };
+        let result = tool_exec_result(
+            &request,
+            ToolResult {
+                data: json!({
+                    "is_brief_message": true,
+                    "message": "brief body",
+                    "status": "proactive",
+                    "attachments": ["docs/brief.md"],
+                }),
+                display_preview: Some("brief body".to_string()),
+                ..Default::default()
+            },
+            false,
+            false,
+            request.input.clone(),
+            Some(42),
+            None,
+        );
+
+        let brief = result
+            .brief_message
+            .as_ref()
+            .expect("Brief tool result should expose brief payload");
+        assert_eq!(brief.message, "brief body");
+        assert_eq!(
+            brief.status,
+            allthecodes_types::brief::BriefMessageStatus::Proactive
+        );
+        assert_eq!(brief.attachments, vec!["docs/brief.md".to_string()]);
+        assert_eq!(brief.tool_use_id.as_deref(), Some("toolu-brief"));
     }
 
     #[test]

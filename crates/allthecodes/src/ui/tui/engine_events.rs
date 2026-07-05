@@ -437,6 +437,16 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
             }
         }
 
+        SdkMessage::BriefMessage(brief) => {
+            if ss.is_partial() {
+                ss.clear();
+            }
+            app.add_message(make_assistant_text(
+                brief.message,
+                brief.timestamp.map(normalize_message_timestamp),
+            ));
+        }
+
         SdkMessage::Tombstone(_) => {
             if ss.is_partial() {
                 app.remove_last_message();
@@ -605,6 +615,28 @@ fn make_partial_assistant(blocks: &[ContentBlock]) -> Message {
         api_error: None,
         cost_usd: 0.0,
     })
+}
+
+pub(super) fn make_assistant_text(text: String, timestamp: Option<i64>) -> Message {
+    Message::Assistant(AssistantMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: timestamp.unwrap_or_else(now_ts),
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text { text }],
+        usage: None,
+        stop_reason: None,
+        is_api_error_message: false,
+        api_error: None,
+        cost_usd: 0.0,
+    })
+}
+
+pub(super) fn normalize_message_timestamp(timestamp: i64) -> i64 {
+    if timestamp > 10_000_000_000 {
+        timestamp / 1000
+    } else {
+        timestamp
+    }
 }
 // ---------------------------------------------------------------------------
 // Helpers

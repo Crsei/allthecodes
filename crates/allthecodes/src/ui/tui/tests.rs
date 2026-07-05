@@ -12,10 +12,12 @@ use crate::ui::app::App;
 use allthecodes_config::features::{self, FeatureFlags};
 use allthecodes_engine::types::tool::ToolProgress;
 use allthecodes_ipc_protocol::subsystem_events::{LspEvent, SubsystemEvent};
+use allthecodes_ipc_protocol::BackendMessage;
 use allthecodes_services::skill_search_prefetch::{
     collect_skill_discovery_prefetch, start_skill_discovery_prefetch, SkillPrefetchContext,
 };
 use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
+use allthecodes_types::brief::{BriefMessagePayload, BriefMessageStatus};
 use allthecodes_types::message::{
     ContentBlock, InfoLevel, Message, MessageContent, StreamEvent, SystemMessage, SystemSubtype,
     ToolResultContent, UserMessage,
@@ -24,8 +26,8 @@ use allthecodes_types::sdk::{
     ResultSubtype, SdkAssistantMessage, SdkMessage, SdkResult, SdkStreamEvent, SdkTombstone,
     SdkUserReplay, UsageTracking,
 };
-use serial_test::serial;
 use serde_json::json;
+use serial_test::serial;
 fn stream_event(event: StreamEvent) -> SdkMessage {
     SdkMessage::StreamEvent(SdkStreamEvent {
         event,
@@ -448,6 +450,60 @@ fn tui_user_replay_preserves_tool_result_preview() {
 }
 
 #[test]
+fn tui_sdk_brief_message_adds_assistant_text_message() {
+    let mut app = App::new();
+    let mut state = StreamingState::new();
+
+    handle_sdk_message(
+        &mut app,
+        SdkMessage::BriefMessage(BriefMessagePayload {
+            message: "Build finished.".to_string(),
+            status: BriefMessageStatus::Normal,
+            attachments: Vec::new(),
+            level: None,
+            source_tool_name: Some("Brief".to_string()),
+            tool_use_id: Some("toolu_brief".to_string()),
+            session_id: Some("test-session".to_string()),
+            timestamp: Some(now_ts()),
+        }),
+        &mut state,
+    );
+
+    let blocks = last_assistant_blocks(&app);
+    assert_eq!(blocks.len(), 1);
+    match &blocks[0] {
+        ContentBlock::Text { text } => assert_eq!(text, "Build finished."),
+        other => panic!("expected brief text block, got {other:?}"),
+    }
+}
+
+#[test]
+fn tui_backend_brief_message_adds_assistant_text_message() {
+    let mut app = App::new();
+
+    super::handle_agent_backend_messages(
+        &mut app,
+        vec![BackendMessage::BriefMessage {
+            message: "Worker finished.".to_string(),
+            status: "normal".to_string(),
+            attachments: Vec::new(),
+            level: None,
+            source_tool_name: Some("Brief".to_string()),
+            tool_use_id: Some("toolu_brief".to_string()),
+            session_id: Some("test-session".to_string()),
+            timestamp: Some(now_ts()),
+        }],
+    );
+
+    let blocks = last_assistant_blocks(&app);
+    assert_eq!(blocks.len(), 1);
+    match &blocks[0] {
+        ContentBlock::Text { text } => assert_eq!(text, "Worker finished."),
+        other => panic!("expected backend brief text block, got {other:?}"),
+    }
+}
+
+#[test]
 fn tui_tool_progress_updates_existing_progress_message() {
     let mut app = App::new();
 
@@ -505,12 +561,10 @@ fn tui_suggestions_include_turn_zero_skill_discovery_tip() {
         "rust-review",
         "Review Rust code without remote fetch",
     )]);
-    collect_skill_discovery_prefetch(start_skill_discovery_prefetch(
-        SkillPrefetchContext {
-            session_id: "test-session".to_string(),
-            query: "rust".to_string(),
-        },
-    ));
+    collect_skill_discovery_prefetch(start_skill_discovery_prefetch(SkillPrefetchContext {
+        session_id: "test-session".to_string(),
+        query: "rust".to_string(),
+    }));
     let mut app = App::new();
     app.set_session_id("test-session".to_string());
     app.add_message(create_user_message("I need help with Rust code"));

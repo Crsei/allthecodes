@@ -117,6 +117,18 @@ pub fn handle_sdk_message(
             })
         }
 
+        // ── BriefMessage ─────────────────────────────────────────
+        SdkMessage::BriefMessage(brief) => sink.send(&BackendMessage::BriefMessage {
+            message: brief.message.clone(),
+            status: brief.status.as_str().to_string(),
+            attachments: brief.attachments.clone(),
+            level: brief.level.map(|level| level.as_str().to_string()),
+            source_tool_name: brief.source_tool_name.clone(),
+            tool_use_id: brief.tool_use_id.clone(),
+            session_id: brief.session_id.clone(),
+            timestamp: brief.timestamp,
+        }),
+
         // ── UserReplay (includes tool results) ──────────────────
         SdkMessage::UserReplay(replay) => {
             if replay.is_synthetic {
@@ -490,9 +502,7 @@ mod tests {
         collect_skill_discovery_prefetch, start_skill_discovery_prefetch, SkillPrefetchContext,
     };
     use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
-    use allthecodes_types::message::{
-        AssistantMessage, ImageSource, MessageContent, UserMessage,
-    };
+    use allthecodes_types::message::{AssistantMessage, ImageSource, MessageContent, UserMessage};
     use allthecodes_types::sdk::{ResultSubtype, SdkResult};
     use serial_test::serial;
     use uuid::Uuid;
@@ -810,6 +820,51 @@ mod tests {
     }
 
     #[test]
+    fn headless_maps_sdk_brief_message_to_backend_brief_message() {
+        let engine = make_engine(env!("CARGO_MANIFEST_DIR"));
+        let suggestion_svc = Arc::new(Mutex::new(PromptSuggestionService::new(false)));
+        let sink = FrontendSink::memory();
+
+        handle_sdk_message(
+            &SdkMessage::BriefMessage(allthecodes_types::brief::BriefMessagePayload {
+                message: "brief body".into(),
+                status: allthecodes_types::brief::BriefMessageStatus::Proactive,
+                attachments: vec!["docs/brief.md".into()],
+                level: Some(allthecodes_types::brief::BriefMessageLevel::Warning),
+                source_tool_name: Some("Brief".into()),
+                tool_use_id: Some("toolu-brief".into()),
+                session_id: Some("session-1".into()),
+                timestamp: Some(100),
+            }),
+            "message-1",
+            &engine,
+            &suggestion_svc,
+            &sink,
+        )
+        .expect("handle brief message");
+
+        let captured = sink.captured();
+        assert!(matches!(
+            captured.as_slice(),
+            [BackendMessage::BriefMessage {
+                message,
+                status,
+                attachments,
+                level: Some(level),
+                tool_use_id: Some(tool_use_id),
+                session_id: Some(session_id),
+                timestamp: Some(100),
+                ..
+            }] if message == "brief body"
+                && status == "proactive"
+                && attachments == &vec!["docs/brief.md".to_string()]
+                && level == "warning"
+                && tool_use_id == "toolu-brief"
+                && session_id == "session-1"
+        ));
+    }
+
+    #[test]
     #[serial]
     fn headless_suggestions_include_turn_zero_skill_discovery_tip() {
         let mut flags = FeatureFlags::all_disabled();
@@ -822,12 +877,10 @@ mod tests {
         )]);
         let engine = make_engine(env!("CARGO_MANIFEST_DIR"));
         let session_id = engine.current_session_id().to_string();
-        collect_skill_discovery_prefetch(start_skill_discovery_prefetch(
-            SkillPrefetchContext {
-                session_id: session_id.clone(),
-                query: "rust".to_string(),
-            },
-        ));
+        collect_skill_discovery_prefetch(start_skill_discovery_prefetch(SkillPrefetchContext {
+            session_id: session_id.clone(),
+            query: "rust".to_string(),
+        }));
         engine.replace_messages(vec![
             user_message("I need help with Rust code"),
             assistant_message("I can help inspect the implementation."),
@@ -837,10 +890,13 @@ mod tests {
 
         generate_and_send_suggestions(&engine, &suggestion_svc, &sink);
 
-        let suggestions = sink.captured().into_iter().find_map(|message| match message {
-            BackendMessage::Suggestions { items } => Some(items),
-            _ => None,
-        });
+        let suggestions = sink
+            .captured()
+            .into_iter()
+            .find_map(|message| match message {
+                BackendMessage::Suggestions { items } => Some(items),
+                _ => None,
+            });
         assert!(
             suggestions
                 .unwrap_or_default()

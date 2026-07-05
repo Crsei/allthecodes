@@ -274,6 +274,7 @@ fn internal_tool_error_result(
         hook_stopped_continuation: false,
         duration_ms: None,
         permission_decision: None,
+        brief_message: None,
     }
 }
 
@@ -651,6 +652,7 @@ mod tests {
                 hook_stopped_continuation: false,
                 duration_ms: None,
                 permission_decision: None,
+                brief_message: None,
             })
         }
 
@@ -889,6 +891,7 @@ mod tests {
             hook_stopped_continuation: false,
             duration_ms: None,
             permission_decision: None,
+            brief_message: None,
         };
 
         let user_msg = make_tool_result_user_message(&deps, &exec_result, source_uuid);
@@ -934,6 +937,7 @@ mod tests {
             hook_stopped_continuation: false,
             duration_ms: None,
             permission_decision: None,
+            brief_message: None,
         };
 
         let user_msg = make_tool_result_user_message(&deps, &exec_result, source_uuid);
@@ -990,6 +994,7 @@ mod tests {
             hook_stopped_continuation: false,
             duration_ms: None,
             permission_decision: None,
+            brief_message: None,
         };
 
         let user_msg = make_tool_result_user_message(&deps, &exec_result, source_uuid);
@@ -1036,6 +1041,7 @@ mod tests {
             hook_stopped_continuation: false,
             duration_ms: None,
             permission_decision: None,
+            brief_message: None,
         };
 
         let user_msg = make_tool_result_user_message(&deps, &exec_result, source_uuid);

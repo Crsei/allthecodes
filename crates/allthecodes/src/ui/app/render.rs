@@ -130,6 +130,7 @@ impl App {
                 selected_expanded,
                 MessageRenderOptions {
                     verbose: self.verbose,
+                    brief_only: self.brief_only,
                     is_transcript_mode: false,
                     thinking_animation_frame: self.thinking_animation_frame(),
                     ..MessageRenderOptions::default()
@@ -177,6 +178,7 @@ impl App {
                 selected_expanded,
                 MessageRenderOptions {
                     verbose: self.verbose,
+                    brief_only: self.brief_only,
                     is_transcript_mode: false,
                     thinking_animation_frame: self.thinking_animation_frame(),
                     ..MessageRenderOptions::default()
@@ -545,6 +547,7 @@ impl App {
             selected_expanded,
             MessageRenderOptions {
                 verbose: self.verbose,
+                brief_only: false,
                 is_transcript_mode: true,
                 show_all_in_transcript: true,
                 thinking_animation_frame: None,

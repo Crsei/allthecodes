@@ -25,6 +25,7 @@ pub(super) enum QueryTurnEvent {
     Message(Message),
     Tombstone(crate::types::message::TombstoneMessage),
     ToolUseSummary(crate::types::message::ToolUseSummaryMessage),
+    BriefMessage(allthecodes_types::brief::BriefMessagePayload),
 }
 
 impl From<QueryYield> for QueryTurnEvent {
@@ -35,6 +36,7 @@ impl From<QueryYield> for QueryTurnEvent {
             QueryYield::Message(message) => Self::Message(message),
             QueryYield::Tombstone(tombstone) => Self::Tombstone(tombstone),
             QueryYield::ToolUseSummary(summary) => Self::ToolUseSummary(summary),
+            QueryYield::BriefMessage(payload) => Self::BriefMessage(payload),
         }
     }
 }
@@ -132,6 +134,7 @@ pub(super) fn process_stream_item(
         QueryTurnEvent::RequestStart(_) => handle_request_start(),
         QueryTurnEvent::Tombstone(tombstone) => handle_tombstone(tombstone, ctx),
         QueryTurnEvent::ToolUseSummary(summary_msg) => handle_tool_use_summary(summary_msg, ctx),
+        QueryTurnEvent::BriefMessage(payload) => handle_brief_message(payload),
     }
 }
 
@@ -896,6 +899,12 @@ fn handle_tool_use_summary(
     ))]
 }
 
+fn handle_brief_message(
+    payload: allthecodes_types::brief::BriefMessagePayload,
+) -> Vec<StreamAction> {
+    vec![StreamAction::Yield(SdkMessage::BriefMessage(payload))]
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
@@ -1196,6 +1205,49 @@ mod tests {
         assert_eq!(request_event.model.as_deref(), Some("claude-test"));
         assert_eq!(request_event.attempt, 2);
         assert!(request_event.is_retry);
+    }
+
+    #[test]
+    fn process_stream_item_forwards_brief_messages_without_transcript_persist() {
+        let engine = QueryEngine::new(make_config());
+        let session_id = engine.session_id.clone();
+        let mut submit_turn = SubmitTurnState::new();
+        let mut submit_langfuse_trace = None;
+        let mut telemetry_submit_span = None;
+        let mut ctx = StreamContext {
+            config: &engine.config,
+            state_ref: &engine.state,
+            session_id: &session_id,
+            submit_turn: &mut submit_turn,
+            replay_user_messages: false,
+            submit_langfuse_trace: &mut submit_langfuse_trace,
+            telemetry_submit_span: &mut telemetry_submit_span,
+            model_name: "test-model",
+            backend_name: "test-backend",
+            request_event: None,
+            api_started_at: Instant::now(),
+        };
+        let payload = allthecodes_types::brief::BriefMessagePayload {
+            message: "brief body".to_string(),
+            status: allthecodes_types::brief::BriefMessageStatus::Normal,
+            attachments: vec![],
+            level: None,
+            source_tool_name: Some(allthecodes_types::brief::BRIEF_TOOL_NAME.to_string()),
+            tool_use_id: Some("toolu-brief".to_string()),
+            session_id: Some(session_id.to_string()),
+            timestamp: Some(100),
+        };
+
+        let actions = process_stream_item(
+            QueryTurnEvent::from(QueryYield::BriefMessage(payload.clone())),
+            &mut ctx,
+        );
+
+        let [StreamAction::Yield(SdkMessage::BriefMessage(forwarded))] = actions.as_slice() else {
+            panic!("expected single brief message SDK action");
+        };
+        assert_eq!(forwarded, &payload);
+        assert!(engine.state.read().transcript.messages.is_empty());
     }
 
     #[test]

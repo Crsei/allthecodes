@@ -388,6 +388,16 @@ pub enum BackendMessage {
         message: String,
         status: String,
         attachments: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        level: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_tool_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timestamp: Option<i64>,
     },
     /// Autonomous action started (proactive tick).
     AutonomousStart {
@@ -599,6 +609,30 @@ mod tests {
             encoded,
             r#"{"type":"file_search_result","request_id":"search-1","matches":[{"file":"src/main.rs","line":7,"text":"fn main() {}"}],"truncated":false}"#
         );
+    }
+
+    #[test]
+    fn brief_message_preserves_extended_optional_fields() {
+        let message = BackendMessage::BriefMessage {
+            message: "brief body".into(),
+            status: "proactive".into(),
+            attachments: vec!["docs/brief.md".into()],
+            level: Some("warning".into()),
+            source_tool_name: Some("Brief".into()),
+            tool_use_id: Some("toolu-brief".into()),
+            session_id: Some("session-1".into()),
+            timestamp: Some(100),
+        };
+
+        let value = serde_json::to_value(&message).unwrap();
+        assert_eq!(value["type"], "brief_message");
+        assert_eq!(value["message"], "brief body");
+        assert_eq!(value["status"], "proactive");
+        assert_eq!(value["attachments"], serde_json::json!(["docs/brief.md"]));
+        assert_eq!(value["level"], "warning");
+        assert_eq!(value["tool_use_id"], "toolu-brief");
+        assert_eq!(value["session_id"], "session-1");
+        assert_eq!(value["timestamp"], 100);
     }
 
     #[test]

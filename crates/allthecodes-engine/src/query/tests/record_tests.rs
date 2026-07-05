@@ -44,6 +44,7 @@ fn shell_exec_result(
         hook_stopped_continuation: false,
         duration_ms: Some(42),
         permission_decision: Some(permission_decision),
+        brief_message: None,
     }
 }
 

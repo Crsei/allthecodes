@@ -25,6 +25,7 @@ pub(crate) struct MessageRenderContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct MessageRenderOptions {
     pub(crate) verbose: bool,
+    pub(crate) brief_only: bool,
     pub(crate) is_transcript_mode: bool,
     pub(crate) show_all_in_transcript: bool,
     pub(crate) thinking_animation_frame: Option<usize>,
@@ -294,8 +295,9 @@ pub(crate) fn build_message_lookups(
 fn render_context_cache_key(ctx: &MessageRenderContext) -> String {
     let mut parts = vec![
         format!(
-            "mode=v{}t{}",
+            "mode=v{}b{}t{}",
             u8::from(ctx.options.verbose),
+            u8::from(ctx.options.brief_only),
             u8::from(ctx.options.is_transcript_mode)
         ),
         format!(

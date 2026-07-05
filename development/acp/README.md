@@ -67,6 +67,7 @@ These capabilities are out of scope for this branch and must remain absent from 
 ## Known Remaining Limitations
 
 - The real-model binary smoke exists as `acp_stdio_real_model_prompt_smoke` and uses the normal allthecodes config, auth, model, and provider path. It is ignored by default because it requires usable credentials, provider access, and network. On this machine, explicit runs against the current `backend=codex` config timed out after 300 seconds after only `available_commands_update` and `state_update: running`; no model content or idle frame arrived.
+- Structured KAIROS Brief output currently degrades to plain `AgentMessage` text over ACP because the ACP wire mapping does not preserve Brief metadata. Track the required protocol extension in [structured-brief-wire-protocol-plan.md](structured-brief-wire-protocol-plan.md).
 - `session.prompt.image`, `session.prompt.audio`, `session.prompt.embeddedContext`, and `session.mcp.*` remain separate feature work, not partial support.
 - ACP mode uses the Rust backend/TUI-era runtime only. It does not alter legacy `--headless` JSONL IPC behavior.
 

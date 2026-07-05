@@ -809,6 +809,10 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     yield QueryYield::Message(msg.clone());
                     state.messages.push(msg);
 
+                    if let Some(brief_message) = &exec_result.brief_message {
+                        yield QueryYield::BriefMessage(brief_message.clone());
+                    }
+
                     for sub_msg in &exec_result.result.new_messages {
                         yield QueryYield::Message(sub_msg.clone());
                         state.messages.push(sub_msg.clone());

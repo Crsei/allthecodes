@@ -253,9 +253,16 @@ pub(crate) fn reorder_messages_in_ui(messages: Vec<RenderableMessage>) -> Vec<Re
 
 pub(crate) fn filter_brief_messages(
     messages: Vec<RenderableMessage>,
-    _options: MessageRenderOptions,
+    options: MessageRenderOptions,
 ) -> Vec<RenderableMessage> {
+    if !options.brief_only || options.verbose || options.is_transcript_mode {
+        return messages;
+    }
+
     messages
+        .into_iter()
+        .filter(brief_mode_keeps_renderable_message)
+        .collect()
 }
 
 pub(crate) fn truncate_transcript_messages(
@@ -270,6 +277,21 @@ pub(crate) fn truncate_transcript_messages(
         messages[messages.len() - MAX_MESSAGES_TO_SHOW_IN_TRANSCRIPT_MODE..].to_vec()
     } else {
         messages
+    }
+}
+
+fn brief_mode_keeps_renderable_message(msg: &RenderableMessage) -> bool {
+    let RenderableMessage::Message { message, .. } = msg else {
+        return false;
+    };
+
+    match message {
+        Message::Assistant(assistant) => assistant.content.iter().all(
+            |block| matches!(block, ContentBlock::Text { text } if !is_empty_message_text(text)),
+        ),
+        Message::User(user) => !user.is_meta,
+        Message::System(_) | Message::Attachment(_) => true,
+        Message::Progress(_) => false,
     }
 }
 

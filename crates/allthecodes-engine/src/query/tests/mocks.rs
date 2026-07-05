@@ -339,6 +339,7 @@ impl QueryDeps for MockDeps {
             hook_stopped_continuation: self.hook_stopped_tool_execution.load(Ordering::SeqCst),
             duration_ms: None,
             permission_decision: Some(AgentRuntimePermissionDecision::NotRequired),
+            brief_message: None,
         })
     }
 
@@ -900,6 +901,7 @@ impl QueryDeps for ImageMockDeps {
             hook_stopped_continuation: false,
             duration_ms: None,
             permission_decision: Some(AgentRuntimePermissionDecision::NotRequired),
+            brief_message: None,
         })
     }
 
@@ -1038,6 +1040,7 @@ impl QueryDeps for CuMockDeps {
             hook_stopped_continuation: false,
             duration_ms: None,
             permission_decision: Some(AgentRuntimePermissionDecision::NotRequired),
+            brief_message: None,
         })
     }
 

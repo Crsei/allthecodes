@@ -1,7 +1,7 @@
 use super::execute::{
     add_local_always_allow_rule, elapsed_ms, exact_always_allow_rule, permission_action_summary,
     permission_auto_review_event, permission_denied_exec_result, permission_risk_level,
-    persist_local_always_allow_rule, tool_exec_result,
+    persist_local_always_allow_rule, tool_exec_result, tool_exec_result_with_brief,
 };
 use super::*;
 use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
@@ -1116,12 +1116,19 @@ impl<'a> ToolExecutionPipeline<'a> {
                 .push(permission_feedback_message(feedback));
         }
 
+        let brief_message = allthecodes_types::brief::brief_payload_from_tool_result(
+            &self.request.tool_name,
+            &self.request.tool_use_id,
+            &self.deps.session_id,
+            &result.data,
+        );
+
         result.data = allthecodes_tools::result::enforce_result_size(
             result.data,
             self.tool.max_result_size_chars(),
         );
 
-        PipelineStageResult::Finish(tool_exec_result(
+        PipelineStageResult::Finish(tool_exec_result_with_brief(
             self.request,
             result,
             false,
@@ -1129,6 +1136,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             plan.effective_input.clone(),
             elapsed_ms(tool_start),
             Some(plan.permission_decision),
+            brief_message,
         ))
     }
 

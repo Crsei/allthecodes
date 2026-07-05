@@ -126,6 +126,12 @@ impl App {
             self.dirty = true;
         }
 
+        if self.brief_only != state.is_brief_only {
+            self.brief_only = state.is_brief_only;
+            self.conversation.invalidate_vscroll_all();
+            self.dirty = true;
+        }
+
         if state.verbose {
             self.add_notification(
                 InAppNotification::new(

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::brief::BriefMessagePayload;
+
 /// 内容块 — 对应 Anthropic API 的 ContentBlock
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -337,6 +339,7 @@ pub enum QueryYield {
     Message(Message),
     Tombstone(TombstoneMessage),
     ToolUseSummary(ToolUseSummaryMessage),
+    BriefMessage(BriefMessagePayload),
 }
 
 impl Message {
