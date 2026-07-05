@@ -707,6 +707,31 @@ fn payload_string(payload: &Value, keys: &[&str]) -> Option<String> {
     })
 }
 
+fn query_source_from_submit_payload(payload: &Value) -> QuerySource {
+    match payload.get("source").and_then(Value::as_str) {
+        Some("proactive_tick") => QuerySource::ProactiveTick,
+        Some("scheduled_task") => QuerySource::ScheduledTask,
+        Some("webhook_event") => QuerySource::WebhookEvent,
+        Some("channel_notification") => QuerySource::ChannelNotification,
+        Some("channel") => query_source_from_channel_payload(payload),
+        Some("http") | Some("worker") | None => QuerySource::ReplMainThread,
+        Some(_) => QuerySource::ReplMainThread,
+    }
+}
+
+fn query_source_from_channel_payload(payload: &Value) -> QuerySource {
+    match payload
+        .get("channel")
+        .and_then(|channel| channel.get("origin"))
+        .and_then(|origin| origin.get("type"))
+        .and_then(Value::as_str)
+    {
+        Some("webhook") => QuerySource::WebhookEvent,
+        Some("mcp") | None => QuerySource::ChannelNotification,
+        Some(_) => QuerySource::ChannelNotification,
+    }
+}
+
 fn gateway_payload_string(command: &protocol::DaemonCommand, keys: &[&str]) -> Option<String> {
     command
         .payload
@@ -842,6 +867,93 @@ mod tests {
             tool_use_result: None,
             source_tool_assistant_uuid: None,
         })
+    }
+
+    #[test]
+    fn submit_payload_source_maps_proactive_tick() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({ "source": "proactive_tick" })),
+            QuerySource::ProactiveTick
+        );
+    }
+
+    #[test]
+    fn submit_payload_source_maps_scheduled_task() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({ "source": "scheduled_task" })),
+            QuerySource::ScheduledTask
+        );
+    }
+
+    #[test]
+    fn submit_payload_source_maps_explicit_webhook_event() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({ "source": "webhook_event" })),
+            QuerySource::WebhookEvent
+        );
+    }
+
+    #[test]
+    fn submit_payload_source_maps_explicit_channel_notification() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({ "source": "channel_notification" })),
+            QuerySource::ChannelNotification
+        );
+    }
+
+    #[test]
+    fn submit_payload_source_maps_mcp_channel_notification() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({
+                "source": "channel",
+                "channel": {
+                    "origin": { "type": "mcp", "server_name": "slack-mcp" }
+                }
+            })),
+            QuerySource::ChannelNotification
+        );
+    }
+
+    #[test]
+    fn submit_payload_source_maps_webhook_channel_event() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({
+                "source": "channel",
+                "channel": {
+                    "origin": { "type": "webhook", "endpoint": "/hooks/github" }
+                }
+            })),
+            QuerySource::WebhookEvent
+        );
+    }
+
+    #[test]
+    fn submit_payload_source_maps_unknown_channel_as_channel_notification() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({
+                "source": "channel",
+                "channel": {
+                    "origin": { "type": "other" }
+                }
+            })),
+            QuerySource::ChannelNotification
+        );
+    }
+
+    #[test]
+    fn submit_payload_source_keeps_http_interactive() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({ "source": "http" })),
+            QuerySource::ReplMainThread
+        );
+    }
+
+    #[test]
+    fn submit_payload_source_keeps_missing_source_interactive() {
+        assert_eq!(
+            query_source_from_submit_payload(&json!({ "text": "hello" })),
+            QuerySource::ReplMainThread
+        );
     }
 
     #[test]
