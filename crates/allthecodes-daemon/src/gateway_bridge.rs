@@ -602,6 +602,8 @@ impl AssistantWorkerRuntime {
             .get("message_id")
             .and_then(|value| value.as_str())
             .unwrap_or(&command.command_id);
+        let query_source = query_source_from_submit_payload(&command.payload);
+        let query_source_label = query_source.as_label();
 
         self.apply_assistant_session_context(worker_id, command)?;
 
@@ -612,6 +614,7 @@ impl AssistantWorkerRuntime {
             json!({
                 "message_id": message_id,
                 "source": command.payload.get("source").cloned().unwrap_or_else(|| json!("worker")),
+                "query_source": query_source_label,
                 "gateway": command.payload.get("gateway").cloned(),
             }),
         )?;
@@ -625,9 +628,7 @@ impl AssistantWorkerRuntime {
         update_gateway_status(command, RunStatus::Running)?;
 
         self.engine.wake_up();
-        let stream = self
-            .engine
-            .submit_message(text, QuerySource::ReplMainThread);
+        let stream = self.engine.submit_message(text, query_source);
         tokio::pin!(stream);
         while let Some(sdk_msg) = stream.next().await {
             if let Some(event) = sdk_message_to_sse(&sdk_msg, message_id) {
@@ -712,6 +713,31 @@ fn gateway_payload_string(command: &protocol::DaemonCommand, keys: &[&str]) -> O
         .payload
         .get("gateway")
         .and_then(|gateway| payload_string(gateway, keys))
+}
+
+fn query_source_from_submit_payload(payload: &Value) -> QuerySource {
+    match payload.get("source").and_then(Value::as_str) {
+        Some("proactive_tick") => QuerySource::ProactiveTick,
+        Some("scheduled_task") => QuerySource::ScheduledTask,
+        Some("webhook_event") => QuerySource::WebhookEvent,
+        Some("channel_notification") => QuerySource::ChannelNotification,
+        Some("channel") => query_source_from_channel_payload(payload),
+        Some("http") | Some("worker") | None => QuerySource::ReplMainThread,
+        Some(_) => QuerySource::ReplMainThread,
+    }
+}
+
+fn query_source_from_channel_payload(payload: &Value) -> QuerySource {
+    match payload
+        .get("channel")
+        .and_then(|channel| channel.get("origin"))
+        .and_then(|origin| origin.get("type"))
+        .and_then(Value::as_str)
+    {
+        Some("webhook") => QuerySource::WebhookEvent,
+        Some("mcp") | None => QuerySource::ChannelNotification,
+        Some(_) => QuerySource::ChannelNotification,
+    }
 }
 
 fn interaction_delivery_name(delivery: InteractionDelivery) -> &'static str {
@@ -844,31 +870,6 @@ mod tests {
         })
     }
 
-    fn query_source_from_submit_payload(payload: &Value) -> QuerySource {
-        match payload.get("source").and_then(Value::as_str) {
-            Some("proactive_tick") => QuerySource::ProactiveTick,
-            Some("scheduled_task") => QuerySource::ScheduledTask,
-            Some("webhook_event") => QuerySource::WebhookEvent,
-            Some("channel_notification") => QuerySource::ChannelNotification,
-            Some("channel") => query_source_from_channel_payload(payload),
-            Some("http") | Some("worker") | None => QuerySource::ReplMainThread,
-            Some(_) => QuerySource::ReplMainThread,
-        }
-    }
-
-    fn query_source_from_channel_payload(payload: &Value) -> QuerySource {
-        match payload
-            .get("channel")
-            .and_then(|channel| channel.get("origin"))
-            .and_then(|origin| origin.get("type"))
-            .and_then(Value::as_str)
-        {
-            Some("webhook") => QuerySource::WebhookEvent,
-            Some("mcp") | None => QuerySource::ChannelNotification,
-            Some(_) => QuerySource::ChannelNotification,
-        }
-    }
-
     #[test]
     fn submit_payload_source_maps_proactive_tick() {
         assert_eq!(
@@ -954,6 +955,35 @@ mod tests {
             query_source_from_submit_payload(&json!({ "text": "hello" })),
             QuerySource::ReplMainThread
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn execute_submit_records_mapped_query_source_for_proactive_tick() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let runtime = test_runtime(temp.path());
+        let command = submit_command(json!({
+            "text": "<tick_tag>\nLocal time: 2026-07-05 12:00:00\n</tick_tag>",
+            "message_id": "proactive-tick-test",
+            "source": "proactive_tick"
+        }));
+
+        runtime
+            .execute_submit("assistant-session-1", &command)
+            .await
+            .unwrap();
+
+        let events = crate::protocol_store()
+            .read_worker_events("assistant-session-1")
+            .unwrap();
+        let submit_started = events
+            .iter()
+            .find(|event| event.event_type == "submit_started")
+            .expect("submit_started event should be recorded");
+
+        assert_eq!(submit_started.data["source"], "proactive_tick");
+        assert_eq!(submit_started.data["query_source"], "proactive_tick");
     }
 
     #[test]
