@@ -23,6 +23,26 @@ impl ModeRouter {
     }
 }
 
+fn daemon_allowed_by_features() -> bool {
+    use allthecodes_config::features::{self, Feature};
+    features::enabled(Feature::Kairos) || features::enabled(Feature::Proactive)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::daemon_allowed_by_features;
+
+    #[test]
+    #[serial_test::serial]
+    fn daemon_mode_accepts_standalone_proactive() {
+        let mut flags = allthecodes_config::features::FeatureFlags::all_disabled();
+        flags.proactive = true;
+        allthecodes_config::features::set_runtime_override(flags);
+        assert!(daemon_allowed_by_features());
+        allthecodes_config::features::clear_runtime_override();
+    }
+}
+
 async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
     let cli = &runtime.cli;
 
@@ -72,9 +92,8 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
             allthecodes_server::ServerMode::Daemon { .. }
                 | allthecodes_server::ServerMode::All { .. }
         ) {
-            use allthecodes_config::features::{self, Feature};
-            if !features::enabled(Feature::Kairos) {
-                eprintln!("error: --daemon requires FEATURE_KAIROS=1");
+            if !daemon_allowed_by_features() {
+                eprintln!("error: --daemon requires FEATURE_KAIROS=1 or FEATURE_PROACTIVE=1");
                 return Ok(ExitCode::FAILURE);
             }
         }

@@ -420,6 +420,17 @@ mod tests {
     }
 
     #[test]
+    fn kairos_and_standalone_proactive_contracts_are_locked() {
+        let kairos = flags(&[("FEATURE_KAIROS", "1")]);
+        assert!(kairos.kairos);
+        assert!(kairos.proactive);
+
+        let proactive = flags(&[("FEATURE_PROACTIVE", "1")]);
+        assert!(!proactive.kairos);
+        assert!(proactive.proactive);
+    }
+
+    #[test]
     fn brief_without_kairos_is_disabled() {
         let f = flags(&[("FEATURE_KAIROS_BRIEF", "1")]);
         assert!(

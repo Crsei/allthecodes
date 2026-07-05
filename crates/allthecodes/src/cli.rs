@@ -91,6 +91,10 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub daemon: bool,
 
+    /// Start this session in proactive autonomous mode.
+    #[arg(long = "proactive")]
+    pub proactive: bool,
+
     /// INTERNAL: run as a daemon worker child process.
     #[arg(long = "daemon-worker", hide = true)]
     pub daemon_worker: Option<String>,

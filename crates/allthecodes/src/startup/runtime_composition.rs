@@ -37,6 +37,7 @@ impl RuntimeComposition {
     pub(crate) async fn build(mut startup: StartupContext) -> anyhow::Result<Self> {
         let settings = SettingsRuntimeBuilder::build(&mut startup).await?;
         let plugins = PluginRuntimeBuilder::build(&startup, &settings).await?;
+        activate_startup_proactive_if_requested(&startup.cli);
         let tool_catalog = ToolCatalogBuilder::build(&startup, &settings, &plugins).await?;
         let mcp = McpRuntimeBuilder::build(&startup, &settings, tool_catalog).await?;
         let model = ModelRuntimeBuilder::build(&startup, &settings).await?;
@@ -50,5 +51,97 @@ impl RuntimeComposition {
                 .await?;
 
         Ok(Self::Ready(Box::new(ready)))
+    }
+}
+
+fn activate_startup_proactive_if_requested(cli: &crate::cli::Cli) {
+    if !startup_proactive_requested(cli) {
+        return;
+    }
+
+    let mut flags = allthecodes_config::features::current();
+    flags.proactive = true;
+    allthecodes_config::features::set_runtime_override(flags);
+    allthecodes_services::proactive::global_controller().activate("startup");
+}
+
+fn startup_proactive_requested(cli: &crate::cli::Cli) -> bool {
+    cli.proactive
+        || std::env::var("ALLTHECODES_PROACTIVE")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes"
+                )
+            })
+            .unwrap_or(false)
+        || allthecodes_config::features::enabled(allthecodes_config::features::Feature::Proactive)
+}
+
+#[cfg(test)]
+mod tests {
+    use allthecodes_config::features::{self, Feature, FeatureFlags};
+    use allthecodes_services::proactive::ProactiveStatus;
+    use clap::Parser;
+
+    use crate::cli::Cli;
+
+    use super::activate_startup_proactive_if_requested;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_ref() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn startup_proactive_cli_sets_runtime_feature_override() {
+        features::set_runtime_override(FeatureFlags::all_disabled());
+        let cli = Cli::parse_from(["claude", "--proactive"]);
+
+        activate_startup_proactive_if_requested(&cli);
+
+        assert!(features::enabled(Feature::Proactive));
+        let snapshot = allthecodes_services::proactive::global_controller().snapshot();
+        assert_eq!(snapshot.status, ProactiveStatus::Active);
+        assert_eq!(snapshot.source.as_deref(), Some("startup"));
+        features::clear_runtime_override();
+        allthecodes_services::proactive::global_controller().deactivate("test_cleanup");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn startup_proactive_env_sets_runtime_feature_override() {
+        let _guard = EnvGuard::set("ALLTHECODES_PROACTIVE", "yes");
+        features::set_runtime_override(FeatureFlags::all_disabled());
+        let cli = Cli::parse_from(["claude"]);
+
+        activate_startup_proactive_if_requested(&cli);
+
+        assert!(features::enabled(Feature::Proactive));
+        let snapshot = allthecodes_services::proactive::global_controller().snapshot();
+        assert_eq!(snapshot.status, ProactiveStatus::Active);
+        assert_eq!(snapshot.source.as_deref(), Some("startup"));
+        features::clear_runtime_override();
+        allthecodes_services::proactive::global_controller().deactivate("test_cleanup");
     }
 }
