@@ -176,6 +176,10 @@ pub fn settings_schema() -> Value {
                 "enum": ["prompt", "transcript", "focus"],
                 "description": "Default Rust TUI view mode at startup. Invalid persisted values fall back to prompt mode."
             },
+            "hermesEnabled": {
+                "type": "boolean",
+                "description": "Enable Hermes autonomous runtime surfaces. Merge rule is On wins across user/project layers."
+            },
             "spinnerTips": {
                 "type": "object",
                 "additionalProperties": true,

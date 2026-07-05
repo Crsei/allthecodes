@@ -26,6 +26,18 @@ pub struct TaskItem {
     pub elapsed_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

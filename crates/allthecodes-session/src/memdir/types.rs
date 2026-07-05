@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub const MEMORY_ENTRYPOINT_NAME: &str = "MEMORY.md";
 pub const MEMORY_ENTRYPOINT_MAX_LINES: usize = 200;
 pub const MEMORY_ENTRYPOINT_MAX_BYTES: usize = 25_000;
+pub const CURATED_MEMORY_PROFILE_MAX_BYTES: usize = MEMORY_ENTRYPOINT_MAX_BYTES;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,6 +35,13 @@ pub struct MemoryEntry {
     /// Optional search terms used by relevant-memory recall.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub search_terms: Vec<String>,
+    /// Session that produced or justified this curated memory, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session_id: Option<String>,
+    /// Approval record that authorized this curated memory write, when it came
+    /// from a review or self-improvement proposal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
     /// When this entry was created (ISO 8601).
     pub created_at: String,
     /// When this entry was last updated (ISO 8601).
@@ -47,6 +55,66 @@ pub struct RelevantMemory {
     pub entry: MemoryEntry,
     pub score: u32,
     pub matched_terms: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CuratedMemoryTarget {
+    User,
+    Project,
+    Reference,
+    Feedback,
+}
+
+impl CuratedMemoryTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Reference => "reference",
+            Self::Feedback => "feedback",
+        }
+    }
+
+    pub fn memory_type(self) -> MemoryType {
+        match self {
+            Self::User => MemoryType::User,
+            Self::Project => MemoryType::Project,
+            Self::Reference => MemoryType::Reference,
+            Self::Feedback => MemoryType::Feedback,
+        }
+    }
+
+    pub fn default_scope(self) -> MemoryScope {
+        match self {
+            Self::User => MemoryScope::Global,
+            Self::Project | Self::Reference | Self::Feedback => MemoryScope::Project,
+        }
+    }
+
+    pub fn profile_name(self) -> &'static str {
+        match self {
+            Self::User => "USER.md",
+            Self::Project => "PROJECT.md",
+            Self::Reference => "REFERENCE.md",
+            Self::Feedback => "FEEDBACK.md",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CuratedMemoryWrite {
+    pub target: CuratedMemoryTarget,
+    pub key: String,
+    pub value: String,
+    pub source_session_id: Option<String>,
+    pub approval_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CuratedMemorySnapshot {
+    pub context: String,
+    pub captured_at: String,
 }
 
 pub const MODEL_ASSISTED_RECALL_CANDIDATE_LIMIT: usize = 20;

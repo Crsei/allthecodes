@@ -109,6 +109,8 @@ pub struct TurnFinishedRecord {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_proposal_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -579,6 +581,7 @@ mod tests {
                         cache_read_input_tokens: 0,
                         cache_creation_input_tokens: 0,
                     }),
+                    review_proposal_ids: vec!["review-1".into()],
                 }),
             ),
             (

@@ -1,4 +1,4 @@
-﻿//! /session command -- list and show session information.
+//! /session command -- list and show session information.
 //!
 //! Subcommands:
 //! - `/session`              -- show current session info + recent workspace sessions
@@ -26,12 +26,15 @@ impl CommandHandler for SessionHandler {
             [] => handle_show(ctx),
             ["list"] | ["ls"] => handle_list(ctx, false),
             ["list", "all"] | ["ls", "all"] => handle_list(ctx, true),
+            ["search", rest @ ..] | ["find", rest @ ..] => handle_search(ctx, rest),
             [sub, ..] => Ok(CommandResult::Output(format!(
                 "Unknown session subcommand: '{}'\n\
                  Usage:\n  \
                    /session              -- show current session + recent workspace history\n  \
                    /session list         -- list saved sessions for this workspace\n  \
-                   /session list all     -- list saved sessions from all workspaces",
+                   /session list all     -- list saved sessions from all workspaces\n  \
+                   /session search <q>   -- search saved sessions in this workspace\n  \
+                   /session search all <q> -- search saved sessions from all workspaces",
                 sub
             ))),
         }
@@ -187,12 +190,116 @@ fn handle_list(ctx: &CommandContext, include_all: bool) -> Result<CommandResult>
     Ok(CommandResult::Output(lines.join("\n")))
 }
 
+fn handle_search(ctx: &CommandContext, parts: &[&str]) -> Result<CommandResult> {
+    let (include_all, query_parts) = match parts {
+        ["all", rest @ ..] => (true, rest),
+        _ => (false, parts),
+    };
+    let query = query_parts.join(" ");
+    if query.trim().is_empty() {
+        return Ok(CommandResult::Output(
+            "Usage: /session search <query>\n       /session search all <query>".into(),
+        ));
+    }
+
+    let hits = if include_all {
+        storage::search_sessions(&query, 20)?
+    } else {
+        storage::search_workspace_sessions(&ctx.cwd, &query, 20)?
+    };
+
+    Ok(CommandResult::Output(format_session_search_hits(
+        &hits,
+        include_all,
+    )))
+}
+
+fn format_session_search_hits(hits: &[storage::SessionSearchResult], include_all: bool) -> String {
+    let scope = if include_all {
+        "all workspaces"
+    } else {
+        "current workspace"
+    };
+    if hits.is_empty() {
+        return format!("No session search results found ({scope}).");
+    }
+
+    let mut lines = Vec::new();
+    lines.push(format!("Session search results ({scope}):"));
+    lines.push(String::new());
+    lines.push(format!(
+        "  {:<38} {:>3}  {:<10}  {}",
+        "Session ID", "Msg", "Role", "Title"
+    ));
+    lines.push(format!(
+        "  {:<38} {:>3}  {:<10}  {}",
+        "----------", "---", "----", "-----"
+    ));
+
+    for hit in hits {
+        let role = hit.role.as_deref().unwrap_or("-");
+        lines.push(format!(
+            "  {:<38} {:>3}  {:<10}  {}",
+            hit.session_id,
+            hit.message_index,
+            role,
+            truncate_chars(&hit.title, 60)
+        ));
+        if !hit.snippet.is_empty() {
+            lines.push(format!("      {}", hit.snippet));
+        }
+        lines.push(String::new());
+    }
+
+    if hits.len() == 1 {
+        lines.push(format!(
+            "Use /resume {} to load a result.",
+            hits[0].session_id
+        ));
+    } else {
+        lines.push("Use /resume <session_id> to load a result.".into());
+    }
+    lines.join("\n")
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    format!("{}...", text.chars().take(max).collect::<String>())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use allthecodes_bootstrap::SessionId;
     use allthecodes_engine::types::app_state::AppState;
+    use allthecodes_types::message::{Message, MessageContent, UserMessage};
     use std::path::PathBuf;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn test_ctx() -> CommandContext {
         CommandContext {
@@ -201,6 +308,18 @@ mod tests {
             app_state: AppState::default(),
             session_id: SessionId::from_string("test-session"),
         }
+    }
+
+    fn user_message(text: &str) -> Message {
+        Message::User(UserMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: 0,
+            role: "user".into(),
+            content: MessageContent::Text(text.into()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        })
     }
 
     #[tokio::test]
@@ -229,6 +348,39 @@ mod tests {
                 assert!(text.contains("Unknown session subcommand"));
             }
             _ => panic!("Expected Output result"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_session_search_workspace_outputs_hits() {
+        let home = tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        storage::save_session(
+            "session-search-command",
+            &[user_message("hermes style session search")],
+            workspace.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let handler = SessionHandler;
+        let mut ctx = test_ctx();
+        ctx.cwd = workspace;
+
+        let result = handler
+            .execute("search hermes style", &mut ctx)
+            .await
+            .unwrap();
+        match result {
+            CommandResult::Output(text) => {
+                assert!(text.contains("session-search-command"));
+                assert!(text.contains("hermes style"));
+                assert!(text.contains("Use /resume session-search-command"));
+            }
+            _ => panic!("expected Output"),
         }
     }
 }

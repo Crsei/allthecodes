@@ -6,12 +6,13 @@ use std::sync::Arc;
 
 use allthecodes_protocol::v1::{
     SessionArchiveParams, SessionCreateParams, SessionDetailParams, SessionMessageActionParams,
-    SessionModePatchParams, SessionResumeParams,
+    SessionModePatchParams, SessionResumeParams, SessionSearchHit, SessionSearchParams,
+    SessionSearchResponse,
 };
 use allthecodes_protocol::ApiMethod;
 use allthecodes_protocol::{ApiError as ProtocolApiError, NoParams, SerializationScope};
 use async_trait::async_trait;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::Json;
@@ -37,6 +38,7 @@ use crate::state::WebState;
 pub(crate) fn handlers() -> HandlerRegistry {
     HandlerRegistry::new()
         .handle(ApiMethod::SessionList, get(sessions_list_handler))
+        .handle(ApiMethod::SessionSearch, get(session_search_handler))
         .handle(ApiMethod::SessionCreate, post(session_new_handler))
         .handle(ApiMethod::SessionDetail, get(session_detail_handler))
         .handle(ApiMethod::SessionResume, post(session_resume_handler))
@@ -279,6 +281,61 @@ impl Processor for SessionListProcessor {
 
     async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
         Ok(build_session_list_response(&self.state))
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionSearchProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionSearchProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionSearchProcessor {
+    type Request = SessionSearchParams;
+    type Response = SessionSearchResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.search"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let query = params.query.trim().to_string();
+        if query.is_empty() {
+            return Err(ProtocolApiError::BadRequest {
+                code: "query_required",
+                message: "query is required".to_string(),
+            });
+        }
+
+        let limit = params.limit.unwrap_or(20);
+        let workspace_key = params
+            .workspace_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty());
+        let hits = match workspace_key {
+            Some(key) => storage::search_sessions_by_workspace_key(key, &query, limit),
+            None => storage::search_sessions(&query, limit),
+        }
+        .map_err(|error| ProtocolApiError::Internal {
+            message: format!("Failed to search sessions: {error}"),
+        })?
+        .into_iter()
+        .map(session_search_hit_from)
+        .collect();
+
+        Ok(SessionSearchResponse { query, hits })
     }
 }
 
@@ -945,6 +1002,14 @@ pub async fn sessions_list_handler(State(state): State<WebState>) -> Response {
         .await
 }
 
+/// GET /api/sessions/search -- Search saved session messages.
+pub async fn session_search_handler(
+    State(state): State<WebState>,
+    Query(params): Query<SessionSearchParams>,
+) -> Response {
+    rest_processor_response::<SessionSearchProcessor>(state, ApiMethod::SessionSearch, params).await
+}
+
 /// GET /api/sessions/all-profiles -- List sessions across all profiles.
 pub async fn sessions_all_profiles_handler(State(_state): State<WebState>) -> Response {
     crate::api_errors::protocol_error_response(ProtocolApiError::NotImplemented {
@@ -1240,6 +1305,21 @@ fn build_session_list_response(state: &WebState) -> SessionListResponse {
         },
         active_session_id: engine.current_session_id().to_string(),
         sessions: summaries,
+    }
+}
+
+fn session_search_hit_from(hit: storage::SessionSearchResult) -> SessionSearchHit {
+    SessionSearchHit {
+        session_id: hit.session_id,
+        message_index: hit.message_index,
+        role: hit.role,
+        msg_type: hit.msg_type,
+        timestamp: hit.timestamp,
+        title: hit.title,
+        cwd: hit.cwd,
+        workspace_key: hit.workspace_key,
+        workspace_name: hit.workspace_name,
+        snippet: hit.snippet,
     }
 }
 

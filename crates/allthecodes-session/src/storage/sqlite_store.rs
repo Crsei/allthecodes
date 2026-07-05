@@ -4,10 +4,13 @@ use std::path::Path;
 use allthecodes_db::{Migration, MigrationRunner};
 use anyhow::{Context, Result};
 use chrono::Utc;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tracing::warn;
 
 use super::file_store::{cursor_for_session, load_session_file_from_path};
+use super::session_search::{
+    clamp_search_limit, make_snippet, searchable_message_text, SessionSearchResult,
+};
 use super::{
     derive_title, get_session_dir, workspace_key, workspace_name, workspace_root,
     SerializableMessage, SessionFile, SessionInfo, SessionListCursor, SessionListPage,
@@ -92,6 +95,29 @@ const MIGRATIONS: &[Migration] = &[
 
             CREATE INDEX IF NOT EXISTS idx_session_rollouts_workspace
               ON session_rollouts(workspace_key, updated_at DESC);
+            "#,
+    ),
+    Migration::new(
+        6,
+        r#"
+            CREATE TABLE IF NOT EXISTS session_message_search (
+                session_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                role TEXT,
+                msg_type TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                PRIMARY KEY (session_id, position),
+                FOREIGN KEY (session_id)
+                    REFERENCES sessions(session_id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_session_message_search_text
+                ON session_message_search(text);
+
+            CREATE INDEX IF NOT EXISTS idx_session_message_search_session
+                ON session_message_search(session_id, position);
             "#,
     ),
 ];
@@ -199,6 +225,8 @@ pub(super) fn save_session_file(file: &SessionFile) -> Result<()> {
             .await
             .context("failed to insert sqlite session message")?;
         }
+
+        refresh_search_rows_for_session(&mut tx, &file).await?;
 
         tx.commit()
             .await
@@ -360,6 +388,42 @@ pub(super) fn list_workspace_session_page(
     })
 }
 
+pub(super) fn search_session_messages(
+    query: &str,
+    limit: usize,
+    workspace_key_filter: Option<String>,
+) -> Result<Vec<SessionSearchResult>> {
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = clamp_search_limit(limit);
+
+    allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
+        let pool = migrated_pool().await?;
+        import_legacy_json_sessions(&pool).await?;
+        backfill_missing_search_rows(&pool).await?;
+
+        match search_session_messages_fts(&pool, &query, limit, workspace_key_filter.as_deref())
+            .await
+        {
+            Ok(results) if !results.is_empty() => Ok(results),
+            Ok(_) => {
+                search_session_messages_like(&pool, &query, limit, workspace_key_filter.as_deref())
+                    .await
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to search sqlite session FTS table; falling back to LIKE search"
+                );
+                search_session_messages_like(&pool, &query, limit, workspace_key_filter.as_deref())
+                    .await
+            }
+        }
+    })
+}
+
 pub(super) fn archive_session(session_id: &str) -> Result<bool> {
     let session_id = session_id.to_string();
     allthecodes_db::run_sqlite_sync("allthecodes-session-sqlite", async move {
@@ -406,7 +470,116 @@ async fn migrated_pool() -> Result<SqlitePool> {
     MigrationRunner::new("sessions", MIGRATIONS)
         .run(&pool)
         .await?;
+    if let Err(err) = ensure_fts_search_table(&pool).await {
+        warn!(
+            error = %err,
+            "failed to initialize sqlite session FTS table; LIKE search remains available"
+        );
+    }
     Ok(pool)
+}
+
+async fn ensure_fts_search_table(pool: &SqlitePool) -> Result<()> {
+    sqlx::query(
+        r#"
+            CREATE VIRTUAL TABLE IF NOT EXISTS session_message_search_fts
+            USING fts5(
+                session_id UNINDEXED,
+                position UNINDEXED,
+                role,
+                msg_type UNINDEXED,
+                text
+            )
+            "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to create sqlite session message FTS table")?;
+    Ok(())
+}
+
+async fn refresh_search_rows_for_session(
+    tx: &mut Transaction<'_, Sqlite>,
+    file: &SessionFile,
+) -> Result<()> {
+    sqlx::query("DELETE FROM session_message_search WHERE session_id = ?")
+        .bind(&file.session_id)
+        .execute(&mut **tx)
+        .await
+        .context("failed to clear sqlite session search rows")?;
+
+    let mut fts_available =
+        sqlx::query("DELETE FROM session_message_search_fts WHERE session_id = ?")
+            .bind(&file.session_id)
+            .execute(&mut **tx)
+            .await
+            .map(|_| true)
+            .unwrap_or_else(|err| {
+                warn!(
+                    session_id = %file.session_id,
+                    error = %err,
+                    "failed to clear sqlite session FTS rows; continuing with LIKE search"
+                );
+                false
+            });
+
+    for (position, message) in file.messages.iter().enumerate() {
+        let text = searchable_message_text(message);
+        sqlx::query(
+            r#"
+                INSERT INTO session_message_search (
+                    session_id,
+                    position,
+                    role,
+                    msg_type,
+                    timestamp,
+                    text
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                "#,
+        )
+        .bind(&file.session_id)
+        .bind(usize_to_i64(position))
+        .bind(role_for_message(message))
+        .bind(&message.msg_type)
+        .bind(message.timestamp)
+        .bind(&text)
+        .execute(&mut **tx)
+        .await
+        .context("failed to insert sqlite session search row")?;
+
+        if fts_available {
+            if let Err(err) = sqlx::query(
+                r#"
+                    INSERT INTO session_message_search_fts (
+                        session_id,
+                        position,
+                        role,
+                        msg_type,
+                        text
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    "#,
+            )
+            .bind(&file.session_id)
+            .bind(usize_to_i64(position))
+            .bind(role_for_message(message))
+            .bind(&message.msg_type)
+            .bind(&text)
+            .execute(&mut **tx)
+            .await
+            {
+                warn!(
+                    session_id = %file.session_id,
+                    error = %err,
+                    "failed to insert sqlite session FTS row; continuing with LIKE search"
+                );
+                fts_available = false;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn import_legacy_json_sessions(pool: &SqlitePool) -> Result<()> {
@@ -532,10 +705,274 @@ async fn save_session_file_to_pool(pool: &SqlitePool, file: &SessionFile) -> Res
         .context("failed to insert sqlite legacy session message")?;
     }
 
+    refresh_search_rows_for_session(&mut tx, file).await?;
+
     tx.commit()
         .await
         .context("failed to commit sqlite legacy session import")?;
     Ok(())
+}
+
+async fn backfill_missing_search_rows(pool: &SqlitePool) -> Result<()> {
+    let rows = sqlx::query(
+        r#"
+            SELECT
+                session_id,
+                created_at,
+                last_modified,
+                cwd,
+                custom_title,
+                chat_mode_override
+            FROM sessions s
+            WHERE archived = 0
+              AND EXISTS (
+                  SELECT 1
+                  FROM session_messages sm
+                  WHERE sm.session_id = s.session_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM session_message_search sms
+                  WHERE sms.session_id = s.session_id
+              )
+            LIMIT 500
+            "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to query sqlite sessions missing search rows")?;
+
+    for row in rows {
+        let session_id: String = row.try_get("session_id")?;
+        let message_rows = sqlx::query(
+            r#"
+                SELECT msg_type, uuid, timestamp, content
+                FROM session_messages
+                WHERE session_id = ?
+                ORDER BY position ASC
+                "#,
+        )
+        .bind(&session_id)
+        .fetch_all(pool)
+        .await
+        .with_context(|| format!("failed to query sqlite messages for {}", session_id))?;
+
+        let mut messages = Vec::with_capacity(message_rows.len());
+        for message_row in message_rows {
+            let content: String = message_row.try_get("content")?;
+            messages.push(SerializableMessage {
+                msg_type: message_row.try_get("msg_type")?,
+                uuid: message_row.try_get("uuid")?,
+                timestamp: message_row.try_get("timestamp")?,
+                data: serde_json::from_str(&content)
+                    .context("failed to parse sqlite session message JSON")?,
+            });
+        }
+
+        let file = SessionFile {
+            session_id,
+            created_at: row.try_get("created_at")?,
+            last_modified: row.try_get("last_modified")?,
+            cwd: row.try_get("cwd")?,
+            custom_title: row.try_get("custom_title")?,
+            chat_mode_override: row.try_get("chat_mode_override")?,
+            messages,
+        };
+        let mut tx = pool
+            .begin()
+            .await
+            .context("failed to begin sqlite session search backfill transaction")?;
+        refresh_search_rows_for_session(&mut tx, &file).await?;
+        tx.commit()
+            .await
+            .context("failed to commit sqlite session search backfill transaction")?;
+    }
+
+    Ok(())
+}
+
+async fn search_session_messages_fts(
+    pool: &SqlitePool,
+    query: &str,
+    limit: usize,
+    workspace_key_filter: Option<&str>,
+) -> Result<Vec<SessionSearchResult>> {
+    let fts_query = fts_phrase(query);
+    let rows = match workspace_key_filter {
+        Some(workspace_key) => {
+            sqlx::query(
+                r#"
+                    SELECT
+                        s.session_id,
+                        session_message_search_fts.position AS position,
+                        sms.role,
+                        sms.msg_type,
+                        sms.timestamp,
+                        s.title,
+                        s.cwd,
+                        s.workspace_key,
+                        s.workspace_name,
+                        sms.text
+                    FROM session_message_search_fts
+                    JOIN sessions s
+                        ON s.session_id = session_message_search_fts.session_id
+                    JOIN session_message_search sms
+                        ON sms.session_id = session_message_search_fts.session_id
+                       AND sms.position = session_message_search_fts.position
+                    WHERE session_message_search_fts MATCH ?
+                      AND s.archived = 0
+                      AND s.workspace_key = ?
+                    ORDER BY s.last_modified DESC, session_message_search_fts.position ASC
+                    LIMIT ?
+                    "#,
+            )
+            .bind(&fts_query)
+            .bind(workspace_key)
+            .bind(usize_to_i64(limit))
+            .fetch_all(pool)
+            .await
+        }
+        None => {
+            sqlx::query(
+                r#"
+                    SELECT
+                        s.session_id,
+                        session_message_search_fts.position AS position,
+                        sms.role,
+                        sms.msg_type,
+                        sms.timestamp,
+                        s.title,
+                        s.cwd,
+                        s.workspace_key,
+                        s.workspace_name,
+                        sms.text
+                    FROM session_message_search_fts
+                    JOIN sessions s
+                        ON s.session_id = session_message_search_fts.session_id
+                    JOIN session_message_search sms
+                        ON sms.session_id = session_message_search_fts.session_id
+                       AND sms.position = session_message_search_fts.position
+                    WHERE session_message_search_fts MATCH ?
+                      AND s.archived = 0
+                    ORDER BY s.last_modified DESC, session_message_search_fts.position ASC
+                    LIMIT ?
+                    "#,
+            )
+            .bind(&fts_query)
+            .bind(usize_to_i64(limit))
+            .fetch_all(pool)
+            .await
+        }
+    }
+    .context("failed to query sqlite session message FTS search")?;
+
+    rows.into_iter()
+        .map(|row| search_result_from_row(row, query))
+        .collect()
+}
+
+async fn search_session_messages_like(
+    pool: &SqlitePool,
+    query: &str,
+    limit: usize,
+    workspace_key_filter: Option<&str>,
+) -> Result<Vec<SessionSearchResult>> {
+    let like_query = format!("%{}%", escape_like(query));
+    let rows = match workspace_key_filter {
+        Some(workspace_key) => {
+            sqlx::query(
+                r#"
+                    SELECT
+                        s.session_id,
+                        sms.position,
+                        sms.role,
+                        sms.msg_type,
+                        sms.timestamp,
+                        s.title,
+                        s.cwd,
+                        s.workspace_key,
+                        s.workspace_name,
+                        sms.text
+                    FROM session_message_search sms
+                    JOIN sessions s
+                        ON s.session_id = sms.session_id
+                    WHERE LOWER(sms.text) LIKE LOWER(?) ESCAPE '\'
+                      AND s.archived = 0
+                      AND s.workspace_key = ?
+                    ORDER BY s.last_modified DESC, sms.position ASC
+                    LIMIT ?
+                    "#,
+            )
+            .bind(&like_query)
+            .bind(workspace_key)
+            .bind(usize_to_i64(limit))
+            .fetch_all(pool)
+            .await
+        }
+        None => {
+            sqlx::query(
+                r#"
+                    SELECT
+                        s.session_id,
+                        sms.position,
+                        sms.role,
+                        sms.msg_type,
+                        sms.timestamp,
+                        s.title,
+                        s.cwd,
+                        s.workspace_key,
+                        s.workspace_name,
+                        sms.text
+                    FROM session_message_search sms
+                    JOIN sessions s
+                        ON s.session_id = sms.session_id
+                    WHERE LOWER(sms.text) LIKE LOWER(?) ESCAPE '\'
+                      AND s.archived = 0
+                    ORDER BY s.last_modified DESC, sms.position ASC
+                    LIMIT ?
+                    "#,
+            )
+            .bind(&like_query)
+            .bind(usize_to_i64(limit))
+            .fetch_all(pool)
+            .await
+        }
+    }
+    .context("failed to query sqlite session message LIKE search")?;
+
+    rows.into_iter()
+        .map(|row| search_result_from_row(row, query))
+        .collect()
+}
+
+fn search_result_from_row(
+    row: sqlx::sqlite::SqliteRow,
+    query: &str,
+) -> Result<SessionSearchResult> {
+    let text: String = row.try_get("text")?;
+    Ok(SessionSearchResult {
+        session_id: row.try_get("session_id")?,
+        message_index: i64_to_usize(row.try_get("position")?),
+        role: row.try_get("role")?,
+        msg_type: row.try_get("msg_type")?,
+        timestamp: row.try_get("timestamp")?,
+        title: row.try_get("title")?,
+        cwd: row.try_get("cwd")?,
+        workspace_key: row.try_get("workspace_key")?,
+        workspace_name: row.try_get("workspace_name")?,
+        snippet: make_snippet(&text, query),
+    })
+}
+
+fn fts_phrase(query: &str) -> String {
+    format!("\"{}\"", query.replace('"', "\"\""))
+}
+
+fn escape_like(query: &str) -> String {
+    query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 async fn list_session_page_from_pool(

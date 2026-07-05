@@ -22,6 +22,38 @@ pub struct SessionListResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct SessionSearchParams {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct SessionSearchResponse {
+    pub query: String,
+    pub hits: Vec<SessionSearchHit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct SessionSearchHit {
+    pub session_id: String,
+    pub message_index: usize,
+    pub role: Option<String>,
+    pub msg_type: String,
+    pub timestamp: i64,
+    pub title: String,
+    pub cwd: String,
+    pub workspace_key: String,
+    pub workspace_name: String,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct SessionCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,

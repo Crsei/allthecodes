@@ -16,7 +16,7 @@ use crate::supervisor::ASSISTANT_WORKER_ID;
 
 pub const SCHEDULER_TICK_INTERVAL_MS: u64 = 15_000;
 
-pub async fn scheduler_loop(_state: DaemonState) {
+pub async fn scheduler_loop(state: DaemonState) {
     let mut interval = tokio::time::interval(Duration::from_millis(SCHEDULER_TICK_INTERVAL_MS));
     info!(
         "scheduled task loop started (interval: {}ms)",
@@ -29,6 +29,10 @@ pub async fn scheduler_loop(_state: DaemonState) {
 
         if super::automation_state::autonomous_worker_blocked() {
             debug!("scheduled task tick skipped: automation state is not idle");
+            continue;
+        }
+        if !scheduled_dispatch_enabled_by_hermes(&state.engine.app_state().settings) {
+            debug!("scheduled task tick skipped: Hermes runtime disabled");
             continue;
         }
 
@@ -98,6 +102,12 @@ fn enqueue_due_scheduled_task_unchecked() -> Result<Option<DaemonCommand>> {
     )?;
     store.record_fired(&task.id)?;
     Ok(Some(command))
+}
+
+fn scheduled_dispatch_enabled_by_hermes(
+    settings: &allthecodes_engine::types::app_state::SettingsJson,
+) -> bool {
+    settings.hermes_enabled.unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -252,5 +262,14 @@ mod tests {
             .read_worker_commands(ASSISTANT_WORKER_ID)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn scheduled_dispatch_requires_hermes_enabled() {
+        let mut settings = allthecodes_engine::types::app_state::SettingsJson::default();
+        assert!(!scheduled_dispatch_enabled_by_hermes(&settings));
+
+        settings.hermes_enabled = Some(true);
+        assert!(scheduled_dispatch_enabled_by_hermes(&settings));
     }
 }

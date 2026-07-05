@@ -168,6 +168,7 @@ pub struct SpeechSettings {
 
 #[derive(Debug, Clone, Default)]
 pub struct IntegrationSettings {
+    pub hermes_enabled: Option<bool>,
     pub teammate_mode: Option<bool>,
     pub claude_in_chrome_default_enabled: Option<bool>,
     pub cloud_sync_enabled: Option<bool>,
@@ -291,6 +292,7 @@ impl RuntimeSettings {
                 tts_model: effective.tts_model.clone(),
             },
             integrations: IntegrationSettings {
+                hermes_enabled: effective.hermes_enabled,
                 teammate_mode: effective.teammate_mode,
                 claude_in_chrome_default_enabled: effective.claude_in_chrome_default_enabled,
                 cloud_sync_enabled: effective.cloud_sync_enabled,
@@ -388,6 +390,7 @@ pub struct SettingsJson {
     pub system_prompt: Option<String>,
 
     // -- Modes / integrations ------------------------------------------
+    pub hermes_enabled: Option<bool>,
     pub teammate_mode: Option<bool>,
     pub claude_in_chrome_default_enabled: Option<bool>,
 
@@ -523,6 +526,7 @@ impl SettingsJson {
         insert_opt!("compact_threshold", self.compact_threshold);
         insert_opt!("keep_recent_messages", self.keep_recent_messages);
         insert_opt!("hashline_mode", self.hashline_mode);
+        insert_opt!("hermes_enabled", self.hermes_enabled);
         insert_opt!("teammate_mode", self.teammate_mode);
         insert_opt!(
             "claude_in_chrome_default_enabled",
@@ -649,6 +653,7 @@ impl From<RuntimeSettings> for SettingsJson {
             hashline_mode: runtime.model.hashline_mode,
             advisor_model: runtime.model.advisor_model,
             system_prompt: runtime.core.system_prompt,
+            hermes_enabled: runtime.integrations.hermes_enabled,
             teammate_mode: runtime.integrations.teammate_mode,
             claude_in_chrome_default_enabled: runtime.integrations.claude_in_chrome_default_enabled,
             auto_memory_enabled: runtime.memory.auto_memory_enabled,

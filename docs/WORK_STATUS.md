@@ -29,6 +29,7 @@ allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默
 - Runtime storage：`ALLTHECODES_HOME` / `~/.allthecodes/` 和项目级 `.allthecodes/` 路径隔离已落地，旧计划归档。
 - Crate migration：root binary 已删除旧 `src/engine/**` 与 `src/ipc/**`；engine/agent 实现由 `allthecodes-engine` 拥有，IPC JSONL runtime、agent settings 与共享 protocol/handler facade 由 `allthecodes-ipc` / `allthecodes-ipc-client` / `allthecodes-ipc-protocol` 拥有，root 仅保留 startup、UI 与 runtime adapter glue。
 - Codebase optimization Phase 4：Rust TUI 状态解耦已落地；`App` facade 下沉到 domain stores、overlay dispatcher、message view-model 与 runtime view state，最终验证见 [codebase-optimization-plan-2026-07-03.md](../development/code-split/codebase-optimization-plan-2026-07-03.md)。
+- Hermes-like runtime 基础层：以 `QueryEngine` 为唯一 agent loop，外围补齐 `session_search` warm memory、`/session search`、Web search API、模型可见 `SessionSearch`、审批式 memory/skill proposal、background review proposal queue、scheduled task registry/daemon dispatch，以及 `DelegateTask` 可追踪 delegation envelope；实施记录见 [hermes-runtime.md](../development/archive/implemented/hermes-runtime.md)。
 
 ## 活跃待办
 
@@ -37,6 +38,7 @@ allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默
 | API providers | 基线完成，真实凭据质量门部分收束 | provider validation DTO、Azure/Foundry 命名诊断、Anthropic-compatible coding 契约和 mock smoke matrix 已补；2026-05-21 `scripts/provider_smoke_matrix.py real` 已通过可用凭据覆盖的 bearer/custom-base/prompt-cache 场景，下一步补 direct API key、Bedrock、Vertex/Azure 等缺凭据真实证据。 |
 | Team Memory 客户端同步 | 代码路径已接通，验证与文档收口未完 | 补同步、断线恢复、冲突处理 e2e；通过后归档旧 Team Memory plan/spec。 |
 | TaskTools | 多数基础已完成，remote/multi-type poller parity 仍开放 | 对齐远程/多类型后台任务 poller/reconnect runtime。 |
+| Hermes runtime follow-ups | 基础层完成，执行桥接仍有残留 | `session_search`、审批队列、learnable skills、background review、scheduled task registry 和 `DelegateTask` envelope 已落地；scheduled task 的 `cwd` 目前作为 source/system prompt metadata 保留，尚未覆盖 `QueryEngine` 实际执行 cwd；`DelegateTask` 已创建 child session/task/worktree metadata 并可由父 session 工具追踪，但尚未直接启动 caller-provided child `QueryEngine`。 |
 | PlanMode | 保守 classifier、持久化、审批和 plan file 白名单已完成 | 补 full auto-mode LLM classifier parity，并覆盖 plan 创建/恢复/审批/e2e。 |
 | WebFetch | HTTP-only release scope | redirect/MIME/proxy/credential 边界已完成；browser-grade JS rendering 已写入 [IMPLEMENTATION_GAPS.md](../development/archive/IMPLEMENTATION_GAPS.md) §6 intentional crop。 |
 | Daemon / KAIROS | resident assistant parity 主线已落地 | 默认验证覆盖 CLI stopped/start/status/submit/sleep/stop、worker IDs、automation state、history DTO 和 graceful shutdown。可选 live smoke 需要真实 provider 凭据和网络；Bridge/GrowthBook 公网行为、Telegram/Lark 入站会话仍按 intentional/deferred scope 处理。 |

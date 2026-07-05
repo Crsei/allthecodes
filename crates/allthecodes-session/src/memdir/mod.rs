@@ -12,8 +12,9 @@ mod recall;
 mod types;
 
 pub use crud::{
-    build_memory_context, build_memory_context_with, delete_memory, read_memory, search_memories,
-    write_memory,
+    build_curated_memory_profile, build_memory_context, build_memory_context_with,
+    capture_curated_memory_snapshot, curated_memory_profile_path, delete_memory, read_memory,
+    refresh_curated_memory_profile, search_memories, write_curated_memory, write_memory,
 };
 pub use index::{
     build_memory_index, list_memories, memory_dir, query_requests_memory_ignore, read_memory_index,
@@ -47,6 +48,27 @@ mod tests {
     /// Clean up a temp directory.
     fn cleanup(dir: &Path) {
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    struct HomeGuard {
+        previous: Option<String>,
+    }
+
+    impl HomeGuard {
+        fn set(path: &Path) -> Self {
+            let previous = std::env::var("ALLTHECODES_HOME").ok();
+            std::env::set_var("ALLTHECODES_HOME", path);
+            Self { previous }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("ALLTHECODES_HOME", value),
+                None => std::env::remove_var("ALLTHECODES_HOME"),
+            }
+        }
     }
 
     #[test]
@@ -212,6 +234,8 @@ mod tests {
                 memory_type: Some(MemoryType::Project),
                 description: None,
                 search_terms: Vec::new(),
+                source_session_id: None,
+                approval_id: None,
                 created_at: "2026-05-06T00:00:00Z".to_string(),
                 updated_at: "2026-05-06T00:00:00Z".to_string(),
             })
@@ -294,8 +318,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_recall_relevant_memories_filters_already_surfaced() {
         let cwd = make_temp_dir();
+        let home = make_temp_dir();
+        let _home_guard = HomeGuard::set(&home);
         write_memory(
             "rust-build",
             "Use cargo test before cargo build.",
@@ -311,6 +338,7 @@ mod tests {
 
         assert!(results.is_empty());
         cleanup(&cwd);
+        cleanup(&home);
     }
 
     #[test]
@@ -532,6 +560,109 @@ mod tests {
         let ctx = build_memory_context(&cwd).unwrap();
         assert!(ctx.contains("[testing-feedback](testing-feedback.json) - feedback:"));
         assert!(ctx.contains("**testing-feedback** [feedback]:"));
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_curated_user_profile_is_bounded() {
+        let cwd = make_temp_dir();
+        let home = make_temp_dir();
+        let _home_guard = HomeGuard::set(&home);
+
+        for idx in 0..24 {
+            write_curated_memory(
+                CuratedMemoryWrite {
+                    target: CuratedMemoryTarget::User,
+                    key: format!("user-pref-{idx}"),
+                    value: format!("prefer concise verification notes {}", "x".repeat(200)),
+                    source_session_id: Some("session-curated".to_string()),
+                    approval_id: Some("approval-curated".to_string()),
+                },
+                &cwd,
+            )
+            .unwrap();
+        }
+
+        let profile_path = refresh_curated_memory_profile(CuratedMemoryTarget::User, &cwd, 512)
+            .unwrap()
+            .unwrap();
+        let profile = build_curated_memory_profile(CuratedMemoryTarget::User, &cwd, 512).unwrap();
+
+        assert!(
+            profile.len() <= 512,
+            "profile exceeded limit: {}",
+            profile.len()
+        );
+        assert!(profile.contains("USER.md"));
+        assert!(profile.contains("[truncated]"));
+        assert_eq!(std::fs::read_to_string(profile_path).unwrap(), profile);
+
+        cleanup(&cwd);
+        cleanup(&home);
+    }
+
+    #[test]
+    fn test_curated_project_memory_uses_allthecodes_path() {
+        let cwd = make_temp_dir();
+
+        write_curated_memory(
+            CuratedMemoryWrite {
+                target: CuratedMemoryTarget::Project,
+                key: "project-build".to_string(),
+                value: "Use the local cargo root for verification.".to_string(),
+                source_session_id: None,
+                approval_id: Some("approval-project".to_string()),
+            },
+            &cwd,
+        )
+        .unwrap();
+
+        let path = memory_dir(MemoryScope::Project, &cwd).unwrap();
+        let path_text = path.to_string_lossy().replace('\\', "/");
+
+        assert!(path_text.ends_with("/.allthecodes/memory"));
+        assert!(!path_text.contains("/.codex/"));
+        assert!(!path_text.contains("/.Codex/"));
+        assert!(path.join("project-build.json").exists());
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn test_curated_memory_snapshot_is_frozen_after_capture() {
+        let cwd = make_temp_dir();
+
+        write_curated_memory(
+            CuratedMemoryWrite {
+                target: CuratedMemoryTarget::Project,
+                key: "before".to_string(),
+                value: "snapshot should include this".to_string(),
+                source_session_id: None,
+                approval_id: Some("approval-before".to_string()),
+            },
+            &cwd,
+        )
+        .unwrap();
+
+        let snapshot = capture_curated_memory_snapshot(&cwd, false, 4096).unwrap();
+
+        write_curated_memory(
+            CuratedMemoryWrite {
+                target: CuratedMemoryTarget::Project,
+                key: "after".to_string(),
+                value: "snapshot must not mutate mid-turn".to_string(),
+                source_session_id: None,
+                approval_id: Some("approval-after".to_string()),
+            },
+            &cwd,
+        )
+        .unwrap();
+
+        assert!(snapshot.context.contains("before"));
+        assert!(!snapshot.context.contains("after"));
+        assert!(build_memory_context(&cwd).unwrap().contains("after"));
 
         cleanup(&cwd);
     }

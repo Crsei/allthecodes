@@ -287,6 +287,12 @@ pub(super) fn handle_show(parts: &[&str], ctx: &CommandContext) -> Result<Comman
         &mut lines,
     );
     row(
+        "hermesEnabled",
+        opt_str(state.settings.hermes_enabled.map(|b| b.to_string())),
+        "hermesEnabled",
+        &mut lines,
+    );
+    row(
         "teammateMode",
         opt_str(state.settings.teammate_mode.map(|b| b.to_string())),
         "teammateMode",

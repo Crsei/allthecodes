@@ -1,6 +1,6 @@
 # cc-rust 当前问题汇总
 
-> 更新日期: 2026-05-23
+> 更新日期: 2026-07-04
 
 本文是当前开放问题、代码审查发现和文档状态问题的唯一活跃入口。已修复、已失效或只具历史价值的问题已迁移到：
 
@@ -67,14 +67,22 @@
 | ACP-001 | Medium | Open | Binary real-model smoke | The deterministic ACP stdio smoke passes, but the on-demand real-model binary smoke did not complete in this environment. | `acp_stdio_real_model_prompt_smoke` uses the normal allthecodes config/auth/model path and is ignored by default because it requires credentials, provider access, and network. Explicit local runs against current `backend=codex` timed out after 300s after `available_commands_update` and `state_update: running`, with no model content or final idle. |
 | ACP-002 | Medium | Intentional | ACP multimodal prompt and MCP | ACP image/audio/embedded-context prompt blocks and per-session MCP are intentionally unadvertised for this branch. | `session.prompt.image`, `session.prompt.audio`, `session.prompt.embeddedContext`, and `session.mcp.*` remain separate feature work. Current behavior is explicit rejection with `InvalidParams` or omitted capabilities, not partial support. |
 
-## 8. 更新规则
+## 8. Hermes Runtime residuals (2026-07-04)
+
+| ID | Severity | Status | Scope | Summary | Detail |
+| --- | --- | --- | --- | --- | --- |
+| HERMES-001 | Medium | Open | Scheduled tasks | Scheduled task `cwd` is preserved as registry/source/system-prompt metadata, but does not yet override the `QueryEngine` execution cwd. | `dispatch_due_agent_tasks` routes through the existing engine with `QuerySource::ScheduledTask`. The engine submit API currently has no per-submit cwd override, so tool execution still uses the daemon engine cwd until that API is extended. |
+| HERMES-002 | Medium | Open | `DelegateTask` runtime | `DelegateTask` creates a child session, task record, worktree metadata, and searchable bootstrap transcript, but does not yet directly start a child `QueryEngine` with the returned `child_session_id`. | The current tool is a durable delegation envelope that parents can track with task tools and resume via the child session id. Full runtime parity requires a child-agent execution bridge that accepts caller-provided lineage/session ids. |
+| HERMES-003 | Low | Open | Web task list scope | Web `/api/tasks` now lists scheduled tasks and the default task store; session-scoped task stores are still only visible through session tools unless a task-list/session scope is added to the API. | `TaskListTool` stores tasks under the current session-derived task list. The Web endpoint has no `task_list_id` or session parameter yet, so it cannot enumerate every session-local `DelegateTask` record without a protocol extension. |
+
+## 9. 更新规则
 
 1. 新增开放问题写入本文，不再新增 `docs/issues*.md` 或 `docs/issues/` 下的活跃问题文档。
 2. 只读审查原文、长日志和历史复盘放入 [archive/issues/](issues)。
 3. 修复完成后，把问题从本文移到 [archive/resolved-known-issues-2026-05-07.md](resolved-known-issues-2026-05-07.md) 或后续同类 resolved archive。
 4. 文档中若只有“已实现/已修复”历史，不应留在活跃入口；迁入 `development/archive/`。
 
-## 9. Remote-Control Gateway Residuals (2026-05-08)
+## 10. Remote-Control Gateway Residuals (2026-05-08)
 
 | ID | Severity | Status | Scope | Summary | Detail |
 | --- | --- | --- | --- | --- | --- |
@@ -84,19 +92,19 @@
 | REMOTE-004 | Medium | Open | Release verification | Session 16 performed docs-gate verification, not full remote-control code verification. | The next release step must run the Session 17 command set before claiming the gateway implementation is fully green. |
 | REMOTE-005 | Low | Open | Public exposure | Public hosted gateway and multi-tenant SaaS are non-goals for this release. | Non-loopback use requires explicit remote-token policy and origin controls; production hosting design remains out of scope. |
 
-## 10. Ratatui UI parity OMX verification residuals (2026-05-10)
+## 11. Ratatui UI parity OMX verification residuals (2026-05-10)
 
 | ID | Severity | Status | Scope | Summary | Detail |
 | --- | --- | --- | --- | --- | --- |
 | UI-005 | Low | Open | line endings | `git diff --check` passes but reports CRLF-to-LF normalization warnings for several touched files. | The warnings are not whitespace errors, but commit packaging should expect Git normalization on touched Rust/docs files. |
 
-## 11. Agent Teams / Swarm residuals (2026-05-18)
+## 12. Agent Teams / Swarm residuals (2026-05-18)
 
 | ID | Severity | Status | Scope | Summary | Detail |
 | --- | --- | --- | --- | --- | --- |
 | TEAMS-001 | Medium | Open | teammate session resume | TeamContext resume by session id is wired for team leads, but teammate self-session resume still depends on persisting `TeamMember.session_id`. | `restore_team_context_for_session()` matches `TeamFile.lead_session_id` and member `session_id`. Current in-process spawn records teammate members with `session_id: None`, so a teammate's own saved session cannot be restored by session id until runner/spawn records the child session id back into the team file. |
 
-## 12. PTY E2E 测试发现的问题 (2026-05-23)
+## 13. PTY E2E 测试发现的问题 (2026-05-23)
 
 | ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
 | --- | --- | --- | --- | --- | --- |

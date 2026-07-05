@@ -13,6 +13,7 @@
 //!   set <key> <value> [--global|--team|--auto] [--category=<cat>]
 //!   rm <key>   [--global|--team|--auto]
 //!   search <query>
+//!   pending / approve <id> / reject <id> - approval-gated memory proposals
 //!   auto on|off|status  - Toggle auto-memory capture/injection
 //!   open  <auto|team|global|project>  - Print/ensure-and-open a dir
 //!
@@ -33,6 +34,9 @@ use allthecodes_config::claude_md as config_claude_md;
 use allthecodes_config::features::{self, Feature};
 use allthecodes_config::paths as cfg_paths;
 use allthecodes_config::settings;
+use allthecodes_engine::services::background_review::{
+    self, BackgroundReviewProposal, BackgroundReviewProposalKind,
+};
 use allthecodes_session::memdir::{self, MemoryEntry, MemoryScope};
 
 mod claude_md;
@@ -93,6 +97,15 @@ impl CommandHandler for MemoryHandler {
                 }
                 search_entries(query, &ctx.cwd)
             }
+            "pending" => pending_proposals(),
+            "approve" => {
+                let id = parts.get(1).copied().unwrap_or("");
+                approve_proposal(id, &ctx.cwd)
+            }
+            "reject" => {
+                let id = parts.get(1).copied().unwrap_or("");
+                reject_proposal(id)
+            }
             "auto" => {
                 let action = parts.get(1).copied().unwrap_or("status");
                 auto_toggle(action, ctx)
@@ -102,7 +115,7 @@ impl CommandHandler for MemoryHandler {
                 open_dir(which, &ctx.cwd)
             }
             _ => Ok(CommandResult::Output(
-                "Usage: /memory [show|path|edit|list|get|set|rm|search|auto|open]\n\n\
+                "Usage: /memory [show|path|edit|list|get|set|rm|search|pending|approve|reject|auto|open]\n\n\
                  (no args)           - Interactive memory selector (default)\n\n\
                  AGENTS.md (project instructions):\n\
                  \x20 show           - Display current AGENTS.md content\n\
@@ -114,6 +127,10 @@ impl CommandHandler for MemoryHandler {
                  \x20 set <key> <val> [--global|--team|--auto] [--category=<cat>]\n\
                  \x20 rm <key> [--global|--team|--auto]\n\
                  \x20 search <query>             - Substring match across entries\n\n\
+                 Memory proposals:\n\
+                 \x20 pending                    - List pending memory proposals\n\
+                 \x20 approve <id>               - Approve a memory proposal\n\
+                 \x20 reject <id>                - Reject a memory proposal\n\n\
                  Auto-memory (issue #45):\n\
                  \x20 auto on|off|status        - Toggle auto-capture\n\
                  \x20 open <auto|team|global|project>\n\
@@ -304,6 +321,124 @@ fn search_entries(query: &str, cwd: &Path) -> Result<CommandResult> {
         ));
     }
     Ok(CommandResult::Output(lines.join("\n")))
+}
+
+fn pending_proposals() -> Result<CommandResult> {
+    let proposals = background_review::list_background_review_proposals()?
+        .into_iter()
+        .filter(is_memory_review_proposal)
+        .collect::<Vec<_>>();
+    if proposals.is_empty() {
+        return Ok(CommandResult::Output(
+            "No pending memory proposals.".to_string(),
+        ));
+    }
+
+    let mut lines = vec![format!("Pending memory proposals ({})", proposals.len())];
+    for proposal in proposals {
+        lines.push(format!(
+            "  {} [{:?}] {}",
+            proposal.id,
+            proposal.kind,
+            truncate(&proposal.summary, 80)
+        ));
+    }
+    Ok(CommandResult::Output(lines.join("\n")))
+}
+
+fn approve_proposal(id: &str, cwd: &Path) -> Result<CommandResult> {
+    if id.trim().is_empty() {
+        return Ok(CommandResult::Output(
+            "Usage: /memory approve <id>".to_string(),
+        ));
+    }
+    let proposal = match background_review::load_background_review_proposal(id) {
+        Ok(proposal) if is_memory_review_proposal(&proposal) => proposal,
+        _ => {
+            return Ok(CommandResult::Output(format!(
+                "Memory proposal '{}' not found.",
+                id
+            )));
+        }
+    };
+
+    match proposal.kind {
+        BackgroundReviewProposalKind::WorkflowWarning => {
+            background_review::reject_background_review_proposal(id)?;
+            Ok(CommandResult::Output(format!(
+                "Acknowledged background review proposal {}. No memory was written.",
+                id
+            )))
+        }
+        BackgroundReviewProposalKind::MemoryAdd | BackgroundReviewProposalKind::MemoryReplace => {
+            let Some(write) = memory_write_from_review(&proposal) else {
+                return Ok(CommandResult::Output(format!(
+                    "Memory proposal '{}' has no concrete memory payload. No memory was written.",
+                    id
+                )));
+            };
+            let entry = memdir::write_curated_memory(write, cwd)?;
+            background_review::reject_background_review_proposal(id)?;
+            Ok(CommandResult::Output(format!(
+                "Approved memory proposal {}. Wrote memory '{}'.",
+                id, entry.key
+            )))
+        }
+        _ => Ok(CommandResult::Output(format!(
+            "Memory proposal '{}' not found.",
+            id
+        ))),
+    }
+}
+
+fn reject_proposal(id: &str) -> Result<CommandResult> {
+    if id.trim().is_empty() {
+        return Ok(CommandResult::Output(
+            "Usage: /memory reject <id>".to_string(),
+        ));
+    }
+    match background_review::load_background_review_proposal(id) {
+        Ok(proposal) if is_memory_review_proposal(&proposal) => {
+            background_review::reject_background_review_proposal(id)?;
+            Ok(CommandResult::Output(format!(
+                "Rejected memory proposal {}.",
+                proposal.id
+            )))
+        }
+        _ => Ok(CommandResult::Output(format!(
+            "Memory proposal '{}' not found.",
+            id
+        ))),
+    }
+}
+
+fn is_memory_review_proposal(proposal: &BackgroundReviewProposal) -> bool {
+    matches!(
+        proposal.kind,
+        BackgroundReviewProposalKind::MemoryAdd
+            | BackgroundReviewProposalKind::MemoryReplace
+            | BackgroundReviewProposalKind::WorkflowWarning
+    )
+}
+
+fn memory_write_from_review(
+    proposal: &BackgroundReviewProposal,
+) -> Option<memdir::CuratedMemoryWrite> {
+    let memory = proposal.payload.get("memory").unwrap_or(&proposal.payload);
+    let target = match memory.get("target")?.as_str()? {
+        "user" => memdir::CuratedMemoryTarget::User,
+        "project" => memdir::CuratedMemoryTarget::Project,
+        "reference" => memdir::CuratedMemoryTarget::Reference,
+        "feedback" => memdir::CuratedMemoryTarget::Feedback,
+        _ => return None,
+    };
+    Some(memdir::CuratedMemoryWrite {
+        target,
+        key: memory.get("key")?.as_str()?.to_string(),
+        value: memory.get("value")?.as_str()?.to_string(),
+        source_session_id: Some(proposal.source_session_id.clone()),
+        approval_id: Some(proposal.id.clone()),
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ full = [
     "dep:allthecodes-ipc-protocol",
     "dep:allthecodes-permissions",
     "dep:allthecodes-sandbox",
+    "dep:allthecodes-session",
     "dep:allthecodes-skills",
     "dep:allthecodes-tasks",
     "dep:allthecodes-utils",
@@ -44,6 +45,7 @@ allthecodes-browser = { workspace = true, optional = true }
 allthecodes-ipc-protocol = { workspace = true, optional = true }
 allthecodes-permissions = { workspace = true, optional = true }
 allthecodes-sandbox = { workspace = true, optional = true }
+allthecodes-session = { workspace = true, optional = true }
 allthecodes-skills = { workspace = true, optional = true }
 allthecodes-tasks = { workspace = true, optional = true }
 allthecodes-utils = { workspace = true, optional = true }

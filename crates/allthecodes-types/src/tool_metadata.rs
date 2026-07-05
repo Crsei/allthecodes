@@ -134,6 +134,7 @@ fn canonical_tool_name(name: &str) -> &'static str {
         "TaskList" => "TaskList",
         "TaskStop" => "TaskStop",
         "TaskOutput" => "TaskOutput",
+        "DelegateTask" | "delegate_task" => "DelegateTask",
         "TodoWrite" => "TodoWrite",
         "Edit" => "Edit",
         "Write" => "Write",
@@ -154,6 +155,7 @@ fn aliases_for(name: &str) -> &'static [&'static str] {
         "WaitAgent" => &["wait_agent"],
         "CloseAgent" => &["close_agent"],
         "TeamSpawn" => &["spawn_agent"],
+        "DelegateTask" => &["delegate_task"],
         "Bash" => &["bash"],
         "PowerShell" => &["powershell", "Pwsh", "pwsh"],
         "Read" => &["read"],
@@ -180,7 +182,7 @@ fn apply_capability_seed(name: &str, metadata: &mut ToolMetadata) {
         "Bash" | "PowerShell" => {
             capabilities.run_processes = true;
         }
-        "Agent" | "TeamSpawn" | "FollowupTask" => {
+        "Agent" | "TeamSpawn" | "FollowupTask" | "DelegateTask" => {
             capabilities.spawn_agents = true;
         }
         "WebSearch" | "WebFetch" => {
@@ -194,9 +196,8 @@ fn apply_risk_seed(name: &str, metadata: &mut ToolMetadata) {
     metadata.risk = match name {
         "Read" | "Grep" | "Glob" | "LSP" | "Sleep" | "TaskCreate" | "TaskUpdate" | "TaskGet"
         | "TaskList" | "Plan" | "WebSearch" | "WebFetch" => ToolRisk::Low,
-        "Bash" | "PowerShell" | "Agent" | "TeamSpawn" | "FollowupTask" | "Edit" | "Write" => {
-            ToolRisk::High
-        }
+        "Bash" | "PowerShell" | "Agent" | "TeamSpawn" | "FollowupTask" | "DelegateTask"
+        | "Edit" | "Write" => ToolRisk::High,
         _ => metadata.risk,
     };
 }
@@ -214,6 +215,7 @@ fn apply_visibility_seed(name: &str, metadata: &mut ToolMetadata) {
             | "FollowupTask"
             | "WaitAgent"
             | "CloseAgent"
+            | "DelegateTask"
             | "TaskList"
             | "TaskStop"
             | "subscribe_pr_activity"

@@ -29,6 +29,7 @@ async fn test_config_show() {
             assert!(text.contains("permissionMode"));
             assert!(text.contains("soundEffects"));
             assert!(text.contains("terminalProgressBarEnabled"));
+            assert!(text.contains("hermesEnabled"));
             let sound_line = text
                 .lines()
                 .find(|line| line.contains("soundEffects"))

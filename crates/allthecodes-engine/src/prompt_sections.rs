@@ -79,6 +79,15 @@ pub fn uncached_section(
     }
 }
 
+/// Create a memoized section from a value captured before the current turn.
+///
+/// This makes session-start snapshots explicit at call sites that must not
+/// observe mid-turn mutations from memory or other durable stores.
+pub fn frozen_section(name: &str, snapshot: Option<String>) -> PromptSection {
+    let snapshot = snapshot.filter(|value| !value.trim().is_empty());
+    cached_section(name, move || snapshot.clone())
+}
+
 /// Resolve all prompt sections, returning their string values.
 /// Cached sections use memoized values; uncached sections always recompute.
 ///
@@ -198,5 +207,49 @@ mod tests {
         )];
         let r1 = resolve_sections(&sections);
         assert_eq!(r1, vec!["fresh"]);
+    }
+
+    #[test]
+    fn test_frozen_section_keeps_memory_snapshot_stable() {
+        clear_cache();
+        let cwd =
+            std::env::temp_dir().join(format!("prompt_frozen_memory_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        allthecodes_session::memdir::write_curated_memory(
+            allthecodes_session::memdir::CuratedMemoryWrite {
+                target: allthecodes_session::memdir::CuratedMemoryTarget::Project,
+                key: "before".to_string(),
+                value: "frozen section should include this".to_string(),
+                source_session_id: None,
+                approval_id: Some("approval-before".to_string()),
+            },
+            &cwd,
+        )
+        .unwrap();
+        let snapshot =
+            allthecodes_session::memdir::capture_curated_memory_snapshot(&cwd, false, 4096)
+                .unwrap();
+        let sections = vec![frozen_section("memory", Some(snapshot.context))];
+
+        let first = resolve_sections(&sections).join("\n");
+        allthecodes_session::memdir::write_curated_memory(
+            allthecodes_session::memdir::CuratedMemoryWrite {
+                target: allthecodes_session::memdir::CuratedMemoryTarget::Project,
+                key: "after".to_string(),
+                value: "frozen section must not include this".to_string(),
+                source_session_id: None,
+                approval_id: Some("approval-after".to_string()),
+            },
+            &cwd,
+        )
+        .unwrap();
+        let second = resolve_sections(&sections).join("\n");
+
+        assert!(first.contains("before"));
+        assert!(!first.contains("after"));
+        assert_eq!(first, second);
+
+        let _ = std::fs::remove_dir_all(&cwd);
     }
 }

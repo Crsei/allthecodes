@@ -6,6 +6,7 @@ use crate::interaction::{AskUserQuestionTool, SendUserMessageTool, StructuredOut
 use crate::metadata::ToolMetadata;
 use crate::plan_mode::{EnterPlanModeTool, ExitPlanModeTool};
 use crate::runtime::{BriefTool, ConfigTool, SystemStatusTool, ToolSearchTool};
+use crate::session_search::SessionSearchTool;
 use crate::tool::{Tool, Tools};
 use allthecodes_config::features::{self, Feature, FeatureFlags};
 use parking_lot::RwLock;
@@ -123,6 +124,8 @@ const MULTI_AGENT_V2_TOOL_NAMES: &[&str] = &[
     "send_message",
 ];
 
+const HERMES_AUTONOMY_TOOL_NAMES: &[&str] = &["SessionSearch", "DelegateTask"];
+
 fn tool_enabled_by_feature_gates(name: &str, flags: &FeatureFlags) -> bool {
     if GOAL_TOOL_NAMES.contains(&name) {
         return flags.is_enabled(Feature::GoalTools);
@@ -186,9 +189,11 @@ pub fn filter_tools_for_runtime_settings(
     settings: &allthecodes_config::runtime_settings::SettingsJson,
 ) -> Tools {
     let hashline_enabled = settings.hashline_mode.unwrap_or(false);
+    let hermes_enabled = settings.hermes_enabled.unwrap_or(false);
     tools
         .into_iter()
         .filter(|tool| hashline_enabled || tool.name() != "HashEdit")
+        .filter(|tool| hermes_enabled || !HERMES_AUTONOMY_TOOL_NAMES.contains(&tool.name()))
         .collect()
 }
 
@@ -222,6 +227,7 @@ pub fn allthecodes_tools_base_tools() -> Tools {
         Arc::new(ExitPlanModeTool) as _,
         Arc::new(BriefTool) as _,
         Arc::new(SystemStatusTool) as _,
+        Arc::new(SessionSearchTool) as _,
         Arc::new(ToolSearchTool) as _,
     ]);
 
@@ -365,7 +371,9 @@ mod tests {
 
         assert!(names.contains(&"Read".to_string()));
         assert!(names.contains(&"TodoWrite".to_string()));
+        assert!(names.contains(&"DelegateTask".to_string()));
         assert!(names.contains(&"WebFetch".to_string()));
+        assert!(names.contains(&"SessionSearch".to_string()));
     }
 
     #[test]
@@ -419,6 +427,7 @@ mod tests {
             "spawn_agent",
             "FollowupTask",
             "followup_task",
+            "DelegateTask",
         ] {
             assert!(
                 !names.contains(&hidden.to_string()),
@@ -438,13 +447,18 @@ mod tests {
             .map(|tool| tool.name().to_string())
             .collect::<Vec<_>>();
         assert!(!names.contains(&"HashEdit".to_string()));
+        assert!(!names.contains(&"SessionSearch".to_string()));
+        assert!(!names.contains(&"DelegateTask".to_string()));
 
         settings.hashline_mode = Some(true);
+        settings.hermes_enabled = Some(true);
         let names = filter_tools_for_runtime_settings(get_all_tools(), &settings)
             .into_iter()
             .map(|tool| tool.name().to_string())
             .collect::<Vec<_>>();
         assert!(names.contains(&"HashEdit".to_string()));
+        assert!(names.contains(&"SessionSearch".to_string()));
+        assert!(names.contains(&"DelegateTask".to_string()));
     }
 
     #[test]
@@ -479,6 +493,11 @@ mod tests {
         );
         assert!(
             crate::metadata::ToolMetadata::from_tool_name("FollowupTask")
+                .capabilities
+                .spawn_agents
+        );
+        assert!(
+            crate::metadata::ToolMetadata::from_tool_name("DelegateTask")
                 .capabilities
                 .spawn_agents
         );

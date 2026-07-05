@@ -81,6 +81,7 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::CodingAgentsStatus - legacy REST handler, ChatProcessor target.
 // ClientRequest::LaunchpadSnapshotCreate - legacy REST handler.
 // ClientRequest::SessionList - dispatched.
+// ClientRequest::SessionSearch - dispatched.
 // ClientRequest::SessionCreate - dispatched.
 // ClientRequest::SessionDetail - dispatched.
 // ClientRequest::SessionResume - dispatched.
@@ -348,6 +349,16 @@ pub async fn dispatch(
             )
             .await?;
             Ok(ClientResponse::SessionList(map_session_list(response)))
+        }
+        ClientRequest::SessionSearch(params) => {
+            let response = dispatch_tracked_processor::<handlers::SessionSearchProcessor>(
+                state,
+                context,
+                ApiMethod::SessionSearch,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::SessionSearch(response))
         }
         ClientRequest::SessionCreate(params) => {
             let response = dispatch_tracked_processor::<handlers::SessionCreateProcessor>(
@@ -1142,7 +1153,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 50);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 51);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

@@ -7,7 +7,10 @@ use super::index::{
     ensure_memory_dir, format_memory_context_section, key_to_filename, list_memories, memory_dir,
     refresh_memory_index,
 };
-use super::types::{MemoryEntry, MemoryScope, MemoryType};
+use super::types::{
+    CuratedMemorySnapshot, CuratedMemoryTarget, CuratedMemoryWrite, MemoryEntry, MemoryScope,
+    MemoryType, CURATED_MEMORY_PROFILE_MAX_BYTES,
+};
 
 /// Write a memory entry.
 pub fn write_memory(
@@ -40,6 +43,8 @@ pub fn write_memory(
         memory_type: MemoryType::parse(category),
         description: None,
         search_terms: Vec::new(),
+        source_session_id: None,
+        approval_id: None,
         created_at,
         updated_at: now,
     };
@@ -51,6 +56,117 @@ pub fn write_memory(
     refresh_memory_index(scope, cwd)?;
 
     Ok(entry)
+}
+
+/// Write a bounded curated memory entry into the target's default scope.
+///
+/// This is the common write path for approved self-improvement outputs. Direct
+/// user commands may still use [`write_memory`], but proposal reviewers should
+/// pass the proposal/approval id here so the durable entry records provenance.
+pub fn write_curated_memory(write: CuratedMemoryWrite, cwd: &Path) -> Result<MemoryEntry> {
+    let target = write.target;
+    let scope = target.default_scope();
+    let dir = ensure_memory_dir(scope, cwd)?;
+    let filename = key_to_filename(&write.key);
+    let file_path = dir.join(&filename);
+    let now = Utc::now().to_rfc3339();
+
+    let created_at = if file_path.exists() {
+        read_memory(&write.key, scope, cwd)
+            .ok()
+            .map(|entry| entry.created_at)
+            .unwrap_or_else(|| now.clone())
+    } else {
+        now.clone()
+    };
+
+    let entry = MemoryEntry {
+        key: write.key,
+        value: write.value,
+        category: target.as_str().to_string(),
+        memory_type: Some(target.memory_type()),
+        description: None,
+        search_terms: Vec::new(),
+        source_session_id: write.source_session_id,
+        approval_id: write.approval_id,
+        created_at,
+        updated_at: now,
+    };
+
+    let json = serde_json::to_string_pretty(&entry).context("Failed to serialize memory entry")?;
+    std::fs::write(&file_path, json)
+        .with_context(|| format!("Failed to write memory file: {}", file_path.display()))?;
+
+    refresh_memory_index(scope, cwd)?;
+    refresh_curated_memory_profile(target, cwd, CURATED_MEMORY_PROFILE_MAX_BYTES)?;
+
+    Ok(entry)
+}
+
+pub fn curated_memory_profile_path(
+    target: CuratedMemoryTarget,
+    cwd: &Path,
+) -> Result<std::path::PathBuf> {
+    Ok(memory_dir(target.default_scope(), cwd)?.join(target.profile_name()))
+}
+
+pub fn build_curated_memory_profile(
+    target: CuratedMemoryTarget,
+    cwd: &Path,
+    max_bytes: usize,
+) -> Result<String> {
+    let mut entries = list_memories(target.default_scope(), cwd)?;
+    entries.retain(|entry| entry.effective_memory_type() == Some(target.memory_type()));
+    if entries.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut lines = vec![format!("# {}", target.profile_name())];
+    for entry in entries {
+        let mut line = format!("- **{}**: {}", entry.key, one_line(&entry.value));
+        if let Some(session_id) = entry.source_session_id.as_deref() {
+            line.push_str(&format!(" (source session: {session_id})"));
+        }
+        if let Some(approval_id) = entry.approval_id.as_deref() {
+            line.push_str(&format!(" (approval: {approval_id})"));
+        }
+        lines.push(line);
+    }
+    Ok(truncate_to_limit(&lines.join("\n"), max_bytes))
+}
+
+pub fn refresh_curated_memory_profile(
+    target: CuratedMemoryTarget,
+    cwd: &Path,
+    max_bytes: usize,
+) -> Result<Option<std::path::PathBuf>> {
+    let dir = ensure_memory_dir(target.default_scope(), cwd)?;
+    let path = dir.join(target.profile_name());
+    let profile = build_curated_memory_profile(target, cwd, max_bytes)?;
+
+    if profile.trim().is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove memory profile: {}", path.display()))?;
+        }
+        return Ok(None);
+    }
+
+    std::fs::write(&path, profile)
+        .with_context(|| format!("Failed to write memory profile: {}", path.display()))?;
+    Ok(Some(path))
+}
+
+pub fn capture_curated_memory_snapshot(
+    cwd: &Path,
+    include_auto: bool,
+    max_bytes: usize,
+) -> Result<CuratedMemorySnapshot> {
+    let context = build_memory_context_with(cwd, include_auto)?;
+    Ok(CuratedMemorySnapshot {
+        context: truncate_to_limit(&context, max_bytes),
+        captured_at: Utc::now().to_rfc3339(),
+    })
 }
 
 /// Read a memory entry by key.
@@ -185,4 +301,40 @@ pub fn build_memory_context_with(cwd: &Path, include_auto: bool) -> Result<Strin
             sections.join("\n")
         ))
     }
+}
+
+fn one_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_to_limit(content: &str, max_bytes: usize) -> String {
+    if max_bytes == 0 || content.is_empty() {
+        return String::new();
+    }
+    if content.len() <= max_bytes {
+        return content.to_string();
+    }
+
+    const WARNING: &str = "- [truncated] curated memory profile exceeded allthecodes limits.";
+    if WARNING.len() >= max_bytes {
+        return truncate_at_boundary(WARNING, max_bytes);
+    }
+
+    let keep = max_bytes.saturating_sub(WARNING.len() + 1);
+    let mut output = truncate_at_boundary(content, keep)
+        .trim_end_matches(char::is_whitespace)
+        .to_string();
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str(WARNING);
+    output
+}
+
+fn truncate_at_boundary(value: &str, max_bytes: usize) -> String {
+    let mut end = max_bytes.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }

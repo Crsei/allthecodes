@@ -6,6 +6,7 @@ pub mod specs;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, Tools, ValidationResult};
@@ -13,10 +14,10 @@ use allthecodes_tasks::{
     parse_task_create, parse_task_id, parse_task_output_limit_bytes, parse_task_output_timeout_ms,
     parse_task_update, replace_todos_for_key, task_list_id_from_parts, task_output_payload,
     task_output_payload_with_events, task_to_json_from_store, todo_owner_key, wait_for_task_output,
-    TaskEntry, TaskError, TaskListScope, TaskOutputRetrievalStatus, TaskOutputWaitResult,
-    TaskStatus, TaskStore, TaskUpdateAction,
+    TaskCreateOptions, TaskEntry, TaskError, TaskListScope, TaskOutputRetrievalStatus,
+    TaskOutputWaitResult, TaskStatus, TaskStore, TaskUpdateAction, TASK_KIND_LOCAL_AGENT,
 };
-use allthecodes_types::message::AssistantMessage;
+use allthecodes_types::message::{AssistantMessage, Message, MessageContent, UserMessage};
 
 fn task_error_result(error: TaskError) -> ToolResult {
     ToolResult {
@@ -115,6 +116,214 @@ fn maybe_link_plan_workflow_task(
     Ok(record)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct DelegateTaskInput {
+    pub role: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub worktree: Option<String>,
+    #[serde(default)]
+    pub max_turns: Option<usize>,
+    #[serde(default)]
+    pub verification_policy: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegateTaskOutput {
+    pub task_id: String,
+    pub child_session_id: String,
+    pub status: String,
+    pub worktree_path: Option<String>,
+}
+
+fn parse_delegate_task_input(input: Value) -> Result<DelegateTaskInput> {
+    let mut parsed: DelegateTaskInput = serde_json::from_value(input)?;
+    parsed.role = parsed.role.trim().to_string();
+    parsed.prompt = parsed.prompt.trim().to_string();
+    parsed.cwd = parsed
+        .cwd
+        .and_then(|value| normalize_non_empty_string(&value));
+    parsed.worktree = parsed
+        .worktree
+        .and_then(|value| normalize_non_empty_string(&value));
+    parsed.verification_policy = parsed
+        .verification_policy
+        .and_then(|value| normalize_non_empty_string(&value));
+
+    if parsed.role.is_empty() {
+        anyhow::bail!("role is required");
+    }
+    if parsed.prompt.is_empty() {
+        anyhow::bail!("prompt is required");
+    }
+    if parsed.max_turns == Some(0) {
+        anyhow::bail!("max_turns must be greater than zero");
+    }
+
+    if let Some(worktree) = parsed.worktree.as_deref() {
+        let _ = delegate_worktree_slug("delegate-validation", Some(worktree))?;
+    }
+
+    Ok(parsed)
+}
+
+fn normalize_non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn delegate_worktree_slug(
+    child_session_id: &str,
+    requested_worktree: Option<&str>,
+) -> Result<String> {
+    let requested = requested_worktree
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let slug = match requested {
+        Some(value)
+            if !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "true" | "worktree" | "isolated"
+            ) =>
+        {
+            value.to_string()
+        }
+        _ => child_session_id.chars().take(12).collect(),
+    };
+    validate_delegate_worktree_slug(&slug)?;
+    Ok(slug)
+}
+
+fn validate_delegate_worktree_slug(slug: &str) -> Result<()> {
+    if slug.trim().is_empty() {
+        anyhow::bail!("delegate worktree slug cannot be empty");
+    }
+    if slug.contains("..") || slug.contains('/') || slug.contains('\\') {
+        anyhow::bail!("delegate worktree slug cannot contain path separators or '..'");
+    }
+    if slug.len() > 64 {
+        anyhow::bail!("delegate worktree slug too long (max 64 chars)");
+    }
+    if !slug
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        anyhow::bail!(
+            "delegate worktree slug may only contain ASCII letters, numbers, '-' and '_'"
+        );
+    }
+    Ok(())
+}
+
+fn delegate_worktree_path_for_slug(slug: &str) -> String {
+    allthecodes_config::paths::worktrees_dir()
+        .join(format!("agent-worktree-{slug}"))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn delegate_task_subject(input: &DelegateTaskInput) -> String {
+    let first_line = input
+        .prompt
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("Delegated task")
+        .trim();
+    let summary: String = first_line.chars().take(80).collect();
+    format!("Delegate {}: {}", input.role, summary)
+}
+
+fn delegate_bootstrap_message(parent_session_id: &str, input: &DelegateTaskInput) -> Message {
+    Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        role: "user".to_string(),
+        content: MessageContent::Text(format!(
+            "Delegated from parent session {parent_session_id} as role {}.\n\n{}",
+            input.role, input.prompt
+        )),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    })
+}
+
+fn save_delegate_child_session(
+    child_session_id: &str,
+    parent_session_id: &str,
+    input: &DelegateTaskInput,
+    cwd: &str,
+) -> Result<()> {
+    let message = delegate_bootstrap_message(parent_session_id, input);
+    allthecodes_session::storage::save_session(child_session_id, &[message], cwd)?;
+    let title = delegate_task_subject(input);
+    allthecodes_session::storage::set_session_title(child_session_id, Some(&title))?;
+    Ok(())
+}
+
+fn delegate_task_create_options(
+    ctx: &ToolUseContext,
+    input: &DelegateTaskInput,
+    child_session_id: &str,
+    cwd: &str,
+) -> Result<TaskCreateOptions> {
+    let worktree_slug = input
+        .worktree
+        .as_deref()
+        .map(|worktree| delegate_worktree_slug(child_session_id, Some(worktree)))
+        .transpose()?;
+    let worktree_path = worktree_slug
+        .as_deref()
+        .map(delegate_worktree_path_for_slug);
+    let worktree_branch = worktree_slug
+        .as_deref()
+        .map(|slug| format!("agent-worktree-{slug}"));
+
+    Ok(TaskCreateOptions {
+        kind: Some(TASK_KIND_LOCAL_AGENT.to_string()),
+        parent_id: None,
+        depends_on: Vec::new(),
+        owner: ctx.agent_id.clone(),
+        active_form: Some(format!("Delegating to {}", input.role)),
+        metadata: Some(json!({
+            "delegate": true,
+            "delegate_role": input.role,
+            "parent_session_id": ctx.session_id,
+            "child_session_id": child_session_id,
+            "prompt": input.prompt,
+            "cwd": cwd,
+            "max_turns": input.max_turns,
+            "verification_policy": input.verification_policy,
+            "resume_command": format!("/resume {child_session_id}"),
+            "agent_tool_input": {
+                "prompt": input.prompt,
+                "description": delegate_task_subject(input),
+                "subagent_type": input.role,
+                "run_in_background": true,
+                "isolation": worktree_slug.as_ref().map(|_| "worktree"),
+                "max_turns": input.max_turns,
+                "verification_policy": input.verification_policy,
+            }
+        })),
+        tool_use_id: None,
+        agent_id: Some(child_session_id.to_string()),
+        supervisor_id: None,
+        isolation: worktree_slug.as_ref().map(|_| "worktree".to_string()),
+        worktree_path,
+        worktree_branch,
+        remote_task_type: None,
+        remote_session_id: Some(child_session_id.to_string()),
+        remote_task_metadata: None,
+        poll_started_at: None,
+    })
+}
+
 pub struct TodoWriteTool;
 
 #[async_trait]
@@ -191,6 +400,81 @@ impl Tool for TodoWriteTool {
 
     async fn prompt(&self) -> String {
         "Track progress by replacing the current todo list with a complete todos array. Use pending, in_progress, and completed statuses.".to_string()
+    }
+}
+
+pub struct DelegateTaskTool;
+
+#[async_trait]
+impl Tool for DelegateTaskTool {
+    fn name(&self) -> &str {
+        crate::tasks::specs::DELEGATE_TASK_NAME
+    }
+
+    async fn description(&self, _: &Value) -> String {
+        "Delegate a task to a child agent and persist a trackable child session.".to_string()
+    }
+
+    fn input_json_schema(&self) -> Value {
+        crate::tasks::specs::delegate_task_schema()
+    }
+
+    async fn validate_input(&self, input: &Value, _ctx: &ToolUseContext) -> ValidationResult {
+        match parse_delegate_task_input(input.clone()) {
+            Ok(_) => ValidationResult::Ok,
+            Err(err) => ValidationResult::Error {
+                message: err.to_string(),
+                error_code: 1,
+            },
+        }
+    }
+
+    async fn call(
+        &self,
+        input: Value,
+        ctx: &ToolUseContext,
+        _p: &AssistantMessage,
+        _: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
+    ) -> Result<ToolResult> {
+        let input = parse_delegate_task_input(input)?;
+        let child_session_id = uuid::Uuid::new_v4().to_string();
+        let cwd = input.cwd.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string())
+        });
+        save_delegate_child_session(&child_session_id, &ctx.session_id, &input, &cwd)?;
+
+        let task_store = store_for_context(ctx);
+        let subject = delegate_task_subject(&input);
+        let options = delegate_task_create_options(ctx, &input, &child_session_id, &cwd)?;
+        let entry = task_store.try_create_with_options(&subject, &input.prompt, options)?;
+
+        let output = DelegateTaskOutput {
+            task_id: entry.id.clone(),
+            child_session_id: child_session_id.clone(),
+            status: entry.status.as_str().to_string(),
+            worktree_path: entry.worktree_path.clone(),
+        };
+
+        Ok(ToolResult {
+            data: json!({
+                "task_id": output.task_id,
+                "child_session_id": output.child_session_id,
+                "status": output.status,
+                "worktree_path": output.worktree_path,
+                "message": format!(
+                    "Delegated task {} to child session {}",
+                    entry.id, child_session_id
+                )
+            }),
+            new_messages: vec![],
+            ..Default::default()
+        })
+    }
+
+    async fn prompt(&self) -> String {
+        "Delegate work to a child agent. The returned task_id can be tracked with TaskList, TaskGet, TaskOutput, or TaskStop, and child_session_id can be resumed.".to_string()
     }
 }
 
@@ -707,6 +991,7 @@ impl Tool for TaskOutputTool {
 pub fn tools() -> Tools {
     vec![
         Arc::new(TodoWriteTool),
+        Arc::new(DelegateTaskTool),
         Arc::new(TaskCreateTool),
         Arc::new(TaskGetTool),
         Arc::new(TaskUpdateTool),
@@ -714,4 +999,155 @@ pub fn tools() -> Tools {
         Arc::new(TaskStopTool),
         Arc::new(TaskOutputTool),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use allthecodes_session::storage;
+    use allthecodes_types::commands::NoopCommandDispatcher;
+    use allthecodes_types::hooks::NoopHookRunner;
+    use serde_json::json;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn test_context(session_id: &str) -> ToolUseContext {
+        let (_abort_tx, abort_rx) = tokio::sync::watch::channel(false);
+        let state = crate::tool::ToolAppState::default();
+        ToolUseContext {
+            options: crate::tool::ToolUseOptions {
+                debug: false,
+                main_loop_model: "test-model".to_string(),
+                verbose: false,
+                is_non_interactive_session: false,
+                custom_system_prompt: None,
+                append_system_prompt: None,
+                max_budget_usd: None,
+            },
+            abort_signal: abort_rx,
+            read_file_state: crate::tool::FileStateCache::default(),
+            get_app_state: Arc::new(move || state.clone()),
+            set_app_state: Arc::new(|_updater| {}),
+            session_id: session_id.to_string(),
+            langfuse_session_id: session_id.to_string(),
+            messages: vec![],
+            agent_id: None,
+            agent_type: None,
+            query_tracking: None,
+            permission_callback: None,
+            ask_user_callback: None,
+            permission_event_callback: None,
+            bg_agent_tx: None,
+            hook_runner: Arc::new(NoopHookRunner::new()),
+            command_dispatcher: Arc::new(NoopCommandDispatcher::new()),
+            available_tools: Tools::new(),
+            execute_deferred_tool: None,
+        }
+    }
+
+    fn parent_message() -> AssistantMessage {
+        AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "assistant".to_string(),
+            content: vec![],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn delegate_task_creates_child_session_and_trackable_task() {
+        let home = TempDir::new().expect("temp home");
+        let workspace = TempDir::new().expect("temp workspace");
+        let _home_guard = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let ctx = test_context("parent-session");
+        let parent = parent_message();
+
+        let result = DelegateTaskTool
+            .call(
+                json!({
+                    "role": "explorer",
+                    "prompt": "Find every delegate task lineage marker",
+                    "cwd": workspace.path().display().to_string(),
+                    "worktree": "delegate-lineage",
+                    "max_turns": 4,
+                    "verification_policy": "targeted_tests"
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .expect("delegate task result");
+
+        let task_id = result.data["task_id"].as_str().expect("task id");
+        let child_session_id = result.data["child_session_id"]
+            .as_str()
+            .expect("child session id");
+        assert_eq!(result.data["status"], "pending");
+        assert!(result.data["worktree_path"]
+            .as_str()
+            .expect("worktree path")
+            .contains("delegate-lineage"));
+
+        let list = TaskListTool
+            .call(json!({}), &ctx, &parent, None)
+            .await
+            .expect("task list");
+        let tasks = list.data["tasks"].as_array().expect("tasks");
+        let task = tasks
+            .iter()
+            .find(|task| task["id"] == task_id)
+            .expect("delegate task is listed");
+        assert_eq!(task["kind"], allthecodes_tasks::TASK_KIND_LOCAL_AGENT);
+        assert_eq!(task["agent_id"], child_session_id);
+        assert_eq!(task["remote_session_id"], child_session_id);
+        assert_eq!(task["isolation"], "worktree");
+        assert_eq!(task["metadata"]["parent_session_id"], "parent-session");
+        assert_eq!(task["metadata"]["delegate_role"], "explorer");
+        assert_eq!(task["metadata"]["max_turns"], 4);
+        assert_eq!(task["metadata"]["verification_policy"], "targeted_tests");
+
+        let output = TaskOutputTool
+            .call(
+                json!({ "task_id": task_id, "block": false }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .expect("task output");
+        assert_eq!(output.data["retrieval_status"], "not_ready");
+
+        let hits = storage::search_sessions("delegate task lineage marker", 10)
+            .expect("search child session");
+        assert!(hits.iter().any(|hit| hit.session_id == child_session_id));
+    }
 }
