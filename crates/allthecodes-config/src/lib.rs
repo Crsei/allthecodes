@@ -33,6 +33,7 @@ pub mod mdm;
 pub mod paths;
 pub mod permission_validation;
 pub mod proactive_sleep;
+pub mod proactive_state;
 pub mod runtime_settings;
 pub mod settings;
 pub mod user_agent;

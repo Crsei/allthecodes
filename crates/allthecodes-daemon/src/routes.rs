@@ -766,7 +766,7 @@ async fn attach(State(state): State<DaemonState>, Json(body): Json<AttachRequest
 /// `POST /api/detach` -- remove a client from the SSE registry.
 async fn detach(State(state): State<DaemonState>, Json(body): Json<DetachRequest>) -> Json<Value> {
     info!(client_id = body.client_id, "client detach");
-    state.clients.write().remove(&body.client_id);
+    state.detach_sse_client(&body.client_id);
     Json(json!({ "status": "ok" }))
 }
 
@@ -958,6 +958,42 @@ mod tests {
             .body(Body::empty())
             .expect("request");
         response_json(app.oneshot(request).await.expect("response")).await
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn detach_endpoint_persists_terminal_focus_unfocused() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let state = make_daemon_state();
+        let _receiver = state.register_sse_client(
+            "client-1".to_string(),
+            allthecodes_server::ConnectionId::from_static("detach-focus"),
+        );
+        assert!(
+            crate::process_state::read_terminal_focus_state()
+                .unwrap()
+                .expect("terminal focus state after attach")
+                .focused
+        );
+        let app = api_routes().with_state(state.clone());
+
+        let (status, body) = post_json(
+            app,
+            "/api/detach",
+            "",
+            json!({
+                "client_id": "client-1",
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        let focus = crate::process_state::read_terminal_focus_state()
+            .unwrap()
+            .expect("terminal focus state after api detach");
+        assert!(!focus.focused);
     }
 
     fn bridge_state(

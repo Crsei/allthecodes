@@ -164,6 +164,19 @@ impl DaemonState {
         self.publish_terminal_focus_state();
     }
 
+    pub fn detach_sse_client(&self, client_id: &str) {
+        let connection_id = self
+            .clients
+            .write()
+            .remove(client_id)
+            .map(|client| client.connection_id);
+        if let Some(connection_id) = connection_id {
+            self.event_router.unregister(&connection_id);
+            self.lagged_disconnects.lock().remove(&connection_id);
+        }
+        self.publish_terminal_focus_state();
+    }
+
     pub fn latest_seq(&self) -> EventSeq {
         self.event_log.latest_seq()
     }

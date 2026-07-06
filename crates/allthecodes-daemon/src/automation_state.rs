@@ -151,7 +151,11 @@ pub fn snapshot_from_process_state() -> AutomationState {
             .and_then(|state| state.next_tick_at)
             .or(proactive.next_tick_at),
         proactive_active: proactive_active(daemon_proactive.as_ref(), &proactive, false),
-        terminal_focus: false,
+        terminal_focus: process_state::read_terminal_focus_state()
+            .ok()
+            .flatten()
+            .map(|state| state.focused)
+            .unwrap_or(false),
         query_running,
         pending_input,
     }
@@ -468,6 +472,18 @@ mod tests {
 
         assert!(!current.proactive_active);
         assert!(!process_current.proactive_active);
+    }
+
+    #[test]
+    #[serial]
+    fn process_snapshot_reports_persisted_terminal_focus() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        process_state::write_terminal_focus_state(true).unwrap();
+
+        let current = snapshot_from_process_state();
+
+        assert!(current.terminal_focus);
     }
 
     #[test]

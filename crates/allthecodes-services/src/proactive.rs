@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use anyhow::{Context, Result};
@@ -13,9 +13,11 @@ pub use allthecodes_config::proactive_sleep::{
     active_sleep_state, clear_sleep_state, read_sleep_state, write_sleep_state,
     write_sleep_state_until, SleepState, SLEEP_STATE_SCHEMA_VERSION,
 };
+pub use allthecodes_config::proactive_state::{
+    DurableProactiveState, PROACTIVE_STATE_SCHEMA_VERSION as DURABLE_PROACTIVE_STATE_SCHEMA_VERSION,
+};
 
 pub const DEFAULT_TICK_INTERVAL_MS: u64 = 30_000;
-pub const DURABLE_PROACTIVE_STATE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,18 +35,6 @@ pub struct ProactiveSnapshot {
     pub next_tick_at: Option<DateTime<Utc>>,
     pub paused_reason: Option<String>,
     pub context_blocked: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DurableProactiveState {
-    pub schema_version: u32,
-    pub active: bool,
-    pub next_tick_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub context_blocked: bool,
-    #[serde(default)]
-    pub blocked_reason: Option<String>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug)]
@@ -205,21 +195,16 @@ pub fn write_durable_state_with_context(
     context_blocked: bool,
     blocked_reason: Option<String>,
 ) -> Result<DurableProactiveState> {
-    let state = DurableProactiveState {
-        schema_version: DURABLE_PROACTIVE_STATE_SCHEMA_VERSION,
+    allthecodes_config::proactive_state::write_proactive_state(
         active,
         next_tick_at,
         context_blocked,
-        blocked_reason: blocked_reason.filter(|reason| !reason.trim().is_empty()),
-        updated_at: Utc::now(),
-    };
-    write_durable_state_file(&state)?;
-    Ok(state)
+        blocked_reason,
+    )
 }
 
 pub fn read_durable_state() -> Result<Option<DurableProactiveState>> {
-    let path = durable_state_path();
-    read_durable_state_from_path(&path, |path| fs::read_to_string(path))
+    allthecodes_config::proactive_state::read_proactive_state()
 }
 
 pub fn clear_durable_state(reason: &str) -> Result<bool> {
@@ -281,52 +266,7 @@ fn next_tick_at() -> DateTime<Utc> {
 }
 
 fn durable_state_path() -> PathBuf {
-    allthecodes_config::paths::daemon_dir().join("proactive-state.json")
-}
-
-fn write_durable_state_file(state: &DurableProactiveState) -> Result<()> {
-    let path = durable_state_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create daemon directory {}", parent.display()))?;
-    }
-
-    let tmp = path.with_file_name(format!(
-        "proactive-state.json.{}.{}.tmp",
-        std::process::id(),
-        Utc::now().timestamp_micros()
-    ));
-    fs::write(&tmp, serde_json::to_vec_pretty(state)?)
-        .with_context(|| format!("failed to write daemon proactive state {}", tmp.display()))?;
-    fs::rename(&tmp, &path).with_context(|| {
-        format!(
-            "failed to replace daemon proactive state {} with {}",
-            path.display(),
-            tmp.display()
-        )
-    })?;
-    Ok(())
-}
-
-fn read_durable_state_from_path<F>(
-    path: &Path,
-    read_to_string: F,
-) -> Result<Option<DurableProactiveState>>
-where
-    F: FnOnce(&Path) -> std::io::Result<String>,
-{
-    let text = match read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!("failed to read daemon proactive state {}", path.display())
-            })
-        }
-    };
-    let state = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse daemon proactive state {}", path.display()))?;
-    Ok(Some(state))
+    allthecodes_config::proactive_state::proactive_state_path()
 }
 
 fn normalized_text(text: &str) -> Option<String> {
