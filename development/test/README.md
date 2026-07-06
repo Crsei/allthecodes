@@ -44,6 +44,16 @@
 ## 运行
 
 ```bash
+# Cargo build/test wrapper
+scripts/cargo-build-test.sh --dry-run full
+scripts/cargo-build-test.sh ci
+scripts/cargo-build-test.sh full
+
+# Optional just facade
+just dry-run full
+just ci
+just full
+
 # 单个计划
 cargo test -p allthecodes-permissions command_risk
 cargo test -p allthecodes-session
