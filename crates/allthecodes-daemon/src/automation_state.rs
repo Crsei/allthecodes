@@ -71,6 +71,7 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
     let query_running = state.is_query_running.load(Ordering::SeqCst) || assistant_command_active();
     let pending_input = pending_input_active();
     let proactive = allthecodes_services::proactive::global_controller().snapshot();
+    let daemon_proactive = process_state::read_proactive_state().ok().flatten();
     let sleeping = daemon_sleep.is_some() || engine_sleeping;
     let status = if pending_input {
         AutomationStatus::NeedsInput
@@ -90,9 +91,17 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
         status,
         sleeping_until,
         reason,
-        next_tick_at: proactive.next_tick_at,
+        next_tick_at: proactive.next_tick_at.or_else(|| {
+            daemon_proactive
+                .as_ref()
+                .and_then(|state| state.next_tick_at)
+        }),
         proactive_active: proactive.status == ProactiveStatus::Active
             || state.features.proactive
+            || daemon_proactive
+                .as_ref()
+                .map(|state| state.active)
+                .unwrap_or(false)
             || allthecodes_config::features::enabled(Feature::Proactive),
         terminal_focus: state.terminal_focus(),
         query_running,
@@ -108,6 +117,7 @@ pub fn snapshot_from_process_state() -> AutomationState {
     let query_running = assistant_command_active();
     let pending_input = pending_input_active();
     let proactive = allthecodes_services::proactive::global_controller().snapshot();
+    let daemon_proactive = process_state::read_proactive_state().ok().flatten();
     let sleeping = daemon_sleep.is_some();
     let status = if pending_input {
         AutomationStatus::NeedsInput
@@ -127,8 +137,16 @@ pub fn snapshot_from_process_state() -> AutomationState {
         status,
         sleeping_until,
         reason,
-        next_tick_at: proactive.next_tick_at,
+        next_tick_at: proactive.next_tick_at.or_else(|| {
+            daemon_proactive
+                .as_ref()
+                .and_then(|state| state.next_tick_at)
+        }),
         proactive_active: proactive.status == ProactiveStatus::Active
+            || daemon_proactive
+                .as_ref()
+                .map(|state| state.active)
+                .unwrap_or(false)
             || allthecodes_config::features::enabled(Feature::Proactive),
         terminal_focus: false,
         query_running,
@@ -214,7 +232,7 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use allthecodes_config::features::FeatureFlags;
+    use allthecodes_config::features::{self, FeatureFlags};
     use allthecodes_engine::lifecycle::QueryEngine;
     use allthecodes_engine::types::config::QueryEngineConfig;
     use chrono::Utc;
@@ -360,6 +378,25 @@ mod tests {
 
         assert!(current.next_tick_at.is_none());
         assert!(current.proactive_active);
+    }
+
+    #[test]
+    #[serial]
+    fn process_snapshot_reports_next_tick_written_by_proactive_worker() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let mut flags = FeatureFlags::all_disabled();
+        flags.proactive = true;
+        features::set_runtime_override(flags);
+
+        crate::tick::enqueue_proactive_tick_once(chrono::Local::now(), false)
+            .unwrap()
+            .expect("tick command");
+        let current = snapshot_from_process_state();
+        features::clear_runtime_override();
+
+        assert!(current.proactive_active);
+        assert!(current.next_tick_at.is_some());
     }
 
     #[test]

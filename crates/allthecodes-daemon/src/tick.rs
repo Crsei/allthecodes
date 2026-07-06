@@ -53,6 +53,7 @@ pub fn enqueue_proactive_tick_once(
         return Ok(None);
     }
 
+    write_proactive_schedule(now);
     let payload = build_tick_payload(now, terminal_focus)?;
     let command = crate::protocol_store().enqueue_command(
         ASSISTANT_WORKER_ID,
@@ -81,6 +82,14 @@ pub fn build_tick_payload(now: DateTime<Local>, terminal_focus: bool) -> Result<
     }
 
     Ok(payload)
+}
+
+fn write_proactive_schedule(now: DateTime<Local>) {
+    let next_tick_at = now.with_timezone(&chrono::Utc)
+        + chrono::Duration::milliseconds(DEFAULT_TICK_INTERVAL_MS as i64);
+    if let Err(error) = crate::process_state::write_proactive_state(true, Some(next_tick_at)) {
+        warn!(error = %error, "failed to write daemon proactive state");
+    }
 }
 
 fn skill_discovery_tick_summary() -> Option<Value> {

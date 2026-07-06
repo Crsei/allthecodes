@@ -122,6 +122,14 @@ pub struct DaemonSleepState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonProactiveState {
+    pub schema_version: u32,
+    pub active: bool,
+    pub next_tick_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DaemonBridgeSessionState {
     pub schema_version: u32,
     pub session_id: String,

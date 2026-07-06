@@ -77,6 +77,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn proactive_command_toggles_active_state() {
         let controller = allthecodes_services::proactive::global_controller();
         let _reset_guard = ProactiveControllerResetGuard(controller);
@@ -106,6 +107,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn proactive_command_enables_sleep_tool_without_feature_env() {
         let controller = allthecodes_services::proactive::global_controller();
         let _reset_guard = ProactiveControllerResetGuard(controller);

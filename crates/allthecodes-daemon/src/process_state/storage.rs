@@ -11,16 +11,17 @@ use tracing::warn;
 use super::atomic_write_json;
 use super::paths::{
     bridge_session_state_path, control_token_path, daemon_dir, health_url, logs_dir,
-    shutdown_request_path, sleep_state_path, state_path, worker_state_path, workers_dir,
+    proactive_state_path, shutdown_request_path, sleep_state_path, state_path, worker_state_path,
+    workers_dir,
 };
 use super::platform::{process_matches_record, process_start_key};
 #[cfg(feature = "sqlite-storage")]
 use super::sqlite_store;
 use super::types::{
-    DaemonBridgeSessionState, DaemonControlToken, DaemonProcessState, DaemonRunStatus,
-    DaemonShutdownRequest, DaemonSleepState, DaemonStatusSnapshot, DaemonWorkerState,
-    DaemonWorkerStatus, DaemonWorkerSummary, ProcessIdentityStatus, StaleStateCleanupReport,
-    SCHEMA_VERSION,
+    DaemonBridgeSessionState, DaemonControlToken, DaemonProactiveState, DaemonProcessState,
+    DaemonRunStatus, DaemonShutdownRequest, DaemonSleepState, DaemonStatusSnapshot,
+    DaemonWorkerState, DaemonWorkerStatus, DaemonWorkerSummary, ProcessIdentityStatus,
+    StaleStateCleanupReport, SCHEMA_VERSION,
 };
 
 const DEFAULT_LOG_TAIL_BYTES: usize = 16 * 1024;
@@ -55,6 +56,7 @@ pub fn write_stopped(port: u16, cwd: &Path) -> Result<DaemonProcessState> {
     clear_shutdown_request()?;
     clear_control_token()?;
     clear_sleep_state()?;
+    clear_proactive_state()?;
     let now = Utc::now();
     let state = DaemonProcessState {
         schema_version: SCHEMA_VERSION,
@@ -501,6 +503,46 @@ pub fn clear_sleep_state() -> Result<()> {
         );
     }
     allthecodes_config::proactive_sleep::clear_sleep_state("process_state").map(|_| ())
+}
+
+pub fn write_proactive_state(
+    active: bool,
+    next_tick_at: Option<DateTime<Utc>>,
+) -> Result<DaemonProactiveState> {
+    let now = Utc::now();
+    let state = DaemonProactiveState {
+        schema_version: SCHEMA_VERSION,
+        active,
+        next_tick_at,
+        updated_at: now,
+    };
+    write_state_value("proactive-state", &proactive_state_path(), &state)?;
+    Ok(state)
+}
+
+pub fn read_proactive_state() -> Result<Option<DaemonProactiveState>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::read_state_value::<DaemonProactiveState>("proactive-state") {
+        Ok(state) => return Ok(state),
+        Err(err) => warn!(
+            error = %err,
+            "failed to read daemon proactive state from sqlite; falling back to JSON"
+        ),
+    }
+
+    let path = proactive_state_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read daemon proactive state {}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse daemon proactive state {}", path.display()))
+        .map(Some)
+}
+
+pub fn clear_proactive_state() -> Result<()> {
+    remove_state_value("proactive-state", &proactive_state_path()).map(|_| ())
 }
 
 fn map_sleep_state(state: allthecodes_config::proactive_sleep::SleepState) -> DaemonSleepState {

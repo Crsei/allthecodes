@@ -644,9 +644,11 @@ impl QueryEngine {
                     capability_tools_snapshot,
                     &app_settings,
                 );
+            let enabled_tools_snapshot =
+                allthecodes_tools::registry::filter_tools_for_enabled_state(settings_tools_snapshot);
             let session_tools_snapshot = allthecodes_tools::registry::dedupe_tools_by_name(
                 allthecodes_tools::registry::filter_tools_for_session_gates(
-                    settings_tools_snapshot,
+                    enabled_tools_snapshot,
                     allthecodes_tools::registry::ToolSessionGates {
                         non_interactive: query_source.is_non_interactive(),
                         subagent: query_source.starts_with_agent(),

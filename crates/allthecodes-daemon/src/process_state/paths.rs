@@ -54,6 +54,10 @@ pub fn sleep_state_path() -> PathBuf {
     daemon_dir().join("sleep-state.json")
 }
 
+pub fn proactive_state_path() -> PathBuf {
+    daemon_dir().join("proactive-state.json")
+}
+
 pub fn workers_dir() -> PathBuf {
     daemon_dir().join("workers")
 }
