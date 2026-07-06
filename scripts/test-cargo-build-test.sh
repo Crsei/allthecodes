@@ -32,6 +32,9 @@ ci_no_toolchain="$("${script}" --dry-run --no-toolchain ci)"
 assert_not_contains "${ci_no_toolchain}" "+ cargo --version"
 assert_contains "${ci_no_toolchain}" "+ cargo test -p allthecodes-tools --features full"
 
+nextest_output="$("${script}" --dry-run nextest)"
+assert_contains "${nextest_output}" "+ cargo nextest run --workspace --no-fail-fast"
+
 unknown_output="$(mktemp "${TMPDIR:-/tmp}/allthecodes-script-test.XXXXXX")"
 trap 'rm -f "${unknown_output}"' EXIT
 if "${script}" --dry-run unknown-mode >"${unknown_output}" 2>&1; then

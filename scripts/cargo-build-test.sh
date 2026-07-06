@@ -8,6 +8,7 @@ Usage: scripts/cargo-build-test.sh [OPTIONS] [MODE]
 Modes:
   quick      Show toolchain, cargo check --workspace, build allthecodes release binary
   ci         Mirror the Rust CI job: fmt, clippy, workspace tests, tools feature tests
+  nextest    Run workspace tests with cargo-nextest
   release    Build the full workspace in release mode
   full       Run ci mode, then release mode
   toolchain  Only show the selected Cargo/Rust toolchain
@@ -99,7 +100,7 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    quick|ci|release|full|toolchain)
+    quick|ci|nextest|release|full|toolchain)
       MODE="$1"
       shift
       ;;
@@ -141,6 +142,13 @@ run_ci() {
   run cargo test -p allthecodes-tools --features full
 }
 
+run_nextest() {
+  if [[ "${DRY_RUN}" == "0" ]]; then
+    cargo nextest --version >/dev/null 2>&1 || die "cargo-nextest is required for nextest mode. Install with: cargo install --locked cargo-nextest"
+  fi
+  run cargo nextest run --workspace --no-fail-fast
+}
+
 run_release() {
   run cargo build --workspace --release
 }
@@ -155,6 +163,9 @@ case "${MODE}" in
     ;;
   ci)
     run_ci
+    ;;
+  nextest)
+    run_nextest
     ;;
   release)
     run_release

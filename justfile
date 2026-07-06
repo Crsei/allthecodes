@@ -24,6 +24,9 @@ clippy:
 test *args:
     cargo test --workspace {{args}}
 
+nextest:
+    {{script}} nextest
+
 ci:
     {{script}} ci
 

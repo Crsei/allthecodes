@@ -1,0 +1,24 @@
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.default.junit]
+path = "junit.xml"
+
+[profile.local]
+inherits = "default"
+
+[test-groups.tui_pty_e2e]
+max-threads = 1
+
+[test-groups.integration_process_heavy]
+max-threads = 2
+
+[[profile.default.overrides]]
+filter = 'package(allthecodes) & test(pty_tui_e2e)'
+test-group = 'tui_pty_e2e'
+slow-timeout = { period = "45s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = 'test(headless) | test(ipc) | test(daemon)'
+test-group = 'integration_process_heavy'
+slow-timeout = { period = "45s", terminate-after = 2 }
