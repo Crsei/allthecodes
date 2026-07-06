@@ -32,7 +32,7 @@ daemon 状态位于 `{ALLTHECODES_HOME:-~/.allthecodes}/daemon/`：
 
 ## CLI 管理命令
 
-`daemon start` 和隐藏 `--daemon` 运行面需要 `FEATURE_KAIROS=1`。管理命令可以从另一个 CLI 进程操作同一个后台 supervisor。
+`daemon start` 和隐藏 `--daemon` 运行面需要 `FEATURE_KAIROS=1` 或 `FEATURE_PROACTIVE=1`。管理命令可以从另一个 CLI 进程操作同一个后台 supervisor。
 
 ```bash
 FEATURE_KAIROS=1 allthecodes daemon start
@@ -56,6 +56,12 @@ FEATURE_KAIROS=1 allthecodes --port 19837 daemon restart
 ```
 
 `daemon stop` writes a shutdown request and the daemon runtime now observes that request directly, so normal stop should not wait for the fallback terminate grace period.
+
+## Standalone Proactive Daemon
+
+`FEATURE_PROACTIVE=1 allthecodes --daemon` starts the daemon with `assistant-session-1` and `proactive-1`. It does not start KAIROS bridge or scheduler workers unless `FEATURE_KAIROS=1` is also set.
+
+Sleep state lives at `~/.allthecodes/daemon/sleep-state.json` or under `ALLTHECODES_HOME`. User submit paths clear active sleep state before queueing work.
 
 ## Slash 命令
 
