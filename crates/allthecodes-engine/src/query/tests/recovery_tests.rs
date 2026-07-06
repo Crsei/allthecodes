@@ -89,7 +89,7 @@ async fn test_prompt_too_long_reactive_compact_retries_model_call() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn test_prompt_too_long_writes_durable_context_blocked_state() {
+async fn test_prompt_too_long_without_existing_state_does_not_activate_durable_proactive_state() {
     let home = tempfile::tempdir().unwrap();
     let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
     let initial_messages = vec![make_user_message_for_test("Summarize this long context")];
@@ -105,7 +105,7 @@ async fn test_prompt_too_long_writes_durable_context_blocked_state() {
         &std::fs::read_to_string(&state_path).expect("durable proactive state"),
     )
     .unwrap();
-    assert_eq!(state["active"], true);
+    assert_eq!(state["active"], false);
     assert_eq!(state["context_blocked"], true);
     assert_eq!(state["blocked_reason"], "context_limit");
     assert!(state["next_tick_at"].is_null());

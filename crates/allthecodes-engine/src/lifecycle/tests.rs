@@ -1960,6 +1960,8 @@ async fn test_submit_local_command() {
 async fn test_submit_clear_command_clears_proactive_context_blocked() {
     use futures::StreamExt;
 
+    let home = tempdir().unwrap();
+    let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
     allthecodes_types::proactive_context::set_context_blocked(true, "context_limit");
 
     let mut engine = QueryEngine::new(make_config());
@@ -1970,6 +1972,13 @@ async fn test_submit_clear_command_clears_proactive_context_blocked() {
     while stream.next().await.is_some() {}
 
     assert!(!allthecodes_types::proactive_context::is_context_blocked());
+    let state = allthecodes_config::proactive_state::read_proactive_state()
+        .unwrap()
+        .expect("clear writes durable proactive state");
+    assert!(
+        !state.active,
+        "non-proactive /clear must not leave durable proactive active"
+    );
 }
 
 #[tokio::test]

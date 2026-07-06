@@ -44,7 +44,7 @@ pub fn write_proactive_context_blocked(
     reason: &str,
 ) -> Result<DurableProactiveState> {
     let current = read_proactive_state()?;
-    let active = current.as_ref().map(|state| state.active).unwrap_or(true);
+    let active = current.as_ref().map(|state| state.active).unwrap_or(false);
     let next_tick_at = if blocked || !active {
         None
     } else {
@@ -188,5 +188,29 @@ mod tests {
 
         let read_back = super::read_proactive_state().unwrap().unwrap();
         assert_eq!(read_back, blocked);
+    }
+
+    #[test]
+    #[serial]
+    fn proactive_context_blocked_write_without_existing_state_does_not_activate() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+
+        let blocked = super::write_proactive_context_blocked(true, "context_limit").unwrap();
+
+        assert!(!blocked.active);
+        assert!(blocked.next_tick_at.is_none());
+        assert!(blocked.context_blocked);
+        assert_eq!(blocked.blocked_reason.as_deref(), Some("context_limit"));
+
+        let unblocked = super::write_proactive_context_blocked(false, "context_ready").unwrap();
+
+        assert!(!unblocked.active);
+        assert!(unblocked.next_tick_at.is_none());
+        assert!(!unblocked.context_blocked);
+        assert!(unblocked.blocked_reason.is_none());
+
+        let read_back = super::read_proactive_state().unwrap().unwrap();
+        assert_eq!(read_back, unblocked);
     }
 }

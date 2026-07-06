@@ -7,7 +7,10 @@ use super::engine_events::{
     progress_message_from_tool_progress, StreamingState,
 };
 use super::subsystem_events::handle_subsystem_event;
-use super::{clear_proactive_sleep_for_user_submit, reject_unavailable_streaming_command};
+use super::{
+    clear_proactive_sleep_for_steer_submit, clear_proactive_sleep_for_user_submit,
+    reject_unavailable_streaming_command,
+};
 use crate::ui::app::{App, ProactiveUiStatus};
 use allthecodes_config::features::{self, FeatureFlags};
 use allthecodes_engine::types::tool::ToolProgress;
@@ -258,6 +261,24 @@ fn user_submit_clears_proactive_sleep_state() {
         .is_some());
 
     clear_proactive_sleep_for_user_submit();
+
+    assert!(allthecodes_services::proactive::active_sleep_state()
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+#[serial]
+fn steer_submit_clears_proactive_sleep_state() {
+    let home = tempfile::tempdir().expect("allthecodes home");
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+
+    allthecodes_services::proactive::write_sleep_state(60, "waiting").unwrap();
+    assert!(allthecodes_services::proactive::active_sleep_state()
+        .unwrap()
+        .is_some());
+
+    clear_proactive_sleep_for_steer_submit();
 
     assert!(allthecodes_services::proactive::active_sleep_state()
         .unwrap()

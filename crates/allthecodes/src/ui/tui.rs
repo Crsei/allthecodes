@@ -907,6 +907,10 @@ fn clear_proactive_sleep_for_user_submit() {
     let _ = allthecodes_services::proactive::clear_sleep_state("user_submit");
 }
 
+fn clear_proactive_sleep_for_steer_submit() {
+    let _ = allthecodes_services::proactive::clear_sleep_state("steer_submit");
+}
+
 async fn submit_prompt_to_engine(
     text: String,
     engine: &Arc<QueryEngine>,
@@ -954,6 +958,7 @@ async fn submit_prompt_to_engine(
 fn steer_prompt_to_engine(text: String, engine: &Arc<QueryEngine>, app: &mut App) {
     match engine.submit_steer_message(text.clone()) {
         Ok(()) => {
+            clear_proactive_sleep_for_steer_submit();
             app.push_history(text.clone());
             app.add_message(create_user_message(&text));
             app.handle_app_event(AppEvent::LocalNotice {
