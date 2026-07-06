@@ -15,6 +15,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -296,6 +297,8 @@ impl Tool for ExitPlanModeTool {
                 record
             }
         })?;
+        allthecodes_types::proactive_context::set_context_blocked(false, "context_ready");
+        clear_durable_proactive_context_block()?;
 
         let mut result = json!({
             "message": "Exited plan mode. Normal operations restored. You may now implement the plan.",
@@ -461,6 +464,45 @@ fn push_unique_rule(rules: &mut Vec<String>, rule: String) {
     }
 }
 
+fn clear_durable_proactive_context_block() -> Result<()> {
+    let path = allthecodes_config::paths::daemon_dir().join("proactive-state.json");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let existing: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let active = existing
+        .get("active")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let now = Utc::now();
+    let next_tick_at = if active {
+        json!(now + Duration::milliseconds(30_000))
+    } else {
+        Value::Null
+    };
+    let state = json!({
+        "schema_version": 2,
+        "active": active,
+        "next_tick_at": next_tick_at,
+        "context_blocked": false,
+        "blocked_reason": null,
+        "updated_at": now,
+    });
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_file_name(format!(
+        "proactive-state.json.{}.{}.tmp",
+        std::process::id(),
+        now.timestamp_micros()
+    ));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&state)?)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
 fn plan_cwd() -> PathBuf {
     if let Ok(cwd) = std::env::current_dir() {
         if !cwd.as_os_str().is_empty() {
@@ -600,6 +642,28 @@ mod tests {
     impl Drop for PlanCwdGuard {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.previous);
+        }
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
         }
     }
 
@@ -773,6 +837,72 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_exit_plan_mode_clears_proactive_context_block() {
+        struct ContextGuard;
+        impl Drop for ContextGuard {
+            fn drop(&mut self) {
+                allthecodes_types::proactive_context::set_context_blocked(false, "test_cleanup");
+            }
+        }
+
+        let _guard = ContextGuard;
+        let _cwd_guard = PlanCwdGuard::new();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+        let durable_path = home.path().join("daemon").join("proactive-state.json");
+        std::fs::create_dir_all(durable_path.parent().unwrap()).expect("create daemon dir");
+        std::fs::write(
+            &durable_path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": 2,
+                "active": true,
+                "next_tick_at": null,
+                "context_blocked": true,
+                "blocked_reason": "plan_mode",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }))
+            .expect("serialize durable state"),
+        )
+        .expect("write durable state");
+        let state = Arc::new(RwLock::new(AppState::default()));
+        {
+            let mut s = state.write();
+            s.tool_permission_context.mode = PermissionMode::Plan;
+            s.tool_permission_context.pre_plan_mode = Some(PermissionMode::Default);
+        }
+        allthecodes_types::proactive_context::set_context_blocked(true, "plan_mode");
+
+        let exit_tool = ExitPlanModeTool;
+        let dummy_msg = AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "assistant".to_string(),
+            content: vec![],
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        };
+        let ctx = make_ctx(Arc::clone(&state));
+
+        let _ = exit_tool
+            .call(json!({}), &ctx, &dummy_msg, None)
+            .await
+            .unwrap();
+
+        assert!(!allthecodes_types::proactive_context::is_context_blocked());
+        let persisted: Value = serde_json::from_slice(
+            &std::fs::read(&durable_path).expect("durable proactive state should remain"),
+        )
+        .expect("parse durable state");
+        assert_eq!(persisted["active"], true);
+        assert_eq!(persisted["context_blocked"], false);
+        assert!(persisted["blocked_reason"].is_null());
     }
 
     #[tokio::test]

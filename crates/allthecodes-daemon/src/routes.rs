@@ -710,7 +710,7 @@ async fn status(State(state): State<DaemonState>) -> Json<StatusResponse> {
         };
     Json(StatusResponse {
         kairos_active: state.features.kairos,
-        proactive: state.features.proactive,
+        proactive: automation_state.proactive_active,
         query_running: automation_state.query_running,
         clients_connected: state.clients.read().len(),
         sleeping: automation_state.status == AutomationStatus::Sleeping,
@@ -904,6 +904,10 @@ mod tests {
     }
 
     fn make_daemon_state() -> DaemonState {
+        make_daemon_state_with_features(FeatureFlags::all_disabled())
+    }
+
+    fn make_daemon_state_with_features(features: FeatureFlags) -> DaemonState {
         let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
             cwd: ".".to_string(),
             tools: vec![],
@@ -925,7 +929,7 @@ mod tests {
             auto_save_session: false,
             agent_context: None,
         }));
-        DaemonState::new(engine, Arc::new(FeatureFlags::all_disabled()), 19836)
+        DaemonState::new(engine, Arc::new(features), 19836)
     }
 
     async fn response_json(response: axum::response::Response) -> (StatusCode, Value) {
@@ -1216,6 +1220,24 @@ mod tests {
         assert_eq!(body["automation_state"]["terminal_focus"], false);
         assert_eq!(body["query_running"], false);
         assert_eq!(body["sleeping"], false);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn status_endpoint_reports_durable_proactive_disable_over_feature_gate() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        crate::process_state::write_proactive_state(false, None).unwrap();
+        let app = api_routes().with_state(make_daemon_state_with_features(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        }));
+
+        let (status, body) = get_json(app, "/api/status").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["proactive"], false);
+        assert_eq!(body["automation_state"]["proactive_active"], false);
     }
 
     fn make_engine() -> QueryEngine {

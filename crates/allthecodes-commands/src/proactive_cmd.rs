@@ -17,6 +17,7 @@ impl crate::CommandHandler for ProactiveCmdHandler {
         ) {
             controller.deactivate("slash_command");
             allthecodes_services::proactive::write_durable_state(false, None)?;
+            allthecodes_services::proactive::clear_sleep_state("proactive_disabled")?;
             Ok(crate::CommandResult::Output(
                 "Proactive mode disabled.".to_string(),
             ))
@@ -156,6 +157,29 @@ mod tests {
             .expect("durable proactive state after disable");
         assert!(!disabled.active);
         assert!(disabled.next_tick_at.is_none());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn proactive_command_disable_clears_active_sleep_state() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        let _reset_guard = ProactiveControllerResetGuard(controller);
+        controller.activate("test-active");
+        allthecodes_services::proactive::write_sleep_state(300, "waiting").unwrap();
+
+        let handler = ProactiveCmdHandler;
+        let mut ctx = test_ctx();
+        let result = handler.execute("", &mut ctx).await.unwrap();
+
+        match result {
+            CommandResult::Output(text) => assert!(text.contains("Proactive mode disabled")),
+            _ => panic!("expected output"),
+        }
+        assert!(allthecodes_services::proactive::active_sleep_state()
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

@@ -73,10 +73,13 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
     let proactive = allthecodes_services::proactive::global_controller().snapshot();
     let daemon_proactive = process_state::read_proactive_state().ok().flatten();
     let sleeping = daemon_sleep.is_some() || engine_sleeping;
+    let context_blocked = context_blocked_active(daemon_proactive.as_ref(), &proactive);
     let status = if pending_input {
         AutomationStatus::NeedsInput
     } else if sleeping {
         AutomationStatus::Sleeping
+    } else if context_blocked {
+        AutomationStatus::Blocked
     } else if query_running {
         AutomationStatus::Running
     } else {
@@ -84,7 +87,10 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
     };
     let (sleeping_until, reason) = match daemon_sleep {
         Some((sleeping_until, reason)) => (Some(sleeping_until), reason),
-        None => (None, None),
+        None => (
+            None,
+            context_block_reason(daemon_proactive.as_ref(), &proactive),
+        ),
     };
 
     AutomationState {
@@ -95,13 +101,11 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
             .as_ref()
             .and_then(|state| state.next_tick_at)
             .or(proactive.next_tick_at),
-        proactive_active: proactive.status == ProactiveStatus::Active
-            || state.features.proactive
-            || daemon_proactive
-                .as_ref()
-                .map(|state| state.active)
-                .unwrap_or(false)
-            || allthecodes_config::features::enabled(Feature::Proactive),
+        proactive_active: proactive_active(
+            daemon_proactive.as_ref(),
+            &proactive,
+            state.features.proactive,
+        ),
         terminal_focus: state.terminal_focus(),
         query_running,
         pending_input,
@@ -118,10 +122,13 @@ pub fn snapshot_from_process_state() -> AutomationState {
     let proactive = allthecodes_services::proactive::global_controller().snapshot();
     let daemon_proactive = process_state::read_proactive_state().ok().flatten();
     let sleeping = daemon_sleep.is_some();
+    let context_blocked = context_blocked_active(daemon_proactive.as_ref(), &proactive);
     let status = if pending_input {
         AutomationStatus::NeedsInput
     } else if sleeping {
         AutomationStatus::Sleeping
+    } else if context_blocked {
+        AutomationStatus::Blocked
     } else if query_running {
         AutomationStatus::Running
     } else {
@@ -129,7 +136,10 @@ pub fn snapshot_from_process_state() -> AutomationState {
     };
     let (sleeping_until, reason) = match daemon_sleep {
         Some((sleeping_until, reason)) => (Some(sleeping_until), reason),
-        None => (None, None),
+        None => (
+            None,
+            context_block_reason(daemon_proactive.as_ref(), &proactive),
+        ),
     };
 
     AutomationState {
@@ -140,12 +150,7 @@ pub fn snapshot_from_process_state() -> AutomationState {
             .as_ref()
             .and_then(|state| state.next_tick_at)
             .or(proactive.next_tick_at),
-        proactive_active: proactive.status == ProactiveStatus::Active
-            || daemon_proactive
-                .as_ref()
-                .map(|state| state.active)
-                .unwrap_or(false)
-            || allthecodes_config::features::enabled(Feature::Proactive),
+        proactive_active: proactive_active(daemon_proactive.as_ref(), &proactive, false),
         terminal_focus: false,
         query_running,
         pending_input,
@@ -160,6 +165,48 @@ pub(crate) fn autonomous_worker_blocked() -> bool {
     process_state::active_sleep_state().ok().flatten().is_some()
         || assistant_command_active()
         || pending_input_active()
+        || process_state::read_proactive_state()
+            .ok()
+            .flatten()
+            .map(|state| state.context_blocked)
+            .unwrap_or(false)
+}
+
+fn proactive_active(
+    daemon_proactive: Option<&process_state::DaemonProactiveState>,
+    proactive: &allthecodes_services::proactive::ProactiveSnapshot,
+    daemon_feature_enabled: bool,
+) -> bool {
+    if let Some(state) = daemon_proactive {
+        return state.active;
+    }
+    matches!(
+        proactive.status,
+        ProactiveStatus::Active | ProactiveStatus::Paused | ProactiveStatus::ContextBlocked
+    ) || daemon_feature_enabled
+        || allthecodes_config::features::enabled(Feature::Proactive)
+}
+
+fn context_blocked_active(
+    daemon_proactive: Option<&process_state::DaemonProactiveState>,
+    proactive: &allthecodes_services::proactive::ProactiveSnapshot,
+) -> bool {
+    daemon_proactive
+        .map(|state| state.context_blocked)
+        .unwrap_or(proactive.context_blocked || proactive.status == ProactiveStatus::ContextBlocked)
+}
+
+fn context_block_reason(
+    daemon_proactive: Option<&process_state::DaemonProactiveState>,
+    proactive: &allthecodes_services::proactive::ProactiveSnapshot,
+) -> Option<String> {
+    daemon_proactive
+        .and_then(|state| state.blocked_reason.clone())
+        .or_else(|| {
+            (proactive.context_blocked || proactive.status == ProactiveStatus::ContextBlocked)
+                .then(|| proactive.paused_reason.clone())
+                .flatten()
+        })
 }
 
 pub(crate) fn active_submit_count() -> usize {
@@ -401,6 +448,48 @@ mod tests {
 
         assert!(current.next_tick_at.is_none());
         assert!(current.proactive_active);
+    }
+
+    #[test]
+    #[serial]
+    fn snapshot_durable_disabled_overrides_enabled_feature_gate() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        allthecodes_services::proactive::global_controller()
+            .deactivate("automation_state_test_cleanup");
+        process_state::write_proactive_state(false, None).unwrap();
+        let state = make_daemon_state_with_features(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+
+        let current = snapshot(&state);
+        let process_current = snapshot_from_process_state();
+
+        assert!(!current.proactive_active);
+        assert!(!process_current.proactive_active);
+    }
+
+    #[test]
+    #[serial]
+    fn snapshot_reports_context_blocked_as_blocked_with_reason() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("automation_state_test");
+        allthecodes_types::proactive_context::set_context_blocked(true, "plan_mode");
+        let state = make_daemon_state();
+
+        let current = snapshot(&state);
+        let metadata = current.external_metadata();
+
+        allthecodes_types::proactive_context::set_context_blocked(false, "test_cleanup");
+        controller.deactivate("automation_state_test_cleanup");
+        assert_eq!(current.status, AutomationStatus::Blocked);
+        assert_eq!(current.reason.as_deref(), Some("plan_mode"));
+        assert_eq!(metadata["status"], "blocked");
+        assert_eq!(metadata["reason"], "plan_mode");
+        assert_eq!(metadata["proactive_active"], true);
     }
 
     #[test]

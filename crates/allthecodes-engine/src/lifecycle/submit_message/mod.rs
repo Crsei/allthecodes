@@ -454,7 +454,7 @@ impl QueryEngine {
                 && state_ref.read().app_state.tool_permission_context.mode
                     == crate::types::tool::PermissionMode::Plan
             {
-                allthecodes_types::proactive_context::set_context_blocked(true, "plan_mode");
+                super::set_proactive_context_blocked(true, "plan_mode");
                 let result =
                     "Proactive tick blocked while permission mode is plan_mode.".to_string();
                 let telemetry_model = config.user_specified_model.clone().unwrap_or_else(|| {
@@ -800,10 +800,7 @@ impl QueryEngine {
                         .await
                         .map(|result| result.messages);
                     if compacted.is_some() {
-                        allthecodes_types::proactive_context::set_context_blocked(
-                            false,
-                            "context_ready",
-                        );
+                        super::set_proactive_context_blocked(false, "context_ready");
                     }
                     compacted.unwrap_or(messages)
                 }

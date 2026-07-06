@@ -30,10 +30,10 @@ pub use storage::{
     read_bridge_session_state, read_control_token, read_proactive_state, read_sleep_state,
     read_state, read_terminal_focus_state, read_worker_state, read_worker_states, request_shutdown,
     shutdown_requested, status_snapshot, tail_log, verify_control_token, worker_summaries,
-    write_bridge_session_state, write_control_token, write_proactive_state, write_sleep_state,
-    write_sleep_state_until, write_started, write_stopped, write_supervisor_heartbeat,
-    write_terminal_focus_state, write_worker_heartbeat, write_worker_running, write_worker_stale,
-    write_worker_stopped,
+    write_bridge_session_state, write_control_token, write_proactive_context_blocked,
+    write_proactive_state, write_sleep_state, write_sleep_state_until, write_started,
+    write_stopped, write_supervisor_heartbeat, write_terminal_focus_state, write_worker_heartbeat,
+    write_worker_running, write_worker_stale, write_worker_stopped,
 };
 pub use types::{
     DaemonBridgeSessionState, DaemonControlToken, DaemonProactiveState, DaemonProcessState,

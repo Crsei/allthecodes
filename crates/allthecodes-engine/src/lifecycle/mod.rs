@@ -127,6 +127,55 @@ fn pause_active_goal_for_abort(session_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) fn set_proactive_context_blocked(blocked: bool, reason: &str) {
+    allthecodes_types::proactive_context::set_context_blocked(blocked, reason);
+    if let Err(error) = write_durable_proactive_context_blocked(blocked, reason) {
+        warn!(%error, "failed to persist proactive context block state");
+    }
+}
+
+fn write_durable_proactive_context_blocked(blocked: bool, reason: &str) -> anyhow::Result<()> {
+    let path = allthecodes_config::paths::daemon_dir().join("proactive-state.json");
+    let existing = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let active = existing
+        .as_ref()
+        .and_then(|state| state.get("active"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let next_tick_at = if blocked || !active {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(
+            (chrono::Utc::now() + chrono::Duration::milliseconds(30_000)).to_rfc3339(),
+        )
+    };
+    let blocked_reason = if blocked {
+        let trimmed = reason.trim();
+        if trimmed.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(trimmed.to_string())
+        }
+    } else {
+        serde_json::Value::Null
+    };
+    let state = serde_json::json!({
+        "schema_version": 2,
+        "active": active,
+        "next_tick_at": next_tick_at,
+        "context_blocked": blocked,
+        "blocked_reason": blocked_reason,
+        "updated_at": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&state)?)?;
+    Ok(())
+}
+
 pub struct SteerError {
     message: String,
 }

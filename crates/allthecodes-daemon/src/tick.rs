@@ -283,6 +283,30 @@ mod tests {
             .is_empty());
     }
 
+    #[test]
+    #[serial]
+    fn proactive_tick_skips_while_context_blocked_by_another_process() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _features = FeatureGuard::set(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("test-active");
+        allthecodes_types::proactive_context::set_context_blocked(true, "plan_mode");
+
+        let result = enqueue_proactive_tick_once(Local::now(), false).unwrap();
+
+        allthecodes_types::proactive_context::set_context_blocked(false, "test-cleanup");
+        controller.deactivate("test-cleanup");
+        assert!(result.is_none());
+        assert!(crate::protocol_store()
+            .read_worker_commands(ASSISTANT_WORKER_ID)
+            .unwrap()
+            .is_empty());
+    }
+
     #[tokio::test]
     #[serial]
     async fn proactive_slash_disable_blocks_future_daemon_ticks() {

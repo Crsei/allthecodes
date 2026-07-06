@@ -1528,6 +1528,49 @@ mod tests {
 
     #[test]
     #[serial]
+    fn bridge_mirrors_context_blocked_automation_metadata_to_run_meta() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("gateway-test");
+        allthecodes_types::proactive_context::set_context_blocked(true, "plan_mode");
+        let store = GatewayStore::default_with_policy(SessionKeyPolicy::default());
+        let source = allthecodes_gateway::RemoteSource::new(
+            allthecodes_gateway::RemoteTransport::Http,
+            "local",
+            "F:/AIclassmanager/cc/rust",
+            "client",
+            "user",
+            "thread",
+        );
+        let created = store
+            .create_run(allthecodes_gateway::RunRequest {
+                prompt: "hello".to_string(),
+                source,
+                policy: allthecodes_gateway::RunPolicy::default(),
+                idempotency_key: None,
+            })
+            .unwrap();
+        let run_id = created.meta().run_id.clone();
+        let command = submit_command(json!({
+            "text": "hello",
+            "gateway": {
+                "runId": run_id.to_string(),
+                "sessionKey": created.meta().session_key.to_string(),
+            }
+        }));
+
+        mirror_automation_state(&command, "assistant-session-1").unwrap();
+
+        let meta = store.load_run(&run_id).unwrap();
+        allthecodes_types::proactive_context::set_context_blocked(false, "test-cleanup");
+        controller.deactivate("test-cleanup");
+        assert_eq!(meta.metadata["automation_state"]["status"], "blocked");
+        assert_eq!(meta.metadata["automation_state"]["reason"], "plan_mode");
+    }
+
+    #[test]
+    #[serial]
     fn bridge_appends_automation_state_event_without_run_id() {
         let temp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());

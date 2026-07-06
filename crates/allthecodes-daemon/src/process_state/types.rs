@@ -126,6 +126,10 @@ pub struct DaemonProactiveState {
     pub schema_version: u32,
     pub active: bool,
     pub next_tick_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub context_blocked: bool,
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 

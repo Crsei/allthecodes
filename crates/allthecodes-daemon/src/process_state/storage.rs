@@ -519,6 +519,34 @@ pub fn write_proactive_state(
     Ok(state)
 }
 
+pub fn write_proactive_context_blocked(
+    blocked: bool,
+    reason: &str,
+) -> Result<DaemonProactiveState> {
+    let current = read_proactive_state()?;
+    let active = current.as_ref().map(|state| state.active).unwrap_or(true);
+    let next_tick_at = if blocked {
+        None
+    } else if active {
+        Some(
+            Utc::now()
+                + chrono::Duration::milliseconds(crate::tick::DEFAULT_TICK_INTERVAL_MS as i64),
+        )
+    } else {
+        None
+    };
+    let state = map_durable_proactive_state(
+        allthecodes_services::proactive::write_durable_state_with_context(
+            active,
+            next_tick_at,
+            blocked,
+            blocked.then(|| reason.trim().to_string()),
+        )?,
+    );
+    write_proactive_state_sqlite_backup(&state);
+    Ok(state)
+}
+
 pub fn read_proactive_state() -> Result<Option<DaemonProactiveState>> {
     #[cfg(feature = "sqlite-storage")]
     {
@@ -616,6 +644,8 @@ fn map_durable_proactive_state(
         schema_version: state.schema_version,
         active: state.active,
         next_tick_at: state.next_tick_at,
+        context_blocked: state.context_blocked,
+        blocked_reason: state.blocked_reason,
         updated_at: state.updated_at,
     }
 }
@@ -723,6 +753,8 @@ fn write_proactive_state_json_backup(state: &DaemonProactiveState) {
         schema_version: state.schema_version,
         active: state.active,
         next_tick_at: state.next_tick_at,
+        context_blocked: state.context_blocked,
+        blocked_reason: state.blocked_reason.clone(),
         updated_at: state.updated_at,
     };
     if let Err(err) = atomic_write_json(&proactive_state_path(), &shared) {
@@ -850,6 +882,8 @@ mod sleep_tests {
             schema_version: allthecodes_services::proactive::DURABLE_PROACTIVE_STATE_SCHEMA_VERSION,
             active: true,
             next_tick_at: Some(Utc::now() + chrono::Duration::seconds(30)),
+            context_blocked: false,
+            blocked_reason: None,
             updated_at: Utc::now() - chrono::Duration::seconds(10),
         };
         crate::process_state::sqlite_store::write_state_value("proactive-state", &stale_sqlite)

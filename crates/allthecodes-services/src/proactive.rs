@@ -40,6 +40,10 @@ pub struct DurableProactiveState {
     pub schema_version: u32,
     pub active: bool,
     pub next_tick_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub context_blocked: bool,
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -124,6 +128,7 @@ impl ProactiveController {
         }
         state.next_tick_at = None;
         state.context_blocked = true;
+        self.publish_durable_context_state(&state);
         self.publish_active_state(&state);
     }
 
@@ -136,6 +141,7 @@ impl ProactiveController {
             state.paused_reason = None;
         }
         state.context_blocked = false;
+        self.publish_durable_context_state(&state);
         self.publish_active_state(&state);
     }
 
@@ -144,6 +150,24 @@ impl ProactiveController {
             allthecodes_types::proactive_context::set_proactive_active(
                 state.status == ProactiveStatus::Active,
             );
+        }
+    }
+
+    fn publish_durable_context_state(&self, state: &ProactiveSnapshot) {
+        if !self.publish_global_state {
+            return;
+        }
+        let active = state.status != ProactiveStatus::Inactive;
+        if let Err(error) = write_durable_state_with_context(
+            active,
+            state.next_tick_at,
+            state.context_blocked,
+            state
+                .context_blocked
+                .then(|| state.paused_reason.clone())
+                .flatten(),
+        ) {
+            tracing::warn!(%error, "failed to publish durable proactive context state");
         }
     }
 }
@@ -172,10 +196,21 @@ pub fn write_durable_state(
     active: bool,
     next_tick_at: Option<DateTime<Utc>>,
 ) -> Result<DurableProactiveState> {
+    write_durable_state_with_context(active, next_tick_at, false, None)
+}
+
+pub fn write_durable_state_with_context(
+    active: bool,
+    next_tick_at: Option<DateTime<Utc>>,
+    context_blocked: bool,
+    blocked_reason: Option<String>,
+) -> Result<DurableProactiveState> {
     let state = DurableProactiveState {
         schema_version: DURABLE_PROACTIVE_STATE_SCHEMA_VERSION,
         active,
         next_tick_at,
+        context_blocked,
+        blocked_reason: blocked_reason.filter(|reason| !reason.trim().is_empty()),
         updated_at: Utc::now(),
     };
     write_durable_state_file(&state)?;
@@ -425,6 +460,45 @@ mod tests {
         assert_eq!(active.status, ProactiveStatus::Active);
         assert!(!active.context_blocked);
         assert!(active.next_tick_at.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn context_blocked_shared_signal_updates_durable_state() {
+        struct ControllerGuard;
+        impl Drop for ControllerGuard {
+            fn drop(&mut self) {
+                allthecodes_types::proactive_context::set_context_blocked(false, "test_cleanup");
+                global_controller().deactivate("test_cleanup");
+            }
+        }
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _guard = ControllerGuard;
+
+        global_controller().activate("test");
+        allthecodes_types::proactive_context::set_context_blocked(true, "plan_mode");
+        let blocked: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(home.path().join("daemon").join("proactive-state.json"))
+                .expect("durable proactive state after context block"),
+        )
+        .unwrap();
+
+        assert_eq!(blocked["active"], true);
+        assert_eq!(blocked["context_blocked"], true);
+        assert_eq!(blocked["blocked_reason"], "plan_mode");
+        assert!(blocked["next_tick_at"].is_null());
+
+        allthecodes_types::proactive_context::set_context_blocked(false, "context_ready");
+        let active: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(home.path().join("daemon").join("proactive-state.json"))
+                .expect("durable proactive state after context ready"),
+        )
+        .unwrap();
+        assert_eq!(active["active"], true);
+        assert_eq!(active["context_blocked"], false);
+        assert!(active["blocked_reason"].is_null());
+        assert!(active["next_tick_at"].is_string());
     }
 
     #[test]

@@ -155,7 +155,7 @@ impl QueryEngineDeps {
 
         // If auto-compact was triggered AND we have an API client, generate a model summary
         if auto_compact_triggered {
-            allthecodes_types::proactive_context::set_context_blocked(true, "context_limit");
+            super::super::set_proactive_context_blocked(true, "context_limit");
             let updated_tracking = auto_compact_tracking
                 .clone()
                 .unwrap_or_else(|| auto_compact_trigger_tracking(tracking.as_ref()));
@@ -186,10 +186,7 @@ impl QueryEngineDeps {
                         tracking.as_ref(),
                         &Uuid::new_v4().to_string(),
                     );
-                    allthecodes_types::proactive_context::set_context_blocked(
-                        false,
-                        "context_ready",
-                    );
+                    super::super::set_proactive_context_blocked(false, "context_ready");
                     return Ok(Some(CompactionResult {
                         messages: session_memory_result.messages,
                         tracking: new_tracking,
@@ -271,10 +268,7 @@ impl QueryEngineDeps {
                             tracking.as_ref(),
                             &Uuid::new_v4().to_string(),
                         );
-                        allthecodes_types::proactive_context::set_context_blocked(
-                            false,
-                            "context_ready",
-                        );
+                        super::super::set_proactive_context_blocked(false, "context_ready");
 
                         return Ok(Some(CompactionResult {
                             messages: post_messages,
@@ -286,10 +280,7 @@ impl QueryEngineDeps {
                         let new_tracking =
                             crate::compact::compaction::tracking_on_failure(tracking.as_ref());
                         // Fall through to local-only result
-                        allthecodes_types::proactive_context::set_context_blocked(
-                            false,
-                            "context_ready",
-                        );
+                        super::super::set_proactive_context_blocked(false, "context_ready");
                         return Ok(Some(CompactionResult {
                             messages: pipeline_result.messages,
                             tracking: new_tracking,
@@ -299,7 +290,7 @@ impl QueryEngineDeps {
             }
 
             // No API client -- return local pipeline result
-            allthecodes_types::proactive_context::set_context_blocked(false, "context_ready");
+            super::super::set_proactive_context_blocked(false, "context_ready");
             return Ok(Some(CompactionResult {
                 messages: pipeline_result.messages,
                 tracking: updated_tracking,
@@ -308,7 +299,7 @@ impl QueryEngineDeps {
 
         // Pipeline ran but auto-compact was not triggered -- return local compacted messages
         if pipeline_result.compacted {
-            allthecodes_types::proactive_context::set_context_blocked(false, "context_ready");
+            super::super::set_proactive_context_blocked(false, "context_ready");
             return Ok(Some(CompactionResult {
                 messages: pipeline_result.messages,
                 tracking: tracking.unwrap_or(AutoCompactTracking {
@@ -345,7 +336,7 @@ impl QueryEngineDeps {
                     tokens_freed = result.tokens_freed,
                     "reactive compact: freed tokens via emergency pipeline"
                 );
-                allthecodes_types::proactive_context::set_context_blocked(false, "context_ready");
+                super::super::set_proactive_context_blocked(false, "context_ready");
                 Ok(Some(CompactionResult {
                     messages: result.messages,
                     tracking: result.tracking,
@@ -396,7 +387,7 @@ impl QueryEngineDeps {
             total_tokens_freed = pipeline_result.total_tokens_freed,
             "collapse drain: committed local context pipeline result"
         );
-        allthecodes_types::proactive_context::set_context_blocked(false, "context_ready");
+        super::super::set_proactive_context_blocked(false, "context_ready");
 
         Ok(Some(CompactionResult {
             messages: pipeline_result.messages,
