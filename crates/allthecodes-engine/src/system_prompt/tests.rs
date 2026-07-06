@@ -306,6 +306,38 @@ fn proactive_compact_resume_reminder_uses_compact_boundary_metadata() {
 
 #[test]
 #[serial_test::serial]
+fn proactive_compact_resume_reminder_skips_first_tick_after_compaction() {
+    let _guard = FeatureOverrideGuard;
+    let mut flags = FeatureFlags::all_disabled();
+    flags.proactive = true;
+    features::set_runtime_override(flags);
+    allthecodes_types::proactive_context::set_proactive_active(true);
+    prompt_sections::clear_cache();
+
+    let compact_boundary = crate::compact::compaction::create_compact_boundary(100, 40);
+    let current_tick = user_message("<tick_tag>first wake after compact</tick_tag>");
+    let (parts, _, _) = build_system_prompt_with_memory_contexts(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(&[compact_boundary, current_tick]),
+    );
+    let joined = parts.join("\n");
+
+    assert!(!joined.contains(
+        "You are running in autonomous/proactive mode. This is not a first wake-up after compaction. Continue the existing work loop from the summary instead of greeting the user again."
+    ));
+}
+
+#[test]
+#[serial_test::serial]
 fn proactive_compact_resume_reminder_requires_active_controller() {
     let _guard = FeatureOverrideGuard;
     let mut flags = FeatureFlags::all_disabled();
@@ -550,6 +582,18 @@ fn assistant_message(text: &str) -> crate::types::message::Message {
         is_api_error_message: false,
         api_error: None,
         cost_usd: 0.0,
+    })
+}
+
+fn user_message(text: &str) -> crate::types::message::Message {
+    crate::types::message::Message::User(crate::types::message::UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 1,
+        role: "user".into(),
+        content: crate::types::message::MessageContent::Text(text.to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
     })
 }
 

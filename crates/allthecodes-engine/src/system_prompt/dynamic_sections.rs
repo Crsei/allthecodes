@@ -250,15 +250,10 @@ pub(super) fn proactive_compact_resume_section(messages: Option<&[Message]>) -> 
         )
     })?;
 
-    let resumed_after_boundary =
-        messages
-            .iter()
-            .skip(boundary_index + 1)
-            .any(|message| match message {
-                Message::Assistant(_) => true,
-                Message::User(user) => !user.is_meta,
-                _ => false,
-            });
+    let resumed_after_boundary = messages
+        .iter()
+        .skip(boundary_index + 1)
+        .any(|message| matches!(message, Message::Assistant(_)));
 
     resumed_after_boundary.then(|| {
         "You are running in autonomous/proactive mode. This is not a first wake-up after compaction. Continue the existing work loop from the summary instead of greeting the user again."
