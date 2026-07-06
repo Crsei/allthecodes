@@ -1,5 +1,7 @@
 use chrono::{DateTime, Local, Utc};
 
+use crate::ui::app::ProactiveUiStatus;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProactiveTickDecision {
     Submit,
@@ -77,6 +79,77 @@ pub(super) fn decide_tick(
     match snapshot.next_tick_at {
         Some(next) if next <= now => ProactiveTickDecision::Submit,
         _ => ProactiveTickDecision::NotDue,
+    }
+}
+
+pub(super) fn ui_status_from_snapshot(
+    snapshot: &allthecodes_services::proactive::ProactiveSnapshot,
+    sleep: Option<&allthecodes_services::proactive::SleepState>,
+) -> Option<ProactiveUiStatus> {
+    use allthecodes_services::proactive::ProactiveStatus;
+
+    if snapshot.status == ProactiveStatus::Inactive {
+        return None;
+    }
+    if snapshot.context_blocked {
+        return Some(ProactiveUiStatus {
+            label: "proactive blocked".to_string(),
+            next_tick_text: snapshot.paused_reason.clone(),
+        });
+    }
+    if let Some(sleep) = sleep {
+        return Some(ProactiveUiStatus {
+            label: "proactive sleeping".to_string(),
+            next_tick_text: Some(format!(
+                "wake in {}",
+                format_countdown(sleep.sleeping_until)
+            )),
+        });
+    }
+
+    match snapshot.status {
+        ProactiveStatus::Active => Some(ProactiveUiStatus {
+            label: "proactive standby".to_string(),
+            next_tick_text: snapshot
+                .next_tick_at
+                .map(|next_tick_at| format!("next tick in {}", format_countdown(next_tick_at))),
+        }),
+        ProactiveStatus::Paused => Some(ProactiveUiStatus {
+            label: "proactive paused".to_string(),
+            next_tick_text: snapshot.paused_reason.clone(),
+        }),
+        ProactiveStatus::ContextBlocked => Some(ProactiveUiStatus {
+            label: "proactive blocked".to_string(),
+            next_tick_text: snapshot.paused_reason.clone(),
+        }),
+        ProactiveStatus::Inactive => None,
+    }
+}
+
+fn format_countdown(deadline: DateTime<Utc>) -> String {
+    let remaining_millis = deadline
+        .signed_duration_since(Utc::now())
+        .num_milliseconds()
+        .max(0);
+    let remaining = (remaining_millis + 999) / 1000;
+    if remaining >= 3600 {
+        let hours = remaining / 3600;
+        let minutes = (remaining % 3600) / 60;
+        if minutes == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h{minutes}m")
+        }
+    } else if remaining >= 60 {
+        let minutes = remaining / 60;
+        let seconds = remaining % 60;
+        if seconds == 0 {
+            format!("{minutes}m")
+        } else {
+            format!("{minutes}m{seconds}s")
+        }
+    } else {
+        format!("{remaining}s")
     }
 }
 

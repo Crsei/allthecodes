@@ -814,6 +814,9 @@ pub async fn run_tui(
             }
 
             _ = proactive_interval.tick() => {
+                let snapshot = allthecodes_services::proactive::global_controller().snapshot();
+                let sleep = allthecodes_services::proactive::active_sleep_state().ok().flatten();
+                app.set_proactive_status(proactive::ui_status_from_snapshot(&snapshot, sleep.as_ref()));
                 let decision = proactive_tick_driver.decide(
                     app.is_streaming(),
                     pending_permission_response.is_some(),

@@ -8,6 +8,7 @@ use ratatui::Frame;
 
 use super::App;
 use crate::ui::agents::agents_menu::AgentsMenuState;
+use crate::ui::app::ProactiveUiStatus;
 use crate::ui::bottom_pane::BottomPaneHeights;
 use crate::ui::command_palette::CommandPalette;
 use crate::ui::command_surface::CommandSurface;
@@ -28,6 +29,13 @@ const STATUS_LINE_MAX_LINES: usize = 3;
 const MESSAGE_BOTTOM_GAP_HEIGHT: u16 = 1;
 
 impl App {
+    pub fn set_proactive_status(&mut self, status: Option<ProactiveUiStatus>) {
+        if self.session_ui.proactive_status != status {
+            self.session_ui.proactive_status = status;
+            self.mark_dirty();
+        }
+    }
+
     pub fn render(&mut self, frame: &mut Frame) {
         let size = frame.area();
         if size.width < 10 || size.height < 4 {
@@ -498,6 +506,9 @@ impl App {
                 format_status_duration(goal.time_used_seconds),
                 goal.tokens_used
             ));
+        }
+        if let Some(status) = &self.session_ui.proactive_status {
+            parts.push(status.render_inline());
         }
         if !self.session_ui.model_name.is_empty() {
             parts.push(self.session_ui.model_name.clone());
