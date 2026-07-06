@@ -5,6 +5,7 @@
 | 文件 | 来源计划 | 实现状态 | 优先级 |
 |------|----------|----------|--------|
 | [code-split-tdd-test-plan.md](code-split-tdd-test-plan.md) | `development/code-split/codebase-optimization-plan-2026-07-03.md` | P0-P2 待实现 | ⭐ P0 |
+| [cargo-build-test-system-plan.md](cargo-build-test-system-plan.md) | Codex 原版 build/test 体系对照 | 本计划 | ⭐ P0 |
 | [record-replay-tdd-test-plan.md](record-replay-tdd-test-plan.md) | `development/record-replay/implementation-plan.md` | Phase 0-4 核心待实现 | ⭐ P0 |
 | [command-risk-tdd-test-plan.md](command-risk-tdd-test-plan.md) | `development/command/unified-command-risk-classification-plan.md` | Phase 1 待实现 | ⭐ P0 |
 | [cost-tdd-test-plan.md](cost-tdd-test-plan.md) | `development/cost/session-cost-log-plan.md` | Phase 1-2 待实现 | ⭐ P0 |
