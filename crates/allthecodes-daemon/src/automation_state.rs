@@ -47,6 +47,21 @@ pub struct AutomationState {
     pub pending_input: bool,
 }
 
+impl AutomationState {
+    pub fn external_metadata(&self) -> Value {
+        serde_json::json!({
+            "status": self.status.as_str(),
+            "sleeping_until": self.sleeping_until.map(|value| value.to_rfc3339()),
+            "reason": self.reason.clone(),
+            "next_tick_at": self.next_tick_at.map(|value| value.to_rfc3339()),
+            "proactive_active": self.proactive_active,
+            "terminal_focus": self.terminal_focus,
+            "query_running": self.query_running,
+            "pending_input": self.pending_input,
+        })
+    }
+}
+
 pub fn snapshot(state: &DaemonState) -> AutomationState {
     let daemon_sleep = process_state::active_sleep_state()
         .ok()
@@ -80,6 +95,42 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
             || state.features.proactive
             || allthecodes_config::features::enabled(Feature::Proactive),
         terminal_focus: state.terminal_focus(),
+        query_running,
+        pending_input,
+    }
+}
+
+pub fn snapshot_from_process_state() -> AutomationState {
+    let daemon_sleep = process_state::active_sleep_state()
+        .ok()
+        .flatten()
+        .map(|sleep| (sleep.sleeping_until, sleep.reason));
+    let query_running = assistant_command_active();
+    let pending_input = pending_input_active();
+    let proactive = allthecodes_services::proactive::global_controller().snapshot();
+    let sleeping = daemon_sleep.is_some();
+    let status = if pending_input {
+        AutomationStatus::NeedsInput
+    } else if sleeping {
+        AutomationStatus::Sleeping
+    } else if query_running {
+        AutomationStatus::Running
+    } else {
+        AutomationStatus::Standby
+    };
+    let (sleeping_until, reason) = match daemon_sleep {
+        Some((sleeping_until, reason)) => (Some(sleeping_until), reason),
+        None => (None, None),
+    };
+
+    AutomationState {
+        status,
+        sleeping_until,
+        reason,
+        next_tick_at: proactive.next_tick_at,
+        proactive_active: proactive.status == ProactiveStatus::Active
+            || allthecodes_config::features::enabled(Feature::Proactive),
+        terminal_focus: false,
         query_running,
         pending_input,
     }
@@ -257,6 +308,23 @@ mod tests {
         assert!(current.reason.is_none());
         assert!(current.next_tick_at.is_none());
         assert!(!current.proactive_active);
+    }
+
+    #[test]
+    #[serial]
+    fn external_metadata_includes_public_gateway_fields() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let state = make_daemon_state();
+
+        let metadata = snapshot(&state).external_metadata();
+
+        assert_eq!(metadata["status"], "standby");
+        assert_eq!(metadata["proactive_active"], false);
+        assert!(metadata.get("next_tick_at").is_some());
+        assert_eq!(metadata["query_running"], false);
+        assert_eq!(metadata["pending_input"], false);
+        assert_eq!(metadata["terminal_focus"], false);
     }
 
     #[test]

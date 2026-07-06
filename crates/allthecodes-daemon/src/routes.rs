@@ -375,6 +375,7 @@ async fn submit_authorized(state: DaemonState, body: SubmitRequest) -> Json<Valu
         }
     };
 
+    append_automation_state_event(&command.command_id);
     info!(message_id, text_len = text.len(), "submit received");
     super::memory_log::append_log_entry(&format!("user submit: {}", &text));
     state.broadcast(SseEvent {
@@ -392,6 +393,18 @@ async fn submit_authorized(state: DaemonState, body: SubmitRequest) -> Json<Valu
         "message_id": message_id,
         "command_id": command.command_id,
     }))
+}
+
+fn append_automation_state_event(command_id: &str) {
+    let automation = crate::automation_state::snapshot_from_process_state();
+    let _ = super::protocol_store().append_event(
+        ASSISTANT_WORKER_ID,
+        Some(command_id),
+        "automation_state",
+        json!({
+            "automation_state": automation.external_metadata()
+        }),
+    );
 }
 
 /// `GET /daemon/bridge/sessions` -- list persisted bridge sessions.
@@ -1196,6 +1209,8 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["automation_state"]["status"], "standby");
+        assert!(body["automation_state"].get("proactive_active").is_some());
+        assert!(body["automation_state"].get("next_tick_at").is_some());
         assert_eq!(body["automation_state"]["query_running"], false);
         assert_eq!(body["automation_state"]["pending_input"], false);
         assert_eq!(body["automation_state"]["terminal_focus"], false);
