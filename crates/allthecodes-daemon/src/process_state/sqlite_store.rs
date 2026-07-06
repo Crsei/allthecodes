@@ -9,12 +9,13 @@ use sqlx::{Row, SqlitePool};
 use tracing::warn;
 
 use super::paths::{
-    control_token_path, shutdown_request_path, sleep_state_path, state_path, workers_dir,
+    control_token_path, proactive_state_path, shutdown_request_path, sleep_state_path, state_path,
+    workers_dir,
 };
 use super::storage::read_worker_state_file;
 use super::types::{
-    DaemonControlToken, DaemonProcessState, DaemonShutdownRequest, DaemonSleepState,
-    DaemonWorkerState,
+    DaemonControlToken, DaemonProactiveState, DaemonProcessState, DaemonShutdownRequest,
+    DaemonSleepState, DaemonWorkerState,
 };
 
 const MIGRATIONS: &[Migration] = &[
@@ -190,6 +191,8 @@ async fn import_legacy_json(pool: &SqlitePool) -> Result<()> {
         .await?;
     import_state_file::<DaemonControlToken>(pool, "control-token", &control_token_path()).await?;
     import_state_file::<DaemonSleepState>(pool, "sleep-state", &sleep_state_path()).await?;
+    import_state_file::<DaemonProactiveState>(pool, "proactive-state", &proactive_state_path())
+        .await?;
     import_worker_files(pool).await?;
     Ok(())
 }

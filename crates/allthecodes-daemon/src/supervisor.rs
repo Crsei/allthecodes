@@ -406,7 +406,10 @@ async fn run_proactive_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathB
                     process_state::write_worker_stopped(worker_id, None)?;
                     return Ok(());
                 }
-                match super::tick::enqueue_proactive_tick_once(Local::now(), false)? {
+                match super::tick::enqueue_proactive_tick_once(
+                    Local::now(),
+                    daemon_terminal_focus_for_worker(),
+                )? {
                     Some(command) => info!(
                         worker_id,
                         command_id = %command.command_id,
@@ -419,6 +422,14 @@ async fn run_proactive_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathB
             }
         }
     }
+}
+
+fn daemon_terminal_focus_for_worker() -> bool {
+    process_state::read_terminal_focus_state()
+        .ok()
+        .flatten()
+        .map(|state| state.focused)
+        .unwrap_or(false)
 }
 
 async fn run_scheduler_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf) -> Result<()> {
@@ -688,6 +699,49 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn proactive_worker_terminal_focus_defaults_unfocused_without_frontend() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        process_state::write_started(19836, temp.path()).expect("supervisor state");
+        let log_path = process_state::worker_log_path(PROACTIVE_WORKER_ID);
+        process_state::write_worker_running(
+            PROACTIVE_WORKER_ID,
+            WorkerKind::Proactive.as_str(),
+            std::process::id(),
+            temp.path(),
+            &log_path,
+            0,
+            false,
+        )
+        .expect("worker state");
+
+        assert!(!daemon_terminal_focus_for_worker());
+    }
+
+    #[test]
+    #[serial]
+    fn proactive_worker_uses_persisted_frontend_focus_for_tick_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let _features = FeatureOverrideGuard::set(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+        process_state::write_terminal_focus_state(true).expect("terminal focus state");
+
+        let command = crate::tick::enqueue_proactive_tick_once(
+            Local::now(),
+            daemon_terminal_focus_for_worker(),
+        )
+        .unwrap()
+        .expect("focused proactive tick should enqueue");
+
+        assert_eq!(command.payload["terminal_focus"], true);
+        assert_eq!(command.payload["proactive"]["terminal_focus"], true);
+    }
+
+    #[test]
     fn worker_kind_accepts_bridge_sync() {
         assert_eq!(
             WorkerKind::parse("assistant-session").unwrap(),
@@ -751,5 +805,27 @@ mod tests {
             .iter()
             .filter(|spec| !spec.required)
             .all(|spec| spec.log_path.starts_with(temp.path())));
+    }
+
+    #[test]
+    #[serial]
+    fn default_worker_specs_include_proactive_without_kairos() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let _features = FeatureOverrideGuard::set(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+
+        let specs = default_worker_specs(temp.path());
+        let kinds = specs
+            .iter()
+            .map(|spec| spec.kind.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(kinds.contains(&"assistant-session"));
+        assert!(kinds.contains(&"proactive"));
+        assert!(!kinds.contains(&"bridge-sync"));
+        assert!(!kinds.contains(&"scheduler"));
     }
 }

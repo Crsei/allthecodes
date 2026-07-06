@@ -350,6 +350,12 @@ async fn submit(
 async fn submit_authorized(state: DaemonState, body: SubmitRequest) -> Json<Value> {
     let text = body.text;
     let message_id = body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if let Err(err) = crate::process_state::clear_sleep_state() {
+        return Json(json!({
+            "status": "error",
+            "message": err.to_string(),
+        }));
+    }
     let command = match super::protocol_store().enqueue_command(
         ASSISTANT_WORKER_ID,
         DaemonCommandKind::Submit,
@@ -369,6 +375,7 @@ async fn submit_authorized(state: DaemonState, body: SubmitRequest) -> Json<Valu
         }
     };
 
+    append_automation_state_event(&command.command_id);
     info!(message_id, text_len = text.len(), "submit received");
     super::memory_log::append_log_entry(&format!("user submit: {}", &text));
     state.broadcast(SseEvent {
@@ -386,6 +393,18 @@ async fn submit_authorized(state: DaemonState, body: SubmitRequest) -> Json<Valu
         "message_id": message_id,
         "command_id": command.command_id,
     }))
+}
+
+fn append_automation_state_event(command_id: &str) {
+    let automation = crate::automation_state::snapshot_from_process_state();
+    let _ = super::protocol_store().append_event(
+        ASSISTANT_WORKER_ID,
+        Some(command_id),
+        "automation_state",
+        json!({
+            "automation_state": automation.external_metadata()
+        }),
+    );
 }
 
 /// `GET /daemon/bridge/sessions` -- list persisted bridge sessions.
@@ -692,7 +711,7 @@ async fn status(State(state): State<DaemonState>) -> Json<StatusResponse> {
         };
     Json(StatusResponse {
         kairos_active: state.features.kairos,
-        proactive: state.features.proactive,
+        proactive: automation_state.proactive_active,
         query_running: automation_state.query_running,
         clients_connected: state.clients.read().len(),
         sleeping: automation_state.status == AutomationStatus::Sleeping,
@@ -748,7 +767,7 @@ async fn attach(State(state): State<DaemonState>, Json(body): Json<AttachRequest
 /// `POST /api/detach` -- remove a client from the SSE registry.
 async fn detach(State(state): State<DaemonState>, Json(body): Json<DetachRequest>) -> Json<Value> {
     info!(client_id = body.client_id, "client detach");
-    state.clients.write().remove(&body.client_id);
+    state.detach_sse_client(&body.client_id);
     Json(json!({ "status": "ok" }))
 }
 
@@ -886,6 +905,10 @@ mod tests {
     }
 
     fn make_daemon_state() -> DaemonState {
+        make_daemon_state_with_features(FeatureFlags::all_disabled())
+    }
+
+    fn make_daemon_state_with_features(features: FeatureFlags) -> DaemonState {
         let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
             cwd: ".".to_string(),
             tools: vec![],
@@ -907,7 +930,7 @@ mod tests {
             auto_save_session: false,
             agent_context: None,
         }));
-        DaemonState::new(engine, Arc::new(FeatureFlags::all_disabled()), 19836)
+        DaemonState::new(engine, Arc::new(features), 19836)
     }
 
     async fn response_json(response: axum::response::Response) -> (StatusCode, Value) {
@@ -936,6 +959,42 @@ mod tests {
             .body(Body::empty())
             .expect("request");
         response_json(app.oneshot(request).await.expect("response")).await
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn detach_endpoint_persists_terminal_focus_unfocused() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let state = make_daemon_state();
+        let _receiver = state.register_sse_client(
+            "client-1".to_string(),
+            allthecodes_server::ConnectionId::from_static("detach-focus"),
+        );
+        assert!(
+            crate::process_state::read_terminal_focus_state()
+                .unwrap()
+                .expect("terminal focus state after attach")
+                .focused
+        );
+        let app = api_routes().with_state(state.clone());
+
+        let (status, body) = post_json(
+            app,
+            "/api/detach",
+            "",
+            json!({
+                "client_id": "client-1",
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        let focus = crate::process_state::read_terminal_focus_state()
+            .unwrap()
+            .expect("terminal focus state after api detach");
+        assert!(!focus.focused);
     }
 
     fn bridge_state(
@@ -1032,6 +1091,29 @@ mod tests {
         assert_eq!(commands[0].kind, DaemonCommandKind::PermissionResponse);
         assert_eq!(commands[0].payload["tool_use_id"], "toolu_1");
         assert_eq!(commands[0].payload["decision"], "allow");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn submit_endpoint_clears_active_sleep_state() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        let token = crate::process_state::write_control_token().unwrap();
+        crate::process_state::write_sleep_state(300, "waiting").unwrap();
+        let app = api_routes().with_state(make_daemon_state());
+
+        let (_status, body) = post_json(
+            app,
+            "/api/submit",
+            &token.token,
+            json!({ "text": "wake up" }),
+        )
+        .await;
+
+        assert_eq!(body["status"], "ok");
+        assert!(crate::process_state::active_sleep_state()
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -1168,11 +1250,31 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["automation_state"]["status"], "standby");
+        assert!(body["automation_state"].get("proactive_active").is_some());
+        assert!(body["automation_state"].get("next_tick_at").is_some());
         assert_eq!(body["automation_state"]["query_running"], false);
         assert_eq!(body["automation_state"]["pending_input"], false);
         assert_eq!(body["automation_state"]["terminal_focus"], false);
         assert_eq!(body["query_running"], false);
         assert_eq!(body["sleeping"], false);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn status_endpoint_reports_durable_proactive_disable_over_feature_gate() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path().to_str().unwrap());
+        crate::process_state::write_proactive_state(false, None).unwrap();
+        let app = api_routes().with_state(make_daemon_state_with_features(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        }));
+
+        let (status, body) = get_json(app, "/api/status").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["proactive"], false);
+        assert_eq!(body["automation_state"]["proactive_active"], false);
     }
 
     fn make_engine() -> QueryEngine {

@@ -12,6 +12,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
+use allthecodes_engine::types::config::QuerySource;
 use allthecodes_engine::types::tool::PermissionMode;
 use allthecodes_types::callbacks::PermissionResponsePayload;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
@@ -34,6 +35,8 @@ mod commands;
 mod engine_events;
 #[path = "tui/export.rs"]
 mod export;
+#[path = "tui/proactive.rs"]
+mod proactive;
 #[path = "tui/subsystem_events.rs"]
 mod subsystem_events;
 #[path = "tui/terminal_guard.rs"]
@@ -48,7 +51,8 @@ use engine_events::{
     create_user_message, handle_sdk_message, handle_tool_progress, install_tui_ask_user_callback,
     install_tui_permission_callback, install_tui_permission_event_callback,
     install_tui_tool_progress_callback, make_assistant_text, normalize_message_timestamp,
-    permission_choice_to_response, spawn_engine_query, EngineEvent, StreamingState,
+    permission_choice_to_response, spawn_engine_query, spawn_engine_query_with_source, EngineEvent,
+    StreamingState,
 };
 use export::{export_to_editor, open_reference_in_editor};
 use subsystem_events::{
@@ -437,6 +441,7 @@ pub async fn run_tui(
 
     // ── Handle initial prompt ──────────────────────────────────────
     if let Some(ref prompt) = initial_prompt {
+        clear_proactive_sleep_for_user_submit();
         app.add_message(create_user_message(prompt));
         app.push_history(prompt.clone());
         app.set_streaming(true);
@@ -447,6 +452,9 @@ pub async fn run_tui(
     // ── Main event loop ────────────────────────────────────────────
     let mut tick_interval = tokio::time::interval(Duration::from_millis(16));
     tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut proactive_interval = tokio::time::interval(Duration::from_secs(1));
+    proactive_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let proactive_tick_driver = proactive::ProactiveTickDriver::new();
 
     loop {
         // Draw the UI only when something changed (dirty flag).
@@ -805,6 +813,30 @@ pub async fn run_tui(
                 }
             }
 
+            _ = proactive_interval.tick() => {
+                let snapshot = allthecodes_services::proactive::global_controller().snapshot();
+                let sleep = allthecodes_services::proactive::active_sleep_state().ok().flatten();
+                app.set_proactive_status(proactive::ui_status_from_snapshot(&snapshot, sleep.as_ref()));
+                let decision = proactive_tick_driver.decide(
+                    app.is_streaming(),
+                    pending_permission_response.is_some(),
+                    pending_question_response.is_some(),
+                    chrono::Utc::now(),
+                );
+                if decision == proactive::ProactiveTickDecision::Submit {
+                    let prompt = proactive_tick_driver.build_prompt(chrono::Local::now(), true);
+                    app.set_streaming(true);
+                    engine.reset_abort();
+                    spawn_engine_query_with_source(
+                        engine.clone(),
+                        prompt,
+                        QuerySource::ProactiveTick,
+                        engine_tx.clone(),
+                    );
+                    proactive_tick_driver.mark_tick_submitted();
+                }
+            }
+
             // Tick timer (spinner animation, ~80ms)
             _ = tick_interval.tick() => {
                 app.handle_app_event(AppEvent::Tick);
@@ -871,6 +903,14 @@ fn reject_unavailable_streaming_command(text: String, app: &mut App) -> bool {
     true
 }
 
+fn clear_proactive_sleep_for_user_submit() {
+    let _ = allthecodes_services::proactive::clear_sleep_state("user_submit");
+}
+
+fn clear_proactive_sleep_for_steer_submit() {
+    let _ = allthecodes_services::proactive::clear_sleep_state("steer_submit");
+}
+
 async fn submit_prompt_to_engine(
     text: String,
     engine: &Arc<QueryEngine>,
@@ -878,6 +918,7 @@ async fn submit_prompt_to_engine(
     engine_tx: &mpsc::UnboundedSender<EngineEvent>,
 ) -> bool {
     app.push_history(text.clone());
+    clear_proactive_sleep_for_user_submit();
 
     if let Some(action) = try_execute_command(&text, engine, app).await {
         match action {
@@ -917,6 +958,7 @@ async fn submit_prompt_to_engine(
 fn steer_prompt_to_engine(text: String, engine: &Arc<QueryEngine>, app: &mut App) {
     match engine.submit_steer_message(text.clone()) {
         Ok(()) => {
+            clear_proactive_sleep_for_steer_submit();
             app.push_history(text.clone());
             app.add_message(create_user_message(&text));
             app.handle_app_event(AppEvent::LocalNotice {

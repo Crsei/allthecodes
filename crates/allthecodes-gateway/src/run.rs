@@ -1,5 +1,6 @@
 use crate::{RemoteSource, SessionKey, SessionKeyPolicy};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -224,6 +225,8 @@ pub struct RunMeta {
     pub session_key: SessionKey,
     pub status: RunStatus,
     pub request: RunRequest,
+    #[serde(default)]
+    pub metadata: Map<String, Value>,
     pub created_at_ms: u128,
     pub updated_at_ms: u128,
 }
@@ -237,6 +240,7 @@ impl RunMeta {
             session_key,
             status: RunStatus::Queued,
             request: request.redacted(),
+            metadata: Map::new(),
             created_at_ms: now,
             updated_at_ms: now,
         }

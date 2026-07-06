@@ -286,10 +286,18 @@ pub(super) fn spawn_engine_query(
     prompt: String,
     tx: mpsc::UnboundedSender<EngineEvent>,
 ) {
+    spawn_engine_query_with_source(engine, prompt, QuerySource::ReplMainThread, tx);
+}
+
+pub(super) fn spawn_engine_query_with_source(
+    engine: Arc<QueryEngine>,
+    prompt: String,
+    source: QuerySource,
+    tx: mpsc::UnboundedSender<EngineEvent>,
+) {
     tokio::spawn(async move {
         let overrides = chat_mode_submit_overrides(&engine);
-        let stream =
-            engine.submit_message_with_overrides(&prompt, QuerySource::ReplMainThread, overrides);
+        let stream = engine.submit_message_with_overrides(&prompt, source, overrides);
         futures::pin_mut!(stream);
 
         while let Some(msg) = stream.next().await {

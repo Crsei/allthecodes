@@ -63,7 +63,7 @@ pub(crate) async fn run_server_mode(
             allthecodes_server::ServerMode::All { daemon_addr, .. } => daemon_addr,
             _ => unreachable!(),
         };
-        let features = Arc::new(allthecodes_config::features::FLAGS.clone());
+        let features = Arc::new(daemon_feature_flags());
         let ds = allthecodes_daemon::state::DaemonState::new(
             engine.clone(),
             features,
@@ -107,6 +107,37 @@ pub(crate) async fn run_server_mode(
         allthecodes_server::ServerMode::None => {
             unreachable!("run_server_mode called with ServerMode::None");
         }
+    }
+}
+
+fn daemon_feature_flags() -> allthecodes_config::features::FeatureFlags {
+    allthecodes_config::features::current()
+}
+
+#[cfg(test)]
+mod tests {
+    use allthecodes_config::features::{self, FeatureFlags};
+    use serial_test::serial;
+
+    struct FeatureGuard;
+
+    impl Drop for FeatureGuard {
+        fn drop(&mut self) {
+            features::clear_runtime_override();
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn daemon_feature_flags_uses_runtime_overrides() {
+        let mut flags = FeatureFlags::all_disabled();
+        flags.team_memory = true;
+        features::set_runtime_override(flags);
+        let _guard = FeatureGuard;
+
+        let current = super::daemon_feature_flags();
+
+        assert!(current.team_memory);
     }
 }
 

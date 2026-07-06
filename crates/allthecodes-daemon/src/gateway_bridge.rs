@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use allthecodes_gateway::{
     GatewayCommand, GatewayCommandKind, GatewayCommandReceipt, GatewayCommandSink,
-    GatewayDiagnostic, GatewayError, RunEventKind, RunStatus,
+    GatewayDiagnostic, GatewayError, GatewayStore, RunEventKind, RunId, RunStatus,
+    SessionKeyPolicy,
 };
 use allthecodes_types::callbacks::{
     AskUserRequestPayload, PermissionRequestPayload, PermissionResponsePayload,
@@ -83,6 +84,19 @@ impl GatewayCommandSink for GatewayDaemonBridge {
             self.bridge_session_id.as_deref(),
             self.assistant_session_id.as_deref(),
         );
+        if command.kind == GatewayCommandKind::Submit && should_wake_sleep_for_payload(&payload) {
+            crate::process_state::clear_sleep_state().map_err(|error| {
+                GatewayError::new(
+                    GatewayDiagnostic::new(
+                        "daemon_sleep_clear_failed",
+                        "The daemon bridge could not clear proactive sleep before dispatching work.",
+                        "Check daemon state directory permissions and retry the request.",
+                    )
+                    .with_context(format!("run_id={}, error={error:#}", command.run_id)),
+                )
+            })?;
+            let _ = mirror_automation_state_from_run_id(&command.run_id, &self.target_worker_id);
+        }
         let queued = super::protocol_store()
             .enqueue_command(
                 &self.target_worker_id,
@@ -97,6 +111,10 @@ impl GatewayCommandSink for GatewayDaemonBridge {
             target: queued.target_worker_id,
         })
     }
+}
+
+fn should_wake_sleep_for_payload(payload: &serde_json::Value) -> bool {
+    payload.get("source").and_then(serde_json::Value::as_str) != Some("proactive_tick")
 }
 
 fn daemon_kind(kind: GatewayCommandKind) -> DaemonCommandKind {
@@ -402,9 +420,11 @@ pub async fn handle_worker_command(
                         "error": err.to_string(),
                     }),
                 )?;
-                store.mark_command_failed(command, err.to_string())?;
+                let command = store.mark_command_failed(command, err.to_string())?;
+                mirror_automation_state(&command, worker_id)?;
             } else {
-                store.mark_command_handled(command)?;
+                let command = store.mark_command_handled(command)?;
+                mirror_automation_state(&command, worker_id)?;
             }
             Ok(false)
         }
@@ -628,6 +648,7 @@ impl AssistantWorkerRuntime {
             },
         )?;
         update_gateway_status(command, RunStatus::Running)?;
+        mirror_automation_state(command, worker_id)?;
 
         self.engine.wake_up();
         let stream = self.engine.submit_message(text, query_source);
@@ -711,6 +732,44 @@ fn persist_bridge_assistant_session_id(
     };
     state.assistant_session_id = Some(assistant_session_id.to_string());
     crate::process_state::write_bridge_session_state(&state)?;
+    Ok(())
+}
+
+fn mirror_automation_state(command: &protocol::DaemonCommand, worker_id: &str) -> Result<()> {
+    let patch = automation_state_patch();
+    let Some(run_id) = gateway_payload_string(command, &["runId", "run_id"]) else {
+        super::protocol_store().append_event(
+            worker_id,
+            Some(&command.command_id),
+            "automation_state",
+            patch,
+        )?;
+        return Ok(());
+    };
+    merge_automation_state_metadata(&run_id, patch)
+}
+
+fn mirror_automation_state_from_run_id(run_id: &str, worker_id: &str) -> Result<()> {
+    let patch = automation_state_patch();
+    if run_id.trim().is_empty() {
+        super::protocol_store().append_event(worker_id, None, "automation_state", patch)?;
+        return Ok(());
+    }
+    merge_automation_state_metadata(run_id, patch)
+}
+
+fn automation_state_patch() -> Value {
+    let automation = crate::automation_state::snapshot_from_process_state();
+    json!({
+        "automation_state": automation.external_metadata()
+    })
+}
+
+fn merge_automation_state_metadata(run_id: &str, patch: Value) -> Result<()> {
+    let run_id = RunId::from_string(run_id.to_string()).map_err(|error| anyhow::anyhow!(error))?;
+    GatewayStore::default_with_policy(SessionKeyPolicy::default())
+        .merge_run_metadata(&run_id, patch)
+        .context("merge gateway automation metadata")?;
     Ok(())
 }
 
@@ -1203,6 +1262,52 @@ mod tests {
 
     #[test]
     #[serial]
+    fn bridge_submit_clears_active_sleep_for_non_proactive_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        crate::process_state::write_sleep_state(300, "waiting").unwrap();
+        let bridge = GatewayDaemonBridge::for_worker("assistant-session-1");
+
+        bridge
+            .dispatch(GatewayCommand {
+                kind: GatewayCommandKind::Submit,
+                run_id: "run_bridge123".to_string(),
+                session_key: "remote:http:abc".to_string(),
+                payload: json!({ "text": "wake up", "source": "remote_user" }),
+                idempotency_key: Some("delivery-1".to_string()),
+            })
+            .unwrap();
+
+        assert!(crate::process_state::active_sleep_state()
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_submit_preserves_active_sleep_for_proactive_tick_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        crate::process_state::write_sleep_state(300, "waiting").unwrap();
+        let bridge = GatewayDaemonBridge::for_worker("assistant-session-1");
+
+        bridge
+            .dispatch(GatewayCommand {
+                kind: GatewayCommandKind::Submit,
+                run_id: "run_bridge123".to_string(),
+                session_key: "remote:http:abc".to_string(),
+                payload: json!({ "text": "tick", "source": "proactive_tick" }),
+                idempotency_key: Some("delivery-1".to_string()),
+            })
+            .unwrap();
+
+        assert!(crate::process_state::active_sleep_state()
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    #[serial]
     fn assistant_context_records_current_session_id_in_bridge_state() {
         let temp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
@@ -1379,6 +1484,108 @@ mod tests {
             RunEventKind::Custom { name, .. } if name == "stream_delta"
         )));
         assert_eq!(store.load_run(&run_id).unwrap().status, RunStatus::Running);
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_mirrors_automation_metadata_to_run_meta() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let store = GatewayStore::default_with_policy(SessionKeyPolicy::default());
+        let source = allthecodes_gateway::RemoteSource::new(
+            allthecodes_gateway::RemoteTransport::Http,
+            "local",
+            "F:/AIclassmanager/cc/rust",
+            "client",
+            "user",
+            "thread",
+        );
+        let created = store
+            .create_run(allthecodes_gateway::RunRequest {
+                prompt: "hello".to_string(),
+                source,
+                policy: allthecodes_gateway::RunPolicy::default(),
+                idempotency_key: None,
+            })
+            .unwrap();
+        let run_id = created.meta().run_id.clone();
+        let command = submit_command(json!({
+            "text": "hello",
+            "gateway": {
+                "runId": run_id.to_string(),
+                "sessionKey": created.meta().session_key.to_string(),
+            }
+        }));
+
+        mirror_automation_state(&command, "assistant-session-1").unwrap();
+
+        let meta = store.load_run(&run_id).unwrap();
+        assert_eq!(meta.metadata["automation_state"]["status"], "standby");
+        assert!(meta.metadata["automation_state"]
+            .get("next_tick_at")
+            .is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_mirrors_context_blocked_automation_metadata_to_run_meta() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("gateway-test");
+        allthecodes_types::proactive_context::set_context_blocked(true, "plan_mode");
+        let store = GatewayStore::default_with_policy(SessionKeyPolicy::default());
+        let source = allthecodes_gateway::RemoteSource::new(
+            allthecodes_gateway::RemoteTransport::Http,
+            "local",
+            "F:/AIclassmanager/cc/rust",
+            "client",
+            "user",
+            "thread",
+        );
+        let created = store
+            .create_run(allthecodes_gateway::RunRequest {
+                prompt: "hello".to_string(),
+                source,
+                policy: allthecodes_gateway::RunPolicy::default(),
+                idempotency_key: None,
+            })
+            .unwrap();
+        let run_id = created.meta().run_id.clone();
+        let command = submit_command(json!({
+            "text": "hello",
+            "gateway": {
+                "runId": run_id.to_string(),
+                "sessionKey": created.meta().session_key.to_string(),
+            }
+        }));
+
+        mirror_automation_state(&command, "assistant-session-1").unwrap();
+
+        let meta = store.load_run(&run_id).unwrap();
+        allthecodes_types::proactive_context::set_context_blocked(false, "test-cleanup");
+        controller.deactivate("test-cleanup");
+        assert_eq!(meta.metadata["automation_state"]["status"], "blocked");
+        assert_eq!(meta.metadata["automation_state"]["reason"], "plan_mode");
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_appends_automation_state_event_without_run_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let command = submit_command(json!({ "text": "hello" }));
+
+        mirror_automation_state(&command, "assistant-session-1").unwrap();
+
+        let events = crate::protocol_store()
+            .read_worker_events("assistant-session-1")
+            .unwrap();
+        let event = events
+            .iter()
+            .find(|event| event.event_type == "automation_state")
+            .expect("automation_state event should be appended");
+        assert_eq!(event.data["automation_state"]["status"], "standby");
     }
 
     #[tokio::test]

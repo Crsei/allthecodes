@@ -18,7 +18,7 @@ use crate::supervisor::ASSISTANT_WORKER_ID;
 
 pub const DEFAULT_TICK_INTERVAL_MS: u64 = 30_000;
 
-pub async fn tick_loop(_state: DaemonState) {
+pub async fn tick_loop(state: DaemonState) {
     let mut interval = tokio::time::interval(Duration::from_millis(DEFAULT_TICK_INTERVAL_MS));
     info!(
         "proactive tick loop started (interval: {}ms)",
@@ -28,7 +28,7 @@ pub async fn tick_loop(_state: DaemonState) {
     interval.tick().await;
     loop {
         interval.tick().await;
-        match enqueue_proactive_tick_once(Local::now(), false) {
+        match enqueue_proactive_tick_once(Local::now(), state.terminal_focus()) {
             Ok(Some(command)) => {
                 debug!(
                     command_id = %command.command_id,
@@ -49,10 +49,14 @@ pub fn enqueue_proactive_tick_once(
     now: DateTime<Local>,
     terminal_focus: bool,
 ) -> Result<Option<DaemonCommand>> {
+    if !proactive_ticks_enabled() {
+        return Ok(None);
+    }
     if super::automation_state::autonomous_worker_blocked() {
         return Ok(None);
     }
 
+    write_proactive_schedule(now);
     let payload = build_tick_payload(now, terminal_focus)?;
     let command = crate::protocol_store().enqueue_command(
         ASSISTANT_WORKER_ID,
@@ -69,33 +73,43 @@ pub fn enqueue_proactive_tick_once(
 
 pub fn build_tick_payload(now: DateTime<Local>, terminal_focus: bool) -> Result<Value> {
     let today_log = super::memory_log::read_today_log();
-    let tick_prompt = format!(
-        "<tick_tag>\nLocal time: {}\nTerminal focus: {}\n</tick_tag>{}",
-        now.format("%Y-%m-%d %H:%M:%S"),
+    let mut payload = allthecodes_services::proactive::build_tick_payload(
+        now,
         terminal_focus,
-        if today_log.is_empty() {
-            String::new()
-        } else {
-            format!("\n<daily_log>\n{}</daily_log>", today_log)
-        },
+        (!today_log.is_empty()).then_some(today_log.as_str()),
     );
-    let mut proactive = json!({
-        "time": now.to_rfc3339(),
-        "terminal_focus": terminal_focus,
-    });
     if let Some(skill_discovery) = skill_discovery_tick_summary() {
-        if let Some(proactive) = proactive.as_object_mut() {
+        if let Some(proactive) = payload["proactive"].as_object_mut() {
             proactive.insert("skill_discovery".to_string(), skill_discovery);
         }
     }
 
-    Ok(json!({
-        "text": tick_prompt,
-        "message_id": format!("proactive-tick-{}", now.timestamp_millis()),
-        "source": "proactive_tick",
-        "terminal_focus": terminal_focus,
-        "proactive": proactive,
-    }))
+    Ok(payload)
+}
+
+fn proactive_ticks_enabled() -> bool {
+    match crate::process_state::read_proactive_state() {
+        Ok(Some(state)) => state.active,
+        Ok(None) => {
+            features::enabled(Feature::Proactive)
+                || allthecodes_services::proactive::global_controller()
+                    .snapshot()
+                    .status
+                    == allthecodes_services::proactive::ProactiveStatus::Active
+        }
+        Err(error) => {
+            warn!(error = %error, "failed to read daemon proactive state; using feature gate");
+            features::enabled(Feature::Proactive)
+        }
+    }
+}
+
+fn write_proactive_schedule(now: DateTime<Local>) {
+    let next_tick_at = now.with_timezone(&chrono::Utc)
+        + chrono::Duration::milliseconds(DEFAULT_TICK_INTERVAL_MS as i64);
+    if let Err(error) = crate::process_state::write_proactive_state(true, Some(next_tick_at)) {
+        warn!(error = %error, "failed to write daemon proactive state");
+    }
 }
 
 fn skill_discovery_tick_summary() -> Option<Value> {
@@ -120,10 +134,13 @@ mod tests {
     use crate::process_state::DaemonSleepState;
     use crate::protocol::DaemonCommandKind;
     use crate::supervisor::ASSISTANT_WORKER_ID;
+    use allthecodes_bootstrap::SessionId;
+    use allthecodes_commands::{CommandContext, CommandHandler, CommandResult};
     use allthecodes_config::features::{self, FeatureFlags};
     use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
     use chrono::{TimeZone, Utc};
     use serial_test::serial;
+    use std::path::PathBuf;
 
     struct EnvGuard {
         key: &'static str,
@@ -208,11 +225,24 @@ mod tests {
         std::fs::write(path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
     }
 
+    fn test_command_context() -> CommandContext {
+        CommandContext {
+            messages: Vec::new(),
+            cwd: PathBuf::from("/tmp/proactive-daemon-test"),
+            app_state: Default::default(),
+            session_id: SessionId::from_string("proactive-daemon-test"),
+        }
+    }
+
     #[test]
     #[serial]
     fn proactive_tick_enqueues_assistant_submit_command() {
         let home = tempfile::tempdir().unwrap();
         let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _features = FeatureGuard::set(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
         append_log_entry("previous work item");
 
         let command = enqueue_proactive_tick_once(Local::now(), false)
@@ -238,11 +268,73 @@ mod tests {
     fn proactive_tick_skips_while_sleeping() {
         let home = tempfile::tempdir().unwrap();
         let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _features = FeatureGuard::set(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
         write_sleep_state();
 
         let result = enqueue_proactive_tick_once(Local::now(), false).unwrap();
 
         assert!(result.is_none());
+        assert!(crate::protocol_store()
+            .read_worker_commands(ASSISTANT_WORKER_ID)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn proactive_tick_skips_while_context_blocked_by_another_process() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _features = FeatureGuard::set(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("test-active");
+        allthecodes_types::proactive_context::set_context_blocked(true, "plan_mode");
+
+        let result = enqueue_proactive_tick_once(Local::now(), false).unwrap();
+
+        allthecodes_types::proactive_context::set_context_blocked(false, "test-cleanup");
+        controller.deactivate("test-cleanup");
+        assert!(result.is_none());
+        assert!(crate::protocol_store()
+            .read_worker_commands(ASSISTANT_WORKER_ID)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn proactive_slash_disable_blocks_future_daemon_ticks() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("test-active");
+        let _features = FeatureGuard::set(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+        let handler = allthecodes_commands::proactive_cmd::ProactiveCmdHandler;
+        let mut ctx = test_command_context();
+
+        let result = handler.execute("", &mut ctx).await.unwrap();
+        match result {
+            CommandResult::Output(text) => assert!(text.contains("disabled")),
+            _ => panic!("expected output"),
+        }
+        let durable = allthecodes_services::proactive::read_durable_state()
+            .unwrap()
+            .expect("durable proactive state after disable");
+        assert!(!durable.active);
+
+        let tick = enqueue_proactive_tick_once(Local::now(), false).unwrap();
+
+        controller.deactivate("test-cleanup");
+        assert!(tick.is_none());
         assert!(crate::protocol_store()
             .read_worker_commands(ASSISTANT_WORKER_ID)
             .unwrap()
@@ -273,5 +365,31 @@ mod tests {
         let body = serde_json::to_string(&payload).unwrap();
         assert!(!body.contains("http://"));
         assert!(!body.contains("https://"));
+    }
+
+    #[test]
+    #[serial]
+    fn proactive_tick_payload_matches_shared_builder_fields() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        append_log_entry("shared payload daily log");
+        let now = Local.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+
+        let payload = build_tick_payload(now, true).expect("payload");
+        let today_log = crate::memory_log::read_today_log();
+        let expected = allthecodes_services::proactive::build_tick_payload(
+            now,
+            true,
+            (!today_log.is_empty()).then_some(today_log.as_str()),
+        );
+
+        assert_eq!(payload["source"], "proactive_tick");
+        assert_eq!(payload["terminal_focus"], expected["terminal_focus"]);
+        assert_eq!(payload["proactive"]["time"], expected["proactive"]["time"]);
+        assert_eq!(
+            payload["proactive"]["terminal_focus"],
+            expected["proactive"]["terminal_focus"]
+        );
+        assert_eq!(payload["text"], expected["text"]);
     }
 }

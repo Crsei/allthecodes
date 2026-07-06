@@ -14,7 +14,7 @@ override such as `/experimental`.
 - `FEATURE_KAIROS_CHANNELS`: enables `/channels`; requires `FEATURE_KAIROS`.
 - `FEATURE_KAIROS_PUSH_NOTIFICATION`: enables `/notify`; requires `FEATURE_KAIROS`.
 - `FEATURE_KAIROS_GITHUB_WEBHOOKS`: GitHub webhook integration gate; requires `FEATURE_KAIROS`.
-- `FEATURE_PROACTIVE`: enables proactive sleep/tick surfaces such as `/sleep` and `SleepTool`; also implied by `FEATURE_KAIROS`.
+- `FEATURE_PROACTIVE`: enables standalone proactive mode, `/proactive`, `/sleep`, `SleepTool`, local TUI ticks, and daemon proactive worker ticks; also implied by `FEATURE_KAIROS`.
 - `FEATURE_TEAMMEM`: enables team memory scope injection/recall.
 - `FEATURE_SUBAGENT_DASHBOARD`: enables the subagent dashboard companion surface.
 - `FEATURE_AGENT_TEAMS` / `ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS`: enables experimental Agent Teams surfaces.

@@ -54,6 +54,8 @@ use domain::{ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiSt
 use overlays::OverlayState;
 use runtime_state::RuntimeViewState;
 
+pub use domain::ProactiveUiStatus;
+
 #[cfg(test)]
 pub(crate) use overlays::ActiveOverlay;
 

@@ -8,6 +8,21 @@ use crate::ui::messages::MessageRenderContext;
 use crate::ui::theme::Theme;
 use crate::ui::virtual_scroll::VirtualScroll;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProactiveUiStatus {
+    pub label: String,
+    pub next_tick_text: Option<String>,
+}
+
+impl ProactiveUiStatus {
+    pub fn render_inline(&self) -> String {
+        match self.next_tick_text.as_deref() {
+            Some(text) if !text.is_empty() => format!("{} | {}", self.label, text),
+            _ => self.label.clone(),
+        }
+    }
+}
+
 pub(super) struct ConversationStore {
     messages: Vec<Message>,
     selected_message: Option<usize>,
@@ -165,6 +180,7 @@ pub(super) struct SessionUiStore {
     pub(super) session_id: String,
     pub(super) cwd: String,
     pub(super) output_style: Option<String>,
+    pub(super) proactive_status: Option<ProactiveUiStatus>,
     pub(super) history: Vec<HistorySearchEntry>,
 }
 

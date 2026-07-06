@@ -122,6 +122,25 @@ pub struct DaemonSleepState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonProactiveState {
+    pub schema_version: u32,
+    pub active: bool,
+    pub next_tick_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub context_blocked: bool,
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonTerminalFocusState {
+    pub schema_version: u32,
+    pub focused: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DaemonBridgeSessionState {
     pub schema_version: u32,
     pub session_id: String,

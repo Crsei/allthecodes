@@ -3,7 +3,7 @@
 //! Schedules a sleep period (in seconds) during which the proactive
 //! tick loop pauses autonomous actions.
 //!
-//! Requires `FEATURE_PROACTIVE=1` (implied by `FEATURE_KAIROS=1`).
+//! Requires proactive mode to be enabled.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,6 +12,11 @@ use std::sync::{OnceLock, RwLock};
 
 use crate::{CommandContext, CommandHandler, CommandResult};
 use allthecodes_config::features::{self, Feature};
+
+fn proactive_sleep_enabled() -> bool {
+    features::enabled(Feature::Proactive)
+        || allthecodes_types::proactive_context::is_proactive_active()
+}
 
 /// Minimum sleep duration in seconds.
 const MIN_SLEEP_SECS: u64 = 1;
@@ -54,9 +59,9 @@ pub struct SleepCmdHandler;
 #[async_trait]
 impl CommandHandler for SleepCmdHandler {
     async fn execute(&self, args: &str, ctx: &mut CommandContext) -> Result<CommandResult> {
-        if !features::enabled(Feature::Proactive) {
+        if !proactive_sleep_enabled() {
             return Ok(CommandResult::Output(
-                "Sleep command requires FEATURE_PROACTIVE=1".into(),
+                "Sleep command requires proactive mode".into(),
             ));
         }
 
@@ -110,6 +115,7 @@ impl CommandHandler for SleepCmdHandler {
 mod tests {
     use super::*;
     use allthecodes_bootstrap::SessionId;
+    use allthecodes_config::features::FeatureFlags;
     use std::path::PathBuf;
 
     fn test_ctx() -> CommandContext {
@@ -121,20 +127,103 @@ mod tests {
         }
     }
 
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    struct FeatureOverrideGuard {
+        previous: Option<FeatureFlags>,
+    }
+
+    impl FeatureOverrideGuard {
+        fn proactive_enabled() -> Self {
+            let previous = features::runtime_override();
+            let mut flags = FeatureFlags::all_disabled();
+            flags.proactive = true;
+            features::set_runtime_override(flags);
+            Self { previous }
+        }
+
+        fn all_disabled() -> Self {
+            let previous = features::runtime_override();
+            features::set_runtime_override(FeatureFlags::all_disabled());
+            Self { previous }
+        }
+    }
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(flags) => features::set_runtime_override(flags),
+                None => features::clear_runtime_override(),
+            }
+        }
+    }
+
+    struct ProactiveActiveGuard;
+
+    impl ProactiveActiveGuard {
+        fn inactive() -> Self {
+            allthecodes_types::proactive_context::set_proactive_active(false);
+            Self
+        }
+
+        fn active() -> Self {
+            allthecodes_types::proactive_context::set_proactive_active(true);
+            Self
+        }
+    }
+
+    impl Drop for ProactiveActiveGuard {
+        fn drop(&mut self) {
+            allthecodes_types::proactive_context::set_proactive_active(false);
+        }
+    }
+
+    fn write_shared_sleep_for_test(secs: u64, reason: &str) -> Result<DaemonSleepState> {
+        let state = allthecodes_config::proactive_sleep::write_sleep_state(secs, reason)?;
+        Ok(DaemonSleepState {
+            sleeping_until: state.sleeping_until,
+        })
+    }
+
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_feature_gate() {
+        let _features = FeatureOverrideGuard::all_disabled();
+        let _active = ProactiveActiveGuard::inactive();
         let handler = SleepCmdHandler;
         let mut ctx = test_ctx();
         let result = handler.execute("10", &mut ctx).await.unwrap();
         match result {
-            CommandResult::Output(text) => assert!(text.contains("FEATURE_PROACTIVE")),
+            CommandResult::Output(text) => assert!(text.contains("proactive mode")),
             _ => panic!("Expected Output"),
         }
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_all_args_gated() {
-        // Feature is not enabled in test env, so all invocations hit the gate.
+        let _features = FeatureOverrideGuard::all_disabled();
+        let _active = ProactiveActiveGuard::inactive();
         let handler = SleepCmdHandler;
         let mut ctx = test_ctx();
 
@@ -142,12 +231,57 @@ mod tests {
             let result = handler.execute(input, &mut ctx).await.unwrap();
             match result {
                 CommandResult::Output(text) => assert!(
-                    text.contains("FEATURE_PROACTIVE"),
+                    text.contains("proactive mode"),
                     "expected gate message for input '{}'",
                     input
                 ),
                 _ => panic!("Expected Output for input '{}'", input),
             }
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn sleep_command_uses_runtime_writer_for_shared_sleep_state() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _features = FeatureOverrideGuard::proactive_enabled();
+        set_sleep_command_runtime(SleepCommandRuntime {
+            write_sleep_state: write_shared_sleep_for_test,
+        });
+        let handler = SleepCmdHandler;
+        let mut ctx = test_ctx();
+
+        let result = handler.execute("5", &mut ctx).await.unwrap();
+
+        match result {
+            CommandResult::Output(text) => assert!(text.contains("Sleep scheduled until")),
+            _ => panic!("Expected Output"),
+        }
+        let shared = allthecodes_config::proactive_sleep::active_sleep_state()
+            .unwrap()
+            .expect("shared sleep state");
+        assert_eq!(shared.reason.as_deref(), Some("slash command /sleep"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn sleep_command_allows_active_proactive_controller_without_feature_env() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _features = FeatureOverrideGuard::all_disabled();
+        let _active = ProactiveActiveGuard::active();
+        set_sleep_command_runtime(SleepCommandRuntime {
+            write_sleep_state: write_shared_sleep_for_test,
+        });
+        let handler = SleepCmdHandler;
+        let mut ctx = test_ctx();
+
+        let result = handler.execute("5", &mut ctx).await.unwrap();
+
+        match result {
+            CommandResult::Output(text) => assert!(text.contains("Sleep scheduled until")),
+            _ => panic!("Expected Output"),
         }
     }
 }

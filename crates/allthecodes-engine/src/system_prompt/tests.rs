@@ -34,6 +34,8 @@ impl Drop for FeatureOverrideGuard {
     fn drop(&mut self) {
         features::clear_runtime_override();
         prompt_sections::clear_cache();
+        allthecodes_types::proactive_context::set_proactive_active(false);
+        allthecodes_types::proactive_context::set_context_blocked(false, "test_cleanup");
     }
 }
 
@@ -272,6 +274,126 @@ fn kairos_prompt_injects_proactive_section_when_kairos_enabled() {
 
 #[test]
 #[serial_test::serial]
+fn proactive_prompt_injects_section_when_controller_is_active_without_feature_gate() {
+    let _guard = FeatureOverrideGuard;
+    features::set_runtime_override(FeatureFlags::all_disabled());
+    allthecodes_types::proactive_context::set_proactive_active(true);
+    prompt_sections::clear_cache();
+
+    let (parts, _, _) = build_system_prompt(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+    );
+    let joined = parts.join("\n");
+
+    assert!(joined.contains("# Autonomous work"));
+    assert!(joined.contains("Sleep"));
+    assert!(joined.contains("terminalFocus"));
+}
+
+#[test]
+#[serial_test::serial]
+fn proactive_compact_resume_reminder_uses_compact_boundary_metadata() {
+    let _guard = FeatureOverrideGuard;
+    let mut flags = FeatureFlags::all_disabled();
+    flags.proactive = true;
+    features::set_runtime_override(flags);
+    allthecodes_types::proactive_context::set_proactive_active(true);
+    prompt_sections::clear_cache();
+
+    let compact_boundary = crate::compact::compaction::create_compact_boundary(100, 40);
+    let prior_resume = assistant_message("continued after compact");
+    let (parts, _, _) = build_system_prompt_with_memory_contexts(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(&[compact_boundary, prior_resume]),
+    );
+    let joined = parts.join("\n");
+
+    assert!(joined.contains(
+        "You are running in autonomous/proactive mode. This is not a first wake-up after compaction. Continue the existing work loop from the summary instead of greeting the user again."
+    ));
+}
+
+#[test]
+#[serial_test::serial]
+fn proactive_compact_resume_reminder_skips_first_tick_after_compaction() {
+    let _guard = FeatureOverrideGuard;
+    let mut flags = FeatureFlags::all_disabled();
+    flags.proactive = true;
+    features::set_runtime_override(flags);
+    allthecodes_types::proactive_context::set_proactive_active(true);
+    prompt_sections::clear_cache();
+
+    let compact_boundary = crate::compact::compaction::create_compact_boundary(100, 40);
+    let current_tick = user_message("<tick_tag>first wake after compact</tick_tag>");
+    let (parts, _, _) = build_system_prompt_with_memory_contexts(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(&[compact_boundary, current_tick]),
+    );
+    let joined = parts.join("\n");
+
+    assert!(!joined.contains(
+        "You are running in autonomous/proactive mode. This is not a first wake-up after compaction. Continue the existing work loop from the summary instead of greeting the user again."
+    ));
+}
+
+#[test]
+#[serial_test::serial]
+fn proactive_compact_resume_reminder_requires_active_controller() {
+    let _guard = FeatureOverrideGuard;
+    let mut flags = FeatureFlags::all_disabled();
+    flags.proactive = true;
+    features::set_runtime_override(flags);
+    prompt_sections::clear_cache();
+
+    let compact_boundary = crate::compact::compaction::create_compact_boundary(100, 40);
+    let prior_resume = assistant_message("continued after compact");
+    let (parts, _, _) = build_system_prompt_with_memory_contexts(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(&[compact_boundary, prior_resume]),
+    );
+    let joined = parts.join("\n");
+
+    assert!(!joined.contains(
+        "You are running in autonomous/proactive mode. This is not a first wake-up after compaction. Continue the existing work loop from the summary instead of greeting the user again."
+    ));
+}
+
+#[test]
+#[serial_test::serial]
 fn kairos_prompt_injects_brief_section_when_brief_enabled() {
     let _guard = FeatureOverrideGuard;
     let mut flags = FeatureFlags::all_disabled();
@@ -472,6 +594,34 @@ fn test_format_bullets() {
     assert_eq!(result, " - first\n - second");
 }
 
+fn assistant_message(text: &str) -> crate::types::message::Message {
+    crate::types::message::Message::Assistant(crate::types::message::AssistantMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 1,
+        role: "assistant".into(),
+        content: vec![crate::types::message::ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        usage: None,
+        stop_reason: None,
+        is_api_error_message: false,
+        api_error: None,
+        cost_usd: 0.0,
+    })
+}
+
+fn user_message(text: &str) -> crate::types::message::Message {
+    crate::types::message::Message::User(crate::types::message::UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 1,
+        role: "user".into(),
+        content: crate::types::message::MessageContent::Text(text.to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    })
+}
+
 #[test]
 fn test_agents_md_injection() {
     prompt_sections::clear_cache();
@@ -546,6 +696,7 @@ fn test_prebuilt_memory_context_overrides_full_memory_scan() {
         false,
         Some("<memory-context>\n## Relevant Memories\n- **selected**: use this\n</memory-context>"),
         Some("<session-insights>\n- Keep session detail.\n</session-insights>"),
+        None,
     );
     let joined = parts.join("\n");
 

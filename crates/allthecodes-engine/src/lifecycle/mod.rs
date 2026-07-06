@@ -127,6 +127,15 @@ fn pause_active_goal_for_abort(session_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) fn set_proactive_context_blocked(blocked: bool, reason: &str) {
+    allthecodes_types::proactive_context::set_context_blocked(blocked, reason);
+    if let Err(error) =
+        allthecodes_config::proactive_state::write_proactive_context_blocked(blocked, reason)
+    {
+        warn!(%error, "failed to persist proactive context block state");
+    }
+}
+
 pub struct SteerError {
     message: String,
 }

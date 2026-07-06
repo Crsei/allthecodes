@@ -230,11 +230,19 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         );
 
                         if matches!(&recovery, ModelCallFailureRecovery::PromptTooLong) {
+                            crate::lifecycle::set_proactive_context_blocked(
+                                true,
+                                "context_limit",
+                            );
                             let terminal =
                                 handle_prompt_too_long(&deps, &mut state, &error_str).await;
 
                             match terminal {
                                 PromptRecovery::Continue(reason) => {
+                                    crate::lifecycle::set_proactive_context_blocked(
+                                        false,
+                                        "context_ready",
+                                    );
                                     state.transition = Some(reason);
                                     continue 'query_loop;
                                 }

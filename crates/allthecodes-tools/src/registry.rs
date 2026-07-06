@@ -148,6 +148,15 @@ fn tool_enabled_by_session_gates(tool: &dyn Tool, gates: ToolSessionGates) -> bo
     true
 }
 
+fn tool_available_in_registry(tool: &dyn Tool) -> bool {
+    tool.name() == "Sleep" || tool.is_enabled()
+}
+
+/// Filter tools by their current dynamic enablement state.
+pub fn filter_tools_for_enabled_state(tools: Tools) -> Tools {
+    tools.into_iter().filter(|tool| tool.is_enabled()).collect()
+}
+
 /// Filter tools controlled by runtime feature gates.
 ///
 /// These gates default to enabled in the full-build branch. The filter is
@@ -230,7 +239,12 @@ pub fn allthecodes_tools_base_tools() -> Tools {
         Arc::new(ToolSearchTool) as _,
     ]);
 
-    filter_tools_for_feature_gates(tools.into_iter().filter(|tool| tool.is_enabled()).collect())
+    filter_tools_for_feature_gates(
+        tools
+            .into_iter()
+            .filter(|tool| tool_available_in_registry(tool.as_ref()))
+            .collect(),
+    )
 }
 
 /// Get all built-in tools using the supplied external providers.

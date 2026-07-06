@@ -16,6 +16,28 @@ use crate::types::message::{
     AssistantMessage, ContentBlock, Message, QueryYield, StreamEvent, Usage,
 };
 
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: impl AsRef<std::path::Path>) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value.as_ref());
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_prompt_too_long_reactive_compact_retries_model_call() {
     let initial_messages = vec![make_user_message_for_test("Summarize this long context")];
@@ -63,6 +85,30 @@ async fn test_prompt_too_long_reactive_compact_retries_model_call() {
         }
     });
     assert!(recovered, "expected recovered assistant response");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_prompt_too_long_without_existing_state_does_not_activate_durable_proactive_state() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+    let initial_messages = vec![make_user_message_for_test("Summarize this long context")];
+    let deps = Arc::new(MockDeps::from_steps(vec![MockStreamStep::Error(
+        "prompt_too_long: context window exceeded".to_string(),
+    )]));
+
+    let stream = query(make_query_params(initial_messages), deps);
+    let _items: Vec<QueryYield> = stream.collect().await;
+
+    let state_path = home.path().join("daemon").join("proactive-state.json");
+    let state: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).expect("durable proactive state"),
+    )
+    .unwrap();
+    assert_eq!(state["active"], false);
+    assert_eq!(state["context_blocked"], true);
+    assert_eq!(state["blocked_reason"], "context_limit");
+    assert!(state["next_tick_at"].is_null());
 }
 
 #[tokio::test]

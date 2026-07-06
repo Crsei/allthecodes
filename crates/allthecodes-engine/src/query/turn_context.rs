@@ -105,9 +105,11 @@ pub(crate) async fn prepare_model_request(
         capability_filtered_tools,
         &app_state_for_request.settings,
     );
+    let enabled_tools =
+        allthecodes_tools::registry::filter_tools_for_enabled_state(settings_filtered_tools);
     let session_filtered_tools = allthecodes_tools::registry::dedupe_tools_by_name(
         allthecodes_tools::registry::filter_tools_for_session_gates(
-            settings_filtered_tools,
+            enabled_tools,
             allthecodes_tools::registry::ToolSessionGates {
                 non_interactive: context.query_source.is_non_interactive(),
                 subagent: context.query_source.starts_with_agent(),

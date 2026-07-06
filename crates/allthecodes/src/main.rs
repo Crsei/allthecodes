@@ -106,6 +106,11 @@ pub(crate) fn resolve_descriptive_permission_message(tool_name: &str) -> Option<
     computer_use_permission_message(tool_name).or_else(|| browser_permission_message(tool_name))
 }
 
+fn prepare_dump_system_prompt_tools(cli: &Cli) -> allthecodes_engine::types::tool::Tools {
+    crate::startup::runtime_composition::activate_startup_proactive_if_requested(cli);
+    registry::get_tools_for_active_session()
+}
+
 fn main() -> ExitCode {
     startup_crate::load_env_files();
     allthecodes_tools::registry::install_tool_registry_providers(
@@ -208,7 +213,7 @@ fn main() -> ExitCode {
     // Fast path: --dump-system-prompt
     if cli.dump_system_prompt {
         allthecodes_plugins::init_plugins();
-        let tools = registry::get_tools_for_active_session();
+        let tools = prepare_dump_system_prompt_tools(&cli);
         return startup_crate::fast_paths::run_dump_system_prompt(&cli, &tools);
     }
 
@@ -234,4 +239,113 @@ fn main() -> ExitCode {
     });
     allthecodes_services::langfuse::shutdown_langfuse();
     exit_code
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use crate::cli::Cli;
+
+    use super::prepare_dump_system_prompt_tools;
+
+    struct FeatureOverrideGuard;
+
+    impl FeatureOverrideGuard {
+        fn set(flags: allthecodes_config::features::FeatureFlags) -> Self {
+            allthecodes_config::features::set_runtime_override(flags);
+            Self
+        }
+    }
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            allthecodes_config::features::clear_runtime_override();
+        }
+    }
+
+    struct ProactiveControllerGuard;
+
+    impl ProactiveControllerGuard {
+        fn inactive() -> Self {
+            allthecodes_services::proactive::global_controller().deactivate("test_setup");
+            Self
+        }
+    }
+
+    impl Drop for ProactiveControllerGuard {
+        fn drop(&mut self) {
+            allthecodes_services::proactive::global_controller().deactivate("test_cleanup");
+        }
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_ref() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn assert_dump_tools_are_proactive(cli: &Cli) {
+        let tools = prepare_dump_system_prompt_tools(cli);
+
+        assert!(allthecodes_config::features::enabled(
+            allthecodes_config::features::Feature::Proactive
+        ));
+        assert!(tools.iter().any(|tool| tool.name() == "Sleep"));
+        let (parts, _, _) =
+            allthecodes_engine::system_prompt::build_system_prompt_with_session_memory(
+                None,
+                None,
+                &tools,
+                allthecodes_types::models::default_model_id().as_str(),
+                ".",
+                None,
+                None,
+                false,
+                None,
+            );
+        assert!(parts.iter().any(|part| part.contains("# Autonomous work")));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn dump_system_prompt_fast_path_activates_proactive_before_tools() {
+        let mut flags = allthecodes_config::features::FeatureFlags::all_disabled();
+        flags.proactive = false;
+        let _features = FeatureOverrideGuard::set(flags);
+        let _controller = ProactiveControllerGuard::inactive();
+        let cli = Cli::parse_from(["claude", "--dump-system-prompt", "--proactive"]);
+
+        assert_dump_tools_are_proactive(&cli);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn dump_system_prompt_fast_path_env_activates_proactive_before_tools() {
+        let _env = EnvGuard::set("ALLTHECODES_PROACTIVE", "yes");
+        let mut flags = allthecodes_config::features::FeatureFlags::all_disabled();
+        flags.proactive = false;
+        let _features = FeatureOverrideGuard::set(flags);
+        let _controller = ProactiveControllerGuard::inactive();
+        let cli = Cli::parse_from(["claude", "--dump-system-prompt"]);
+
+        assert_dump_tools_are_proactive(&cli);
+    }
 }

@@ -597,7 +597,7 @@ fn sleep_state_for_commands(
     duration_seconds: u64,
     reason: &str,
 ) -> anyhow::Result<allthecodes_commands::sleep_cmd::DaemonSleepState> {
-    let state = allthecodes_daemon::process_state::write_sleep_state(duration_seconds, reason)?;
+    let state = allthecodes_services::proactive::write_sleep_state(duration_seconds, reason)?;
     Ok(allthecodes_commands::sleep_cmd::DaemonSleepState {
         sleeping_until: state.sleeping_until,
     })

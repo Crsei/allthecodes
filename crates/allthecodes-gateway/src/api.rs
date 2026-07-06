@@ -450,6 +450,7 @@ fn create_run_body(submission: GatewayRunSubmission) -> Value {
         "sessionKey": submission.meta.session_key,
         "status": submission.meta.status,
         "action": submission.action,
+        "metadata": submission.meta.metadata,
         "eventsUrl": format!("/remote-control/v1/runs/{}/events", submission.meta.run_id),
         "timelineUrl": format!("/remote-control/v1/runs/{}/timeline", submission.meta.run_id),
     });
@@ -482,6 +483,7 @@ fn run_body(meta: RunMeta) -> Value {
         "sessionKey": meta.session_key,
         "status": meta.status,
         "request": meta.request,
+        "metadata": meta.metadata,
         "createdAtMs": meta.created_at_ms,
         "updatedAtMs": meta.updated_at_ms,
     })
@@ -558,5 +560,70 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_run_response_includes_metadata() {
+        let request = RunRequest {
+            prompt: "hello".to_string(),
+            source: crate::RemoteSource::new(
+                crate::RemoteTransport::Local,
+                "local",
+                "/workspace",
+                "test",
+                "user",
+                "thread",
+            ),
+            policy: crate::RunPolicy::default(),
+            idempotency_key: None,
+        };
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(RUNS_PATH)
+                    .header(DAEMON_TOKEN_HEADER, "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_json(response).await;
+        let run_id = body["runId"].as_str().unwrap();
+        let store = GatewayStore::default_with_policy(SessionKeyPolicy::default());
+        store
+            .merge_run_metadata(
+                &RunId::from_string(run_id).unwrap(),
+                json!({
+                    "automation_state": {
+                        "status": "standby"
+                    }
+                }),
+            )
+            .unwrap();
+
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/remote-control/v1/runs/{run_id}"))
+                    .header(DAEMON_TOKEN_HEADER, "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_json(response).await;
+        assert_eq!(body["metadata"]["automation_state"]["status"], "standby");
+    }
+
+    async fn to_json(response: Response) -> Value {
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
     }
 }

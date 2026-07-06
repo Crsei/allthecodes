@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::types::message::{Message, SystemSubtype};
 use crate::types::tool::Tool;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -189,10 +190,16 @@ pub(super) fn kairos_brief_section() -> Option<String> {
     })
 }
 
-pub(super) fn kairos_proactive_section() -> Option<String> {
+fn proactive_runtime_enabled() -> bool {
     use allthecodes_config::features::{self, Feature};
 
-    (features::enabled(Feature::Kairos) || features::enabled(Feature::Proactive)).then(|| {
+    features::enabled(Feature::Kairos)
+        || features::enabled(Feature::Proactive)
+        || allthecodes_types::proactive_context::is_proactive_active()
+}
+
+pub(super) fn kairos_proactive_section() -> Option<String> {
+    proactive_runtime_enabled().then(|| {
         concat!(
             "# Autonomous work\n\n",
             "You are running as a resident assistant. Periodic `<tick_tag>` prompts ",
@@ -221,6 +228,39 @@ pub(super) fn kairos_proactive_section() -> Option<String> {
             "is watching; keep the feedback loop tight and be more collaborative.\n"
         )
         .to_string()
+    })
+}
+
+pub(super) fn proactive_compact_resume_section(messages: Option<&[Message]>) -> Option<String> {
+    if !proactive_runtime_enabled() {
+        return None;
+    }
+    if !allthecodes_types::proactive_context::is_proactive_active() {
+        return None;
+    }
+
+    let messages = messages?;
+    let boundary_index = messages.iter().rposition(|message| {
+        matches!(
+            message,
+            Message::System(system)
+                if matches!(
+                    system.subtype,
+                    SystemSubtype::CompactBoundary {
+                        compact_metadata: Some(_)
+                    }
+                )
+        )
+    })?;
+
+    let resumed_after_boundary = messages
+        .iter()
+        .skip(boundary_index + 1)
+        .any(|message| matches!(message, Message::Assistant(_)));
+
+    resumed_after_boundary.then(|| {
+        "You are running in autonomous/proactive mode. This is not a first wake-up after compaction. Continue the existing work loop from the summary instead of greeting the user again."
+            .to_string()
     })
 }
 

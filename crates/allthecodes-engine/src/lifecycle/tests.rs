@@ -44,6 +44,40 @@ impl Drop for EnvGuard {
     }
 }
 
+struct FeatureOverrideGuard(Option<allthecodes_config::features::FeatureFlags>);
+
+impl FeatureOverrideGuard {
+    fn set(flags: allthecodes_config::features::FeatureFlags) -> Self {
+        let previous = allthecodes_config::features::runtime_override();
+        allthecodes_config::features::set_runtime_override(flags);
+        Self(previous)
+    }
+}
+
+impl Drop for FeatureOverrideGuard {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(flags) => allthecodes_config::features::set_runtime_override(flags),
+            None => allthecodes_config::features::clear_runtime_override(),
+        }
+    }
+}
+
+struct ProactiveControllerResetGuard;
+
+impl ProactiveControllerResetGuard {
+    fn inactive() -> Self {
+        allthecodes_types::proactive_context::set_proactive_active(false);
+        Self
+    }
+}
+
+impl Drop for ProactiveControllerResetGuard {
+    fn drop(&mut self) {
+        allthecodes_types::proactive_context::set_proactive_active(false);
+    }
+}
+
 struct TestCommandDispatcher;
 
 impl allthecodes_types::commands::CommandDispatcher for TestCommandDispatcher {
@@ -70,6 +104,12 @@ impl allthecodes_types::commands::CommandDispatcher for TestCommandDispatcher {
                 args: rest.trim().to_string(),
             });
         }
+        if trimmed == "/proactive" {
+            return Some(allthecodes_types::commands::ParsedCommand {
+                index: 3,
+                args: String::new(),
+            });
+        }
         None
     }
 
@@ -78,6 +118,7 @@ impl allthecodes_types::commands::CommandDispatcher for TestCommandDispatcher {
             0 => Some("clear".to_string()),
             1 => Some("help".to_string()),
             2 => Some("review".to_string()),
+            3 => Some("proactive".to_string()),
             _ => None,
         }
     }
@@ -107,6 +148,10 @@ impl CommandExecutor for TestCommandExecutor {
                     source_tool_assistant_uuid: None,
                 }));
                 CommandResult::Query(ctx.messages.clone())
+            }
+            3 => {
+                allthecodes_types::proactive_context::set_proactive_active(true);
+                CommandResult::Output("Proactive mode enabled.".to_string())
             }
             _ => CommandResult::None,
         })
@@ -1911,9 +1956,73 @@ async fn test_submit_local_command() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
+async fn test_submit_clear_command_clears_proactive_context_blocked() {
+    use futures::StreamExt;
+
+    let home = tempdir().unwrap();
+    let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+    allthecodes_types::proactive_context::set_context_blocked(true, "context_limit");
+
+    let mut engine = QueryEngine::new(make_config());
+    engine.set_command_dispatcher(Arc::new(TestCommandDispatcher));
+    engine.set_command_executor(Arc::new(TestCommandExecutor));
+    let stream = engine.submit_message("/clear", QuerySource::Sdk);
+    let mut stream = std::pin::pin!(stream);
+    while stream.next().await.is_some() {}
+
+    assert!(!allthecodes_types::proactive_context::is_context_blocked());
+    let state = allthecodes_config::proactive_state::read_proactive_state()
+        .unwrap()
+        .expect("clear writes durable proactive state");
+    assert!(
+        !state.active,
+        "non-proactive /clear must not leave durable proactive active"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn proactive_tick_in_plan_mode_is_blocked_without_model_submit() {
+    use futures::StreamExt;
+
+    struct ContextGuard;
+    impl Drop for ContextGuard {
+        fn drop(&mut self) {
+            allthecodes_types::proactive_context::set_context_blocked(false, "test_cleanup");
+        }
+    }
+    let _guard = ContextGuard;
+    allthecodes_types::proactive_context::set_context_blocked(false, "test_start");
+
+    let engine = QueryEngine::new(make_config());
+    engine.state.write().app_state.tool_permission_context.mode = PermissionMode::Plan;
+
+    let stream = engine.submit_message("<tick_tag>test</tick_tag>", QuerySource::ProactiveTick);
+    let items: Vec<_> = stream.collect().await;
+    let result = items
+        .into_iter()
+        .find_map(|item| match item {
+            SdkMessage::Result(result) => Some(result),
+            _ => None,
+        })
+        .expect("terminal result");
+
+    assert!(result.is_error);
+    assert_eq!(result.subtype, ResultSubtype::ErrorDuringExecution);
+    assert_eq!(result.stop_reason.as_deref(), Some("context_blocked"));
+    assert!(result.result.contains("plan_mode"));
+    assert!(allthecodes_types::proactive_context::is_context_blocked());
+    assert!(engine.messages().is_empty());
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn submit_system_init_filters_view_image_for_text_only_model() {
     use futures::StreamExt;
 
+    let _controller = ProactiveControllerResetGuard::inactive();
+    allthecodes_types::proactive_context::set_proactive_active(true);
     let mut engine = QueryEngine::new(make_config());
     engine.set_tools(vec![
         Arc::new(allthecodes_tools::exec::SleepTool),
@@ -1943,6 +2052,33 @@ async fn submit_system_init_filters_view_image_for_text_only_model() {
             assert!(init.tools.contains(&"Sleep".to_string()));
             assert!(!init.tools.contains(&"ViewImage".to_string()));
             assert!(!init.tools.contains(&"view_image".to_string()));
+        }
+        other => panic!("expected SystemInit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn submit_proactive_command_makes_sleep_available_from_startup_catalog() {
+    use futures::StreamExt;
+
+    let _controller = ProactiveControllerResetGuard::inactive();
+    let _features =
+        FeatureOverrideGuard::set(allthecodes_config::features::FeatureFlags::all_disabled());
+    let startup_tools = allthecodes_tools::registry::get_all_tools();
+    let mut config = make_config();
+    config.tools = startup_tools;
+    let mut engine = QueryEngine::new(config);
+    engine.set_command_dispatcher(Arc::new(TestCommandDispatcher));
+    engine.set_command_executor(Arc::new(TestCommandExecutor));
+
+    let stream = engine.submit_message("/proactive", QuerySource::Sdk);
+    let mut stream = std::pin::pin!(stream);
+    let first = stream.next().await.expect("system init");
+
+    match first {
+        SdkMessage::SystemInit(init) => {
+            assert!(init.tools.contains(&"Sleep".to_string()));
         }
         other => panic!("expected SystemInit, got {other:?}"),
     }

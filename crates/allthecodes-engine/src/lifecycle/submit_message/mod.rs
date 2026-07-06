@@ -450,6 +450,59 @@ impl QueryEngine {
 
             // A.1: Clear turn-scoped state
             state_ref.write().tools.discovered_skill_names.clear();
+            if matches!(query_source, QuerySource::ProactiveTick)
+                && state_ref.read().app_state.tool_permission_context.mode
+                    == crate::types::tool::PermissionMode::Plan
+            {
+                super::set_proactive_context_blocked(true, "plan_mode");
+                let result =
+                    "Proactive tick blocked while permission mode is plan_mode.".to_string();
+                let telemetry_model = config.user_specified_model.clone().unwrap_or_else(|| {
+                    state_ref.read().app_state.main_loop_model.clone()
+                });
+                finish_submit_telemetry(
+                    &mut telemetry_submit_span,
+                    &telemetry_model,
+                    &UsageTracking::default(),
+                );
+                let mut transaction = SubmitTransaction::new();
+                transaction.record_items(
+                    "turn_finished",
+                    vec![turn_finished_item(
+                        TurnFinishStatus::Errored,
+                        Some(result.clone()),
+                    )],
+                );
+                transaction.flush_recorder_after_commit();
+                transaction.terminate(SdkResult {
+                    subtype: ResultSubtype::ErrorDuringExecution,
+                    is_error: true,
+                    duration_ms: submit_turn.duration_ms(),
+                    duration_api_ms: 0,
+                    num_turns: 0,
+                    result: result.clone(),
+                    stop_reason: Some("context_blocked".to_string()),
+                    session_id: session_id.to_string(),
+                    total_cost_usd: 0.0,
+                    usage: UsageTracking::default(),
+                    permission_denials: vec![],
+                    structured_output: None,
+                    uuid: Uuid::new_v4(),
+                    errors: vec![result],
+                });
+                for message in commit_submit_transaction_best_effort(
+                    transaction,
+                    &state_ref,
+                    &session_recorder,
+                    &config,
+                    &session_id,
+                )
+                .await
+                {
+                    yield message;
+                }
+                return;
+            }
 
             // A.2: Process user input (delegate to input_processing module)
             let current_msgs_snapshot = state_ref.read().transcript.messages.clone();
@@ -592,9 +645,11 @@ impl QueryEngine {
                     capability_tools_snapshot,
                     &app_settings,
                 );
+            let enabled_tools_snapshot =
+                allthecodes_tools::registry::filter_tools_for_enabled_state(settings_tools_snapshot);
             let session_tools_snapshot = allthecodes_tools::registry::dedupe_tools_by_name(
                 allthecodes_tools::registry::filter_tools_for_session_gates(
-                    settings_tools_snapshot,
+                    enabled_tools_snapshot,
                     allthecodes_tools::registry::ToolSessionGates {
                         non_interactive: query_source.is_non_interactive(),
                         subagent: query_source.starts_with_agent(),
@@ -741,10 +796,14 @@ impl QueryEngine {
                 SubmitContextMode::Inherit => state_ref.read().transcript.messages.clone(),
                 SubmitContextMode::Compact => {
                     let messages = state_ref.read().transcript.messages.clone();
-                    crate::compact::pipeline::try_reactive_compact(messages.clone(), &model_name)
+                    let compacted =
+                        crate::compact::pipeline::try_reactive_compact(messages.clone(), &model_name)
                         .await
-                        .map(|result| result.messages)
-                        .unwrap_or(messages)
+                        .map(|result| result.messages);
+                    if compacted.is_some() {
+                        super::set_proactive_context_blocked(false, "context_ready");
+                    }
+                    compacted.unwrap_or(messages)
                 }
                 SubmitContextMode::Isolated => processed.messages.clone(),
             };

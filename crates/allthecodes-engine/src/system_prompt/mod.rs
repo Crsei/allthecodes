@@ -20,6 +20,7 @@ use tracing::debug;
 
 use crate::config::claude_md;
 use crate::prompt_sections::{self, cached_section, uncached_section, DYNAMIC_BOUNDARY};
+use crate::types::message::Message;
 use crate::types::tool::Tool;
 
 mod dynamic_sections;
@@ -116,6 +117,7 @@ pub fn build_system_prompt_with_session_memory(
         include_auto_memory,
         None,
         session_memory_context,
+        None,
     )
 }
 
@@ -136,6 +138,7 @@ pub fn build_system_prompt_with_memory_contexts(
     include_auto_memory: bool,
     memory_context_override: Option<&str>,
     session_memory_context: Option<&str>,
+    transcript_messages: Option<&[Message]>,
 ) -> (
     Vec<String>,
     HashMap<String, String>,
@@ -169,6 +172,7 @@ pub fn build_system_prompt_with_memory_contexts(
         let language_owned = language.map(|s| s.to_string());
         let output_style_owned = output_style.map(|s| s.to_string());
         let cwd_for_style = std::path::PathBuf::from(cwd);
+        let transcript_messages_owned = transcript_messages.map(|messages| messages.to_vec());
         let dynamic_sections = vec![
             cached_section("env_info_simple", move || {
                 Some(env_info_section(&model_owned, &cwd_owned))
@@ -211,6 +215,11 @@ pub fn build_system_prompt_with_memory_contexts(
                 "kairos_proactive",
                 kairos_proactive_section,
                 "KAIROS and proactive gates can be toggled for the current session",
+            ),
+            uncached_section(
+                "proactive_compact_resume",
+                move || proactive_compact_resume_section(transcript_messages_owned.as_deref()),
+                "compact boundary metadata changes as the session transcript advances",
             ),
             uncached_section(
                 "external_channels",

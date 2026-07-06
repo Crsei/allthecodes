@@ -1,6 +1,6 @@
 # Daemon 操作与发布检查
 
-> 状态日期：2026-07-05
+> 状态日期：2026-07-06
 > 范围：`crates/allthecodes-daemon/**`、root `allthecodes` daemon CLI、KAIROS HTTP/SSE 控制面。
 
 ## 当前可用能力
@@ -20,6 +20,8 @@ daemon 状态位于 `{ALLTHECODES_HOME:-~/.allthecodes}/daemon/`：
 - `events/<worker-id>.ndjson`：worker event log，`/events` 连接时会 replay。
 - `control-token.json`：mutating HTTP endpoint token，stop 时清理。
 - `sleep-state.json`：proactive/scheduler sleep state，过期、wake 或 stop 时清理。
+- `proactive-state.json`：daemon proactive tick loop 的 active/next tick 镜像，`/proactive` toggle 和 proactive worker 共同维护。
+- `terminal-focus-state.json`：supervisor SSE client lifecycle 发布的 terminal focus 镜像，proactive worker 用它生成 tick payload。
 - `bridge/sessions/<session-id>.json`：durable bridge session identity、cursor、assistant session id 和 lease。
 - `bridge/sessions/<session-id>/inbox.ndjson`：bridge worker 的 durable inbox。
 
@@ -32,10 +34,11 @@ daemon 状态位于 `{ALLTHECODES_HOME:-~/.allthecodes}/daemon/`：
 
 ## CLI 管理命令
 
-`daemon start` 和隐藏 `--daemon` 运行面需要 `FEATURE_KAIROS=1`。管理命令可以从另一个 CLI 进程操作同一个后台 supervisor。
+`daemon start` 管理命令和隐藏 `--daemon` 运行面都接受 `FEATURE_KAIROS=1` 或 `FEATURE_PROACTIVE=1`，用于 KAIROS daemon 或 standalone proactive daemon。管理命令可以从另一个 CLI 进程操作同一个后台 supervisor。
 
 ```bash
 FEATURE_KAIROS=1 allthecodes daemon start
+FEATURE_PROACTIVE=1 allthecodes daemon start
 FEATURE_KAIROS=1 allthecodes --port 19837 daemon start
 
 allthecodes daemon status
@@ -56,6 +59,14 @@ FEATURE_KAIROS=1 allthecodes --port 19837 daemon restart
 ```
 
 `daemon stop` writes a shutdown request and the daemon runtime now observes that request directly, so normal stop should not wait for the fallback terminate grace period.
+
+## Standalone Proactive Daemon
+
+`FEATURE_PROACTIVE=1 allthecodes --daemon` starts the daemon with `assistant-session-1` and `proactive-1`. It does not start KAIROS bridge or scheduler workers unless `FEATURE_KAIROS=1` is also set.
+
+Sleep state lives at `~/.allthecodes/daemon/sleep-state.json` or under `ALLTHECODES_HOME`. User submit paths clear active sleep state before queueing work.
+
+`/proactive` writes `proactive-state.json` so the assistant worker process can pause or resume future ticks from the separate proactive worker process. SSE client register/unregister updates `terminal-focus-state.json`; when focused, daemon proactive tick payloads carry `terminal_focus=true`.
 
 ## Slash 命令
 

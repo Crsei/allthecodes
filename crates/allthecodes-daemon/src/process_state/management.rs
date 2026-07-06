@@ -90,8 +90,8 @@ fn start_daemon(args: &[String], cwd: &Path, fallback_port: u16) -> Result<()> {
         DaemonStatusSnapshot::Stopped => {}
     }
 
-    if !allthecodes_config::features::enabled(allthecodes_config::features::Feature::Kairos) {
-        anyhow::bail!("daemon start requires FEATURE_KAIROS=1");
+    if !daemon_start_feature_enabled() {
+        anyhow::bail!("daemon start requires FEATURE_KAIROS=1 or FEATURE_PROACTIVE=1");
     }
 
     ensure_daemon_dir()?;
@@ -137,6 +137,11 @@ fn start_daemon(args: &[String], cwd: &Path, fallback_port: u16) -> Result<()> {
         log_path.display()
     );
     Ok(())
+}
+
+pub(super) fn daemon_start_feature_enabled() -> bool {
+    allthecodes_config::features::enabled(allthecodes_config::features::Feature::Kairos)
+        || allthecodes_config::features::enabled(allthecodes_config::features::Feature::Proactive)
 }
 
 fn stop_daemon() -> Result<()> {
@@ -275,6 +280,7 @@ fn submit_worker_command(args: &[String]) -> Result<()> {
         anyhow::bail!("daemon submit requires text");
     }
 
+    clear_sleep_state()?;
     let command = crate::protocol_store().enqueue_command(
         crate::supervisor::ASSISTANT_WORKER_ID,
         protocol::DaemonCommandKind::Submit,

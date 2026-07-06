@@ -34,6 +34,7 @@ pub mod permission_events;
 #[cfg(feature = "runtime-types")]
 pub mod permissions;
 pub mod plan_workflow;
+pub mod proactive_context;
 pub mod query_host;
 pub mod sdk;
 pub mod state;

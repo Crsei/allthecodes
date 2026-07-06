@@ -7,6 +7,7 @@ use allthecodes_types::output::{
     EventSeq, OutputEvent, OutputLifecycleState, OutputReadBatch, OutputStream,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::PathBuf;
@@ -102,6 +103,27 @@ impl GatewayStore {
             sequence,
             RunEventKind::StatusChanged { status },
         ))?;
+        Ok(meta)
+    }
+
+    pub fn merge_run_metadata(
+        &self,
+        run_id: &RunId,
+        patch: Value,
+    ) -> Result<RunMeta, GatewayError> {
+        let patch = patch.as_object().ok_or_else(|| {
+            GatewayError::new(GatewayDiagnostic::new(
+                "invalid_run_metadata_patch",
+                "Run metadata patch must be a JSON object.",
+                "Send an object with metadata keys to merge.",
+            ))
+        })?;
+        let mut meta = self.load_run(run_id)?;
+        for (key, value) in patch {
+            meta.metadata.insert(key.clone(), value.clone());
+        }
+        meta.updated_at_ms = crate::run::now_millis();
+        self.write_meta(&meta)?;
         Ok(meta)
     }
 
@@ -936,5 +958,59 @@ mod tests {
         assert_eq!(output.events[0].chunk, "abc");
         assert_eq!(output.next_seq, 2);
         assert!(output.truncated);
+    }
+
+    #[test]
+    fn metadata_merge_shallowly_updates_run_meta() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp_store(&temp);
+        let run_id = store.create_run(request()).unwrap().meta().run_id.clone();
+
+        let updated = store
+            .merge_run_metadata(
+                &run_id,
+                json!({
+                    "automation_state": {
+                        "status": "running",
+                        "query_running": true
+                    },
+                    "source": "daemon"
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(updated.metadata["automation_state"]["status"], "running");
+        assert_eq!(updated.metadata["source"], "daemon");
+        let reloaded = store.load_run(&run_id).unwrap();
+        assert_eq!(reloaded.metadata["automation_state"]["query_running"], true);
+
+        let merged = store
+            .merge_run_metadata(
+                &run_id,
+                json!({
+                    "automation_state": {
+                        "status": "standby"
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            merged.metadata["automation_state"],
+            json!({ "status": "standby" })
+        );
+        assert_eq!(merged.metadata["source"], "daemon");
+    }
+
+    #[test]
+    fn metadata_merge_rejects_non_object_patch() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp_store(&temp);
+        let run_id = store.create_run(request()).unwrap().meta().run_id.clone();
+
+        let error = store
+            .merge_run_metadata(&run_id, json!("not an object"))
+            .unwrap_err();
+
+        assert_eq!(error.diagnostic().code, "invalid_run_metadata_patch");
     }
 }
