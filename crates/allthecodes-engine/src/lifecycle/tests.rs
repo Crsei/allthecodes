@@ -1911,6 +1911,23 @@ async fn test_submit_local_command() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
+async fn test_submit_clear_command_clears_proactive_context_blocked() {
+    use futures::StreamExt;
+
+    allthecodes_types::proactive_context::set_context_blocked(true, "context_limit");
+
+    let mut engine = QueryEngine::new(make_config());
+    engine.set_command_dispatcher(Arc::new(TestCommandDispatcher));
+    engine.set_command_executor(Arc::new(TestCommandExecutor));
+    let stream = engine.submit_message("/clear", QuerySource::Sdk);
+    let mut stream = std::pin::pin!(stream);
+    while stream.next().await.is_some() {}
+
+    assert!(!allthecodes_types::proactive_context::is_context_blocked());
+}
+
+#[tokio::test]
 async fn submit_system_init_filters_view_image_for_text_only_model() {
     use futures::StreamExt;
 

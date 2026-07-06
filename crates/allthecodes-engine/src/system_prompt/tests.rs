@@ -272,6 +272,37 @@ fn kairos_prompt_injects_proactive_section_when_kairos_enabled() {
 
 #[test]
 #[serial_test::serial]
+fn proactive_compact_resume_reminder_uses_compact_boundary_metadata() {
+    let _guard = FeatureOverrideGuard;
+    let mut flags = FeatureFlags::all_disabled();
+    flags.proactive = true;
+    features::set_runtime_override(flags);
+    prompt_sections::clear_cache();
+
+    let compact_boundary = crate::compact::compaction::create_compact_boundary(100, 40);
+    let prior_resume = assistant_message("continued after compact");
+    let (parts, _, _) = build_system_prompt_with_memory_contexts(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(&[compact_boundary, prior_resume]),
+    );
+    let joined = parts.join("\n");
+
+    assert!(joined.contains(
+        "You are running in autonomous/proactive mode. This is not a first wake-up after compaction. Continue the existing work loop from the summary instead of greeting the user again."
+    ));
+}
+
+#[test]
+#[serial_test::serial]
 fn kairos_prompt_injects_brief_section_when_brief_enabled() {
     let _guard = FeatureOverrideGuard;
     let mut flags = FeatureFlags::all_disabled();
@@ -472,6 +503,22 @@ fn test_format_bullets() {
     assert_eq!(result, " - first\n - second");
 }
 
+fn assistant_message(text: &str) -> crate::types::message::Message {
+    crate::types::message::Message::Assistant(crate::types::message::AssistantMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 1,
+        role: "assistant".into(),
+        content: vec![crate::types::message::ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        usage: None,
+        stop_reason: None,
+        is_api_error_message: false,
+        api_error: None,
+        cost_usd: 0.0,
+    })
+}
+
 #[test]
 fn test_agents_md_injection() {
     prompt_sections::clear_cache();
@@ -546,6 +593,7 @@ fn test_prebuilt_memory_context_overrides_full_memory_scan() {
         false,
         Some("<memory-context>\n## Relevant Memories\n- **selected**: use this\n</memory-context>"),
         Some("<session-insights>\n- Keep session detail.\n</session-insights>"),
+        None,
     );
     let joined = parts.join("\n");
 

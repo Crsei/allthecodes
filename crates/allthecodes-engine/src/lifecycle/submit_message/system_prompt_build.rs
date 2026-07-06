@@ -42,6 +42,7 @@ pub(super) async fn build_submit_system_prompt(
         recent_tool_names,
         already_surfaced_memory_keys,
         model_assisted_memory_recall,
+        transcript_messages,
     ) = {
         let state = state_ref.read();
         (
@@ -66,6 +67,7 @@ pub(super) async fn build_submit_system_prompt(
             recent_tool_names(&state.transcript.messages, 8),
             state.app_state.surfaced_memory_keys.clone(),
             is_model_assisted_memory_recall_enabled(),
+            state.transcript.messages.clone(),
         )
     };
 
@@ -115,6 +117,7 @@ pub(super) async fn build_submit_system_prompt(
             include_auto_memory,
             memory_context_override.as_deref(),
             session_memory_context.as_deref(),
+            Some(&transcript_messages),
         );
 
     fire_instructions_loaded_hook(state_ref, hook_runner, &system_prompt_parts, &config.cwd).await;

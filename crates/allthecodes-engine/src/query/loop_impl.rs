@@ -253,11 +253,19 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         );
 
                         if matches!(&recovery, ModelCallFailureRecovery::PromptTooLong) {
+                            allthecodes_types::proactive_context::set_context_blocked(
+                                true,
+                                "context_limit",
+                            );
                             let terminal =
                                 handle_prompt_too_long(&deps, &mut state, &error_str).await;
 
                             match terminal {
                                 PromptRecovery::Continue(reason) => {
+                                    allthecodes_types::proactive_context::set_context_blocked(
+                                        false,
+                                        "context_ready",
+                                    );
                                     state.transition = Some(reason);
                                     continue 'query_loop;
                                 }

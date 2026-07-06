@@ -173,6 +173,7 @@ fn clear_command_session(
     }
     *active_session_id_ref.write() = new_session_id.clone();
     crate::bootstrap::PROCESS_STATE.write().session_id = new_session_id.clone();
+    allthecodes_types::proactive_context::set_context_blocked(false, "context_ready");
     new_session_id
 }
 

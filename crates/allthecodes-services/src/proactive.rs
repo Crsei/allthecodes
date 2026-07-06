@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use chrono::{DateTime, Duration, Local, Utc};
 use parking_lot::RwLock;
@@ -79,6 +79,14 @@ impl ProactiveController {
         *state = inactive_snapshot(normalized_text(source));
     }
 
+    pub fn set_context_blocked(&self, blocked: bool, reason: &str) {
+        if blocked {
+            self.mark_context_blocked(reason);
+        } else {
+            self.clear_context_blocked(reason);
+        }
+    }
+
     pub fn mark_context_blocked(&self, reason: &str) {
         let mut state = self.state.write();
         state.status = ProactiveStatus::ContextBlocked;
@@ -104,8 +112,17 @@ impl Default for ProactiveController {
 }
 
 pub fn global_controller() -> &'static ProactiveController {
-    static CONTROLLER: LazyLock<ProactiveController> = LazyLock::new(ProactiveController::new);
-    &CONTROLLER
+    static CONTROLLER: LazyLock<Arc<ProactiveController>> = LazyLock::new(|| {
+        let controller = Arc::new(ProactiveController::new());
+        let callback_controller = Arc::clone(&controller);
+        allthecodes_types::proactive_context::register_context_blocked_callback(Arc::new(
+            move |blocked, reason| {
+                callback_controller.set_context_blocked(blocked, reason);
+            },
+        ));
+        controller
+    });
+    CONTROLLER.as_ref()
 }
 
 pub fn build_tick_payload(
@@ -213,6 +230,53 @@ mod tests {
         let inactive = controller.snapshot();
         assert_eq!(inactive.status, ProactiveStatus::Inactive);
         assert!(inactive.next_tick_at.is_none());
+    }
+
+    #[test]
+    fn context_blocked_clears_next_tick_and_resume_reschedules() {
+        let controller = ProactiveController::new();
+        controller.activate("test");
+
+        controller.set_context_blocked(true, "compact_required");
+        let blocked = controller.snapshot();
+        assert_eq!(blocked.status, ProactiveStatus::ContextBlocked);
+        assert!(blocked.next_tick_at.is_none());
+        assert_eq!(blocked.paused_reason.as_deref(), Some("compact_required"));
+        assert!(blocked.context_blocked);
+
+        controller.set_context_blocked(false, "compact_complete");
+        let active = controller.snapshot();
+        assert_eq!(active.status, ProactiveStatus::Active);
+        assert!(active.next_tick_at.is_some());
+        assert_eq!(active.source.as_deref(), Some("compact_complete"));
+        assert!(active.paused_reason.is_none());
+        assert!(!active.context_blocked);
+    }
+
+    #[test]
+    #[serial]
+    fn context_blocked_shared_signal_updates_global_controller() {
+        struct ControllerGuard;
+        impl Drop for ControllerGuard {
+            fn drop(&mut self) {
+                allthecodes_types::proactive_context::set_context_blocked(false, "test_cleanup");
+                global_controller().deactivate("test_cleanup");
+            }
+        }
+        let _guard = ControllerGuard;
+
+        global_controller().activate("test");
+        allthecodes_types::proactive_context::set_context_blocked(true, "context_limit");
+
+        let blocked = global_controller().snapshot();
+        assert_eq!(blocked.status, ProactiveStatus::ContextBlocked);
+        assert!(blocked.next_tick_at.is_none());
+
+        allthecodes_types::proactive_context::set_context_blocked(false, "context_ready");
+        let active = global_controller().snapshot();
+        assert_eq!(active.status, ProactiveStatus::Active);
+        assert!(!active.context_blocked);
+        assert!(active.next_tick_at.is_some());
     }
 
     #[test]

@@ -450,6 +450,12 @@ impl QueryEngine {
 
             // A.1: Clear turn-scoped state
             state_ref.write().tools.discovered_skill_names.clear();
+            if matches!(query_source, QuerySource::ProactiveTick)
+                && state_ref.read().app_state.tool_permission_context.mode
+                    == crate::types::tool::PermissionMode::Plan
+            {
+                allthecodes_types::proactive_context::set_context_blocked(true, "plan_mode");
+            }
 
             // A.2: Process user input (delegate to input_processing module)
             let current_msgs_snapshot = state_ref.read().transcript.messages.clone();
@@ -740,10 +746,17 @@ impl QueryEngine {
                 SubmitContextMode::Inherit => state_ref.read().transcript.messages.clone(),
                 SubmitContextMode::Compact => {
                     let messages = state_ref.read().transcript.messages.clone();
-                    crate::compact::pipeline::try_reactive_compact(messages.clone(), &model_name)
+                    let compacted =
+                        crate::compact::pipeline::try_reactive_compact(messages.clone(), &model_name)
                         .await
-                        .map(|result| result.messages)
-                        .unwrap_or(messages)
+                        .map(|result| result.messages);
+                    if compacted.is_some() {
+                        allthecodes_types::proactive_context::set_context_blocked(
+                            false,
+                            "context_ready",
+                        );
+                    }
+                    compacted.unwrap_or(messages)
                 }
                 SubmitContextMode::Isolated => processed.messages.clone(),
             };
