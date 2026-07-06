@@ -406,7 +406,10 @@ async fn run_proactive_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathB
                     process_state::write_worker_stopped(worker_id, None)?;
                     return Ok(());
                 }
-                match super::tick::enqueue_proactive_tick_once(Local::now(), false)? {
+                match super::tick::enqueue_proactive_tick_once(
+                    Local::now(),
+                    daemon_terminal_focus_for_worker(),
+                )? {
                     Some(command) => info!(
                         worker_id,
                         command_id = %command.command_id,
@@ -419,6 +422,18 @@ async fn run_proactive_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathB
             }
         }
     }
+}
+
+fn daemon_terminal_focus_for_worker() -> bool {
+    crate::process_state::status_snapshot()
+        .ok()
+        .and_then(|snapshot| match snapshot {
+            crate::process_state::DaemonStatusSnapshot::Running(state) => {
+                Some(!state.workers.is_empty())
+            }
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 async fn run_scheduler_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf) -> Result<()> {
@@ -751,5 +766,27 @@ mod tests {
             .iter()
             .filter(|spec| !spec.required)
             .all(|spec| spec.log_path.starts_with(temp.path())));
+    }
+
+    #[test]
+    #[serial]
+    fn default_worker_specs_include_proactive_without_kairos() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let _features = FeatureOverrideGuard::set(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+
+        let specs = default_worker_specs(temp.path());
+        let kinds = specs
+            .iter()
+            .map(|spec| spec.kind.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(kinds.contains(&"assistant-session"));
+        assert!(kinds.contains(&"proactive"));
+        assert!(!kinds.contains(&"bridge-sync"));
+        assert!(!kinds.contains(&"scheduler"));
     }
 }

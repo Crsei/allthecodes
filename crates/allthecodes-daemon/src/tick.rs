@@ -2,11 +2,11 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
 use allthecodes_config::features::{self, Feature};
 use allthecodes_services::skill_search_prefetch::{
     collect_skill_discovery_prefetch, start_skill_discovery_prefetch, SkillPrefetchContext,
 };
+use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
@@ -18,7 +18,7 @@ use crate::supervisor::ASSISTANT_WORKER_ID;
 
 pub const DEFAULT_TICK_INTERVAL_MS: u64 = 30_000;
 
-pub async fn tick_loop(_state: DaemonState) {
+pub async fn tick_loop(state: DaemonState) {
     let mut interval = tokio::time::interval(Duration::from_millis(DEFAULT_TICK_INTERVAL_MS));
     info!(
         "proactive tick loop started (interval: {}ms)",
@@ -28,7 +28,7 @@ pub async fn tick_loop(_state: DaemonState) {
     interval.tick().await;
     loop {
         interval.tick().await;
-        match enqueue_proactive_tick_once(Local::now(), false) {
+        match enqueue_proactive_tick_once(Local::now(), state.terminal_focus()) {
             Ok(Some(command)) => {
                 debug!(
                     command_id = %command.command_id,
@@ -69,33 +69,18 @@ pub fn enqueue_proactive_tick_once(
 
 pub fn build_tick_payload(now: DateTime<Local>, terminal_focus: bool) -> Result<Value> {
     let today_log = super::memory_log::read_today_log();
-    let tick_prompt = format!(
-        "<tick_tag>\nLocal time: {}\nTerminal focus: {}\n</tick_tag>{}",
-        now.format("%Y-%m-%d %H:%M:%S"),
+    let mut payload = allthecodes_services::proactive::build_tick_payload(
+        now,
         terminal_focus,
-        if today_log.is_empty() {
-            String::new()
-        } else {
-            format!("\n<daily_log>\n{}</daily_log>", today_log)
-        },
+        (!today_log.is_empty()).then_some(today_log.as_str()),
     );
-    let mut proactive = json!({
-        "time": now.to_rfc3339(),
-        "terminal_focus": terminal_focus,
-    });
     if let Some(skill_discovery) = skill_discovery_tick_summary() {
-        if let Some(proactive) = proactive.as_object_mut() {
+        if let Some(proactive) = payload["proactive"].as_object_mut() {
             proactive.insert("skill_discovery".to_string(), skill_discovery);
         }
     }
 
-    Ok(json!({
-        "text": tick_prompt,
-        "message_id": format!("proactive-tick-{}", now.timestamp_millis()),
-        "source": "proactive_tick",
-        "terminal_focus": terminal_focus,
-        "proactive": proactive,
-    }))
+    Ok(payload)
 }
 
 fn skill_discovery_tick_summary() -> Option<Value> {
@@ -103,12 +88,11 @@ fn skill_discovery_tick_summary() -> Option<Value> {
         return None;
     }
 
-    let result = collect_skill_discovery_prefetch(start_skill_discovery_prefetch(
-        SkillPrefetchContext {
+    let result =
+        collect_skill_discovery_prefetch(start_skill_discovery_prefetch(SkillPrefetchContext {
             session_id: ASSISTANT_WORKER_ID.to_string(),
             query: String::new(),
-        },
-    ));
+        }));
     Some(json!({
         "count": result.skills.len(),
         "remote_state": result.remote_state,
@@ -118,11 +102,11 @@ fn skill_discovery_tick_summary() -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use allthecodes_config::features::{self, FeatureFlags};
-    use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
     use crate::process_state::DaemonSleepState;
     use crate::protocol::DaemonCommandKind;
     use crate::supervisor::ASSISTANT_WORKER_ID;
+    use allthecodes_config::features::{self, FeatureFlags};
+    use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
     use chrono::{TimeZone, Utc};
     use serial_test::serial;
 
@@ -274,5 +258,31 @@ mod tests {
         let body = serde_json::to_string(&payload).unwrap();
         assert!(!body.contains("http://"));
         assert!(!body.contains("https://"));
+    }
+
+    #[test]
+    #[serial]
+    fn proactive_tick_payload_matches_shared_builder_fields() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        append_log_entry("shared payload daily log");
+        let now = Local.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+
+        let payload = build_tick_payload(now, true).expect("payload");
+        let today_log = crate::memory_log::read_today_log();
+        let expected = allthecodes_services::proactive::build_tick_payload(
+            now,
+            true,
+            (!today_log.is_empty()).then_some(today_log.as_str()),
+        );
+
+        assert_eq!(payload["source"], "proactive_tick");
+        assert_eq!(payload["terminal_focus"], expected["terminal_focus"]);
+        assert_eq!(payload["proactive"]["time"], expected["proactive"]["time"]);
+        assert_eq!(
+            payload["proactive"]["terminal_focus"],
+            expected["proactive"]["terminal_focus"]
+        );
+        assert_eq!(payload["text"], expected["text"]);
     }
 }

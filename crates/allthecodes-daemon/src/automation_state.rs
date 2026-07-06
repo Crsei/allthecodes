@@ -5,6 +5,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use allthecodes_config::features::Feature;
+use allthecodes_services::proactive::ProactiveStatus;
+
 use crate::process_state;
 use crate::protocol::{DaemonCommandKind, DaemonCommandStatus, DaemonEventKind};
 use crate::state::DaemonState;
@@ -37,6 +40,8 @@ pub struct AutomationState {
     pub status: AutomationStatus,
     pub sleeping_until: Option<DateTime<Utc>>,
     pub reason: Option<String>,
+    pub next_tick_at: Option<DateTime<Utc>>,
+    pub proactive_active: bool,
     pub terminal_focus: bool,
     pub query_running: bool,
     pub pending_input: bool,
@@ -50,6 +55,7 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
     let engine_sleeping = state.engine.is_sleeping();
     let query_running = state.is_query_running.load(Ordering::SeqCst) || assistant_command_active();
     let pending_input = pending_input_active();
+    let proactive = allthecodes_services::proactive::global_controller().snapshot();
     let sleeping = daemon_sleep.is_some() || engine_sleeping;
     let status = if pending_input {
         AutomationStatus::NeedsInput
@@ -69,6 +75,10 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
         status,
         sleeping_until,
         reason,
+        next_tick_at: proactive.next_tick_at,
+        proactive_active: proactive.status == ProactiveStatus::Active
+            || state.features.proactive
+            || allthecodes_config::features::enabled(Feature::Proactive),
         terminal_focus: state.terminal_focus(),
         query_running,
         pending_input,
@@ -188,6 +198,10 @@ mod tests {
     }
 
     fn make_daemon_state() -> DaemonState {
+        make_daemon_state_with_features(FeatureFlags::all_disabled())
+    }
+
+    fn make_daemon_state_with_features(features: FeatureFlags) -> DaemonState {
         let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
             cwd: ".".to_string(),
             tools: vec![],
@@ -209,7 +223,7 @@ mod tests {
             auto_save_session: false,
             agent_context: None,
         }));
-        DaemonState::new(engine, Arc::new(FeatureFlags::all_disabled()), 19836)
+        DaemonState::new(engine, Arc::new(features), 19836)
     }
 
     fn write_config_sleep_state(reason: &str) -> DaemonSleepState {
@@ -241,6 +255,43 @@ mod tests {
         assert!(!current.terminal_focus);
         assert!(current.sleeping_until.is_none());
         assert!(current.reason.is_none());
+        assert!(current.next_tick_at.is_none());
+        assert!(!current.proactive_active);
+    }
+
+    #[test]
+    #[serial]
+    fn snapshot_reports_proactive_controller_next_tick() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("automation_state_test");
+        let expected_next_tick_at = controller.snapshot().next_tick_at;
+        let state = make_daemon_state();
+
+        let current = snapshot(&state);
+        controller.deactivate("automation_state_test_cleanup");
+
+        assert_eq!(current.next_tick_at, expected_next_tick_at);
+        assert!(current.proactive_active);
+    }
+
+    #[test]
+    #[serial]
+    fn snapshot_reports_proactive_active_from_worker_feature() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        allthecodes_services::proactive::global_controller()
+            .deactivate("automation_state_test_cleanup");
+        let state = make_daemon_state_with_features(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+
+        let current = snapshot(&state);
+
+        assert!(current.next_tick_at.is_none());
+        assert!(current.proactive_active);
     }
 
     #[test]
