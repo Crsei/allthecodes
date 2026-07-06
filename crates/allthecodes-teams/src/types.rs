@@ -3,9 +3,12 @@
 //! Corresponds to TypeScript: `utils/swarm/teamHelpers.ts` types,
 //! `utils/teammate.ts`, `state/AppState.ts` (TeamContext).
 
+use std::{collections::HashMap, sync::Arc};
+
 use serde::{Deserialize, Serialize};
 
 use allthecodes_tools::tool::PermissionMode;
+use allthecodes_types::hooks::HookRunner;
 
 // ---------------------------------------------------------------------------
 // BackendType
@@ -145,15 +148,28 @@ pub struct TeammateMessage {
     pub summary: Option<String>,
 }
 
+/// Payload emitted when a teammate becomes idle.
+#[derive(Debug, Clone, Serialize)]
+pub struct TeammateIdleHookPayload {
+    pub team_name: String,
+    pub teammate_name: String,
+    pub agent_id: String,
+    pub reason: IdleReason,
+    pub task_list_id: String,
+    pub timestamp: String,
+}
+
 // ---------------------------------------------------------------------------
 // TeammateSpawnConfig
 // ---------------------------------------------------------------------------
 
 /// Configuration for spawning a new teammate.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TeammateSpawnConfig {
     pub name: String,
     pub team_name: String,
+    pub hooks: HashMap<String, serde_json::Value>,
+    pub hook_runner: Option<Arc<dyn HookRunner>>,
     pub color: Option<String>,
     pub plan_mode_required: bool,
     pub prompt: String,
@@ -166,6 +182,32 @@ pub struct TeammateSpawnConfig {
     pub parent_session_id: String,
     pub permissions: Vec<String>,
     pub allow_permission_prompts: bool,
+}
+
+impl std::fmt::Debug for TeammateSpawnConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TeammateSpawnConfig")
+            .field("name", &self.name)
+            .field("team_name", &self.team_name)
+            .field("hooks", &self.hooks)
+            .field(
+                "hook_runner",
+                &self.hook_runner.as_ref().map(|_| "Some(..)"),
+            )
+            .field("color", &self.color)
+            .field("plan_mode_required", &self.plan_mode_required)
+            .field("prompt", &self.prompt)
+            .field("agent_type", &self.agent_type)
+            .field("cwd", &self.cwd)
+            .field("model", &self.model)
+            .field("system_prompt", &self.system_prompt)
+            .field("system_prompt_mode", &self.system_prompt_mode)
+            .field("worktree_path", &self.worktree_path)
+            .field("parent_session_id", &self.parent_session_id)
+            .field("permissions", &self.permissions)
+            .field("allow_permission_prompts", &self.allow_permission_prompts)
+            .finish()
+    }
 }
 
 /// How a custom system prompt interacts with the default.
@@ -339,6 +381,26 @@ mod tests {
         let parsed: TeammateMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.from, "researcher");
         assert!(!parsed.read);
+    }
+
+    #[test]
+    fn teammate_idle_hook_payload_serializes_expected_fields() {
+        let payload = TeammateIdleHookPayload {
+            team_name: "team-a".into(),
+            teammate_name: "worker".into(),
+            agent_id: "worker@team-a".into(),
+            reason: IdleReason::Available,
+            task_list_id: "team-a".into(),
+            timestamp: "2026-07-06T12:00:00Z".into(),
+        };
+
+        let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(json["team_name"], "team-a");
+        assert_eq!(json["teammate_name"], "worker");
+        assert_eq!(json["agent_id"], "worker@team-a");
+        assert_eq!(json["reason"], "available");
+        assert_eq!(json["task_list_id"], "team-a");
+        assert_eq!(json["timestamp"], "2026-07-06T12:00:00Z");
     }
 
     #[test]

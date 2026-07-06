@@ -109,7 +109,9 @@ impl CommandSurface {
             "resume" => Some(Self::Resume(ResumeSurface::new(cwd))),
             "sandbox" => Some(Self::Sandbox(SandboxSurface::new(state))),
             "skills" => Some(Self::Skills(SkillsSurface::new())),
-            "subagents" | "agent-runtime" => Some(Self::Subagents(SubagentsSurface::new(session_id))),
+            "subagents" | "agent-runtime" => {
+                Some(Self::Subagents(SubagentsSurface::new(session_id)))
+            }
             "tasks" => Some(Self::Tasks(TasksSurface::new())),
             "team" | "teams" => Some(Self::Team(TeamSurface::new(state))),
             _ => None,

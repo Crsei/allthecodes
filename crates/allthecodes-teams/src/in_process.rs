@@ -310,6 +310,8 @@ impl TeammateExecutor for InProcessBackend {
             system_prompt: config.system_prompt.clone(),
             system_prompt_mode: config.system_prompt_mode,
             cwd: config.cwd.clone(),
+            hooks: config.hooks.clone(),
+            hook_runner: config.hook_runner.clone(),
             cancellation: cancellation.clone(),
         };
 
@@ -490,6 +492,8 @@ mod tests {
             parent_session_id: "sess-1".into(),
             permissions: vec![],
             allow_permission_prompts: false,
+            hooks: Default::default(),
+            hook_runner: None,
         };
 
         let result = backend.spawn(config).await.unwrap();
@@ -524,6 +528,8 @@ mod tests {
             parent_session_id: "s".into(),
             permissions: vec![],
             allow_permission_prompts: false,
+            hooks: Default::default(),
+            hook_runner: None,
         };
 
         backend.spawn(config).await.unwrap();

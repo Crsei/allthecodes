@@ -331,6 +331,8 @@ async fn spawn(ctx: &mut allthecodes_commands::CommandContext, rest: &str) -> St
             parent_session_id: ctx.session_id.to_string(),
             permissions: vec![],
             allow_permission_prompts: false,
+            hooks: ctx.app_state.hooks.clone(),
+            hook_runner: None,
         })
         .await
     {

@@ -3,7 +3,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-use allthecodes_services::agent_runtime_history::{load_dashboard_snapshot, AgentRuntimeAgentStatus};
+use allthecodes_services::agent_runtime_history::{
+    load_dashboard_snapshot, AgentRuntimeAgentStatus,
+};
 use allthecodes_types::agent_runtime_dashboard::{
     AgentRuntimeAgentSummary, AgentRuntimeDashboardQuery, AgentRuntimeDashboardResponse,
     AgentRuntimeExecutionRecordItem,
@@ -100,10 +102,7 @@ fn format_agent_line(agent: &AgentRuntimeAgentSummary) -> String {
 fn format_execution_line(item: &AgentRuntimeExecutionRecordItem) -> String {
     let record = &item.record;
     let status = if record.had_error { "failed" } else { "ok" };
-    let command = record
-        .command
-        .as_deref()
-        .unwrap_or(record.tool.as_str());
+    let command = record.command.as_deref().unwrap_or(record.tool.as_str());
     format!(
         "- {} {} [{}] {}",
         record.agent_id, record.tool, status, command

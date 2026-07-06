@@ -72,7 +72,11 @@ impl SubagentsSurface {
             out.push_str("No subagent runtime activity recorded for this session.\n");
         } else {
             for (index, row) in self.rows.iter().enumerate() {
-                let marker = if index == self.selected_index { ">" } else { " " };
+                let marker = if index == self.selected_index {
+                    ">"
+                } else {
+                    " "
+                };
                 out.push_str(&format!(
                     "{marker} {} [{}] tools={} failed={} model={} {}\n",
                     row.agent_id,
@@ -128,9 +132,7 @@ impl SubagentsSurface {
         self.summary = snapshot.summary;
         self.updated_at_ms = Some(snapshot.updated_at_ms);
         self.rows = snapshot.agents.iter().map(row_from_agent).collect();
-        self.selected_index = self
-            .selected_index
-            .min(self.rows.len().saturating_sub(1));
+        self.selected_index = self.selected_index.min(self.rows.len().saturating_sub(1));
         self.error = None;
     }
 }

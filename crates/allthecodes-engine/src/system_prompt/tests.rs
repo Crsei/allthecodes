@@ -238,7 +238,7 @@ fn test_coordinator_mode_injects_prompt_section_when_enabled() {
 
     assert!(joined.contains("# Coordinator Mode"));
     assert!(joined.contains("SendMessage"));
-    assert!(joined.contains("TaskList"));
+    assert!(!joined.contains("TaskList"));
     assert!(joined.contains("TaskStop"));
 }
 

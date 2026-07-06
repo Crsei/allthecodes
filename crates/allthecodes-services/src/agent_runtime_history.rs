@@ -127,8 +127,14 @@ impl AgentAccumulator {
     }
 
     fn observe_time(&mut self, ts_millis: i64) {
-        self.started_at_ms = Some(self.started_at_ms.map_or(ts_millis, |value| value.min(ts_millis)));
-        self.last_event_at_ms = Some(self.last_event_at_ms.map_or(ts_millis, |value| value.max(ts_millis)));
+        self.started_at_ms = Some(
+            self.started_at_ms
+                .map_or(ts_millis, |value| value.min(ts_millis)),
+        );
+        self.last_event_at_ms = Some(
+            self.last_event_at_ms
+                .map_or(ts_millis, |value| value.max(ts_millis)),
+        );
     }
 
     fn apply_status(&mut self, status: AgentRuntimeAgentStatus) {
@@ -266,12 +272,16 @@ pub fn load_dashboard_snapshot(
     query: AgentRuntimeDashboardQuery,
 ) -> Result<AgentRuntimeDashboardResponse> {
     let session_id = query.session_id;
-    let limit = query.limit.unwrap_or(DEFAULT_DASHBOARD_LIMIT).min(MAX_DASHBOARD_LIMIT);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_DASHBOARD_LIMIT)
+        .min(MAX_DASHBOARD_LIMIT);
 
     allthecodes_db::run_sqlite_sync("allthecodes-runtime-history-dashboard", async move {
         let pool = migrated_pool().await?;
         let events = fetch_events(&pool, session_id.as_deref(), limit).await?;
-        let execution_records = fetch_execution_records(&pool, session_id.as_deref(), limit).await?;
+        let execution_records =
+            fetch_execution_records(&pool, session_id.as_deref(), limit).await?;
         let agents = derive_agent_summaries(&events, &execution_records);
         let summary = summarize_agents(&agents);
 
@@ -539,7 +549,11 @@ mod tests {
         }
     }
 
-    fn execution_record(session_id: &str, agent_id: &str, had_error: bool) -> AgentRuntimeExecutionRecord {
+    fn execution_record(
+        session_id: &str,
+        agent_id: &str,
+        had_error: bool,
+    ) -> AgentRuntimeExecutionRecord {
         AgentRuntimeExecutionRecord {
             session_id: session_id.to_string(),
             agent_id: agent_id.to_string(),
@@ -604,7 +618,10 @@ mod tests {
         assert_eq!(snapshot.events.len(), 2);
         assert_eq!(snapshot.execution_records.len(), 1);
         assert_eq!(snapshot.agents[0].agent_id, "agent-a");
-        assert_eq!(snapshot.agents[0].status, AgentRuntimeAgentStatus::Completed);
+        assert_eq!(
+            snapshot.agents[0].status,
+            AgentRuntimeAgentStatus::Completed
+        );
     }
 
     #[test]

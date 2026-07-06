@@ -165,8 +165,7 @@ pub(super) fn coordinator_prompt_section() -> Option<String> {
             "work materially helps, and keep ownership of final integration and verification.\n\n",
             "## Worker Coordination\n",
             "- Spawn or address workers only for bounded tasks with clear ownership.\n",
-            "- Use SendMessage for direct worker updates and concise handoffs.\n",
-            "- Use TaskList to inspect active work before assigning more work.\n",
+            "- Use SendMessage to ask workers for task state, progress, and evidence before assigning more work.\n",
             "- Use TaskStop to cancel stale, duplicate, or unsafe worker tasks.\n"
         )
         .to_string()

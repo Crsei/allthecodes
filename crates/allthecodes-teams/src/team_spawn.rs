@@ -222,6 +222,8 @@ impl Tool for TeamSpawnTool {
                 parent_session_id: ctx.session_id.clone(),
                 permissions: vec![],
                 allow_permission_prompts: false,
+                hooks: app_state.hooks.clone(),
+                hook_runner: Some(ctx.hook_runner.clone()),
             })
             .await?;
         if !spawn_result.success {

@@ -17,8 +17,8 @@ pub mod bash_result;
 pub mod brief;
 pub use agent_runtime_dashboard::{
     AgentRuntimeAgentStatus, AgentRuntimeAgentSummary, AgentRuntimeDashboardQuery,
-    AgentRuntimeDashboardResponse, AgentRuntimeDashboardSummary,
-    AgentRuntimeEventItem, AgentRuntimeExecutionRecordItem,
+    AgentRuntimeDashboardResponse, AgentRuntimeDashboardSummary, AgentRuntimeEventItem,
+    AgentRuntimeExecutionRecordItem,
 };
 pub use agent_runtime_record::{AgentRuntimeExecutionRecord, AgentRuntimePermissionDecision};
 pub use bash_result::{BashResult, ShellExecutionOutput};

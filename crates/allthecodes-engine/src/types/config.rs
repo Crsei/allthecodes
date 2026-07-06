@@ -345,7 +345,10 @@ mod tests {
         ];
 
         for source in sources {
-            assert!(!source.is_autonomous(), "{source:?} should not be autonomous");
+            assert!(
+                !source.is_autonomous(),
+                "{source:?} should not be autonomous"
+            );
         }
     }
 

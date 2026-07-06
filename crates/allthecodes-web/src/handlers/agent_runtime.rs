@@ -65,10 +65,7 @@ async fn dashboard_handler(
 }
 
 pub(crate) fn handlers() -> HandlerRegistry {
-    HandlerRegistry::new().handle(
-        ApiMethod::AgentRuntimeDashboard,
-        get(dashboard_handler),
-    )
+    HandlerRegistry::new().handle(ApiMethod::AgentRuntimeDashboard, get(dashboard_handler))
 }
 
 #[cfg(test)]

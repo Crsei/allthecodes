@@ -5,6 +5,8 @@
 //! Runs a teammate's QueryEngine inside a `task_local!` scope,
 //! processing messages from the mailbox and handling protocol messages.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -37,6 +39,8 @@ pub struct InProcessRunnerConfig {
     pub system_prompt: Option<String>,
     pub system_prompt_mode: Option<SystemPromptMode>,
     pub cwd: String,
+    pub hooks: HashMap<String, serde_json::Value>,
+    pub hook_runner: Option<Arc<dyn allthecodes_types::hooks::HookRunner>>,
     pub cancellation: tokio_util::sync::CancellationToken,
 }
 
@@ -141,10 +145,12 @@ async fn run_teammate(config: InProcessRunnerConfig) -> Result<()> {
             }),
         };
 
+        let hook_runner = config
+            .hook_runner
+            .clone()
+            .unwrap_or_else(|| Arc::new(allthecodes_tools::hooks::ShellHookRunner::new()));
         let mut engine = QueryEngine::new(engine_config);
-        engine.set_hook_runner(std::sync::Arc::new(
-            allthecodes_tools::hooks::ShellHookRunner::new(),
-        ));
+        engine.set_hook_runner(hook_runner.clone());
         engine.set_command_dispatcher(std::sync::Arc::new(
             allthecodes_commands::DefaultCommandDispatcher::new(
                 allthecodes_commands::runtime::command_metadata_snapshot(),
@@ -162,6 +168,8 @@ async fn run_teammate(config: InProcessRunnerConfig) -> Result<()> {
                     &agent_name,
                     &team_name,
                     &task_id,
+                    &config.hooks,
+                    &hook_runner,
                     &cancellation,
                 )
                 .await?;
@@ -306,6 +314,8 @@ async fn drive_engine_turn(
     agent_name: &str,
     team_name: &str,
     task_id: &str,
+    hooks: &HashMap<String, serde_json::Value>,
+    hook_runner: &Arc<dyn allthecodes_types::hooks::HookRunner>,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<bool> {
     use allthecodes_types::sdk::SdkMessage;
@@ -332,12 +342,16 @@ async fn drive_engine_turn(
                         InProcessBackend::set_task_idle(task_id, true);
                         debug!(agent_id = %identity.agent_id, "query completed, marking idle");
 
-                        let _ = send_idle_notification(
+                        let _ = send_teammate_idle_notification(
+                            hooks,
+                            hook_runner,
+                            identity,
                             agent_name,
                             team_name,
                             IdleReason::Available,
                             None,
-                        );
+                        )
+                        .await;
                         return Ok(false);
                     }
                     Some(_) => {
@@ -619,6 +633,42 @@ fn send_idle_notification(
     mailbox::write_to_mailbox(super::constants::TEAM_LEAD_NAME, message, team_name)
 }
 
+async fn send_teammate_idle_notification(
+    hooks: &HashMap<String, serde_json::Value>,
+    hook_runner: &Arc<dyn allthecodes_types::hooks::HookRunner>,
+    identity: &TeammateIdentity,
+    agent_name: &str,
+    team_name: &str,
+    reason: IdleReason,
+    summary: Option<&str>,
+) -> Result<()> {
+    let notification_result = send_idle_notification(agent_name, team_name, reason, summary);
+
+    let configs = hook_runner.load_hook_configs(hooks, "TeammateIdle");
+    if !configs.is_empty() {
+        let payload = serde_json::to_value(TeammateIdleHookPayload {
+            team_name: team_name.to_string(),
+            teammate_name: agent_name.to_string(),
+            agent_id: identity.agent_id.clone(),
+            reason,
+            task_list_id: team_name.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        })?;
+        if let Err(error) = hook_runner
+            .run_event_hooks("TeammateIdle", &payload, &configs)
+            .await
+        {
+            warn!(
+                agent_id = %identity.agent_id,
+                error = %error,
+                "teammate idle hook failed"
+            );
+        }
+    }
+
+    notification_result
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -673,6 +723,8 @@ mod tests {
             system_prompt: None,
             system_prompt_mode: None,
             cwd: "/tmp".into(),
+            hooks: Default::default(),
+            hook_runner: None,
             cancellation: tokio_util::sync::CancellationToken::new(),
         };
         assert_eq!(config.identity.agent_id, "worker@team");
