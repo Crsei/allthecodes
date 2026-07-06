@@ -33,7 +33,9 @@ impl Tool for SleepTool {
     }
 
     fn is_enabled(&self) -> bool {
-        features::enabled(Feature::Proactive) || features::enabled(Feature::Kairos)
+        features::enabled(Feature::Proactive)
+            || features::enabled(Feature::Kairos)
+            || allthecodes_types::proactive_context::is_proactive_active()
     }
 
     fn is_read_only(&self, _input: &Value) -> bool {
@@ -125,6 +127,33 @@ mod tests {
         }
     }
 
+    struct ProactiveActiveGuard;
+
+    impl Drop for ProactiveActiveGuard {
+        fn drop(&mut self) {
+            allthecodes_types::proactive_context::set_proactive_active(false);
+        }
+    }
+
+    struct FeatureOverrideGuard(Option<allthecodes_config::features::FeatureFlags>);
+
+    impl FeatureOverrideGuard {
+        fn set(flags: allthecodes_config::features::FeatureFlags) -> Self {
+            let previous = allthecodes_config::features::runtime_override();
+            allthecodes_config::features::set_runtime_override(flags);
+            Self(previous)
+        }
+    }
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(flags) => allthecodes_config::features::set_runtime_override(flags),
+                None => allthecodes_config::features::clear_runtime_override(),
+            }
+        }
+    }
+
     #[test]
     fn test_sleep_tool_name() {
         let tool = SleepTool;
@@ -147,6 +176,18 @@ mod tests {
     fn test_sleep_tool_is_read_only() {
         let tool = SleepTool;
         assert!(tool.is_read_only(&json!({})));
+    }
+
+    #[test]
+    fn test_sleep_tool_is_enabled_by_active_proactive_controller() {
+        let _guard = ProactiveActiveGuard;
+        let _features =
+            FeatureOverrideGuard::set(allthecodes_config::features::FeatureFlags::all_disabled());
+        allthecodes_types::proactive_context::set_proactive_active(true);
+
+        let tool = SleepTool;
+
+        assert!(tool.is_enabled());
     }
 
     #[test]

@@ -425,15 +425,9 @@ async fn run_proactive_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathB
 }
 
 fn daemon_terminal_focus_for_worker() -> bool {
-    crate::process_state::status_snapshot()
-        .ok()
-        .and_then(|snapshot| match snapshot {
-            crate::process_state::DaemonStatusSnapshot::Running(state) => {
-                Some(!state.workers.is_empty())
-            }
-            _ => None,
-        })
-        .unwrap_or(false)
+    // Worker processes cannot observe the daemon's live SSE client set; default
+    // to away/unfocused rather than inferring focus from persisted worker state.
+    false
 }
 
 async fn run_scheduler_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf) -> Result<()> {
@@ -700,6 +694,27 @@ mod tests {
         assert!(state.binary_path.is_some());
         assert_eq!(state.log_path, log_path);
         assert!(state.process_start_key.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn proactive_worker_terminal_focus_defaults_unfocused_without_frontend() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        process_state::write_started(19836, temp.path()).expect("supervisor state");
+        let log_path = process_state::worker_log_path(PROACTIVE_WORKER_ID);
+        process_state::write_worker_running(
+            PROACTIVE_WORKER_ID,
+            WorkerKind::Proactive.as_str(),
+            std::process::id(),
+            temp.path(),
+            &log_path,
+            0,
+            false,
+        )
+        .expect("worker state");
+
+        assert!(!daemon_terminal_focus_for_worker());
     }
 
     #[test]

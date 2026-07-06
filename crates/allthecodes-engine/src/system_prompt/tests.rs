@@ -274,6 +274,31 @@ fn kairos_prompt_injects_proactive_section_when_kairos_enabled() {
 
 #[test]
 #[serial_test::serial]
+fn proactive_prompt_injects_section_when_controller_is_active_without_feature_gate() {
+    let _guard = FeatureOverrideGuard;
+    features::set_runtime_override(FeatureFlags::all_disabled());
+    allthecodes_types::proactive_context::set_proactive_active(true);
+    prompt_sections::clear_cache();
+
+    let (parts, _, _) = build_system_prompt(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+    );
+    let joined = parts.join("\n");
+
+    assert!(joined.contains("# Autonomous work"));
+    assert!(joined.contains("Sleep"));
+    assert!(joined.contains("terminalFocus"));
+}
+
+#[test]
+#[serial_test::serial]
 fn proactive_compact_resume_reminder_uses_compact_boundary_metadata() {
     let _guard = FeatureOverrideGuard;
     let mut flags = FeatureFlags::all_disabled();

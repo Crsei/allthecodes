@@ -34,6 +34,8 @@ mod tests {
     use super::*;
     use crate::{CommandContext, CommandHandler, CommandResult};
     use allthecodes_bootstrap::SessionId;
+    use allthecodes_config::features::{self, FeatureFlags};
+    use allthecodes_engine::types::tool::Tool;
     use std::path::PathBuf;
 
     struct ProactiveControllerResetGuard(
@@ -43,6 +45,25 @@ mod tests {
     impl Drop for ProactiveControllerResetGuard {
         fn drop(&mut self) {
             self.0.deactivate("test-reset");
+        }
+    }
+
+    struct FeatureOverrideGuard(Option<FeatureFlags>);
+
+    impl FeatureOverrideGuard {
+        fn set(flags: FeatureFlags) -> Self {
+            let previous = features::runtime_override();
+            features::set_runtime_override(flags);
+            Self(previous)
+        }
+    }
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(flags) => features::set_runtime_override(flags),
+                None => features::clear_runtime_override(),
+            }
         }
     }
 
@@ -82,5 +103,23 @@ mod tests {
             controller.snapshot().status,
             allthecodes_services::proactive::ProactiveStatus::Inactive
         );
+    }
+
+    #[tokio::test]
+    async fn proactive_command_enables_sleep_tool_without_feature_env() {
+        let controller = allthecodes_services::proactive::global_controller();
+        let _reset_guard = ProactiveControllerResetGuard(controller);
+        let _features = FeatureOverrideGuard::set(FeatureFlags::all_disabled());
+        controller.deactivate("test-reset");
+
+        let handler = ProactiveCmdHandler;
+        let mut ctx = test_ctx();
+        let result = handler.execute("", &mut ctx).await.unwrap();
+
+        match result {
+            CommandResult::Output(text) => assert!(text.contains("Proactive mode enabled")),
+            _ => panic!("expected output"),
+        }
+        assert!(allthecodes_tools::exec::SleepTool.is_enabled());
     }
 }

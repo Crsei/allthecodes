@@ -191,10 +191,16 @@ pub(super) fn kairos_brief_section() -> Option<String> {
     })
 }
 
-pub(super) fn kairos_proactive_section() -> Option<String> {
+fn proactive_runtime_enabled() -> bool {
     use allthecodes_config::features::{self, Feature};
 
-    (features::enabled(Feature::Kairos) || features::enabled(Feature::Proactive)).then(|| {
+    features::enabled(Feature::Kairos)
+        || features::enabled(Feature::Proactive)
+        || allthecodes_types::proactive_context::is_proactive_active()
+}
+
+pub(super) fn kairos_proactive_section() -> Option<String> {
+    proactive_runtime_enabled().then(|| {
         concat!(
             "# Autonomous work\n\n",
             "You are running as a resident assistant. Periodic `<tick_tag>` prompts ",
@@ -227,9 +233,7 @@ pub(super) fn kairos_proactive_section() -> Option<String> {
 }
 
 pub(super) fn proactive_compact_resume_section(messages: Option<&[Message]>) -> Option<String> {
-    use allthecodes_config::features::{self, Feature};
-
-    if !(features::enabled(Feature::Kairos) || features::enabled(Feature::Proactive)) {
+    if !proactive_runtime_enabled() {
         return None;
     }
     if !allthecodes_types::proactive_context::is_proactive_active() {
