@@ -1,5 +1,9 @@
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
+use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Local, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -11,6 +15,7 @@ pub use allthecodes_config::proactive_sleep::{
 };
 
 pub const DEFAULT_TICK_INTERVAL_MS: u64 = 30_000;
+pub const DURABLE_PROACTIVE_STATE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +33,14 @@ pub struct ProactiveSnapshot {
     pub next_tick_at: Option<DateTime<Utc>>,
     pub paused_reason: Option<String>,
     pub context_blocked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DurableProactiveState {
+    pub schema_version: u32,
+    pub active: bool,
+    pub next_tick_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug)]
@@ -155,6 +168,42 @@ pub fn global_controller() -> &'static ProactiveController {
     CONTROLLER.as_ref()
 }
 
+pub fn write_durable_state(
+    active: bool,
+    next_tick_at: Option<DateTime<Utc>>,
+) -> Result<DurableProactiveState> {
+    let state = DurableProactiveState {
+        schema_version: DURABLE_PROACTIVE_STATE_SCHEMA_VERSION,
+        active,
+        next_tick_at,
+        updated_at: Utc::now(),
+    };
+    write_durable_state_file(&state)?;
+    Ok(state)
+}
+
+pub fn read_durable_state() -> Result<Option<DurableProactiveState>> {
+    let path = durable_state_path();
+    read_durable_state_from_path(&path, |path| fs::read_to_string(path))
+}
+
+pub fn clear_durable_state(reason: &str) -> Result<bool> {
+    let path = durable_state_path();
+    match fs::remove_file(&path) {
+        Ok(()) => {
+            tracing::debug!(
+                reason = %reason,
+                path = %path.display(),
+                "cleared durable proactive state"
+            );
+            Ok(true)
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to clear daemon proactive state {}", path.display())),
+    }
+}
+
 pub fn build_tick_payload(
     now: DateTime<Local>,
     terminal_focus: bool,
@@ -194,6 +243,55 @@ fn inactive_snapshot(source: Option<String>) -> ProactiveSnapshot {
 
 fn next_tick_at() -> DateTime<Utc> {
     Utc::now() + Duration::milliseconds(DEFAULT_TICK_INTERVAL_MS as i64)
+}
+
+fn durable_state_path() -> PathBuf {
+    allthecodes_config::paths::daemon_dir().join("proactive-state.json")
+}
+
+fn write_durable_state_file(state: &DurableProactiveState) -> Result<()> {
+    let path = durable_state_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create daemon directory {}", parent.display()))?;
+    }
+
+    let tmp = path.with_file_name(format!(
+        "proactive-state.json.{}.{}.tmp",
+        std::process::id(),
+        Utc::now().timestamp_micros()
+    ));
+    fs::write(&tmp, serde_json::to_vec_pretty(state)?)
+        .with_context(|| format!("failed to write daemon proactive state {}", tmp.display()))?;
+    fs::rename(&tmp, &path).with_context(|| {
+        format!(
+            "failed to replace daemon proactive state {} with {}",
+            path.display(),
+            tmp.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn read_durable_state_from_path<F>(
+    path: &Path,
+    read_to_string: F,
+) -> Result<Option<DurableProactiveState>>
+where
+    F: FnOnce(&Path) -> std::io::Result<String>,
+{
+    let text = match read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read daemon proactive state {}", path.display())
+            })
+        }
+    };
+    let state = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse daemon proactive state {}", path.display()))?;
+    Ok(Some(state))
 }
 
 fn normalized_text(text: &str) -> Option<String> {

@@ -11,8 +11,8 @@ use tracing::warn;
 use super::atomic_write_json;
 use super::paths::{
     bridge_session_state_path, control_token_path, daemon_dir, health_url, logs_dir,
-    proactive_state_path, shutdown_request_path, sleep_state_path, state_path, worker_state_path,
-    workers_dir,
+    proactive_state_path, shutdown_request_path, sleep_state_path, state_path,
+    terminal_focus_state_path, worker_state_path, workers_dir,
 };
 use super::platform::{process_matches_record, process_start_key};
 #[cfg(feature = "sqlite-storage")]
@@ -20,8 +20,8 @@ use super::sqlite_store;
 use super::types::{
     DaemonBridgeSessionState, DaemonControlToken, DaemonProactiveState, DaemonProcessState,
     DaemonRunStatus, DaemonShutdownRequest, DaemonSleepState, DaemonStatusSnapshot,
-    DaemonWorkerState, DaemonWorkerStatus, DaemonWorkerSummary, ProcessIdentityStatus,
-    StaleStateCleanupReport, SCHEMA_VERSION,
+    DaemonTerminalFocusState, DaemonWorkerState, DaemonWorkerStatus, DaemonWorkerSummary,
+    ProcessIdentityStatus, StaleStateCleanupReport, SCHEMA_VERSION,
 };
 
 const DEFAULT_LOG_TAIL_BYTES: usize = 16 * 1024;
@@ -57,6 +57,7 @@ pub fn write_stopped(port: u16, cwd: &Path) -> Result<DaemonProcessState> {
     clear_control_token()?;
     clear_sleep_state()?;
     clear_proactive_state()?;
+    clear_terminal_focus_state()?;
     let now = Utc::now();
     let state = DaemonProcessState {
         schema_version: SCHEMA_VERSION,
@@ -313,6 +314,7 @@ pub fn cleanup_stale_state_before_start() -> Result<StaleStateCleanupReport> {
     report.control_token_removed = remove_state_value("control-token", &control_token_path())?;
     report.shutdown_request_removed =
         remove_state_value("shutdown-request", &shutdown_request_path())?;
+    let _ = clear_terminal_focus_state();
     if read_sleep_state()?.is_some_and(|sleep| sleep.sleeping_until <= Utc::now()) {
         report.expired_sleep_state_removed =
             remove_state_value("sleep-state", &sleep_state_path())?;
@@ -509,40 +511,93 @@ pub fn write_proactive_state(
     active: bool,
     next_tick_at: Option<DateTime<Utc>>,
 ) -> Result<DaemonProactiveState> {
-    let now = Utc::now();
-    let state = DaemonProactiveState {
-        schema_version: SCHEMA_VERSION,
+    let state = map_durable_proactive_state(allthecodes_services::proactive::write_durable_state(
         active,
         next_tick_at,
-        updated_at: now,
-    };
-    write_state_value("proactive-state", &proactive_state_path(), &state)?;
+    )?);
+    write_proactive_state_sqlite_backup(&state);
     Ok(state)
 }
 
 pub fn read_proactive_state() -> Result<Option<DaemonProactiveState>> {
     #[cfg(feature = "sqlite-storage")]
-    match sqlite_store::read_state_value::<DaemonProactiveState>("proactive-state") {
-        Ok(state) => return Ok(state),
-        Err(err) => warn!(
-            error = %err,
-            "failed to read daemon proactive state from sqlite; falling back to JSON"
-        ),
+    {
+        let sqlite_state =
+            match sqlite_store::read_state_value::<DaemonProactiveState>("proactive-state") {
+                Ok(state) => state,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "failed to read daemon proactive state from sqlite; falling back to JSON"
+                    );
+                    None
+                }
+            };
+        let json_state = match allthecodes_services::proactive::read_durable_state() {
+            Ok(state) => state.map(map_durable_proactive_state),
+            Err(err) if sqlite_state.is_some() => {
+                warn!(
+                    error = %err,
+                    "failed to read daemon proactive state JSON backup; using sqlite"
+                );
+                None
+            }
+            Err(err) => return Err(err),
+        };
+        return Ok(reconcile_proactive_states(sqlite_state, json_state));
     }
 
-    let path = proactive_state_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read daemon proactive state {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse daemon proactive state {}", path.display()))
-        .map(Some)
+    #[cfg(not(feature = "sqlite-storage"))]
+    allthecodes_services::proactive::read_durable_state()
+        .map(|state| state.map(map_durable_proactive_state))
 }
 
 pub fn clear_proactive_state() -> Result<()> {
     remove_state_value("proactive-state", &proactive_state_path()).map(|_| ())
+}
+
+pub fn write_terminal_focus_state(focused: bool) -> Result<DaemonTerminalFocusState> {
+    let state = DaemonTerminalFocusState {
+        schema_version: SCHEMA_VERSION,
+        focused,
+        updated_at: Utc::now(),
+    };
+    write_state_value("terminal-focus-state", &terminal_focus_state_path(), &state)?;
+    Ok(state)
+}
+
+pub fn read_terminal_focus_state() -> Result<Option<DaemonTerminalFocusState>> {
+    #[cfg(feature = "sqlite-storage")]
+    match sqlite_store::read_state_value::<DaemonTerminalFocusState>("terminal-focus-state") {
+        Ok(state) => return Ok(state),
+        Err(err) => warn!(
+            error = %err,
+            "failed to read daemon terminal focus state from sqlite; falling back to JSON"
+        ),
+    }
+
+    let path = terminal_focus_state_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path).with_context(|| {
+        format!(
+            "failed to read daemon terminal focus state {}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse daemon terminal focus state {}",
+                path.display()
+            )
+        })
+        .map(Some)
+}
+
+fn clear_terminal_focus_state() -> Result<()> {
+    remove_state_value("terminal-focus-state", &terminal_focus_state_path()).map(|_| ())
 }
 
 fn map_sleep_state(state: allthecodes_config::proactive_sleep::SleepState) -> DaemonSleepState {
@@ -554,6 +609,17 @@ fn map_sleep_state(state: allthecodes_config::proactive_sleep::SleepState) -> Da
     }
 }
 
+fn map_durable_proactive_state(
+    state: allthecodes_services::proactive::DurableProactiveState,
+) -> DaemonProactiveState {
+    DaemonProactiveState {
+        schema_version: state.schema_version,
+        active: state.active,
+        next_tick_at: state.next_tick_at,
+        updated_at: state.updated_at,
+    }
+}
+
 fn write_sleep_state_sqlite_backup(state: &DaemonSleepState) {
     #[cfg(feature = "sqlite-storage")]
     if let Err(err) = sqlite_store::write_state_value("sleep-state", state) {
@@ -561,6 +627,19 @@ fn write_sleep_state_sqlite_backup(state: &DaemonSleepState) {
             key = "sleep-state",
             error = %err,
             "failed to write daemon sleep state to sqlite; keeping JSON backup"
+        );
+    }
+    #[cfg(not(feature = "sqlite-storage"))]
+    let _ = state;
+}
+
+fn write_proactive_state_sqlite_backup(state: &DaemonProactiveState) {
+    #[cfg(feature = "sqlite-storage")]
+    if let Err(err) = sqlite_store::write_state_value("proactive-state", state) {
+        warn!(
+            key = "proactive-state",
+            error = %err,
+            "failed to write daemon proactive state to sqlite; keeping JSON backup"
         );
     }
     #[cfg(not(feature = "sqlite-storage"))]
@@ -595,6 +674,33 @@ fn reconcile_sleep_states(
 }
 
 #[cfg(feature = "sqlite-storage")]
+fn reconcile_proactive_states(
+    sqlite_state: Option<DaemonProactiveState>,
+    json_state: Option<DaemonProactiveState>,
+) -> Option<DaemonProactiveState> {
+    match (sqlite_state, json_state) {
+        (Some(sqlite), Some(json)) if json.updated_at > sqlite.updated_at => {
+            write_proactive_state_sqlite_backup(&json);
+            Some(json)
+        }
+        (Some(sqlite), Some(json)) if sqlite.updated_at > json.updated_at => {
+            write_proactive_state_json_backup(&sqlite);
+            Some(sqlite)
+        }
+        (Some(sqlite), Some(_json)) => Some(sqlite),
+        (Some(sqlite), None) => {
+            write_proactive_state_json_backup(&sqlite);
+            Some(sqlite)
+        }
+        (None, Some(json)) => {
+            write_proactive_state_sqlite_backup(&json);
+            Some(json)
+        }
+        (None, None) => None,
+    }
+}
+
+#[cfg(feature = "sqlite-storage")]
 fn write_sleep_state_json_backup(state: &DaemonSleepState) {
     let shared = allthecodes_config::proactive_sleep::SleepState {
         schema_version: state.schema_version,
@@ -607,6 +713,23 @@ fn write_sleep_state_json_backup(state: &DaemonSleepState) {
             key = "sleep-state",
             error = %err,
             "failed to write daemon sleep state JSON backup; keeping sqlite"
+        );
+    }
+}
+
+#[cfg(feature = "sqlite-storage")]
+fn write_proactive_state_json_backup(state: &DaemonProactiveState) {
+    let shared = allthecodes_services::proactive::DurableProactiveState {
+        schema_version: state.schema_version,
+        active: state.active,
+        next_tick_at: state.next_tick_at,
+        updated_at: state.updated_at,
+    };
+    if let Err(err) = atomic_write_json(&proactive_state_path(), &shared) {
+        warn!(
+            key = "proactive-state",
+            error = %err,
+            "failed to write daemon proactive state JSON backup; keeping sqlite"
         );
     }
 }
@@ -715,6 +838,38 @@ mod sleep_tests {
                 .expect("fresh sleep state should be mirrored to sqlite");
         assert_eq!(mirrored.reason.as_deref(), Some("json fresh"));
         assert_eq!(mirrored.sleeping_until, json_state.sleeping_until);
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    #[test]
+    #[serial]
+    fn proactive_state_prefers_newer_json_over_sqlite_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let stale_sqlite = DaemonProactiveState {
+            schema_version: allthecodes_services::proactive::DURABLE_PROACTIVE_STATE_SCHEMA_VERSION,
+            active: true,
+            next_tick_at: Some(Utc::now() + chrono::Duration::seconds(30)),
+            updated_at: Utc::now() - chrono::Duration::seconds(10),
+        };
+        crate::process_state::sqlite_store::write_state_value("proactive-state", &stale_sqlite)
+            .unwrap();
+        allthecodes_services::proactive::write_durable_state(false, None).unwrap();
+
+        let current = read_proactive_state()
+            .unwrap()
+            .expect("proactive state should be readable from JSON");
+
+        assert!(!current.active);
+        assert!(current.next_tick_at.is_none());
+        let mirrored =
+            crate::process_state::sqlite_store::read_state_value::<DaemonProactiveState>(
+                "proactive-state",
+            )
+            .unwrap()
+            .expect("fresh proactive state should be mirrored to sqlite");
+        assert!(!mirrored.active);
+        assert!(mirrored.next_tick_at.is_none());
     }
 }
 

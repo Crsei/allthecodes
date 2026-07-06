@@ -153,6 +153,7 @@ impl DaemonState {
                 connected_at: std::time::Instant::now(),
             },
         );
+        self.publish_terminal_focus_state();
         receiver
     }
 
@@ -160,6 +161,7 @@ impl DaemonState {
         self.event_router.unregister(connection_id);
         self.clients.write().remove(client_id);
         self.lagged_disconnects.lock().remove(connection_id);
+        self.publish_terminal_focus_state();
     }
 
     pub fn latest_seq(&self) -> EventSeq {
@@ -197,6 +199,16 @@ impl DaemonState {
     pub fn terminal_focus(&self) -> bool {
         self.has_clients()
     }
+
+    fn publish_terminal_focus_state(&self) {
+        if let Err(error) = crate::process_state::write_terminal_focus_state(self.terminal_focus())
+        {
+            tracing::warn!(
+                error = %error,
+                "failed to publish daemon terminal focus state"
+            );
+        }
+    }
 }
 
 fn lagged_sse_event(status: &ReplayStatus, latest_seq: EventSeq) -> Option<SseEvent> {
@@ -226,6 +238,61 @@ fn lagged_sse_event(status: &ReplayStatus, latest_seq: EventSeq) -> Option<SseEv
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use allthecodes_config::features::FeatureFlags;
+    use allthecodes_engine::lifecycle::QueryEngine;
+    use allthecodes_engine::types::config::QueryEngineConfig;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn make_daemon_state() -> DaemonState {
+        let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
+            cwd: ".".to_string(),
+            tools: vec![],
+            custom_system_prompt: None,
+            append_system_prompt: None,
+            user_specified_model: None,
+            fallback_model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            task_budget: None,
+            verbose: false,
+            initial_messages: None,
+            commands: vec![],
+            thinking_config: None,
+            json_schema: None,
+            replay_user_messages: false,
+            persist_session: false,
+            resolved_model: None,
+            auto_save_session: false,
+            agent_context: None,
+        }));
+        DaemonState::new(engine, Arc::new(FeatureFlags::all_disabled()), 19836)
+    }
 
     #[test]
     fn event_log_assigns_sse_ids_and_caps() {
@@ -294,5 +361,26 @@ mod tests {
         assert_eq!(event.event_type, "lagged");
         assert_eq!(event.data["latest_seq"], serde_json::json!(10));
         assert_eq!(event.data["skipped"], serde_json::json!(3));
+    }
+
+    #[test]
+    #[serial]
+    fn sse_client_lifecycle_persists_terminal_focus_state() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let state = make_daemon_state();
+        let connection_id = ConnectionId::from_static("focus-test");
+
+        let _receiver = state.register_sse_client("client-1".to_string(), connection_id.clone());
+        let focused = crate::process_state::read_terminal_focus_state()
+            .unwrap()
+            .expect("terminal focus state after register");
+        assert!(focused.focused);
+
+        state.unregister_sse_client("client-1", &connection_id);
+        let unfocused = crate::process_state::read_terminal_focus_state()
+            .unwrap()
+            .expect("terminal focus state after unregister");
+        assert!(!unfocused.focused);
     }
 }

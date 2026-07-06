@@ -16,11 +16,14 @@ impl crate::CommandHandler for ProactiveCmdHandler {
             ProactiveStatus::Active | ProactiveStatus::Paused | ProactiveStatus::ContextBlocked
         ) {
             controller.deactivate("slash_command");
+            allthecodes_services::proactive::write_durable_state(false, None)?;
             Ok(crate::CommandResult::Output(
                 "Proactive mode disabled.".to_string(),
             ))
         } else {
             controller.activate("slash_command");
+            let activated = controller.snapshot();
+            allthecodes_services::proactive::write_durable_state(true, activated.next_tick_at)?;
             Ok(crate::CommandResult::Output(
                 "Proactive mode enabled. The assistant will continue working from periodic ticks when idle."
                     .to_string(),
@@ -36,7 +39,30 @@ mod tests {
     use allthecodes_bootstrap::SessionId;
     use allthecodes_config::features::{self, FeatureFlags};
     use allthecodes_engine::types::tool::Tool;
+    use std::path::Path;
     use std::path::PathBuf;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     struct ProactiveControllerResetGuard(
         &'static allthecodes_services::proactive::ProactiveController,
@@ -104,6 +130,32 @@ mod tests {
             controller.snapshot().status,
             allthecodes_services::proactive::ProactiveStatus::Inactive
         );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn proactive_command_publishes_durable_daemon_state() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        let _reset_guard = ProactiveControllerResetGuard(controller);
+        controller.deactivate("test-reset");
+
+        let handler = ProactiveCmdHandler;
+        let mut ctx = test_ctx();
+        handler.execute("", &mut ctx).await.unwrap();
+        let enabled = allthecodes_services::proactive::read_durable_state()
+            .unwrap()
+            .expect("durable proactive state after enable");
+        assert!(enabled.active);
+        assert!(enabled.next_tick_at.is_some());
+
+        handler.execute("", &mut ctx).await.unwrap();
+        let disabled = allthecodes_services::proactive::read_durable_state()
+            .unwrap()
+            .expect("durable proactive state after disable");
+        assert!(!disabled.active);
+        assert!(disabled.next_tick_at.is_none());
     }
 
     #[tokio::test]

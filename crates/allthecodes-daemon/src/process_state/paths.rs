@@ -58,6 +58,10 @@ pub fn proactive_state_path() -> PathBuf {
     daemon_dir().join("proactive-state.json")
 }
 
+pub fn terminal_focus_state_path() -> PathBuf {
+    daemon_dir().join("terminal-focus-state.json")
+}
+
 pub fn workers_dir() -> PathBuf {
     daemon_dir().join("workers")
 }

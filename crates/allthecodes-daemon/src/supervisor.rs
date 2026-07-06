@@ -425,9 +425,11 @@ async fn run_proactive_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathB
 }
 
 fn daemon_terminal_focus_for_worker() -> bool {
-    // Worker processes cannot observe the daemon's live SSE client set; default
-    // to away/unfocused rather than inferring focus from persisted worker state.
-    false
+    process_state::read_terminal_focus_state()
+        .ok()
+        .flatten()
+        .map(|state| state.focused)
+        .unwrap_or(false)
 }
 
 async fn run_scheduler_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf) -> Result<()> {
@@ -715,6 +717,28 @@ mod tests {
         .expect("worker state");
 
         assert!(!daemon_terminal_focus_for_worker());
+    }
+
+    #[test]
+    #[serial]
+    fn proactive_worker_uses_persisted_frontend_focus_for_tick_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let _features = FeatureOverrideGuard::set(FeatureFlags {
+            proactive: true,
+            ..FeatureFlags::all_disabled()
+        });
+        process_state::write_terminal_focus_state(true).expect("terminal focus state");
+
+        let command = crate::tick::enqueue_proactive_tick_once(
+            Local::now(),
+            daemon_terminal_focus_for_worker(),
+        )
+        .unwrap()
+        .expect("focused proactive tick should enqueue");
+
+        assert_eq!(command.payload["terminal_focus"], true);
+        assert_eq!(command.payload["proactive"]["terminal_focus"], true);
     }
 
     #[test]

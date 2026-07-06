@@ -130,6 +130,13 @@ pub struct DaemonProactiveState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonTerminalFocusState {
+    pub schema_version: u32,
+    pub focused: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DaemonBridgeSessionState {
     pub schema_version: u32,
     pub session_id: String,

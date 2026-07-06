@@ -18,8 +18,8 @@ mod tests;
 pub use management::try_run_management_command;
 pub use paths::{
     bridge_session_inbox_path, bridge_session_state_path, control_token_path, daemon_dir, logs_dir,
-    proactive_state_path, shutdown_request_path, sleep_state_path, state_path, worker_log_path,
-    worker_state_path, workers_dir,
+    proactive_state_path, shutdown_request_path, sleep_state_path, state_path,
+    terminal_focus_state_path, worker_log_path, worker_state_path, workers_dir,
 };
 pub(crate) use paths::{daily_log_path, team_memory_dir};
 pub(crate) use platform::{process_is_alive, process_matches_record, terminate_process_tree};
@@ -28,17 +28,18 @@ pub use storage::{
     clear_proactive_state, clear_shutdown_request, clear_sleep_state,
     find_bridge_session_by_workspace_key, list_bridge_session_states, migrate_bridge_session_state,
     read_bridge_session_state, read_control_token, read_proactive_state, read_sleep_state,
-    read_state, read_worker_state, read_worker_states, request_shutdown, shutdown_requested,
-    status_snapshot, tail_log, verify_control_token, worker_summaries, write_bridge_session_state,
-    write_control_token, write_proactive_state, write_sleep_state, write_sleep_state_until,
-    write_started, write_stopped, write_supervisor_heartbeat, write_worker_heartbeat,
-    write_worker_running, write_worker_stale, write_worker_stopped,
+    read_state, read_terminal_focus_state, read_worker_state, read_worker_states, request_shutdown,
+    shutdown_requested, status_snapshot, tail_log, verify_control_token, worker_summaries,
+    write_bridge_session_state, write_control_token, write_proactive_state, write_sleep_state,
+    write_sleep_state_until, write_started, write_stopped, write_supervisor_heartbeat,
+    write_terminal_focus_state, write_worker_heartbeat, write_worker_running, write_worker_stale,
+    write_worker_stopped,
 };
 pub use types::{
     DaemonBridgeSessionState, DaemonControlToken, DaemonProactiveState, DaemonProcessState,
     DaemonRunStatus, DaemonShutdownRequest, DaemonSleepState, DaemonStatusSnapshot,
-    DaemonWorkerState, DaemonWorkerStatus, DaemonWorkerSummary, ProcessIdentityStatus,
-    StaleStateCleanupReport,
+    DaemonTerminalFocusState, DaemonWorkerState, DaemonWorkerStatus, DaemonWorkerSummary,
+    ProcessIdentityStatus, StaleStateCleanupReport,
 };
 
 pub(crate) fn data_root() -> std::path::PathBuf {
