@@ -27,13 +27,34 @@ impl ProactiveTickDriver {
         now: DateTime<Utc>,
     ) -> ProactiveTickDecision {
         let snapshot = allthecodes_services::proactive::global_controller().snapshot();
-        decide_tick(
+        self.decide_with_snapshot(
             &snapshot,
             streaming,
             pending_permission,
             pending_question,
             now,
         )
+    }
+
+    fn decide_with_snapshot(
+        &self,
+        snapshot: &allthecodes_services::proactive::ProactiveSnapshot,
+        streaming: bool,
+        pending_permission: bool,
+        pending_question: bool,
+        now: DateTime<Utc>,
+    ) -> ProactiveTickDecision {
+        let decision = decide_tick(
+            snapshot,
+            streaming,
+            pending_permission,
+            pending_question,
+            now,
+        );
+        if suppressed_due_tick_should_reschedule(snapshot, decision, now) {
+            self.mark_tick_submitted();
+        }
+        decision
     }
 
     pub(super) fn build_prompt(&self, now: DateTime<Local>, terminal_focus: bool) -> String {
@@ -50,6 +71,17 @@ impl ProactiveTickDriver {
             .unwrap_or_else(|| "tui_tick".to_string());
         controller.resume(&source);
     }
+}
+
+fn suppressed_due_tick_should_reschedule(
+    snapshot: &allthecodes_services::proactive::ProactiveSnapshot,
+    decision: ProactiveTickDecision,
+    now: DateTime<Utc>,
+) -> bool {
+    matches!(
+        decision,
+        ProactiveTickDecision::BlockedByRunningTurn | ProactiveTickDecision::BlockedByPendingInput
+    ) && matches!(snapshot.next_tick_at, Some(next) if next <= now)
 }
 
 pub(super) fn decide_tick(
@@ -207,6 +239,118 @@ mod tests {
             decide_tick(&snapshot, false, true, false, Utc::now()),
             ProactiveTickDecision::BlockedByPendingInput
         );
+    }
+
+    #[test]
+    #[serial]
+    fn due_streaming_tick_reschedules_when_suppressed() {
+        let home = tempfile::tempdir().expect("allthecodes home");
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("test");
+        let before = controller
+            .snapshot()
+            .next_tick_at
+            .expect("active controller has next tick");
+        let now = Utc::now();
+        let due_snapshot = allthecodes_services::proactive::ProactiveSnapshot {
+            status: allthecodes_services::proactive::ProactiveStatus::Active,
+            source: Some("test".into()),
+            next_tick_at: Some(now - Duration::seconds(1)),
+            paused_reason: None,
+            context_blocked: false,
+        };
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let decision =
+            ProactiveTickDriver::new().decide_with_snapshot(&due_snapshot, true, false, false, now);
+
+        let after = controller
+            .snapshot()
+            .next_tick_at
+            .expect("suppressed due tick reschedules");
+        controller.deactivate("test_cleanup");
+
+        assert_eq!(decision, ProactiveTickDecision::BlockedByRunningTurn);
+        assert!(
+            after > before,
+            "blocked due tick should advance next_tick_at"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn due_pending_input_tick_reschedules_when_suppressed() {
+        let home = tempfile::tempdir().expect("allthecodes home");
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("test");
+        let before = controller
+            .snapshot()
+            .next_tick_at
+            .expect("active controller has next tick");
+        let now = Utc::now();
+        let due_snapshot = allthecodes_services::proactive::ProactiveSnapshot {
+            status: allthecodes_services::proactive::ProactiveStatus::Active,
+            source: Some("test".into()),
+            next_tick_at: Some(now - Duration::seconds(1)),
+            paused_reason: None,
+            context_blocked: false,
+        };
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let decision =
+            ProactiveTickDriver::new().decide_with_snapshot(&due_snapshot, false, true, false, now);
+
+        let after = controller
+            .snapshot()
+            .next_tick_at
+            .expect("suppressed due tick reschedules");
+        controller.deactivate("test_cleanup");
+
+        assert_eq!(decision, ProactiveTickDecision::BlockedByPendingInput);
+        assert!(
+            after > before,
+            "blocked due tick should advance next_tick_at"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn blocked_tick_preserves_schedule_when_not_due() {
+        let home = tempfile::tempdir().expect("allthecodes home");
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("test");
+        let before = controller
+            .snapshot()
+            .next_tick_at
+            .expect("active controller has next tick");
+        let now = Utc::now();
+        let not_due_snapshot = allthecodes_services::proactive::ProactiveSnapshot {
+            status: allthecodes_services::proactive::ProactiveStatus::Active,
+            source: Some("test".into()),
+            next_tick_at: Some(now + Duration::seconds(60)),
+            paused_reason: None,
+            context_blocked: false,
+        };
+
+        let decision = ProactiveTickDriver::new().decide_with_snapshot(
+            &not_due_snapshot,
+            true,
+            false,
+            false,
+            now,
+        );
+
+        let after = controller
+            .snapshot()
+            .next_tick_at
+            .expect("blocked not-due tick preserves schedule");
+        controller.deactivate("test_cleanup");
+
+        assert_eq!(decision, ProactiveTickDecision::BlockedByRunningTurn);
+        assert_eq!(after, before);
     }
 
     #[test]
