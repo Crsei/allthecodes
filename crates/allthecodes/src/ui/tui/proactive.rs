@@ -91,12 +91,6 @@ pub(super) fn ui_status_from_snapshot(
     if snapshot.status == ProactiveStatus::Inactive {
         return None;
     }
-    if snapshot.context_blocked {
-        return Some(ProactiveUiStatus {
-            label: "proactive blocked".to_string(),
-            next_tick_text: snapshot.paused_reason.clone(),
-        });
-    }
     if let Some(sleep) = sleep {
         return Some(ProactiveUiStatus {
             label: "proactive sleeping".to_string(),
@@ -104,6 +98,12 @@ pub(super) fn ui_status_from_snapshot(
                 "wake in {}",
                 format_countdown(sleep.sleeping_until)
             )),
+        });
+    }
+    if snapshot.context_blocked {
+        return Some(ProactiveUiStatus {
+            label: "proactive blocked".to_string(),
+            next_tick_text: snapshot.paused_reason.clone(),
         });
     }
 
@@ -232,5 +232,27 @@ mod tests {
         );
         assert_eq!(after_snapshot.source.as_deref(), Some("test"));
         assert!(after > before, "next_tick_at should advance after submit");
+    }
+
+    #[test]
+    fn ui_status_prefers_sleep_over_context_blocked() {
+        let snapshot = allthecodes_services::proactive::ProactiveSnapshot {
+            status: allthecodes_services::proactive::ProactiveStatus::ContextBlocked,
+            source: Some("test".into()),
+            next_tick_at: None,
+            paused_reason: Some("context_limit".into()),
+            context_blocked: true,
+        };
+        let sleep = allthecodes_services::proactive::SleepState {
+            schema_version: allthecodes_services::proactive::SLEEP_STATE_SCHEMA_VERSION,
+            sleeping_until: Utc::now() + Duration::seconds(60),
+            reason: Some("waiting".into()),
+            updated_at: Utc::now(),
+        };
+
+        let status = ui_status_from_snapshot(&snapshot, Some(&sleep)).expect("ui status");
+
+        assert_eq!(status.label, "proactive sleeping");
+        assert_eq!(status.next_tick_text.as_deref(), Some("wake in 1m"));
     }
 }
