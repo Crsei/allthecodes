@@ -52,3 +52,14 @@ cargo test -p allthecodes-web worktree
 # 全量
 cargo build --workspace --release
 ```
+
+## Proactive
+
+Focused verification:
+
+```bash
+cargo test -p allthecodes-services proactive
+cargo test -p allthecodes-commands proactive
+cargo test -p allthecodes-daemon proactive
+cargo test -p allthecodes proactive
+```
