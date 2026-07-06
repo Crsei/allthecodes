@@ -91,11 +91,10 @@ pub fn snapshot(state: &DaemonState) -> AutomationState {
         status,
         sleeping_until,
         reason,
-        next_tick_at: proactive.next_tick_at.or_else(|| {
-            daemon_proactive
-                .as_ref()
-                .and_then(|state| state.next_tick_at)
-        }),
+        next_tick_at: daemon_proactive
+            .as_ref()
+            .and_then(|state| state.next_tick_at)
+            .or(proactive.next_tick_at),
         proactive_active: proactive.status == ProactiveStatus::Active
             || state.features.proactive
             || daemon_proactive
@@ -137,11 +136,10 @@ pub fn snapshot_from_process_state() -> AutomationState {
         status,
         sleeping_until,
         reason,
-        next_tick_at: proactive.next_tick_at.or_else(|| {
-            daemon_proactive
-                .as_ref()
-                .and_then(|state| state.next_tick_at)
-        }),
+        next_tick_at: daemon_proactive
+            .as_ref()
+            .and_then(|state| state.next_tick_at)
+            .or(proactive.next_tick_at),
         proactive_active: proactive.status == ProactiveStatus::Active
             || daemon_proactive
                 .as_ref()
@@ -360,6 +358,31 @@ mod tests {
 
         assert_eq!(current.next_tick_at, expected_next_tick_at);
         assert!(current.proactive_active);
+    }
+
+    #[test]
+    #[serial]
+    fn snapshot_prefers_worker_proactive_next_tick_over_in_process_controller() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let controller = allthecodes_services::proactive::global_controller();
+        controller.activate("automation_state_test");
+        let controller_next_tick_at = controller
+            .snapshot()
+            .next_tick_at
+            .expect("controller next tick");
+        let worker_next_tick_at = controller_next_tick_at + chrono::Duration::minutes(5);
+        process_state::write_proactive_state(true, Some(worker_next_tick_at)).unwrap();
+        let state = make_daemon_state();
+
+        let current = snapshot(&state);
+        let process_current = snapshot_from_process_state();
+        controller.deactivate("automation_state_test_cleanup");
+
+        assert_eq!(current.next_tick_at, Some(worker_next_tick_at));
+        assert_eq!(process_current.next_tick_at, Some(worker_next_tick_at));
+        assert!(current.proactive_active);
+        assert!(process_current.proactive_active);
     }
 
     #[test]

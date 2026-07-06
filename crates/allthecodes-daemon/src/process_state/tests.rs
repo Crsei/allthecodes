@@ -1,9 +1,10 @@
 use std::fs;
 use std::path::Path;
 
+use allthecodes_config::features::{self, FeatureFlags};
 use chrono::Utc;
 
-use super::management::parse_port;
+use super::management::{daemon_start_feature_enabled, parse_port};
 use super::paths::health_url;
 use super::storage::{ensure_daemon_dir, write_state};
 use super::types::{DEFAULT_DAEMON_PORT, SCHEMA_VERSION};
@@ -29,6 +30,25 @@ impl Drop for EnvGuard {
             std::env::set_var(self.key, previous);
         } else {
             std::env::remove_var(self.key);
+        }
+    }
+}
+
+struct FeatureOverrideGuard(Option<FeatureFlags>);
+
+impl FeatureOverrideGuard {
+    fn set(flags: FeatureFlags) -> Self {
+        let previous = features::runtime_override();
+        features::set_runtime_override(flags);
+        Self(previous)
+    }
+}
+
+impl Drop for FeatureOverrideGuard {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(flags) => features::set_runtime_override(flags),
+            None => features::clear_runtime_override(),
         }
     }
 }
@@ -161,6 +181,17 @@ fn parses_port_from_management_args() {
         "20100".to_string(),
     ];
     assert_eq!(parse_port(&args), Some(20100));
+}
+
+#[test]
+#[serial]
+fn daemon_start_gate_accepts_standalone_proactive_feature() {
+    let _features = FeatureOverrideGuard::set(FeatureFlags {
+        proactive: true,
+        ..FeatureFlags::all_disabled()
+    });
+
+    assert!(daemon_start_feature_enabled());
 }
 
 #[test]
