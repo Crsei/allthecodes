@@ -1928,6 +1928,41 @@ async fn test_submit_clear_command_clears_proactive_context_blocked() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
+async fn proactive_tick_in_plan_mode_is_blocked_without_model_submit() {
+    use futures::StreamExt;
+
+    struct ContextGuard;
+    impl Drop for ContextGuard {
+        fn drop(&mut self) {
+            allthecodes_types::proactive_context::set_context_blocked(false, "test_cleanup");
+        }
+    }
+    let _guard = ContextGuard;
+    allthecodes_types::proactive_context::set_context_blocked(false, "test_start");
+
+    let engine = QueryEngine::new(make_config());
+    engine.state.write().app_state.tool_permission_context.mode = PermissionMode::Plan;
+
+    let stream = engine.submit_message("<tick_tag>test</tick_tag>", QuerySource::ProactiveTick);
+    let items: Vec<_> = stream.collect().await;
+    let result = items
+        .into_iter()
+        .find_map(|item| match item {
+            SdkMessage::Result(result) => Some(result),
+            _ => None,
+        })
+        .expect("terminal result");
+
+    assert!(result.is_error);
+    assert_eq!(result.subtype, ResultSubtype::ErrorDuringExecution);
+    assert_eq!(result.stop_reason.as_deref(), Some("context_blocked"));
+    assert!(result.result.contains("plan_mode"));
+    assert!(allthecodes_types::proactive_context::is_context_blocked());
+    assert!(engine.messages().is_empty());
+}
+
+#[tokio::test]
 async fn submit_system_init_filters_view_image_for_text_only_model() {
     use futures::StreamExt;
 

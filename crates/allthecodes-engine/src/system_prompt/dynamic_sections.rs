@@ -232,6 +232,9 @@ pub(super) fn proactive_compact_resume_section(messages: Option<&[Message]>) -> 
     if !(features::enabled(Feature::Kairos) || features::enabled(Feature::Proactive)) {
         return None;
     }
+    if !allthecodes_types::proactive_context::is_proactive_active() {
+        return None;
+    }
 
     let messages = messages?;
     let boundary_index = messages.iter().rposition(|message| {

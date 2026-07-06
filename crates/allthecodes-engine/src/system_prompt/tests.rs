@@ -34,6 +34,8 @@ impl Drop for FeatureOverrideGuard {
     fn drop(&mut self) {
         features::clear_runtime_override();
         prompt_sections::clear_cache();
+        allthecodes_types::proactive_context::set_proactive_active(false);
+        allthecodes_types::proactive_context::set_context_blocked(false, "test_cleanup");
     }
 }
 
@@ -277,6 +279,7 @@ fn proactive_compact_resume_reminder_uses_compact_boundary_metadata() {
     let mut flags = FeatureFlags::all_disabled();
     flags.proactive = true;
     features::set_runtime_override(flags);
+    allthecodes_types::proactive_context::set_proactive_active(true);
     prompt_sections::clear_cache();
 
     let compact_boundary = crate::compact::compaction::create_compact_boundary(100, 40);
@@ -297,6 +300,37 @@ fn proactive_compact_resume_reminder_uses_compact_boundary_metadata() {
     let joined = parts.join("\n");
 
     assert!(joined.contains(
+        "You are running in autonomous/proactive mode. This is not a first wake-up after compaction. Continue the existing work loop from the summary instead of greeting the user again."
+    ));
+}
+
+#[test]
+#[serial_test::serial]
+fn proactive_compact_resume_reminder_requires_active_controller() {
+    let _guard = FeatureOverrideGuard;
+    let mut flags = FeatureFlags::all_disabled();
+    flags.proactive = true;
+    features::set_runtime_override(flags);
+    prompt_sections::clear_cache();
+
+    let compact_boundary = crate::compact::compaction::create_compact_boundary(100, 40);
+    let prior_resume = assistant_message("continued after compact");
+    let (parts, _, _) = build_system_prompt_with_memory_contexts(
+        None,
+        None,
+        &[],
+        "claude-sonnet-4-20250514",
+        "/tmp",
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(&[compact_boundary, prior_resume]),
+    );
+    let joined = parts.join("\n");
+
+    assert!(!joined.contains(
         "You are running in autonomous/proactive mode. This is not a first wake-up after compaction. Continue the existing work loop from the summary instead of greeting the user again."
     ));
 }

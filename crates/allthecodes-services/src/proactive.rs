@@ -33,12 +33,21 @@ pub struct ProactiveSnapshot {
 #[derive(Debug)]
 pub struct ProactiveController {
     state: RwLock<ProactiveSnapshot>,
+    publish_global_state: bool,
 }
 
 impl ProactiveController {
     pub fn new() -> Self {
         Self {
             state: RwLock::new(inactive_snapshot(None)),
+            publish_global_state: false,
+        }
+    }
+
+    fn with_global_state_publisher() -> Self {
+        Self {
+            state: RwLock::new(inactive_snapshot(None)),
+            publish_global_state: true,
         }
     }
 
@@ -55,6 +64,7 @@ impl ProactiveController {
             paused_reason: None,
             context_blocked: false,
         };
+        self.publish_active_state(&state);
     }
 
     pub fn pause(&self, reason: &str) {
@@ -63,6 +73,7 @@ impl ProactiveController {
         state.next_tick_at = None;
         state.paused_reason = normalized_text(reason);
         state.context_blocked = false;
+        self.publish_active_state(&state);
     }
 
     pub fn resume(&self, source: &str) {
@@ -72,11 +83,13 @@ impl ProactiveController {
         state.next_tick_at = Some(next_tick_at());
         state.paused_reason = None;
         state.context_blocked = false;
+        self.publish_active_state(&state);
     }
 
     pub fn deactivate(&self, source: &str) {
         let mut state = self.state.write();
         *state = inactive_snapshot(normalized_text(source));
+        self.publish_active_state(&state);
     }
 
     pub fn set_context_blocked(&self, blocked: bool, reason: &str) {
@@ -89,19 +102,36 @@ impl ProactiveController {
 
     pub fn mark_context_blocked(&self, reason: &str) {
         let mut state = self.state.write();
-        state.status = ProactiveStatus::ContextBlocked;
+        if matches!(
+            state.status,
+            ProactiveStatus::Active | ProactiveStatus::ContextBlocked
+        ) {
+            state.status = ProactiveStatus::ContextBlocked;
+            state.paused_reason = normalized_text(reason);
+        }
         state.next_tick_at = None;
-        state.paused_reason = normalized_text(reason);
         state.context_blocked = true;
+        self.publish_active_state(&state);
     }
 
     pub fn clear_context_blocked(&self, source: &str) {
         let mut state = self.state.write();
-        state.status = ProactiveStatus::Active;
-        state.source = normalized_text(source);
-        state.next_tick_at = Some(next_tick_at());
-        state.paused_reason = None;
+        if state.status == ProactiveStatus::ContextBlocked {
+            state.status = ProactiveStatus::Active;
+            state.source = normalized_text(source);
+            state.next_tick_at = Some(next_tick_at());
+            state.paused_reason = None;
+        }
         state.context_blocked = false;
+        self.publish_active_state(&state);
+    }
+
+    fn publish_active_state(&self, state: &ProactiveSnapshot) {
+        if self.publish_global_state {
+            allthecodes_types::proactive_context::set_proactive_active(
+                state.status == ProactiveStatus::Active,
+            );
+        }
     }
 }
 
@@ -113,7 +143,7 @@ impl Default for ProactiveController {
 
 pub fn global_controller() -> &'static ProactiveController {
     static CONTROLLER: LazyLock<Arc<ProactiveController>> = LazyLock::new(|| {
-        let controller = Arc::new(ProactiveController::new());
+        let controller = Arc::new(ProactiveController::with_global_state_publisher());
         let callback_controller = Arc::clone(&controller);
         allthecodes_types::proactive_context::register_context_blocked_callback(Arc::new(
             move |blocked, reason| {
@@ -251,6 +281,26 @@ mod tests {
         assert_eq!(active.source.as_deref(), Some("compact_complete"));
         assert!(active.paused_reason.is_none());
         assert!(!active.context_blocked);
+    }
+
+    #[test]
+    fn context_blocked_ready_does_not_activate_inactive_or_paused_controller() {
+        let inactive = ProactiveController::new();
+        inactive.set_context_blocked(false, "context_ready");
+        let inactive_snapshot = inactive.snapshot();
+        assert_eq!(inactive_snapshot.status, ProactiveStatus::Inactive);
+        assert!(inactive_snapshot.next_tick_at.is_none());
+        assert!(!inactive_snapshot.context_blocked);
+
+        let paused = ProactiveController::new();
+        paused.activate("test");
+        paused.pause("user_wait");
+        paused.set_context_blocked(false, "context_ready");
+        let paused_snapshot = paused.snapshot();
+        assert_eq!(paused_snapshot.status, ProactiveStatus::Paused);
+        assert!(paused_snapshot.next_tick_at.is_none());
+        assert_eq!(paused_snapshot.paused_reason.as_deref(), Some("user_wait"));
+        assert!(!paused_snapshot.context_blocked);
     }
 
     #[test]

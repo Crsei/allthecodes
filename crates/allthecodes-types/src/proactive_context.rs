@@ -1,6 +1,5 @@
-use std::sync::{Arc, LazyLock};
-
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, RwLock};
 
 type ContextBlockedCallback = Arc<dyn Fn(bool, &str) + Send + Sync>;
 
@@ -12,6 +11,7 @@ struct ContextBlockedState {
 
 static CONTEXT_BLOCKED_STATE: LazyLock<RwLock<ContextBlockedState>> =
     LazyLock::new(|| RwLock::new(ContextBlockedState::default()));
+static PROACTIVE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub fn register_context_blocked_callback(callback: ContextBlockedCallback) {
     let last = {
@@ -48,4 +48,12 @@ pub fn is_context_blocked() -> bool {
         .last
         .as_ref()
         .is_some_and(|(blocked, _)| *blocked)
+}
+
+pub fn set_proactive_active(active: bool) {
+    PROACTIVE_ACTIVE.store(active, Ordering::SeqCst);
+}
+
+pub fn is_proactive_active() -> bool {
+    PROACTIVE_ACTIVE.load(Ordering::SeqCst)
 }
