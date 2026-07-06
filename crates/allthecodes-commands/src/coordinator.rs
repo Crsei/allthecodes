@@ -8,6 +8,8 @@ use crate::{CommandContext, CommandHandler, CommandResult};
 
 pub struct CoordinatorHandler;
 
+const COORDINATOR_CHAT_MODE: &str = "coordinator";
+
 #[async_trait]
 impl CommandHandler for CoordinatorHandler {
     async fn execute(&self, args: &str, ctx: &mut CommandContext) -> Result<CommandResult> {
@@ -16,12 +18,16 @@ impl CommandHandler for CoordinatorHandler {
         let rest = parts.next().unwrap_or("").trim();
 
         let output = match subcommand {
-            "" | "status" => status(ctx),
+            "" | "status" => Ok(status(ctx)),
             "start" | "on" => start(ctx, rest).await,
             "stop" | "off" => stop(ctx),
-            "help" | "--help" | "-h" => usage().to_string(),
-            other => format!("Unknown /coordinator subcommand: '{}'\n{}", other, usage()),
-        };
+            "help" | "--help" | "-h" => Ok(usage().to_string()),
+            other => Ok(format!(
+                "Unknown /coordinator subcommand: '{}'\n{}",
+                other,
+                usage()
+            )),
+        }?;
         Ok(CommandResult::Output(output))
     }
 }
@@ -73,8 +79,8 @@ fn status(ctx: &CommandContext) -> String {
     lines.join("\n")
 }
 
-async fn start(ctx: &mut CommandContext, rest: &str) -> String {
-    set_coordinator_mode_enabled(true);
+async fn start(ctx: &mut CommandContext, rest: &str) -> Result<String> {
+    set_session_coordinator_mode(ctx, true)?;
 
     let team_name = rest
         .split_whitespace()
@@ -89,10 +95,10 @@ async fn start(ctx: &mut CommandContext, rest: &str) -> String {
         .map(|team| team.team_name == team_name)
         .unwrap_or(false)
     {
-        return format!(
+        return Ok(format!(
             "Coordinator mode enabled for existing active team '{}'.",
             team_name
-        );
+        ));
     }
 
     let output = crate::runtime::execute_team_command(
@@ -104,7 +110,7 @@ async fn start(ctx: &mut CommandContext, rest: &str) -> String {
         || output.starts_with("Usage:")
         || output == "Team command runtime is unavailable."
     {
-        return format!("Failed to create coordinator team: {output}");
+        return Ok(format!("Failed to create coordinator team: {output}"));
     }
 
     let Some(team_name) = ctx
@@ -114,20 +120,23 @@ async fn start(ctx: &mut CommandContext, rest: &str) -> String {
         .map(|team| team.team_name.clone())
         .filter(|name| !name.is_empty())
     else {
-        return format!(
+        return Ok(format!(
             "Coordinator mode enabled, but no active team was returned by the team runtime: {output}"
-        );
+        ));
     };
 
-    format!(
+    Ok(format!(
         "Coordinator mode enabled and team '{}' is active. Spawn workers with Agent(name=..., prompt=...) or /team spawn.",
         team_name
-    )
+    ))
 }
 
-fn stop(_ctx: &mut CommandContext) -> String {
-    set_coordinator_mode_enabled(false);
-    "Coordinator mode disabled for this session. Active team state was left intact.".to_string()
+fn stop(ctx: &mut CommandContext) -> Result<String> {
+    set_session_coordinator_mode(ctx, false)?;
+    Ok(
+        "Coordinator mode disabled for this session. Active team state was left intact."
+            .to_string(),
+    )
 }
 
 fn is_coordinator_mode_enabled() -> bool {
@@ -141,6 +150,17 @@ fn set_coordinator_mode_enabled(enabled: bool) {
         flags.agent_teams = true;
     }
     features::set_runtime_override(flags);
+}
+
+fn set_session_coordinator_mode(ctx: &CommandContext, enabled: bool) -> Result<()> {
+    let value = enabled.then_some(COORDINATOR_CHAT_MODE);
+    allthecodes_session::storage::set_session_chat_mode_override(
+        ctx.session_id.as_str(),
+        value,
+        ctx.cwd.to_string_lossy().as_ref(),
+    )?;
+    set_coordinator_mode_enabled(enabled);
+    Ok(())
 }
 
 fn tool_policy_summary(coordinator_enabled: bool) -> String {
@@ -276,6 +296,12 @@ mod tests {
         };
         assert!(text.contains("Coordinator mode enabled"));
         assert!(is_coordinator_mode_enabled());
+        let info = allthecodes_session::storage::load_session_info(ctx.session_id.as_str())
+            .expect("coordinator start persists session metadata");
+        assert_eq!(
+            info.chat_mode_override.as_deref(),
+            Some(COORDINATOR_CHAT_MODE)
+        );
         assert_eq!(
             ctx.app_state
                 .team_context
@@ -314,6 +340,9 @@ mod tests {
         };
         assert!(text.contains("disabled"));
         assert!(!is_coordinator_mode_enabled());
+        let info = allthecodes_session::storage::load_session_info(ctx.session_id.as_str())
+            .expect("coordinator stop persists session metadata");
+        assert_eq!(info.chat_mode_override, None);
         assert!(ctx.app_state.team_context.is_some());
     }
 

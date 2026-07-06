@@ -1069,9 +1069,9 @@ pub fn get_hook_event_metadata() -> HashMap<HookEvent, HookEventMetadata> {
         HookEvent::TeammateIdle,
         HookEventMetadata {
             summary: "When teammate is detected as idle".into(),
-            description: "Input to command is JSON with teammate_id and idle_duration.\nExit code 0 - command completes successfully\nOther exit codes - show stderr to user only".into(),
+            description: "Input to command is JSON with team_name, teammate_name, agent_id, reason, task_list_id, and timestamp.\nExit code 0 - command completes successfully\nOther exit codes - show stderr to user only".into(),
             matcher_metadata: Some(MatcherMetadata {
-                field_to_match: "teammate_id".into(),
+                field_to_match: "teammate_name".into(),
                 values: Vec::new(),
             }),
         },
@@ -1342,6 +1342,30 @@ mod tests {
         assert_eq!(HookEvent::PreToolUse.to_string(), "PreToolUse");
         assert_eq!(HookEvent::Stop.to_string(), "Stop");
         assert_eq!(HookEvent::FileChanged.to_string(), "FileChanged");
+    }
+
+    #[allow(non_snake_case)]
+    mod TeammateIdle {
+        use super::*;
+
+        #[test]
+        fn hook_event_is_registered() {
+            assert_eq!(HookEvent::TeammateIdle.to_string(), "TeammateIdle");
+            let parsed: HookEvent = serde_json::from_str("\"TeammateIdle\"").unwrap();
+            assert_eq!(parsed, HookEvent::TeammateIdle);
+            assert!(HOOK_EVENTS.contains(&HookEvent::TeammateIdle));
+
+            let metadata = get_hook_event_metadata();
+            let teammate_idle = metadata.get(&HookEvent::TeammateIdle).unwrap();
+            assert_eq!(
+                teammate_idle
+                    .matcher_metadata
+                    .as_ref()
+                    .map(|matcher| matcher.field_to_match.as_str()),
+                Some("teammate_name")
+            );
+            assert!(teammate_idle.description.contains("task_list_id"));
+        }
     }
 
     #[test]

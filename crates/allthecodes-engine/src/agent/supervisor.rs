@@ -20,6 +20,7 @@ use tracing::{info, warn};
 
 use crate::lifecycle::QueryEngine;
 use allthecodes_tasks::{TaskCreateOptions, TaskEntry, TaskStatus};
+use allthecodes_types::agent_events::AgentCompletionStatus;
 
 use crate::types::config::{QueryEngineConfig, QuerySource};
 use crate::types::tool::*;
@@ -29,10 +30,11 @@ use crate::worktree_hooks::{
 };
 
 use super::{
-    build_child_config, count_worktree_changes, find_git_root, get_head_sha,
+    agent_run_usage_from_tracking, assistant_tool_use_count, build_child_config,
+    count_worktree_changes, find_git_root, get_head_sha,
     mark_agent_worktree_session_cleanup_failed, mark_agent_worktree_session_kept,
     mark_agent_worktree_session_removed, persist_agent_worktree_session_record, sdk_to_agent_event,
-    AgentInput, AgentTool,
+    AgentInput, AgentRunUsage, AgentTool,
 };
 
 const SHUTDOWN_WAIT_PER_AGENT: Duration = Duration::from_secs(5);
@@ -125,7 +127,7 @@ pub(super) async fn spawn_background_agent(
     .await?;
     validate_working_directory(&prepared.child_cwd)?;
 
-    let child_config = build_child_config(
+    let mut child_config = build_child_config(
         prepared.child_cwd.clone(),
         ctx,
         &agent_id,
@@ -134,6 +136,7 @@ pub(super) async fn spawn_background_agent(
         &parent_model,
         current_depth,
     );
+    super::dispatch::apply_coordinator_worker_turn_limit(&mut child_config, ctx, &params);
 
     let task_store = crate::agent_runtime::global_task_store();
     let task_entry = task_store.try_create_with_options(
@@ -192,6 +195,7 @@ pub(super) async fn spawn_background_agent(
         agent_id: agent_id.clone(),
         task_id: task_id.clone(),
         description: description.clone(),
+        subagent_type: Some(subagent_type.clone()),
         parent_agent_id: ctx.agent_id.clone(),
         agent_model: agent_model.clone(),
         depth: current_depth + 1,
@@ -294,6 +298,7 @@ struct AgentRuntime {
     agent_id: String,
     task_id: String,
     description: String,
+    subagent_type: Option<String>,
     parent_agent_id: Option<String>,
     agent_model: String,
     depth: usize,
@@ -370,6 +375,8 @@ impl AgentRuntime {
         let mut result_text = String::new();
         let mut had_error = false;
         let mut was_cancelled = false;
+        let mut tool_uses = 0;
+        let mut usage = AgentRunUsage::default();
 
         loop {
             let msg = tokio::select! {
@@ -388,6 +395,7 @@ impl AgentRuntime {
 
             match &msg {
                 allthecodes_types::sdk::SdkMessage::Assistant(assistant_msg) => {
+                    tool_uses += assistant_tool_use_count(assistant_msg);
                     for block in &assistant_msg.message.content {
                         if let crate::types::message::ContentBlock::Text { text } = block {
                             if !result_text.is_empty() {
@@ -398,6 +406,7 @@ impl AgentRuntime {
                     }
                 }
                 allthecodes_types::sdk::SdkMessage::Result(sdk_result) => {
+                    usage = agent_run_usage_from_tracking(&sdk_result.usage, tool_uses);
                     if sdk_result.is_error {
                         had_error = true;
                         if !sdk_result.result.is_empty() {
@@ -426,6 +435,9 @@ impl AgentRuntime {
                 "(Agent completed with no text output)".to_string()
             };
         }
+        if usage.tool_uses.is_none() && tool_uses > 0 {
+            usage.tool_uses = Some(tool_uses);
+        }
 
         if let Some(warning) = &self.startup_warning {
             result_text = format!("[WARNING: {}]\n\n{}", warning, result_text);
@@ -446,6 +458,11 @@ impl AgentRuntime {
         }
 
         let duration_ms = started.elapsed().as_millis() as u64;
+        let completion_status = if was_cancelled {
+            AgentCompletionStatus::Killed
+        } else {
+            AgentCompletionStatus::from_had_error(had_error)
+        };
         let final_status = if was_cancelled {
             TaskStatus::Cancelled
         } else if had_error {
@@ -520,8 +537,12 @@ impl AgentRuntime {
                     agent_id: self.agent_id.clone(),
                     result_preview,
                     had_error,
+                    completion_status,
                     duration_ms,
-                    output_tokens: None,
+                    total_tokens: usage.total_tokens,
+                    output_tokens: usage.output_tokens,
+                    tool_uses: usage.tool_uses,
+                    agent_type: self.subagent_type.clone(),
                 },
             ));
 

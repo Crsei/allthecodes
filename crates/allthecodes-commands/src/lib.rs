@@ -110,9 +110,28 @@ pub mod runtime {
     use allthecodes_ipc_protocol::subsystem_types::{LspRecommendationSettings, LspServerInfo};
     use allthecodes_tasks::TaskEntry;
     use allthecodes_tools::tool::Tools;
+    use allthecodes_types::hooks::HookRunner;
     use allthecodes_types::message::Message;
 
     use crate::{CommandContext, CommandMetadata};
+
+    tokio::task_local! {
+        static COMMAND_HOOK_RUNNER: std::sync::Arc<dyn HookRunner>;
+    }
+
+    pub async fn scope_hook_runner<F>(
+        hook_runner: std::sync::Arc<dyn HookRunner>,
+        future: F,
+    ) -> F::Output
+    where
+        F: Future,
+    {
+        COMMAND_HOOK_RUNNER.scope(hook_runner, future).await
+    }
+
+    pub fn current_hook_runner() -> Option<std::sync::Arc<dyn HookRunner>> {
+        COMMAND_HOOK_RUNNER.try_with(Clone::clone).ok()
+    }
 
     type Installer = fn();
     type LspServersProvider = fn() -> Vec<LspServerInfo>;
@@ -1327,19 +1346,22 @@ impl command_runtime::CommandExecutor for EngineCommandExecutor {
             session_id: ctx.session_id.clone(),
         };
 
-        let result = if let Some(command) = commands.get_mut(parsed.index) {
-            command
-                .handler
-                .execute(&parsed.args, &mut command_ctx)
-                .await?
-        } else {
-            let entry = DYNAMIC_REGISTRY.lock().find(&command_name).cloned();
-            if let Some(entry) = entry {
-                execute_dynamic_command(&entry, &parsed.args, &mut command_ctx).await?
+        let result = runtime::scope_hook_runner(ctx.hook_runner.clone(), async {
+            if let Some(command) = commands.get_mut(parsed.index) {
+                command
+                    .handler
+                    .execute(&parsed.args, &mut command_ctx)
+                    .await
             } else {
-                execute_workflow_command(&command_name, &parsed.args, &mut command_ctx)?
+                let entry = DYNAMIC_REGISTRY.lock().find(&command_name).cloned();
+                if let Some(entry) = entry {
+                    execute_dynamic_command(&entry, &parsed.args, &mut command_ctx).await
+                } else {
+                    execute_workflow_command(&command_name, &parsed.args, &mut command_ctx)
+                }
             }
-        };
+        })
+        .await?;
         ctx.messages = command_ctx.messages;
         ctx.cwd = command_ctx.cwd;
         ctx.app_state = command_ctx.app_state;
@@ -1409,7 +1431,7 @@ fn resolve_workflow_command_script(
                 "failed to read {}: {}",
                 dir.display(),
                 err
-            )))
+            )));
         }
     };
     let mut matches = entries
@@ -1655,6 +1677,7 @@ mod tests {
             cwd: temp.path().to_path_buf(),
             app_state: AppState::default(),
             session_id: SessionId::from_string("workflow-command-test"),
+            hook_runner: std::sync::Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
         };
 
         let result = EngineCommandExecutor

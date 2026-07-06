@@ -2,12 +2,14 @@
 
 use std::path::Path;
 
+use allthecodes_types::agent_events::AgentCompletionStatus;
 use anyhow::Result;
 use serde_json::json;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::types::config::QuerySource;
+use crate::types::message::ToolResultContent;
 use crate::types::tool::*;
 
 use super::{
@@ -310,7 +312,7 @@ impl AgentTool {
         );
 
         // -- 3. Run the agent with cwd = worktree
-        let child_config = build_child_config(
+        let mut child_config = build_child_config(
             worktree_path.to_string_lossy().to_string(),
             ctx,
             agent_id,
@@ -319,6 +321,7 @@ impl AgentTool {
             parent_model,
             current_depth,
         );
+        super::dispatch::apply_coordinator_worker_turn_limit(&mut child_config, ctx, params);
 
         let agent_tx = ctx.bg_agent_tx.as_ref();
 
@@ -376,7 +379,7 @@ impl AgentTool {
             child_engine.submit_message(&params.prompt, QuerySource::Agent(agent_id.to_string()));
 
         let ipc = agent_tx.map(|tx| (tx, agent_id));
-        let (mut result_text, had_error) = collect_stream_result(stream, ipc).await;
+        let (mut result_text, had_error, usage) = collect_stream_result(stream, ipc).await;
 
         // -- 4. Check for changes
         let changes = count_worktree_changes(&worktree_path, original_head.as_deref()).await;
@@ -497,8 +500,12 @@ impl AgentTool {
                         agent_id: agent_id.to_string(),
                         result_preview: preview,
                         had_error,
+                        completion_status: AgentCompletionStatus::from_had_error(had_error),
                         duration_ms,
-                        output_tokens: None,
+                        total_tokens: usage.total_tokens,
+                        output_tokens: usage.output_tokens,
+                        tool_uses: usage.tool_uses,
+                        agent_type: params.subagent_type.clone(),
                     },
                 ));
 
@@ -531,8 +538,26 @@ impl AgentTool {
             "subagent (worktree) completed"
         );
 
+        let model_content = if super::dispatch::is_coordinator_parent(ctx)
+            && super::dispatch::is_worker_subagent(params.subagent_type.as_deref())
+        {
+            Some(ToolResultContent::Text(
+                super::dispatch::coordinator_worker_task_notification(
+                    agent_id,
+                    description,
+                    &result_text,
+                    AgentCompletionStatus::from_had_error(had_error),
+                    duration_ms,
+                    usage,
+                ),
+            ))
+        } else {
+            None
+        };
+
         Ok(ToolResult {
             data: json!(result_text),
+            model_content,
             new_messages: vec![],
             ..Default::default()
         })

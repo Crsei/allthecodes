@@ -1,7 +1,8 @@
 //! Feature gate system for KAIROS and related features.
 //!
 //! Each feature is controlled by an environment variable (`FEATURE_*`), with
-//! Agent Teams also honoring `ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS`.
+//! Agent Teams also honoring `ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS` and the
+//! upstream compatibility alias.
 //! Dependency rules enforce that child features require their parent:
 //! - `kairos_brief`, `kairos_channels`, `kairos_push_notification`,
 //!   `kairos_github_webhooks` all require `kairos`.
@@ -195,6 +196,10 @@ impl FeatureFlags {
                 .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
                 .unwrap_or(false)
         };
+        let read_optional = |key: &str| -> Option<bool> {
+            env.get(key)
+                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        };
         let read_default_enabled = |key: &str| -> bool {
             env.get(key)
                 .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
@@ -206,9 +211,13 @@ impl FeatureFlags {
         let mcp_skills = read("FEATURE_MCP_SKILLS");
         let experimental_skill_search = read("FEATURE_EXPERIMENTAL_SKILL_SEARCH");
         let subagent_dashboard = read("FEATURE_SUBAGENT_DASHBOARD");
-        let agent_teams =
-            read("FEATURE_AGENT_TEAMS") || read("ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS");
-        let coordinator = read("ALLTHECODES_COORDINATOR_MODE");
+        let agent_teams = read_optional("FEATURE_AGENT_TEAMS")
+            .or_else(|| read_optional("ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS"))
+            .or_else(|| read_optional("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"))
+            .unwrap_or(false);
+        let coordinator = read_optional("ALLTHECODES_COORDINATOR_MODE")
+            .or_else(|| read_optional("CLAUDE_CODE_COORDINATOR_MODE"))
+            .unwrap_or(false);
         let workflow_scripts = read_default_enabled("ALLTHECODES_WORKFLOW_SCRIPTS");
         let push_notification_remote_bridge =
             read_default_enabled("ALLTHECODES_PUSH_NOTIFICATION_REMOTE_BRIDGE");
@@ -518,10 +527,57 @@ mod tests {
     }
 
     #[test]
+    fn agent_teams_reads_upstream_compat_env_var() {
+        let f = flags(&[("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")]);
+        assert!(f.agent_teams);
+        assert!(f.is_enabled(Feature::AgentTeams));
+    }
+
+    #[test]
+    fn agent_teams_native_disabled_takes_precedence_over_compat_enabled() {
+        let f = flags(&[
+            ("FEATURE_AGENT_TEAMS", "0"),
+            ("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1"),
+        ]);
+        assert!(!f.agent_teams);
+
+        let f = flags(&[
+            ("ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS", "0"),
+            ("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1"),
+        ]);
+        assert!(!f.agent_teams);
+    }
+
+    #[test]
     fn coordinator_reads_new_env_var() {
         let f = flags(&[("ALLTHECODES_COORDINATOR_MODE", "true")]);
         assert!(f.coordinator);
         assert!(f.is_enabled(Feature::Coordinator));
+    }
+
+    #[test]
+    fn coordinator_reads_upstream_compat_env_var() {
+        let f = flags(&[("CLAUDE_CODE_COORDINATOR_MODE", "true")]);
+        assert!(f.coordinator);
+        assert!(f.is_enabled(Feature::Coordinator));
+    }
+
+    #[test]
+    fn allthecodes_env_takes_precedence_when_compat_env_is_disabled() {
+        let f = flags(&[
+            ("ALLTHECODES_COORDINATOR_MODE", "1"),
+            ("CLAUDE_CODE_COORDINATOR_MODE", "0"),
+        ]);
+        assert!(f.coordinator);
+    }
+
+    #[test]
+    fn coordinator_native_disabled_takes_precedence_over_compat_enabled() {
+        let f = flags(&[
+            ("ALLTHECODES_COORDINATOR_MODE", "0"),
+            ("CLAUDE_CODE_COORDINATOR_MODE", "1"),
+        ]);
+        assert!(!f.coordinator);
     }
 
     #[test]

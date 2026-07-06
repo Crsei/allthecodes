@@ -887,6 +887,7 @@ dependencies = [
  "allthecodes-commands",
  "allthecodes-config",
  "allthecodes-engine",
+ "allthecodes-session",
  "allthecodes-tasks",
  "allthecodes-tools",
  "allthecodes-types",

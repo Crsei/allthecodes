@@ -1083,6 +1083,44 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
+    async fn task_update_reports_stable_claim_failure_shape() {
+        let home = TempDir::new().expect("temp home");
+        let _home_guard = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let ctx = test_context("claim-shape-session");
+        let parent = parent_message();
+        let store = store_for_context(&ctx);
+
+        let task = store
+            .try_create_with_options(
+                "Claim shape",
+                "lock the claim failure payload",
+                TaskCreateOptions::default(),
+            )
+            .expect("create task");
+        store
+            .claim_task(&task.id, "agent-a", false)
+            .expect("seed claimed task");
+
+        let result = TaskUpdateTool
+            .call(
+                json!({
+                    "taskId": task.id,
+                    "status": "in_progress",
+                    "owner": "agent-b"
+                }),
+                &ctx,
+                &parent,
+                None,
+            )
+            .await
+            .expect("task update claim result");
+
+        assert_eq!(result.data["task_error"]["code"], "claim_failed");
+        assert_eq!(result.data["claim"]["reason"], "already_claimed");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
     async fn delegate_task_creates_child_session_and_trackable_task() {
         let home = TempDir::new().expect("temp home");
         let workspace = TempDir::new().expect("temp workspace");

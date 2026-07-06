@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::types::tool::Tool;
 use allthecodes_tasks::{TaskCreateOptions, TaskEntry, TaskRuntimeHandle, TaskStatus};
+use allthecodes_types::agent_events::AgentCompletionStatus;
 use allthecodes_types::agent_runtime_record::AgentRuntimeExecutionRecord;
 use allthecodes_types::agent_types::AgentNode;
 use allthecodes_types::mcp::McpBindingContext;
@@ -25,9 +26,13 @@ use tokio_util::sync::CancellationToken;
 pub struct CompletedBackgroundAgent {
     pub agent_id: String,
     pub description: String,
+    pub agent_type: Option<String>,
     pub result_text: String,
     pub had_error: bool,
+    pub completion_status: AgentCompletionStatus,
     pub duration: Duration,
+    pub total_tokens: Option<u64>,
+    pub tool_uses: Option<u64>,
 }
 
 /// Shared buffer of completed agents waiting to be injected into the query loop.
@@ -512,9 +517,13 @@ mod tests {
         CompletedBackgroundAgent {
             agent_id: id.to_string(),
             description: desc.to_string(),
+            agent_type: Some("worker".to_string()),
             result_text: format!("Result from {}", desc),
             had_error: false,
+            completion_status: AgentCompletionStatus::Completed,
             duration: Duration::from_secs(1),
+            total_tokens: None,
+            tool_uses: None,
         }
     }
 

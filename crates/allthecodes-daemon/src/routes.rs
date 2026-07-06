@@ -546,6 +546,7 @@ async fn command(
         cwd,
         app_state: original_app_state,
         session_id: state.engine.current_session_id(),
+        hook_runner: state.engine.hook_runner(),
     };
 
     match command_executor

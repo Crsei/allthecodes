@@ -58,7 +58,11 @@ pub trait HeadlessRuntimeHost: Send + Sync + 'static {
         agent_id: &str,
         result_preview: &str,
         had_error: bool,
+        completion_status: allthecodes_types::agent_events::AgentCompletionStatus,
         duration_ms: u64,
+        total_tokens: Option<u64>,
+        tool_uses: Option<u64>,
+        agent_type: Option<&str>,
     ) -> Option<BackgroundAgentCompletion>;
 
     fn shutdown_background_agents<'a>(&'a self, reason: &'a str) -> BoxHeadlessFuture<'a, usize>;
@@ -161,14 +165,22 @@ pub async fn run_headless(config: HeadlessRuntimeConfig) -> anyhow::Result<()> {
                             ref agent_id,
                             ref result_preview,
                             had_error,
+                            completion_status,
                             duration_ms,
+                            total_tokens,
+                            tool_uses,
+                            ref agent_type,
                             ..
                         } = agent_event {
                             if let Some(done) = config.host.background_agent_completed(
                                 agent_id,
                                 result_preview,
                                 *had_error,
+                                *completion_status,
                                 *duration_ms,
+                                *total_tokens,
+                                *tool_uses,
+                                agent_type.as_deref(),
                             ) {
                                 let _ = sink.send(&BackendMessage::BackgroundAgentComplete {
                                     agent_id: done.agent_id,

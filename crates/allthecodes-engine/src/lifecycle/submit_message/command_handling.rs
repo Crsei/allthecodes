@@ -36,6 +36,7 @@ pub(super) async fn handle_parsed_command(
     state_ref: &Arc<parking_lot::RwLock<QueryEngineState>>,
     active_session_id_ref: &Arc<parking_lot::RwLock<crate::bootstrap::SessionId>>,
     session_id: &crate::bootstrap::SessionId,
+    hook_runner: &Arc<dyn allthecodes_types::hooks::HookRunner>,
     command_dispatcher: &dyn allthecodes_types::commands::CommandDispatcher,
     command_executor: &dyn crate::command_runtime::CommandExecutor,
 ) -> LocalCommandOutcome {
@@ -53,6 +54,7 @@ pub(super) async fn handle_parsed_command(
         cwd: std::path::PathBuf::from(&config.cwd),
         app_state: state_ref.read().app_state.clone(),
         session_id: session_id.clone(),
+        hook_runner: hook_runner.clone(),
     };
 
     match command_executor

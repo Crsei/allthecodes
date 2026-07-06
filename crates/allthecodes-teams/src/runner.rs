@@ -23,7 +23,8 @@ use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::config::{AgentContext, QueryEngineConfig, QuerySource};
 use allthecodes_engine::types::tool::QueryChainTracking;
 use allthecodes_tools::registry::ToolPolicy;
-use allthecodes_tools::tool::PermissionMode;
+use allthecodes_tools::tool::{PermissionMode, ToolPermissionContext};
+use allthecodes_types::hooks::HookRunner;
 
 // ---------------------------------------------------------------------------
 // Spawn entry point
@@ -33,15 +34,17 @@ use allthecodes_tools::tool::PermissionMode;
 pub struct InProcessRunnerConfig {
     pub identity: TeammateIdentity,
     pub task_id: String,
+    pub task_list_id: String,
     pub prompt: String,
     pub agent_type: Option<String>,
     pub model: Option<String>,
     pub system_prompt: Option<String>,
     pub system_prompt_mode: Option<SystemPromptMode>,
     pub cwd: String,
-    pub hooks: HashMap<String, serde_json::Value>,
-    pub hook_runner: Option<Arc<dyn allthecodes_types::hooks::HookRunner>>,
     pub cancellation: tokio_util::sync::CancellationToken,
+    pub tool_permission_context: ToolPermissionContext,
+    pub hooks: HashMap<String, serde_json::Value>,
+    pub hook_runner: Option<Arc<dyn HookRunner>>,
 }
 
 /// Spawn a teammate runner as a background tokio task.
@@ -102,8 +105,22 @@ async fn run_teammate(config: InProcessRunnerConfig) -> Result<()> {
         let child_tools = tools_for_teammate(tool_policy_for_teammate(
             config.agent_type.as_deref(),
         ));
-        let (custom_system_prompt, append_system_prompt) =
+        let is_coordinator_worker = is_coordinator_worker_agent_type(config.agent_type.as_deref());
+        let (custom_system_prompt, mut append_system_prompt) =
             teammate_system_prompt_parts(config.system_prompt.clone(), config.system_prompt_mode);
+        let mut tool_permission_context = config.tool_permission_context.clone();
+        if is_coordinator_worker {
+            if let Some(scratchpad) =
+                crate::scratchpad::scratchpad_context(&identity.team_name, &identity.parent_session_id)
+            {
+                append_system_prompt =
+                    Some(append_prompt_section(append_system_prompt, scratchpad.prompt));
+                crate::scratchpad::apply_scratchpad_permissions(
+                    &mut tool_permission_context,
+                    &scratchpad.path,
+                );
+            }
+        }
         let engine_config = QueryEngineConfig {
             cwd: config.cwd.clone(),
             tools: child_tools,
@@ -141,16 +158,16 @@ async fn run_teammate(config: InProcessRunnerConfig) -> Result<()> {
                     self_agent_color: identity.color.clone(),
                     ..Default::default()
                 }),
-                tool_permission_context: None,
+                tool_permission_context: Some(tool_permission_context),
             }),
         };
 
+        let mut engine = QueryEngine::new(engine_config);
         let hook_runner = config
             .hook_runner
             .clone()
             .unwrap_or_else(|| Arc::new(allthecodes_tools::hooks::ShellHookRunner::new()));
-        let mut engine = QueryEngine::new(engine_config);
-        engine.set_hook_runner(hook_runner.clone());
+        engine.set_hook_runner(hook_runner);
         engine.set_command_dispatcher(std::sync::Arc::new(
             allthecodes_commands::DefaultCommandDispatcher::new(
                 allthecodes_commands::runtime::command_metadata_snapshot(),
@@ -164,12 +181,11 @@ async fn run_teammate(config: InProcessRunnerConfig) -> Result<()> {
                 let should_stop = drive_engine_turn(
                     &engine,
                     &prompt,
+                    &config,
                     &identity,
                     &agent_name,
                     &team_name,
                     &task_id,
-                    &config.hooks,
-                    &hook_runner,
                     &cancellation,
                 )
                 .await?;
@@ -277,13 +293,40 @@ fn release_teammate_tasks(
     result
 }
 
+fn coordinator_worker_simple_enabled() -> bool {
+    ["ALLTHECODES_COORDINATOR_SIMPLE", "CLAUDE_CODE_SIMPLE"]
+        .iter()
+        .any(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| {
+                    matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes"
+                    )
+                })
+                .unwrap_or(false)
+        })
+}
+
 fn tool_policy_for_teammate(agent_type: Option<&str>) -> ToolPolicy {
-    match agent_type.map(|value| value.trim()) {
-        Some(agent_type) if agent_type.eq_ignore_ascii_case("worker") => {
+    if is_coordinator_worker_agent_type(agent_type) {
+        if coordinator_worker_simple_enabled() {
+            ToolPolicy::CoordinatorWorkerSimple
+        } else {
             ToolPolicy::CoordinatorWorker
         }
-        _ => ToolPolicy::InProcessTeammate,
+    } else {
+        ToolPolicy::InProcessTeammate
     }
+}
+
+fn is_coordinator_worker_agent_type(agent_type: Option<&str>) -> bool {
+    agent_type
+        .map(|value| value.trim())
+        .is_some_and(|agent_type| {
+            agent_type.eq_ignore_ascii_case(crate::coordinator::WORKER_AGENT_TYPE)
+        })
 }
 
 fn tools_for_teammate(policy: ToolPolicy) -> allthecodes_tools::tool::Tools {
@@ -307,15 +350,21 @@ fn teammate_system_prompt_parts(
     }
 }
 
+fn append_prompt_section(existing: Option<String>, section: String) -> String {
+    match existing.filter(|value| !value.trim().is_empty()) {
+        Some(existing) => format!("{existing}\n\n{section}"),
+        None => section,
+    }
+}
+
 async fn drive_engine_turn(
     engine: &QueryEngine,
     prompt: &str,
+    config: &InProcessRunnerConfig,
     identity: &TeammateIdentity,
     agent_name: &str,
     team_name: &str,
     task_id: &str,
-    hooks: &HashMap<String, serde_json::Value>,
-    hook_runner: &Arc<dyn allthecodes_types::hooks::HookRunner>,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<bool> {
     use allthecodes_types::sdk::SdkMessage;
@@ -343,8 +392,7 @@ async fn drive_engine_turn(
                         debug!(agent_id = %identity.agent_id, "query completed, marking idle");
 
                         let _ = send_teammate_idle_notification(
-                            hooks,
-                            hook_runner,
+                            config,
                             identity,
                             agent_name,
                             team_name,
@@ -634,8 +682,7 @@ fn send_idle_notification(
 }
 
 async fn send_teammate_idle_notification(
-    hooks: &HashMap<String, serde_json::Value>,
-    hook_runner: &Arc<dyn allthecodes_types::hooks::HookRunner>,
+    config: &InProcessRunnerConfig,
     identity: &TeammateIdentity,
     agent_name: &str,
     team_name: &str,
@@ -643,30 +690,63 @@ async fn send_teammate_idle_notification(
     summary: Option<&str>,
 ) -> Result<()> {
     let notification_result = send_idle_notification(agent_name, team_name, reason, summary);
+    if let Err(error) = &notification_result {
+        warn!(
+            agent_id = %identity.agent_id,
+            team_name = %team_name,
+            error = %error,
+            "failed to send teammate idle notification"
+        );
+    }
 
-    let configs = hook_runner.load_hook_configs(hooks, "TeammateIdle");
-    if !configs.is_empty() {
-        let payload = serde_json::to_value(TeammateIdleHookPayload {
-            team_name: team_name.to_string(),
-            teammate_name: agent_name.to_string(),
-            agent_id: identity.agent_id.clone(),
-            reason,
-            task_list_id: team_name.to_string(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-        })?;
-        if let Err(error) = hook_runner
-            .run_event_hooks("TeammateIdle", &payload, &configs)
-            .await
-        {
+    run_teammate_idle_hook(config, identity, reason).await;
+    notification_result
+}
+
+async fn run_teammate_idle_hook(
+    config: &InProcessRunnerConfig,
+    identity: &TeammateIdentity,
+    reason: IdleReason,
+) {
+    let Some(hook_runner) = config.hook_runner.as_ref() else {
+        return;
+    };
+    let hook_configs = allthecodes_types::hooks::load_hook_configs(&config.hooks, "TeammateIdle");
+    if hook_configs.is_empty() {
+        return;
+    }
+
+    let payload = TeammateIdleHookPayload {
+        team_name: identity.team_name.clone(),
+        teammate_name: identity.agent_name.clone(),
+        agent_id: identity.agent_id.clone(),
+        reason,
+        task_list_id: config.task_list_id.clone(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    let payload = match serde_json::to_value(payload) {
+        Ok(payload) => payload,
+        Err(error) => {
             warn!(
                 agent_id = %identity.agent_id,
                 error = %error,
-                "teammate idle hook failed"
+                "failed to serialize teammate idle hook payload"
             );
+            return;
         }
-    }
+    };
 
-    notification_result
+    if let Err(error) = hook_runner
+        .run_event_hooks("TeammateIdle", &payload, &hook_configs)
+        .await
+    {
+        warn!(
+            agent_id = %identity.agent_id,
+            team_name = %identity.team_name,
+            error = %error,
+            "teammate idle hook failed"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -676,6 +756,10 @@ async fn send_teammate_idle_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
         key: &'static str,
@@ -705,6 +789,91 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct RecordedHookCall {
+        event_name: String,
+        payload: serde_json::Value,
+    }
+
+    struct RecordingHookRunner {
+        calls: Mutex<Vec<RecordedHookCall>>,
+    }
+
+    impl RecordingHookRunner {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<RecordedHookCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HookRunner for RecordingHookRunner {
+        fn load_hook_configs(
+            &self,
+            hooks_value: &allthecodes_types::hooks::HooksMap,
+            event_name: &str,
+        ) -> Vec<allthecodes_types::hooks::HookEventConfig> {
+            allthecodes_types::hooks::load_hook_configs(hooks_value, event_name)
+        }
+
+        async fn run_pre_tool_hooks(
+            &self,
+            _tool_name: &str,
+            _input: &serde_json::Value,
+            _hook_configs: &[allthecodes_types::hooks::HookEventConfig],
+        ) -> anyhow::Result<allthecodes_types::hooks::PreToolHookResult> {
+            Ok(allthecodes_types::hooks::PreToolHookResult::Continue {
+                updated_input: None,
+                permission_override: None,
+            })
+        }
+
+        async fn run_post_tool_hooks(
+            &self,
+            _tool_name: &str,
+            _input: &serde_json::Value,
+            _tool_result_data: &serde_json::Value,
+            _hook_configs: &[allthecodes_types::hooks::HookEventConfig],
+        ) -> anyhow::Result<allthecodes_types::hooks::PostToolHookResult> {
+            Ok(allthecodes_types::hooks::PostToolHookResult::Continue)
+        }
+
+        async fn run_post_tool_failure_hooks(
+            &self,
+            _tool_name: &str,
+            _input: &serde_json::Value,
+            _error: &str,
+            _hook_configs: &[allthecodes_types::hooks::HookEventConfig],
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn run_event_hooks(
+            &self,
+            event_name: &str,
+            payload: &serde_json::Value,
+            _hook_configs: &[allthecodes_types::hooks::HookEventConfig],
+        ) -> anyhow::Result<allthecodes_types::hooks::HookOutput> {
+            self.calls.lock().unwrap().push(RecordedHookCall {
+                event_name: event_name.to_string(),
+                payload: payload.clone(),
+            });
+            Ok(allthecodes_types::hooks::HookOutput::default())
+        }
+
+        async fn run_stop_hooks(
+            &self,
+            _hook_configs: &[allthecodes_types::hooks::HookEventConfig],
+        ) -> anyhow::Result<allthecodes_types::hooks::PostToolHookResult> {
+            Ok(allthecodes_types::hooks::PostToolHookResult::Continue)
+        }
+    }
+
     #[test]
     fn test_runner_config_creation() {
         let config = InProcessRunnerConfig {
@@ -717,24 +886,169 @@ mod tests {
                 parent_session_id: "sess-1".into(),
             },
             task_id: "task-1".into(),
+            task_list_id: "team".into(),
             prompt: "Do work".into(),
             agent_type: Some("worker".into()),
             model: None,
             system_prompt: None,
             system_prompt_mode: None,
             cwd: "/tmp".into(),
-            hooks: Default::default(),
-            hook_runner: None,
             cancellation: tokio_util::sync::CancellationToken::new(),
+            tool_permission_context: allthecodes_tools::tool::ToolAppState::default()
+                .tool_permission_context,
+            hooks: HashMap::new(),
+            hook_runner: None,
         };
         assert_eq!(config.identity.agent_id, "worker@team");
         assert_eq!(config.prompt, "Do work");
     }
 
     #[test]
+    #[serial_test::serial]
+    fn coordinator_worker_scratchpad_preserves_parent_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", temp.path().to_str().unwrap());
+        let _gate = EnvGuard::set("ALLTHECODES_COORDINATOR_SCRATCHPAD", "1");
+        let _tengu = EnvGuard::remove("TENGU_SCRATCH");
+        let _claude = EnvGuard::remove("CLAUDE_CODE_TENGU_SCRATCH");
+
+        let mut parent_context = allthecodes_tools::tool::ToolPermissionContext {
+            mode: PermissionMode::Auto,
+            additional_working_directories: std::iter::once((
+                "/existing/additional".to_string(),
+                allthecodes_tools::tool::AdditionalWorkingDirectory {
+                    path: "/existing/additional".to_string(),
+                    read_only: false,
+                },
+            ))
+            .collect(),
+            always_allow_rules: std::iter::once(("settings".to_string(), vec!["Read".to_string()]))
+                .collect(),
+            always_deny_rules: std::iter::once(("session".to_string(), vec!["Write".to_string()]))
+                .collect(),
+            always_ask_rules: std::collections::HashMap::new(),
+            session_allow_rules: std::iter::once(("session".to_string(), vec!["Grep".to_string()]))
+                .collect(),
+            auto_mode_stripped_always_allow_rules: vec![],
+            auto_mode_stripped_session_allow_rules: vec![],
+            is_bypass_permissions_mode_available: true,
+            is_auto_mode_available: Some(true),
+            pre_plan_mode: Some(PermissionMode::Default),
+        };
+
+        let scratchpad = crate::scratchpad::scratchpad_context("Team A", "session-123")
+            .expect("scratchpad enabled");
+        crate::scratchpad::apply_scratchpad_permissions(&mut parent_context, &scratchpad.path);
+
+        assert_eq!(parent_context.mode, PermissionMode::Auto);
+        assert_eq!(
+            parent_context
+                .always_allow_rules
+                .get("settings")
+                .cloned()
+                .unwrap(),
+            vec!["Read".to_string()]
+        );
+        assert_eq!(
+            parent_context
+                .always_deny_rules
+                .get("session")
+                .cloned()
+                .unwrap(),
+            vec!["Write".to_string()]
+        );
+        assert_eq!(
+            parent_context
+                .session_allow_rules
+                .get("session")
+                .cloned()
+                .unwrap(),
+            vec!["Grep".to_string()]
+        );
+        assert!(parent_context
+            .additional_working_directories
+            .contains_key("/existing/additional"));
+        assert!(parent_context
+            .additional_working_directories
+            .contains_key(scratchpad.path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
     fn test_idle_reason_serialize() {
         let json = serde_json::to_string(&IdleReason::Available).unwrap();
         assert_eq!(json, "\"available\"");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn teammate_idle_hook_records_payload_and_mailbox_notification() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", temp.path().to_str().unwrap());
+
+        let hook_runner = Arc::new(RecordingHookRunner::new());
+        let config = InProcessRunnerConfig {
+            identity: TeammateIdentity {
+                agent_id: "worker@team".into(),
+                agent_name: "worker".into(),
+                team_name: "team".into(),
+                color: Some("blue".into()),
+                plan_mode_required: false,
+                parent_session_id: "sess-1".into(),
+            },
+            task_id: "task-1".into(),
+            task_list_id: "team".into(),
+            prompt: "Do work".into(),
+            agent_type: Some("worker".into()),
+            model: None,
+            system_prompt: None,
+            system_prompt_mode: None,
+            cwd: "/tmp".into(),
+            cancellation: tokio_util::sync::CancellationToken::new(),
+            tool_permission_context: allthecodes_tools::tool::ToolAppState::default()
+                .tool_permission_context,
+            hooks: HashMap::from([(
+                "TeammateIdle".to_string(),
+                serde_json::json!([
+                    {
+                        "matcher": "*",
+                        "critical": false,
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "echo idle"
+                            }
+                        ]
+                    }
+                ]),
+            )]),
+            hook_runner: Some(hook_runner.clone()),
+        };
+
+        let identity = config.identity.clone();
+        send_teammate_idle_notification(
+            &config,
+            &identity,
+            &identity.agent_name,
+            &identity.team_name,
+            IdleReason::Available,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let calls = hook_runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].event_name, "TeammateIdle");
+        assert_eq!(calls[0].payload["team_name"], "team");
+        assert_eq!(calls[0].payload["teammate_name"], "worker");
+        assert_eq!(calls[0].payload["agent_id"], "worker@team");
+        assert_eq!(calls[0].payload["reason"], "available");
+        assert_eq!(calls[0].payload["task_list_id"], "team");
+
+        let mailbox = mailbox::read_mailbox(crate::constants::TEAM_LEAD_NAME, "team").unwrap();
+        assert_eq!(mailbox.len(), 1);
+        assert!(mailbox[0].text.contains("\"idleReason\":\"available\""));
     }
 
     #[test]
@@ -754,6 +1068,10 @@ mod tests {
 
     #[test]
     fn teammate_tool_policy_uses_worker_boundary_for_worker_agent_type() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _allthecodes_simple = EnvGuard::remove("ALLTHECODES_COORDINATOR_SIMPLE");
+        let _claude_simple = EnvGuard::remove("CLAUDE_CODE_SIMPLE");
+
         assert_eq!(
             tool_policy_for_teammate(Some("worker")),
             ToolPolicy::CoordinatorWorker
@@ -764,6 +1082,22 @@ mod tests {
         );
         assert_eq!(
             tool_policy_for_teammate(None),
+            ToolPolicy::InProcessTeammate
+        );
+    }
+
+    #[test]
+    fn teammate_tool_policy_uses_simple_worker_boundary_when_enabled() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _allthecodes_simple = EnvGuard::set("ALLTHECODES_COORDINATOR_SIMPLE", "yes");
+        let _claude_simple = EnvGuard::remove("CLAUDE_CODE_SIMPLE");
+
+        assert_eq!(
+            tool_policy_for_teammate(Some("worker")),
+            ToolPolicy::CoordinatorWorkerSimple
+        );
+        assert_eq!(
+            tool_policy_for_teammate(Some("teammate")),
             ToolPolicy::InProcessTeammate
         );
     }

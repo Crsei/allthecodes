@@ -3,11 +3,10 @@
 //! Corresponds to TypeScript: `utils/swarm/teamHelpers.ts` types,
 //! `utils/teammate.ts`, `state/AppState.ts` (TeamContext).
 
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
-use serde::{Deserialize, Serialize};
-
-use allthecodes_tools::tool::PermissionMode;
+use allthecodes_tools::tool::{PermissionMode, ToolPermissionContext};
 use allthecodes_types::hooks::HookRunner;
 
 // ---------------------------------------------------------------------------
@@ -149,7 +148,7 @@ pub struct TeammateMessage {
 }
 
 /// Payload emitted when a teammate becomes idle.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TeammateIdleHookPayload {
     pub team_name: String,
     pub teammate_name: String,
@@ -159,17 +158,12 @@ pub struct TeammateIdleHookPayload {
     pub timestamp: String,
 }
 
-// ---------------------------------------------------------------------------
-// TeammateSpawnConfig
-// ---------------------------------------------------------------------------
-
 /// Configuration for spawning a new teammate.
 #[derive(Clone)]
 pub struct TeammateSpawnConfig {
     pub name: String,
     pub team_name: String,
-    pub hooks: HashMap<String, serde_json::Value>,
-    pub hook_runner: Option<Arc<dyn HookRunner>>,
+    pub task_list_id: String,
     pub color: Option<String>,
     pub plan_mode_required: bool,
     pub prompt: String,
@@ -182,6 +176,9 @@ pub struct TeammateSpawnConfig {
     pub parent_session_id: String,
     pub permissions: Vec<String>,
     pub allow_permission_prompts: bool,
+    pub tool_permission_context: ToolPermissionContext,
+    pub hooks: HashMap<String, serde_json::Value>,
+    pub hook_runner: Option<Arc<dyn HookRunner>>,
 }
 
 impl std::fmt::Debug for TeammateSpawnConfig {
@@ -189,11 +186,7 @@ impl std::fmt::Debug for TeammateSpawnConfig {
         f.debug_struct("TeammateSpawnConfig")
             .field("name", &self.name)
             .field("team_name", &self.team_name)
-            .field("hooks", &self.hooks)
-            .field(
-                "hook_runner",
-                &self.hook_runner.as_ref().map(|_| "Some(..)"),
-            )
+            .field("task_list_id", &self.task_list_id)
             .field("color", &self.color)
             .field("plan_mode_required", &self.plan_mode_required)
             .field("prompt", &self.prompt)
@@ -206,6 +199,12 @@ impl std::fmt::Debug for TeammateSpawnConfig {
             .field("parent_session_id", &self.parent_session_id)
             .field("permissions", &self.permissions)
             .field("allow_permission_prompts", &self.allow_permission_prompts)
+            .field("tool_permission_context", &self.tool_permission_context)
+            .field("hooks", &self.hooks)
+            .field(
+                "hook_runner",
+                &self.hook_runner.as_ref().map(|_| "<hook_runner>"),
+            )
             .finish()
     }
 }
@@ -384,26 +383,6 @@ mod tests {
     }
 
     #[test]
-    fn teammate_idle_hook_payload_serializes_expected_fields() {
-        let payload = TeammateIdleHookPayload {
-            team_name: "team-a".into(),
-            teammate_name: "worker".into(),
-            agent_id: "worker@team-a".into(),
-            reason: IdleReason::Available,
-            task_list_id: "team-a".into(),
-            timestamp: "2026-07-06T12:00:00Z".into(),
-        };
-
-        let json = serde_json::to_value(payload).unwrap();
-        assert_eq!(json["team_name"], "team-a");
-        assert_eq!(json["teammate_name"], "worker");
-        assert_eq!(json["agent_id"], "worker@team-a");
-        assert_eq!(json["reason"], "available");
-        assert_eq!(json["task_list_id"], "team-a");
-        assert_eq!(json["timestamp"], "2026-07-06T12:00:00Z");
-    }
-
-    #[test]
     fn test_task_status() {
         assert_ne!(TaskStatus::Running, TaskStatus::Stopped);
         assert_ne!(TaskStatus::Running, TaskStatus::Completed);
@@ -418,6 +397,31 @@ mod tests {
         assert_eq!(json, "\"available\"");
         let parsed: IdleReason = serde_json::from_str("\"interrupted\"").unwrap();
         assert_eq!(parsed, IdleReason::Interrupted);
+    }
+
+    #[test]
+    fn teammate_idle_hook_payload_serializes_expected_fields() {
+        let payload = TeammateIdleHookPayload {
+            team_name: "team".into(),
+            teammate_name: "worker".into(),
+            agent_id: "worker@team".into(),
+            reason: IdleReason::Available,
+            task_list_id: "task-list-1".into(),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+
+        let value = serde_json::to_value(payload).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "team_name": "team",
+                "teammate_name": "worker",
+                "agent_id": "worker@team",
+                "reason": "available",
+                "task_list_id": "task-list-1",
+                "timestamp": "2026-01-01T00:00:00Z",
+            })
+        );
     }
 
     #[test]

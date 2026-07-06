@@ -94,6 +94,7 @@ mod tests {
     #[test]
     fn runtime_view_state_tracks_current_agent_thread() {
         let mut state = RuntimeViewState::default();
+        state.refresh_task_items(&[]);
         state.upsert_agent(AgentThreadEntry {
             thread_id: "worker-1".to_string(),
             agent_nickname: Some("Build worker".to_string()),

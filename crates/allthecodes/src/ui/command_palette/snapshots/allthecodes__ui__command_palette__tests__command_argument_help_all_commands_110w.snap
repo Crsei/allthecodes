@@ -45,6 +45,12 @@ expression: normalize_snapshot_text(rendered)
 │Example: /branch                                                                                            │
 │About: Fork the current conversation into a new branch                                                      │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+## /brief
+┌ /brief arguments ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Usage: /brief                                                                                               │
+│Example: /brief                                                                                             │
+│About: Toggle KAIROS structured Brief output mode                                                           │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ## /btw
 ┌ /btw arguments ────────────────────────────────────────────────────────────────────────────────────────────┐
 │Usage: /btw <question>                                                                                      │
@@ -216,6 +222,12 @@ expression: normalize_snapshot_text(rendered)
 │Example: /help                                                                                              │
 │About: Help V2: commands, quick surfaces, keys, and diagnostics hints                                       │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+## /hermes
+┌ /hermes arguments ─────────────────────────────────────────────────────────────────────────────────────────┐
+│Usage: /hermes                                                                                              │
+│Example: /hermes                                                                                            │
+│About: Enable or inspect Hermes autonomous runtime                                                          │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ## /hooks
 ┌ /hooks arguments ──────────────────────────────────────────────────────────────────────────────────────────┐
 │Usage: /hooks <list|path|open> [event|layer]                                                                │
@@ -244,6 +256,12 @@ expression: normalize_snapshot_text(rendered)
 │About: View, edit, or reload keybindings.json                                                               │
 │Edit: user: ~/.allthecodes/keybindings.json                                                                 │
 │Hint: Ctrl+E pick target                                                                                    │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+## /learn
+┌ /learn arguments ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Usage: /learn                                                                                               │
+│Example: /learn                                                                                             │
+│About: Stage a learnable skill proposal for approval                                                        │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ## /login
 ┌ /login arguments ──────────────────────────────────────────────────────────────────────────────────────────┐
@@ -443,6 +461,12 @@ expression: normalize_snapshot_text(rendered)
 │Example: /statusline show                                                                                   │
 │About: View, edit, or test the scriptable status line                                                       │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+## /subagents
+┌ /subagents arguments ──────────────────────────────────────────────────────────────────────────────────────┐
+│Usage: /subagents                                                                                           │
+│Example: /subagents                                                                                         │
+│About: Inspect subagent runtime events and tool executions                                                  │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ## /tasks
 ┌ /tasks arguments ──────────────────────────────────────────────────────────────────────────────────────────┐
 │Usage: /tasks <list|show|stop|delete> [id]                                                                  │
@@ -478,4 +502,10 @@ expression: normalize_snapshot_text(rendered)
 │Usage: /voice [status|on|off|toggle|diagnose]                                                               │
 │Example: /voice status                                                                                      │
 │About: Inspect compatibility-only voice settings (runtime voice unsupported)                                │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+## /workflows
+┌ /workflows arguments ──────────────────────────────────────────────────────────────────────────────────────┐
+│Usage: /workflows                                                                                           │
+│Example: /workflows                                                                                         │
+│About: List project workflow scripts from .allthecodes/workflows                                            │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

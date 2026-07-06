@@ -29,6 +29,7 @@ use futures::Stream;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use allthecodes_config::features::{self, Feature};
 use allthecodes_types::agent_events::AgentEvent;
 use allthecodes_types::agent_runtime_record::{compute_digest, AgentRuntimeExecutionRecord};
 
@@ -36,7 +37,7 @@ use crate::types::config::QueryParams;
 use crate::types::message::QueryYield;
 use crate::types::message::{
     AssistantMessage, Attachment, AttachmentMessage, ContentBlock, Message, RequestStartEvent,
-    StreamEvent, TombstoneMessage, ToolUseSummaryMessage, Usage,
+    StreamEvent, TombstoneMessage, ToolUseSummaryMessage, Usage, UserMessage,
 };
 use crate::types::state::{BudgetTracker, TokenBudgetDecision};
 use crate::types::transitions::Continue;
@@ -123,35 +124,11 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             // STEP 1b: Inject completed background agent results
 
             let completed_agents = deps.drain_background_results();
+            let coordinator_parent = is_coordinator_parent(&deps);
             for agent in &completed_agents {
-                let content = if agent.had_error {
-                    format!(
-                        "[Background agent '{}' (id: {}) failed after {:.1}s]\n\n{}",
-                        agent.description,
-                        agent.agent_id,
-                        agent.duration.as_secs_f64(),
-                        agent.result_text,
-                    )
-                } else {
-                    format!(
-                        "[Background agent '{}' (id: {}) completed in {:.1}s]\n\n{}",
-                        agent.description,
-                        agent.agent_id,
-                        agent.duration.as_secs_f64(),
-                        agent.result_text,
-                    )
-                };
-
-                let sys_msg = Message::System(crate::types::message::SystemMessage {
-                    uuid: Uuid::new_v4(),
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                    subtype: crate::types::message::SystemSubtype::Informational {
-                        level: crate::types::message::InfoLevel::Info,
-                    },
-                    content,
-                });
-                yield QueryYield::Message(sys_msg.clone());
-                state.messages.push(sys_msg);
+                let msg = background_agent_message(agent, coordinator_parent);
+                yield QueryYield::Message(msg.clone());
+                state.messages.push(msg);
             }
 
             for steer_msg in drain_steer_messages(&deps) {
@@ -1088,6 +1065,221 @@ fn input_string_field(input: &serde_json::Value, keys: &[&str]) -> Option<String
         .map(str::trim)
         .find(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn is_coordinator_parent(deps: &Arc<dyn QueryDeps>) -> bool {
+    if !features::enabled(Feature::Coordinator) {
+        return false;
+    }
+    deps.get_app_state()
+        .team_context
+        .as_ref()
+        .is_none_or(|team_context| allthecodes_types::teams::is_team_lead(Some(team_context)))
+}
+
+fn background_agent_message(
+    agent: &crate::agent_runtime::CompletedBackgroundAgent,
+    coordinator_parent: bool,
+) -> Message {
+    if coordinator_parent && is_worker_subagent(agent.agent_type.as_deref()) {
+        return Message::User(UserMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            role: "user".to_string(),
+            content: crate::types::message::MessageContent::Text(background_task_notification(
+                agent,
+            )),
+            is_meta: true,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        });
+    }
+
+    Message::System(crate::types::message::SystemMessage {
+        uuid: Uuid::new_v4(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        subtype: crate::types::message::SystemSubtype::Informational {
+            level: crate::types::message::InfoLevel::Info,
+        },
+        content: background_agent_system_content(agent),
+    })
+}
+
+fn is_worker_subagent(subagent_type: Option<&str>) -> bool {
+    subagent_type
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("worker"))
+}
+
+fn background_agent_system_content(
+    agent: &crate::agent_runtime::CompletedBackgroundAgent,
+) -> String {
+    if agent.had_error {
+        format!(
+            "[Background agent '{}' (id: {}) failed after {:.1}s]\n\n{}",
+            agent.description,
+            agent.agent_id,
+            agent.duration.as_secs_f64(),
+            agent.result_text,
+        )
+    } else {
+        format!(
+            "[Background agent '{}' (id: {}) completed in {:.1}s]\n\n{}",
+            agent.description,
+            agent.agent_id,
+            agent.duration.as_secs_f64(),
+            agent.result_text,
+        )
+    }
+}
+
+fn background_task_notification(agent: &crate::agent_runtime::CompletedBackgroundAgent) -> String {
+    let status = agent.completion_status.as_str();
+    let summary = format!("Agent \"{}\" {}", agent.description, status);
+    let mut xml = String::from("<task-notification>");
+    push_xml_tag(&mut xml, "task-id", &agent.agent_id);
+    push_xml_tag(&mut xml, "status", status);
+    push_xml_tag(&mut xml, "summary", &summary);
+    push_xml_tag(&mut xml, "result", &agent.result_text);
+    xml.push_str("<usage>");
+    push_xml_tag(
+        &mut xml,
+        "duration_ms",
+        &agent.duration.as_millis().to_string(),
+    );
+    if let Some(total_tokens) = agent.total_tokens {
+        push_xml_tag(&mut xml, "total_tokens", &total_tokens.to_string());
+    }
+    if let Some(tool_uses) = agent.tool_uses {
+        push_xml_tag(&mut xml, "tool_uses", &tool_uses.to_string());
+    }
+    xml.push_str("</usage>");
+    xml.push_str("</task-notification>");
+    xml
+}
+
+fn push_xml_tag(xml: &mut String, tag: &str, value: &str) {
+    xml.push('<');
+    xml.push_str(tag);
+    xml.push('>');
+    xml.push_str(&escape_xml(value));
+    xml.push_str("</");
+    xml.push_str(tag);
+    xml.push('>');
+}
+
+fn escape_xml(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(test)]
+mod task_notification_tests {
+    use super::*;
+
+    #[test]
+    fn task_notification_background_message_is_user_role_for_coordinator() {
+        let agent = crate::agent_runtime::CompletedBackgroundAgent {
+            agent_id: "agent-bg".to_string(),
+            description: "collect data".to_string(),
+            agent_type: Some("worker".to_string()),
+            result_text: "finished".to_string(),
+            had_error: false,
+            completion_status: allthecodes_types::agent_events::AgentCompletionStatus::Completed,
+            duration: std::time::Duration::from_millis(25),
+            total_tokens: Some(99),
+            tool_uses: Some(2),
+        };
+
+        let message = background_agent_message(&agent, true);
+
+        match message {
+            Message::User(user) => {
+                assert!(user.is_meta);
+                let text = match user.content {
+                    crate::types::message::MessageContent::Text(text) => text,
+                    _ => String::new(),
+                };
+                assert!(text.contains("<task-notification>"));
+                assert!(text.contains("<task-id>agent-bg</task-id>"));
+                assert!(text.contains("<status>completed</status>"));
+                assert!(text.contains("<duration_ms>25</duration_ms>"));
+                assert!(text.contains("<total_tokens>99</total_tokens>"));
+                assert!(text.contains("<tool_uses>2</tool_uses>"));
+            }
+            other => panic!("expected user notification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normal_background_message_stays_system_role() {
+        let agent = crate::agent_runtime::CompletedBackgroundAgent {
+            agent_id: "agent-bg".to_string(),
+            description: "collect data".to_string(),
+            agent_type: Some("worker".to_string()),
+            result_text: "finished".to_string(),
+            had_error: false,
+            completion_status: allthecodes_types::agent_events::AgentCompletionStatus::Completed,
+            duration: std::time::Duration::from_millis(25),
+            total_tokens: None,
+            tool_uses: None,
+        };
+
+        assert!(matches!(
+            background_agent_message(&agent, false),
+            Message::System(_)
+        ));
+    }
+
+    #[test]
+    fn coordinator_background_non_worker_stays_system_role() {
+        let agent = crate::agent_runtime::CompletedBackgroundAgent {
+            agent_id: "agent-bg".to_string(),
+            description: "collect data".to_string(),
+            agent_type: Some("researcher".to_string()),
+            result_text: "finished".to_string(),
+            had_error: false,
+            completion_status: allthecodes_types::agent_events::AgentCompletionStatus::Completed,
+            duration: std::time::Duration::from_millis(25),
+            total_tokens: None,
+            tool_uses: None,
+        };
+
+        assert!(matches!(
+            background_agent_message(&agent, true),
+            Message::System(_)
+        ));
+    }
+
+    #[test]
+    fn killed_background_worker_notification_uses_killed_status() {
+        let agent = crate::agent_runtime::CompletedBackgroundAgent {
+            agent_id: "agent-bg".to_string(),
+            description: "collect data".to_string(),
+            agent_type: Some("worker".to_string()),
+            result_text: "(Agent cancelled before producing text output)".to_string(),
+            had_error: true,
+            completion_status: allthecodes_types::agent_events::AgentCompletionStatus::Killed,
+            duration: std::time::Duration::from_millis(25),
+            total_tokens: None,
+            tool_uses: None,
+        };
+
+        let message = background_agent_message(&agent, true);
+
+        let Message::User(user) = message else {
+            panic!("expected user notification for coordinator worker");
+        };
+        let crate::types::message::MessageContent::Text(text) = user.content else {
+            panic!("expected text notification");
+        };
+        assert!(text.contains("<status>killed</status>"));
+        assert!(text.contains("Agent &quot;collect data&quot; killed"));
+    }
 }
 
 #[cfg(test)]

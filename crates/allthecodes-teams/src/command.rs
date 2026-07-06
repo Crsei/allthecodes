@@ -53,6 +53,52 @@ fn char_is_whitespace(c: char) -> bool {
     c.is_whitespace()
 }
 
+fn task_list_id_for_team(
+    team_name: &str,
+    app_state: &allthecodes_engine::types::app_state::AppState,
+) -> String {
+    allthecodes_tasks::task_list_id_from_parts(allthecodes_tasks::TaskListScope {
+        explicit_task_list_id: None,
+        scoped_team_name: Some(team_name.to_string()),
+        app_team_name: app_state
+            .team_context
+            .as_ref()
+            .map(|team_context| team_context.team_name.clone()),
+        session_id: None,
+    })
+}
+
+fn hook_runner_for_team_spawn() -> std::sync::Arc<dyn allthecodes_types::hooks::HookRunner> {
+    allthecodes_commands::runtime::current_hook_runner()
+        .unwrap_or_else(|| std::sync::Arc::new(allthecodes_tools::hooks::ShellHookRunner::new()))
+}
+
+fn backend_diagnostics(backend_type: Option<BackendType>, task_id: Option<&str>) -> (bool, bool) {
+    match backend_type.unwrap_or(BackendType::InProcess) {
+        BackendType::InProcess => (
+            false,
+            task_id.map(InProcessBackend::has_task_id).unwrap_or(false),
+        ),
+        BackendType::Tmux | BackendType::ITerm2 => (false, false),
+    }
+}
+
+fn support_label(value: bool) -> &'static str {
+    if value {
+        "supported"
+    } else {
+        "unsupported"
+    }
+}
+
+fn attachment_label(value: bool) -> &'static str {
+    if value {
+        "attached"
+    } else {
+        "detached"
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Subcommand implementations
 // ---------------------------------------------------------------------------
@@ -138,17 +184,19 @@ fn status(ctx: &allthecodes_commands::CommandContext) -> String {
                 } else {
                     format!("{} task(s)", member_tasks.len())
                 };
+                let (resume_supported, runtime_attached) =
+                    backend_diagnostics(m.backend_type, m.task_id.as_deref());
                 lines.push(format!(
-                    "    {} {} [{}] color={} model={} backend={} status={}",
+                    "    {} {} [{}] color={} model={} backend: {} status={} runtime: {} resume: {}",
                     active_marker,
                     m.name,
                     tag,
                     color,
                     m.model.as_deref().unwrap_or("inherit"),
-                    m.backend_type
-                        .map(|backend| backend.to_string())
-                        .unwrap_or_else(|| "unknown".to_string()),
+                    m.backend_type.unwrap_or(BackendType::InProcess).to_string(),
                     task_state,
+                    attachment_label(runtime_attached),
+                    support_label(resume_supported),
                 ));
             }
         }
@@ -315,10 +363,12 @@ async fn spawn(ctx: &mut allthecodes_commands::CommandContext, rest: &str) -> St
     }
 
     let backend = InProcessBackend::new();
+    let task_list_id = task_list_id_for_team(&team_name, &ctx.app_state);
     let spawn_result = match backend
         .spawn(TeammateSpawnConfig {
             name: name.into(),
             team_name: team_name.clone(),
+            task_list_id,
             color: Some(color.clone()),
             plan_mode_required: false,
             prompt: prompt.into(),
@@ -332,7 +382,8 @@ async fn spawn(ctx: &mut allthecodes_commands::CommandContext, rest: &str) -> St
             permissions: vec![],
             allow_permission_prompts: false,
             hooks: ctx.app_state.hooks.clone(),
-            hook_runner: None,
+            hook_runner: Some(hook_runner_for_team_spawn()),
+            tool_permission_context: ctx.app_state.tool_permission_context.clone(),
         })
         .await
     {
@@ -514,3 +565,193 @@ async fn delete(ctx: &mut allthecodes_commands::CommandContext, rest: &str) -> S
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod task_10_status_diagnostics_tests {
+    use super::*;
+    use crate::types::{InProcessTeammateTaskState, TaskStatus, TeamFile, TeammateIdentity};
+    use allthecodes_bootstrap::SessionId;
+    use allthecodes_engine::types::app_state::AppState;
+    use allthecodes_tools::tool::PermissionMode;
+    use std::path::PathBuf;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn make_ctx(team_file: &TeamFile) -> allthecodes_commands::CommandContext {
+        let mut app_state = AppState::default();
+        app_state.team_context = Some(TeamContext {
+            team_name: team_file.name.clone(),
+            team_file_path: helpers::team_config_path(&team_file.name)
+                .to_string_lossy()
+                .into_owned(),
+            lead_agent_id: team_file.lead_agent_id.clone(),
+            self_agent_id: Some(team_file.lead_agent_id.clone()),
+            self_agent_name: Some(constants::TEAM_LEAD_NAME.into()),
+            is_leader: Some(true),
+            self_agent_color: None,
+            teammates: Default::default(),
+        });
+
+        allthecodes_commands::CommandContext {
+            messages: Vec::new(),
+            cwd: PathBuf::from("."),
+            app_state,
+            session_id: SessionId::from_string("test-session"),
+        }
+    }
+
+    fn add_persisted_worker(team_name: &str, task_id: &str, active: bool) -> String {
+        let agent_id = identity::format_agent_id("worker", team_name);
+        helpers::add_member(
+            team_name,
+            TeamMember {
+                agent_id: agent_id.clone(),
+                name: "worker".into(),
+                agent_type: Some("worker".into()),
+                model: None,
+                prompt: Some("work".into()),
+                color: Some("blue".into()),
+                plan_mode_required: None,
+                joined_at: chrono::Utc::now().timestamp(),
+                tmux_pane_id: String::new(),
+                cwd: ".".into(),
+                worktree_path: None,
+                session_id: None,
+                task_id: Some(task_id.into()),
+                task_path: Some(format!("/tmp/{task_id}.json")),
+                subscriptions: vec![],
+                backend_type: Some(BackendType::InProcess),
+                is_active: Some(active),
+                mode: None,
+                close_state: None,
+                close_requested_at: None,
+            },
+        )
+        .expect("add persisted worker");
+        agent_id
+    }
+
+    fn add_persisted_worker_with_backend(
+        team_name: &str,
+        task_id: &str,
+        active: bool,
+        backend_type: Option<BackendType>,
+    ) -> String {
+        let agent_id = identity::format_agent_id("worker", team_name);
+        helpers::add_member(
+            team_name,
+            TeamMember {
+                agent_id: agent_id.clone(),
+                name: "worker".into(),
+                agent_type: Some("worker".into()),
+                model: None,
+                prompt: Some("work".into()),
+                color: Some("blue".into()),
+                plan_mode_required: None,
+                joined_at: chrono::Utc::now().timestamp(),
+                tmux_pane_id: String::new(),
+                cwd: ".".into(),
+                worktree_path: None,
+                session_id: None,
+                task_id: Some(task_id.into()),
+                task_path: Some(format!("/tmp/{task_id}.json")),
+                subscriptions: vec![],
+                backend_type,
+                is_active: Some(active),
+                mode: None,
+                close_state: None,
+                close_requested_at: None,
+            },
+        )
+        .expect("add persisted worker");
+        agent_id
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn team_status_reports_in_process_resume_unsupported_when_runtime_detached() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", tmp.path().to_str().unwrap());
+        InProcessBackend::clear_registry();
+
+        let team_file =
+            helpers::create_team("status-detached", None, Some("test-session".into()), ".")
+                .expect("create team");
+        add_persisted_worker_with_backend(&team_file.name, "stale-task", false, None);
+        let mut ctx = make_ctx(&team_file);
+
+        let s = execute_team_command("status", &mut ctx).await;
+        assert!(s.contains("backend: in-process"), "unexpected status: {s}");
+        assert!(s.contains("runtime: detached"), "unexpected status: {s}");
+        assert!(s.contains("resume: unsupported"), "unexpected status: {s}");
+        assert!(s.contains("status=no-task"), "unexpected status: {s}");
+
+        InProcessBackend::clear_registry();
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn team_status_reports_in_process_runtime_attached_when_task_is_registered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", tmp.path().to_str().unwrap());
+        InProcessBackend::clear_registry();
+
+        let team_file =
+            helpers::create_team("status-attached", None, Some("test-session".into()), ".")
+                .expect("create team");
+        let agent_id = add_persisted_worker(&team_file.name, "task-1", true);
+        InProcessBackend::register_task(InProcessTeammateTaskState {
+            id: "task-1".into(),
+            status: TaskStatus::Running,
+            identity: TeammateIdentity {
+                agent_id,
+                agent_name: "worker".into(),
+                team_name: team_file.name.clone(),
+                color: None,
+                plan_mode_required: false,
+                parent_session_id: "test-session".into(),
+            },
+            prompt: "work".into(),
+            model: None,
+            abort_handle: None,
+            cancellation_token: None,
+            awaiting_plan_approval: false,
+            permission_mode: PermissionMode::Default,
+            error: None,
+            pending_user_messages: vec![],
+            is_idle: true,
+            shutdown_requested: false,
+            last_reported_tool_count: 0,
+            last_reported_token_count: 0,
+        });
+        let mut ctx = make_ctx(&team_file);
+
+        let s = execute_team_command("status", &mut ctx).await;
+        assert!(s.contains("backend: in-process"), "unexpected status: {s}");
+        assert!(s.contains("runtime: attached"), "unexpected status: {s}");
+        assert!(s.contains("resume: unsupported"), "unexpected status: {s}");
+        assert!(s.contains("status=idle"), "unexpected status: {s}");
+
+        InProcessBackend::clear_registry();
+    }
+}

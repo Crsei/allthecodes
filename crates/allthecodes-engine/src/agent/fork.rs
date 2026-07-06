@@ -143,7 +143,7 @@ pub async fn run_fork(params: ForkParams) -> Result<ForkOutcome> {
     child_engine.set_command_dispatcher(params.command_dispatcher);
 
     let stream = child_engine.submit_message(&params.prompt, QuerySource::Agent(agent_id.clone()));
-    let (text, had_error) = collect_stream_result(stream, None).await;
+    let (text, had_error, _) = collect_stream_result(stream, None).await;
     let duration_ms = started.elapsed().as_millis() as u64;
 
     debug!(

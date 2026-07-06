@@ -83,27 +83,29 @@ static GLOBAL_STORES: std::sync::LazyLock<Mutex<HashMap<String, TaskStore>>> =
 fn task_lists_root() -> PathBuf {
     #[cfg(test)]
     {
-        if let Ok(root) =
-            std::env::var("ALLTHECODES_HOME").or_else(|_| std::env::var("CC_RUST_HOME"))
-        {
+        if let Ok(root) = std::env::var("ALLTHECODES_HOME") {
             if !root.trim().is_empty() {
                 return PathBuf::from(root).join("tasks");
             }
         }
+        // allthecodes keeps task storage under ~/.allthecodes for path isolation.
+        // CLAUDE_CODE_* compatibility aliases and legacy CC_RUST_* variables do
+        // not redirect task storage roots.
         TEST_TASKS_ROOT.clone()
     }
 
     #[cfg(not(test))]
     {
-        if let Ok(root) =
-            std::env::var("ALLTHECODES_HOME").or_else(|_| std::env::var("CC_RUST_HOME"))
-        {
+        if let Ok(root) = std::env::var("ALLTHECODES_HOME") {
             let root = root.trim();
             if !root.is_empty() {
                 return PathBuf::from(root).join("tasks");
             }
         }
 
+        // allthecodes keeps task storage under ~/.allthecodes for path isolation.
+        // CLAUDE_CODE_* compatibility aliases and legacy CC_RUST_* variables do
+        // not redirect task storage roots.
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".allthecodes")
@@ -263,8 +265,8 @@ pub struct TaskListScope {
 
 pub fn task_list_id_from_parts(scope: TaskListScope) -> String {
     if let Some(id) = env_task_list_id(ALLTHECODES_TASK_LIST_ID_ENV)
-        .or_else(|| env_task_list_id(CC_RUST_TASK_LIST_ID_ENV))
         .or_else(|| env_task_list_id(CLAUDE_CODE_TASK_LIST_ID_ENV))
+        .or_else(|| env_task_list_id(CC_RUST_TASK_LIST_ID_ENV))
     {
         return id;
     }
@@ -351,5 +353,92 @@ pub fn unassign_teammate_tasks(
     UnassignTeammateTasksResult {
         unassigned_tasks,
         notification_message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn task_list_id_uses_allthecodes_alias_before_claude_alias() {
+        let _allthecodes = EnvGuard::set(ALLTHECODES_TASK_LIST_ID_ENV, "allthecodes-list");
+        let _claude = EnvGuard::set(CLAUDE_CODE_TASK_LIST_ID_ENV, "claude-list");
+        let _cc_rust = EnvGuard::set(CC_RUST_TASK_LIST_ID_ENV, "cc-rust-list");
+
+        let id = task_list_id_from_parts(TaskListScope::default());
+        assert_eq!(id, "allthecodes-list");
+    }
+
+    #[test]
+    #[serial]
+    fn task_list_id_supports_claude_alias_when_allthecodes_absent() {
+        let _allthecodes = EnvGuard::remove(ALLTHECODES_TASK_LIST_ID_ENV);
+        let _claude = EnvGuard::set(CLAUDE_CODE_TASK_LIST_ID_ENV, "claude-list");
+        let _cc_rust = EnvGuard::remove(CC_RUST_TASK_LIST_ID_ENV);
+
+        let id = task_list_id_from_parts(TaskListScope::default());
+        assert_eq!(id, "claude-list");
+    }
+
+    #[test]
+    #[serial]
+    fn task_list_id_uses_team_context_before_session_fallback() {
+        let _allthecodes = EnvGuard::remove(ALLTHECODES_TASK_LIST_ID_ENV);
+        let _claude = EnvGuard::remove(CLAUDE_CODE_TASK_LIST_ID_ENV);
+        let _cc_rust = EnvGuard::remove(CC_RUST_TASK_LIST_ID_ENV);
+
+        let scope = TaskListScope {
+            explicit_task_list_id: None,
+            scoped_team_name: Some("research".into()),
+            app_team_name: None,
+            session_id: Some("session-x".into()),
+        };
+
+        assert_eq!(task_list_id_from_parts(scope), "research");
+    }
+
+    #[test]
+    #[serial]
+    fn task_storage_root_ignores_legacy_cc_rust_home() {
+        let legacy = tempfile::tempdir().expect("legacy home");
+        let _allthecodes = EnvGuard::remove("ALLTHECODES_HOME");
+        let _cc_rust = EnvGuard::set("CC_RUST_HOME", legacy.path());
+
+        let dir = task_list_dir("path-isolation");
+
+        assert!(dir.starts_with(&*TEST_TASKS_ROOT));
+        assert!(!dir.starts_with(legacy.path()));
     }
 }

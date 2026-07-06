@@ -57,6 +57,8 @@ pub enum ToolPolicy {
     Coordinator,
     /// Dedicated coordinator worker pool.
     CoordinatorWorker,
+    /// Reduced dedicated coordinator worker pool.
+    CoordinatorWorkerSimple,
     /// Generic in-process teammate pool.
     InProcessTeammate,
 }
@@ -118,10 +120,6 @@ const MULTI_AGENT_V2_TOOL_NAMES: &[&str] = &[
     "wait_agent",
     "CloseAgent",
     "close_agent",
-    "TeamSpawn",
-    "spawn_agent",
-    "SendMessage",
-    "send_message",
 ];
 
 const HERMES_AUTONOMY_TOOL_NAMES: &[&str] = &["SessionSearch", "DelegateTask"];
@@ -302,6 +300,7 @@ fn metadata_allowed_for_policy(metadata: ToolMetadata, policy: ToolPolicy) -> bo
         ToolPolicy::DefaultAgent => true,
         ToolPolicy::Coordinator => metadata.visibility.coordinator,
         ToolPolicy::CoordinatorWorker => metadata.visibility.coordinator_worker,
+        ToolPolicy::CoordinatorWorkerSimple => matches!(metadata.name, "Bash" | "Read" | "Edit"),
         ToolPolicy::InProcessTeammate => metadata.visibility.in_process_teammate,
     }
 }
@@ -360,7 +359,31 @@ mod tests {
         assert!(tool_allowed(ToolPolicy::Coordinator, "Agent"));
         assert!(tool_allowed(ToolPolicy::Coordinator, "Task"));
         assert!(tool_allowed(ToolPolicy::Coordinator, "TaskStop"));
+        assert!(tool_allowed(ToolPolicy::Coordinator, "TeamCreate"));
+        assert!(tool_allowed(ToolPolicy::Coordinator, "TeamDelete"));
         assert!(!tool_allowed(ToolPolicy::Coordinator, "Bash"));
+    }
+
+    #[test]
+    fn coordinator_worker_simple_policy_only_allows_bash_read_edit() {
+        let tools: Tools = vec![
+            Arc::new(NamedTestTool("Bash")),
+            Arc::new(NamedTestTool("Read")),
+            Arc::new(NamedTestTool("Edit")),
+            Arc::new(NamedTestTool("Write")),
+            Arc::new(NamedTestTool("SendMessage")),
+            Arc::new(NamedTestTool("TaskUpdate")),
+        ];
+        let names = filter_tools_for_policy(tools, ToolPolicy::CoordinatorWorkerSimple)
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"Bash".to_string()));
+        assert!(names.contains(&"Read".to_string()));
+        assert!(names.contains(&"Edit".to_string()));
+        assert!(!names.contains(&"Write".to_string()));
+        assert!(!names.contains(&"SendMessage".to_string()));
+        assert!(!names.contains(&"TaskUpdate".to_string()));
     }
 
     #[test]
@@ -530,6 +553,8 @@ mod tests {
             Arc::new(NamedTestTool("Read")),
             Arc::new(NamedTestTool("TaskOutput")),
             Arc::new(NamedTestTool("TaskStop")),
+            Arc::new(NamedTestTool("TeamCreate")),
+            Arc::new(NamedTestTool("TeamDelete")),
         ];
 
         let coordinator = filter_tools_for_policy(tools.clone(), ToolPolicy::Coordinator)
@@ -538,14 +563,26 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             coordinator,
-            vec!["Agent".to_string(), "TaskStop".to_string()]
+            vec![
+                "Agent".to_string(),
+                "TaskStop".to_string(),
+                "TeamCreate".to_string(),
+                "TeamDelete".to_string()
+            ]
         );
 
         let worker = filter_tools_for_policy(tools.clone(), ToolPolicy::CoordinatorWorker)
             .into_iter()
             .map(|tool| tool.name().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(worker, vec!["Bash".to_string(), "Read".to_string()]);
+        assert_eq!(
+            worker,
+            vec![
+                "Bash".to_string(),
+                "Read".to_string(),
+                "TaskOutput".to_string()
+            ]
+        );
 
         let teammate = filter_tools_for_policy(tools, ToolPolicy::InProcessTeammate)
             .into_iter()

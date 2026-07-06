@@ -467,6 +467,7 @@ impl QueryEngine {
                 &state_ref,
                 &active_session_id_ref,
                 &session_id,
+                &hook_runner,
                 command_dispatcher.as_ref(),
                 command_executor.as_ref(),
             )

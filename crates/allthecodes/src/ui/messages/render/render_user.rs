@@ -10,11 +10,12 @@ use crate::ui::messages::assistant_text_message::{classify_assistant_text, rende
 use crate::ui::messages::file_edit_tool_updated_message::{
     render_file_edit_tool_updated_message, FileEditMessageStyle, FileEditToolUpdatedView,
 };
+use crate::ui::messages::user_agent_notification_message::render_user_agent_notification_message;
 use crate::ui::messages::user_bash_output_message::{
     render_user_bash_output_message_with_options, ShellOutputRenderOptions,
 };
 use crate::ui::messages::user_text_message::{
-    render_user_text_message, CONVERSATION_INTERRUPTED_MESSAGE,
+    render_user_text_message, route_user_text, UserTextRendered, CONVERSATION_INTERRUPTED_MESSAGE,
 };
 use crate::ui::messages::user_tool_result_message::user_tool_result_message::render_user_tool_result_message;
 use crate::ui::messages::user_tool_result_message::utils::{
@@ -78,7 +79,12 @@ pub(super) fn render_user_message<'a>(
         ))];
     }
 
-    let routed = render_user_text_message(&content_text, theme);
+    let routed = match route_user_text(&content_text) {
+        UserTextRendered::Delegated("agent_notification", content) => {
+            render_user_agent_notification_message(&content, theme)
+        }
+        _ => render_user_text_message(&content_text, theme),
+    };
     if routed.is_empty() {
         return Vec::new();
     }

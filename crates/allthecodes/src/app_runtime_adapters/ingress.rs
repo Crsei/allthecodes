@@ -566,6 +566,7 @@ async fn handle_slash_command(
         cwd,
         app_state: original_app_state,
         session_id: engine.current_session_id(),
+        hook_runner: engine.hook_runner(),
     };
 
     let command_executor = engine.command_executor();

@@ -11,6 +11,7 @@ pub mod command;
 pub mod constants;
 pub mod context;
 pub mod coordinator;
+pub mod coordinator_policy;
 pub mod helpers;
 pub mod identity;
 pub mod in_process;
@@ -22,9 +23,13 @@ pub mod pr_activity;
 pub mod protocol;
 pub mod reconnection;
 pub mod runner;
+pub mod scratchpad;
 pub mod send_message;
+pub mod session_mode;
 pub(crate) mod storage_paths;
+pub mod task_notification;
 pub mod team_spawn;
+pub mod team_tools;
 pub mod tool_specs;
 pub mod types;
 
@@ -32,6 +37,15 @@ pub mod types;
 /// session-local experimental override.
 pub fn is_agent_teams_enabled() -> bool {
     allthecodes_config::features::enabled(allthecodes_config::features::Feature::AgentTeams)
+}
+
+/// Check if model-visible team tooling should be exposed.
+///
+/// Coordinator mode delegates through Agent Teams, so either feature is enough
+/// to expose the root-level swarm tools.
+pub fn teams_tooling_enabled() -> bool {
+    allthecodes_config::features::enabled(allthecodes_config::features::Feature::AgentTeams)
+        || allthecodes_config::features::enabled(allthecodes_config::features::Feature::Coordinator)
 }
 
 /// Check if Agent Teams is active in the given app state.

@@ -119,7 +119,6 @@ Responsibilities:
 - Stay inside the assigned ownership scope.
 - Use Read, Glob, Grep, Bash, Edit, and Write as needed to complete the concrete task.
 - Use TaskList and TaskUpdate to inspect and report task state when the lead asks you to.
-- Use SendMessage for concise status, blockers, and handoff notes.
 - Do not spawn additional agents or create a parallel team unless the lead explicitly asks.
 
 When finished, report exactly what changed, what you verified, and any remaining risks."#,
@@ -133,7 +132,6 @@ When finished, report exactly what changed, what you verified, and any remaining
         "TodoWrite",
         "TaskList",
         "TaskUpdate",
-        "SendMessage",
     ],
     color: Some("green"),
 };
@@ -265,10 +263,17 @@ mod tests {
             .expect("worker built-in agent");
 
         assert!(worker.system_prompt.contains("coordinator-mode worker"));
-        assert!(worker.tools.contains(&"SendMessage".to_string()));
+        assert!(worker.system_prompt.contains("TaskList and TaskUpdate"));
+        assert!(worker.tools.contains(&"TaskList".to_string()));
         assert!(worker.tools.contains(&"TaskUpdate".to_string()));
-        assert!(!worker.tools.contains(&"Agent".to_string()));
-        assert!(!worker.tools.contains(&"Task".to_string()));
-        assert!(!worker.tools.contains(&"TeamSpawn".to_string()));
+        assert!(!worker.tools.contains(&"SendMessage".to_string()));
+        assert!(!worker.system_prompt.contains("SendMessage"));
+        assert!(!worker.system_prompt.contains("send_message"));
+        for forbidden_tool in ["SendMessage", "send_message", "Agent", "Task", "TeamSpawn"] {
+            assert!(
+                !worker.tools.contains(&forbidden_tool.to_string()),
+                "worker built-in unexpectedly exposes {forbidden_tool}"
+            );
+        }
     }
 }

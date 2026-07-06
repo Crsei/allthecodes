@@ -396,14 +396,19 @@ impl HeadlessRuntimeHost for RootHeadlessHost {
         agent_id: &str,
         result_preview: &str,
         had_error: bool,
+        completion_status: allthecodes_types::agent_events::AgentCompletionStatus,
         duration_ms: u64,
+        total_tokens: Option<u64>,
+        tool_uses: Option<u64>,
+        agent_type: Option<&str>,
     ) -> Option<BackgroundAgentCompletion> {
-        let (is_bg, desc) = find_agent_node(agent_id)
-            .map(|node| (node.is_background, node.description))
-            .unwrap_or((true, "unknown".to_string()));
+        let (is_bg, desc, node_agent_type) = find_agent_node(agent_id)
+            .map(|node| (node.is_background, node.description, node.agent_type))
+            .unwrap_or((true, "unknown".to_string(), None));
         if !is_bg {
             return None;
         }
+        let agent_type = agent_type.map(str::to_string).or(node_agent_type);
 
         let result_text = allthecodes_engine::agent::supervisor::output_for_agent(agent_id)
             .map(|task| task.output)
@@ -414,9 +419,13 @@ impl HeadlessRuntimeHost for RootHeadlessHost {
             allthecodes_engine::agent_runtime::CompletedBackgroundAgent {
                 agent_id: agent_id.to_string(),
                 description: desc.clone(),
+                agent_type,
                 result_text,
                 had_error,
+                completion_status,
                 duration: std::time::Duration::from_millis(duration_ms),
+                total_tokens,
+                tool_uses,
             },
         );
 

@@ -58,8 +58,9 @@ OverlayResponse("allow") -> [CloseOverlay, Redraw]
 ## feature-panels
 MCP       Ready (2)
 Agents    Ready
-Teams     Ready
-LSP       NeedsConfig
+Subagents Ready
+Teams     NeedsConfig
+LSP       Ready
 Settings  Ready
 Sandbox   Ready
 Plugins   Ready

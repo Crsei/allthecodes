@@ -134,6 +134,8 @@ fn canonical_tool_name(name: &str) -> &'static str {
         "TaskList" => "TaskList",
         "TaskStop" => "TaskStop",
         "TaskOutput" => "TaskOutput",
+        "TeamCreate" => "TeamCreate",
+        "TeamDelete" => "TeamDelete",
         "DelegateTask" | "delegate_task" => "DelegateTask",
         "TodoWrite" => "TodoWrite",
         "Edit" => "Edit",
@@ -195,9 +197,9 @@ fn apply_capability_seed(name: &str, metadata: &mut ToolMetadata) {
 fn apply_risk_seed(name: &str, metadata: &mut ToolMetadata) {
     metadata.risk = match name {
         "Read" | "Grep" | "Glob" | "LSP" | "Sleep" | "TaskCreate" | "TaskUpdate" | "TaskGet"
-        | "TaskList" | "Plan" | "WebSearch" | "WebFetch" => ToolRisk::Low,
+        | "TaskList" | "TeamCreate" | "Plan" | "WebSearch" | "WebFetch" => ToolRisk::Low,
         "Bash" | "PowerShell" | "Agent" | "TeamSpawn" | "FollowupTask" | "DelegateTask"
-        | "Edit" | "Write" => ToolRisk::High,
+        | "TeamDelete" | "Edit" | "Write" => ToolRisk::High,
         _ => metadata.risk,
     };
 }
@@ -211,15 +213,10 @@ fn apply_visibility_seed(name: &str, metadata: &mut ToolMetadata) {
         name,
         "Agent"
             | "SendMessage"
-            | "ListAgents"
-            | "FollowupTask"
-            | "WaitAgent"
-            | "CloseAgent"
-            | "DelegateTask"
-            | "TaskList"
             | "TaskStop"
+            | "TeamCreate"
+            | "TeamDelete"
             | "subscribe_pr_activity"
-            | "unsubscribe_pr_activity"
     ) {
         metadata.visibility.coordinator = true;
     }
@@ -235,7 +232,7 @@ fn apply_visibility_seed(name: &str, metadata: &mut ToolMetadata) {
             | "TodoWrite"
             | "TaskList"
             | "TaskUpdate"
-            | "SendMessage"
+            | "TaskOutput"
     ) {
         metadata.visibility.coordinator_worker = true;
     }
@@ -255,5 +252,113 @@ fn apply_visibility_seed(name: &str, metadata: &mut ToolMetadata) {
             | "SendMessage"
     ) {
         metadata.visibility.in_process_teammate = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_metadata_coordinator_visibility_is_doc_orchestration_only() {
+        for visible in [
+            "Agent",
+            "Task",
+            "SendMessage",
+            "send_message",
+            "TaskStop",
+            "TeamCreate",
+            "TeamDelete",
+            "subscribe_pr_activity",
+        ] {
+            assert!(
+                ToolMetadata::from_tool_name(visible).visibility.coordinator,
+                "{visible} should be coordinator-visible"
+            );
+        }
+
+        for hidden in [
+            "Bash",
+            "Read",
+            "Edit",
+            "Write",
+            "TaskList",
+            "TaskUpdate",
+            "TaskOutput",
+            "TeamSpawn",
+            "spawn_agent",
+            "ListAgents",
+            "list_agents",
+            "FollowupTask",
+            "followup_task",
+            "WaitAgent",
+            "wait_agent",
+            "CloseAgent",
+            "close_agent",
+            "DelegateTask",
+            "delegate_task",
+            "unsubscribe_pr_activity",
+        ] {
+            assert!(
+                !ToolMetadata::from_tool_name(hidden).visibility.coordinator,
+                "{hidden} should be hidden from coordinator"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_metadata_worker_visibility_excludes_internal_orchestration() {
+        for visible in [
+            "Glob",
+            "Grep",
+            "Read",
+            "Bash",
+            "Edit",
+            "Write",
+            "TodoWrite",
+            "TaskList",
+            "TaskUpdate",
+            "TaskOutput",
+        ] {
+            assert!(
+                ToolMetadata::from_tool_name(visible)
+                    .visibility
+                    .coordinator_worker,
+                "{visible} should be coordinator-worker-visible"
+            );
+        }
+
+        for hidden in [
+            "Agent",
+            "Task",
+            "SendMessage",
+            "send_message",
+            "TeamSpawn",
+            "spawn_agent",
+            "TaskStop",
+            "TeamCreate",
+            "TeamDelete",
+        ] {
+            assert!(
+                !ToolMetadata::from_tool_name(hidden)
+                    .visibility
+                    .coordinator_worker,
+                "{hidden} should be hidden from coordinator workers"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_metadata_in_process_teammate_keeps_send_message() {
+        assert!(
+            ToolMetadata::from_tool_name("SendMessage")
+                .visibility
+                .in_process_teammate
+        );
+        assert!(
+            ToolMetadata::from_tool_name("send_message")
+                .visibility
+                .in_process_teammate
+        );
     }
 }

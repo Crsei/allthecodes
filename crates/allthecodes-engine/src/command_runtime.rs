@@ -14,6 +14,7 @@ pub struct CommandContext {
     pub cwd: PathBuf,
     pub app_state: AppState,
     pub session_id: SessionId,
+    pub hook_runner: Arc<dyn allthecodes_types::hooks::HookRunner>,
 }
 
 /// Engine-facing result of executing a slash command.

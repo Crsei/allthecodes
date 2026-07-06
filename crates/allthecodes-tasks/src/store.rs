@@ -333,7 +333,15 @@ impl TaskStore {
             );
             TaskClaimFailure::new(TaskClaimFailureReason::LockUnavailable)
         })?;
-        let mut tasks = self.load_repository_tasks();
+        let mut tasks = self.load_repository_tasks_strict().map_err(|err| {
+            tracing::warn!(
+                task_id = id,
+                owner,
+                error = %err,
+                "failed to refresh persisted tasks for claim"
+            );
+            TaskClaimFailure::new(TaskClaimFailureReason::LockUnavailable)
+        })?;
         let Some(snapshot) = tasks.get(id).cloned() else {
             self.replace_tasks(tasks);
             return Err(TaskClaimFailure::new(TaskClaimFailureReason::TaskNotFound));
@@ -388,7 +396,15 @@ impl TaskStore {
         entry.status = TaskStatus::InProgress;
         entry.updated_at = chrono::Utc::now().timestamp();
         let cloned = entry.clone();
-        self.persist_entry(&cloned);
+        self.persist_entry_strict(&cloned).map_err(|err| {
+            tracing::warn!(
+                task_id = id,
+                owner,
+                error = %err,
+                "failed to persist claimed task"
+            );
+            TaskClaimFailure::new(TaskClaimFailureReason::LockUnavailable)
+        })?;
         self.replace_tasks(tasks);
         Ok(cloned)
     }
@@ -723,6 +739,8 @@ impl TaskStore {
 #[cfg(all(test, feature = "sqlite-storage", not(feature = "json-storage")))]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     static SQLITE_ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
@@ -900,6 +918,62 @@ mod tests {
             .expect("dependent task remains")
             .depends_on
             .is_empty());
+    }
+
+    #[test]
+    fn task_claims_are_serialized_across_concurrent_attempts() {
+        let _lock = SQLITE_ENV_LOCK.lock().expect("sqlite env lock");
+        let _storage_guard = EnvVarGuard::set("ALLTHECODES_TASK_STORAGE", "json");
+        let _path_guard = EnvVarGuard::unset("ALLTHECODES_TASK_SQLITE_PATH");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().join("tasks").join("claim-race");
+        let store_a = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        let store_b = TaskStore::with_dir_and_output_limit(&dir, 1024);
+        let task = store_a.create("Race target", "concurrent claim regression");
+        let barrier = Arc::new(Barrier::new(3));
+
+        let mut handles = Vec::new();
+        let task_id = task.id.clone();
+        for (store, owner) in [
+            (store_a, "agent-a".to_string()),
+            (store_b, "agent-b".to_string()),
+        ] {
+            let barrier = Arc::clone(&barrier);
+            let task_id = task_id.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                store.claim_task(&task_id, &owner, false)
+            }));
+        }
+
+        barrier.wait();
+
+        let mut winners = Vec::new();
+        let mut failures = Vec::new();
+        for handle in handles {
+            match handle.join().expect("thread join") {
+                Ok(entry) => winners.push(entry),
+                Err(failure) => failures.push(failure),
+            }
+        }
+
+        assert_eq!(winners.len(), 1, "exactly one claim should succeed");
+        assert_eq!(failures.len(), 1, "exactly one claim should fail");
+        assert_eq!(failures[0].reason, TaskClaimFailureReason::AlreadyClaimed);
+
+        let winner = &winners[0];
+        let final_entry = TaskRepository::new(dir.clone(), 1024)
+            .load_for_live_refresh()
+            .expect("reload final task map")
+            .get(&task.id)
+            .cloned()
+            .expect("reload final task");
+        assert_eq!(final_entry.owner.as_deref(), winner.owner.as_deref());
+        assert_eq!(final_entry.status, TaskStatus::InProgress);
+        assert!(matches!(
+            final_entry.owner.as_deref(),
+            Some("agent-a") | Some("agent-b")
+        ));
     }
 
     #[test]

@@ -248,7 +248,7 @@ fn format_resource_contents(
 mod tests {
     use super::*;
     use allthecodes_mcp::client::McpClient;
-    use allthecodes_mcp::{McpConnectionState, McpResource, McpServerConfig};
+    use allthecodes_mcp::{McpConnectionState, McpResource, McpServerConfig, ServerCapabilities};
     use serial_test::serial;
     use tokio::sync::Mutex;
 
@@ -318,6 +318,10 @@ mod tests {
         });
         client.state = McpConnectionState::Connected;
         client.resources = resources;
+        client.server_capabilities = ServerCapabilities {
+            resources: Some(json!({})),
+            ..Default::default()
+        };
         client
     }
 

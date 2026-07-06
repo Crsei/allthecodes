@@ -505,6 +505,36 @@ mod tests {
     }
 
     #[test]
+    fn renders_task_notification_summary_in_user_render_path() {
+        let message = Message::User(UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "user".to_string(),
+            content: MessageContent::Text(
+                "<task-notification><task-id>agent-1</task-id><status>completed</status><summary>Agent completed</summary></task-notification>"
+                    .to_string(),
+            ),
+            is_meta: true,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        });
+
+        let rendered = render_single_message(&message, &Theme::default())
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("Task agent-1 completed: Agent completed"));
+        assert!(!rendered.contains("[agent_notification]"));
+    }
+
+    #[test]
     fn messages_render_path_image_compact_and_interrupt_summaries() {
         let theme = Theme::default();
         let image = ImageSource {

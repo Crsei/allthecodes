@@ -55,11 +55,7 @@ impl Tool for SendMessageTool {
     }
 
     fn is_enabled(&self) -> bool {
-        // Always advertise the tool to the model; the call path gracefully
-        // rejects invocations when no team context is active. This lets a
-        // conversation spin up a team via `/team create` or `TeamSpawn`
-        // without the tool being filtered out at startup.
-        true
+        crate::teams_tooling_enabled()
     }
 
     async fn validate_input(&self, input: &Value, _ctx: &ToolUseContext) -> ValidationResult {
@@ -458,7 +454,16 @@ mod tests {
         BackendType, InProcessTeammateTaskState, TaskStatus, TeamContext, TeamMember,
         TeammateIdentity,
     };
+    use allthecodes_config::features::{self, FeatureFlags};
     use std::sync::Arc;
+
+    struct FeatureOverrideGuard;
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            features::clear_runtime_override();
+        }
+    }
 
     struct EnvGuard {
         key: &'static str,
@@ -486,6 +491,40 @@ mod tests {
     fn test_tool_name() {
         let tool = SendMessageTool;
         assert_eq!(tool.name(), "SendMessage");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn tool_is_hidden_when_agent_teams_and_coordinator_are_disabled() {
+        let _guard = FeatureOverrideGuard;
+        features::set_runtime_override(FeatureFlags::all_disabled());
+
+        assert!(!SendMessageTool.is_enabled());
+        assert!(!SendMessageAliasTool.is_enabled());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn agent_teams_feature_enables_tooling() {
+        let _guard = FeatureOverrideGuard;
+        let mut flags = FeatureFlags::all_disabled();
+        flags.agent_teams = true;
+        features::set_runtime_override(flags);
+
+        assert!(SendMessageTool.is_enabled());
+        assert!(SendMessageAliasTool.is_enabled());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn coordinator_feature_enables_tooling() {
+        let _guard = FeatureOverrideGuard;
+        let mut flags = FeatureFlags::all_disabled();
+        flags.coordinator = true;
+        features::set_runtime_override(flags);
+
+        assert!(SendMessageTool.is_enabled());
+        assert!(SendMessageAliasTool.is_enabled());
     }
 
     #[test]

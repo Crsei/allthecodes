@@ -73,6 +73,7 @@ pub(super) async fn try_execute_command(
         cwd,
         app_state: engine.app_state(),
         session_id: engine.current_session_id(),
+        hook_runner: engine.hook_runner(),
     };
 
     if let Some(surface) = CommandSurface::for_slash_command_with_session(

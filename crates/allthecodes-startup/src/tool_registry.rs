@@ -9,6 +9,7 @@ use allthecodes_teams::pr_activity::{
 };
 use allthecodes_teams::send_message::{SendMessageAliasTool, SendMessageTool};
 use allthecodes_teams::team_spawn::{SpawnAgentAliasTool, TeamSpawnTool};
+use allthecodes_teams::team_tools::{TeamCreateTool, TeamDeleteTool};
 pub use allthecodes_tools::registry::ToolPolicy;
 use allthecodes_tools::registry::ToolRegistryProviders;
 use allthecodes_worktree::tool::{EnterWorktreeTool, ExitWorktreeTool};
@@ -33,6 +34,8 @@ fn root_owned_base_tools() -> Tools {
         Arc::new(SubscribePrTool) as _,
         Arc::new(SubscribePrActivityTool) as _,
         Arc::new(UnsubscribePrActivityTool) as _,
+        Arc::new(TeamCreateTool) as _,
+        Arc::new(TeamDeleteTool) as _,
         Arc::new(TeamSpawnTool) as _,
         Arc::new(SpawnAgentAliasTool) as _,
     ]);
@@ -99,7 +102,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_find_tool_by_name() {
+        let _guard = FeatureOverrideGuard;
+        allthecodes_config::features::set_runtime_override(FeatureFlags::all_enabled());
+
         let tools = get_all_tools();
 
         let bash = tools.iter().find(|t| t.name() == "Bash");
@@ -169,6 +176,8 @@ mod tests {
             "close_agent",
             "SendMessage",
             "send_message",
+            "TeamCreate",
+            "TeamDelete",
             "TeamSpawn",
             "spawn_agent",
         ] {
@@ -203,8 +212,15 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn feature_gate_removes_multi_agent_v2_tools_from_root_registry() {
-        let mut flags = FeatureFlags::all_enabled();
+        let _guard = FeatureOverrideGuard;
+        let mut runtime_flags = FeatureFlags::all_disabled();
+        runtime_flags.agent_teams = true;
+        runtime_flags.multi_agent_v2 = true;
+        allthecodes_config::features::set_runtime_override(runtime_flags.clone());
+
+        let mut flags = runtime_flags;
         flags.multi_agent_v2 = false;
 
         let names = tool_names(
@@ -222,10 +238,6 @@ mod tests {
             "wait_agent",
             "CloseAgent",
             "close_agent",
-            "TeamSpawn",
-            "spawn_agent",
-            "SendMessage",
-            "send_message",
         ] {
             assert!(
                 !names.contains(&hidden.to_string()),
@@ -234,6 +246,85 @@ mod tests {
         }
         assert!(names.contains(&"Agent".to_string()));
         assert!(names.contains(&"Task".to_string()));
+        for visible in ["TeamSpawn", "spawn_agent", "SendMessage", "send_message"] {
+            assert!(
+                names.contains(&visible.to_string()),
+                "{visible} should be controlled by the Agent Teams gate, not MultiAgentV2"
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn feature_gate_hides_team_tools_when_agent_teams_and_coordinator_are_disabled() {
+        let _guard = FeatureOverrideGuard;
+        allthecodes_config::features::set_runtime_override(FeatureFlags::all_disabled());
+
+        let names = tool_names(get_all_tools());
+
+        for hidden in [
+            "TeamSpawn",
+            "spawn_agent",
+            "SendMessage",
+            "send_message",
+            "TeamCreate",
+            "TeamDelete",
+        ] {
+            assert!(
+                !names.contains(&hidden.to_string()),
+                "{hidden} should be hidden when teams tooling is disabled"
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn agent_teams_feature_exposes_team_tools() {
+        let _guard = FeatureOverrideGuard;
+        let mut flags = FeatureFlags::all_disabled();
+        flags.agent_teams = true;
+        allthecodes_config::features::set_runtime_override(flags);
+
+        let names = tool_names(get_all_tools());
+
+        for visible in [
+            "TeamSpawn",
+            "spawn_agent",
+            "SendMessage",
+            "send_message",
+            "TeamCreate",
+            "TeamDelete",
+        ] {
+            assert!(
+                names.contains(&visible.to_string()),
+                "{visible} should be visible when Agent Teams is enabled"
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn coordinator_feature_exposes_team_tools() {
+        let _guard = FeatureOverrideGuard;
+        let mut flags = FeatureFlags::all_disabled();
+        flags.coordinator = true;
+        allthecodes_config::features::set_runtime_override(flags);
+
+        let names = tool_names(get_all_tools());
+
+        for visible in [
+            "TeamSpawn",
+            "spawn_agent",
+            "SendMessage",
+            "send_message",
+            "TeamCreate",
+            "TeamDelete",
+        ] {
+            assert!(
+                names.contains(&visible.to_string()),
+                "{visible} should be visible when Coordinator is enabled"
+            );
+        }
     }
 
     #[test]
@@ -265,39 +356,108 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_policy_exposes_only_lead_orchestration_tools() {
+    #[serial_test::serial]
+    fn coordinator_policy_exposes_only_doc_orchestration_tools() {
+        let _guard = FeatureOverrideGuard;
+        let mut flags = FeatureFlags::all_disabled();
+        flags.coordinator = true;
+        allthecodes_config::features::set_runtime_override(flags);
+
         let names = tool_names(get_tools_for_policy(ToolPolicy::Coordinator));
 
-        assert!(names.contains(&"Agent".to_string()));
-        assert!(names.contains(&"Task".to_string()));
-        assert!(names.contains(&"SendMessage".to_string()));
-        assert!(names.contains(&"send_message".to_string()));
-        assert!(names.contains(&"list_agents".to_string()));
-        assert!(names.contains(&"TaskList".to_string()));
-        assert!(names.contains(&"TaskStop".to_string()));
-        assert!(!names.contains(&"Bash".to_string()));
-        assert!(!names.contains(&"Write".to_string()));
-        assert!(!names.contains(&"TeamSpawn".to_string()));
+        for allowed in [
+            "Agent",
+            "Task",
+            "SendMessage",
+            "send_message",
+            "TaskStop",
+            "TeamCreate",
+            "TeamDelete",
+            "subscribe_pr_activity",
+        ] {
+            assert!(
+                names.contains(&allowed.to_string()),
+                "{allowed} should be coordinator-visible"
+            );
+        }
+
+        for forbidden in [
+            "Bash",
+            "Read",
+            "Edit",
+            "Write",
+            "TaskList",
+            "TaskUpdate",
+            "TaskOutput",
+            "TeamSpawn",
+            "spawn_agent",
+            "ListAgents",
+            "list_agents",
+            "FollowupTask",
+            "followup_task",
+            "WaitAgent",
+            "wait_agent",
+            "CloseAgent",
+            "close_agent",
+            "DelegateTask",
+            "delegate_task",
+            "unsubscribe_pr_activity",
+        ] {
+            assert!(
+                !names.contains(&forbidden.to_string()),
+                "{forbidden} should be hidden from coordinator"
+            );
+        }
     }
 
     #[test]
     fn worker_policy_removes_internal_orchestration_tools() {
         let names = tool_names(get_tools_for_policy(ToolPolicy::CoordinatorWorker));
 
-        assert!(names.contains(&"Read".to_string()));
-        assert!(names.contains(&"Bash".to_string()));
-        assert!(names.contains(&"Write".to_string()));
-        assert!(names.contains(&"SendMessage".to_string()));
-        assert!(names.contains(&"send_message".to_string()));
-        assert!(names.contains(&"TaskUpdate".to_string()));
-        assert!(!names.contains(&"Agent".to_string()));
-        assert!(!names.contains(&"Task".to_string()));
-        assert!(!names.contains(&"TeamSpawn".to_string()));
-        assert!(!names.contains(&"TaskStop".to_string()));
+        for allowed in [
+            "Read",
+            "Grep",
+            "Glob",
+            "Bash",
+            "Edit",
+            "Write",
+            "TodoWrite",
+            "TaskList",
+            "TaskUpdate",
+            "TaskOutput",
+        ] {
+            assert!(
+                names.contains(&allowed.to_string()),
+                "{allowed} should be worker-visible"
+            );
+        }
+
+        for forbidden in [
+            "Agent",
+            "Task",
+            "SendMessage",
+            "send_message",
+            "TeamSpawn",
+            "spawn_agent",
+            "TaskStop",
+            "TeamCreate",
+            "TeamDelete",
+        ] {
+            assert!(
+                !names.contains(&forbidden.to_string()),
+                "{forbidden} should be hidden from worker"
+            );
+        }
     }
 
     #[test]
+    #[serial_test::serial]
     fn in_process_teammate_policy_can_report_but_not_spawn_agents() {
+        let _guard = FeatureOverrideGuard;
+        let mut flags = FeatureFlags::all_disabled();
+        flags.agent_teams = true;
+        allthecodes_config::features::set_runtime_override(flags);
+
         let names = tool_names(get_tools_for_policy(ToolPolicy::InProcessTeammate));
 
         assert!(names.contains(&"SendMessage".to_string()));
@@ -308,5 +468,15 @@ mod tests {
         assert!(!names.contains(&"Agent".to_string()));
         assert!(!names.contains(&"Task".to_string()));
         assert!(!names.contains(&"TeamSpawn".to_string()));
+        assert!(!names.contains(&"TeamCreate".to_string()));
+        assert!(!names.contains(&"TeamDelete".to_string()));
+    }
+
+    struct FeatureOverrideGuard;
+
+    impl Drop for FeatureOverrideGuard {
+        fn drop(&mut self) {
+            allthecodes_config::features::clear_runtime_override();
+        }
     }
 }

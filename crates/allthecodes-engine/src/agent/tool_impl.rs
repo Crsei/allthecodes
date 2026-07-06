@@ -63,6 +63,11 @@ impl Tool for AgentTool {
                     "type": "string",
                     "enum": ["worktree"],
                     "description": "Isolation mode for the agent"
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional hard cap on the child agent turn count"
                 }
             },
             "required": ["prompt", "description"]
@@ -720,6 +725,7 @@ mod tests {
         assert!(props.contains_key("name"));
         assert!(props.contains_key("team_name"));
         assert!(props.contains_key("mode"));
+        assert!(props.contains_key("max_turns"));
 
         let mode_enum = schema["properties"]["mode"]["enum"].as_array().unwrap();
         let variants: Vec<&str> = mode_enum.iter().filter_map(|v| v.as_str()).collect();

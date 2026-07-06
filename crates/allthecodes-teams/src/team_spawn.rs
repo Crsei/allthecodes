@@ -82,9 +82,7 @@ impl Tool for TeamSpawnTool {
     }
 
     fn is_enabled(&self) -> bool {
-        // Always advertise: creating a team through this tool is one of the
-        // ways users turn teams on for a session.
-        true
+        crate::teams_tooling_enabled()
     }
 
     async fn validate_input(&self, input: &Value, _ctx: &ToolUseContext) -> ValidationResult {
@@ -206,10 +204,21 @@ impl Tool for TeamSpawnTool {
         helpers::write_team_file(&team_name, &team_file)?;
 
         let backend = InProcessBackend::new();
+        let task_list_id =
+            allthecodes_tasks::task_list_id_from_parts(allthecodes_tasks::TaskListScope {
+                explicit_task_list_id: None,
+                scoped_team_name: Some(team_name.clone()),
+                app_team_name: app_state
+                    .team_context
+                    .as_ref()
+                    .map(|team_context| team_context.team_name.clone()),
+                session_id: Some(ctx.session_id.clone()),
+            });
         let spawn_result = backend
             .spawn(TeammateSpawnConfig {
                 name: params.name.clone(),
                 team_name: team_name.clone(),
+                task_list_id,
                 color: Some(color.clone()),
                 plan_mode_required,
                 prompt: params.prompt.clone(),
@@ -222,6 +231,7 @@ impl Tool for TeamSpawnTool {
                 parent_session_id: ctx.session_id.clone(),
                 permissions: vec![],
                 allow_permission_prompts: false,
+                tool_permission_context: (ctx.get_app_state)().tool_permission_context.clone(),
                 hooks: app_state.hooks.clone(),
                 hook_runner: Some(ctx.hook_runner.clone()),
             })
@@ -452,8 +462,48 @@ mod tests {
     }
 
     #[test]
-    fn tool_is_enabled_by_default() {
+    #[serial_test::serial]
+    fn tool_is_enabled_when_agent_teams_is_enabled() {
+        let _guard = FeatureOverrideGuard;
+        let mut flags = FeatureFlags::all_disabled();
+        flags.agent_teams = true;
+        features::set_runtime_override(flags);
+
         assert!(TeamSpawnTool.is_enabled());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn tool_is_hidden_when_agent_teams_and_coordinator_are_disabled() {
+        let _guard = FeatureOverrideGuard;
+        features::set_runtime_override(FeatureFlags::all_disabled());
+
+        assert!(!TeamSpawnTool.is_enabled());
+        assert!(!SpawnAgentAliasTool.is_enabled());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn agent_teams_feature_enables_tooling() {
+        let _guard = FeatureOverrideGuard;
+        let mut flags = FeatureFlags::all_disabled();
+        flags.agent_teams = true;
+        features::set_runtime_override(flags);
+
+        assert!(TeamSpawnTool.is_enabled());
+        assert!(SpawnAgentAliasTool.is_enabled());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn coordinator_feature_enables_tooling() {
+        let _guard = FeatureOverrideGuard;
+        let mut flags = FeatureFlags::all_disabled();
+        flags.coordinator = true;
+        features::set_runtime_override(flags);
+
+        assert!(TeamSpawnTool.is_enabled());
+        assert!(SpawnAgentAliasTool.is_enabled());
     }
 
     #[test]

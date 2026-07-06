@@ -199,6 +199,12 @@ impl InProcessBackend {
         registry.keys().cloned().collect()
     }
 
+    /// Return whether the current process still has a runtime task by ID.
+    pub fn has_task_id(task_id: &str) -> bool {
+        let registry = TASK_REGISTRY.lock();
+        registry.contains_key(task_id)
+    }
+
     /// Read-only snapshot of every task in the registry.
     ///
     /// `InProcessTeammateTaskState` holds non-`Clone` data (an abort handle
@@ -304,15 +310,17 @@ impl TeammateExecutor for InProcessBackend {
         let runner_config = runner::InProcessRunnerConfig {
             identity: identity.clone(),
             task_id: task_id.clone(),
+            task_list_id: config.task_list_id.clone(),
             prompt: config.prompt.clone(),
             agent_type: config.agent_type.clone(),
             model: config.model.clone(),
             system_prompt: config.system_prompt.clone(),
             system_prompt_mode: config.system_prompt_mode,
             cwd: config.cwd.clone(),
+            cancellation: cancellation.clone(),
+            tool_permission_context: config.tool_permission_context.clone(),
             hooks: config.hooks.clone(),
             hook_runner: config.hook_runner.clone(),
-            cancellation: cancellation.clone(),
         };
 
         let mut task_state = task_state;
@@ -480,6 +488,7 @@ mod tests {
         let config = TeammateSpawnConfig {
             name: "test-worker".into(),
             team_name: "test-team".into(),
+            task_list_id: "test-team".into(),
             color: Some("blue".into()),
             plan_mode_required: false,
             prompt: "Do something".into(),
@@ -492,8 +501,10 @@ mod tests {
             parent_session_id: "sess-1".into(),
             permissions: vec![],
             allow_permission_prompts: false,
-            hooks: Default::default(),
+            hooks: HashMap::new(),
             hook_runner: None,
+            tool_permission_context: allthecodes_tools::tool::ToolAppState::default()
+                .tool_permission_context,
         };
 
         let result = backend.spawn(config).await.unwrap();
@@ -516,6 +527,7 @@ mod tests {
         let config = TeammateSpawnConfig {
             name: "kill-test".into(),
             team_name: "t".into(),
+            task_list_id: "t".into(),
             color: None,
             plan_mode_required: false,
             prompt: "p".into(),
@@ -528,8 +540,10 @@ mod tests {
             parent_session_id: "s".into(),
             permissions: vec![],
             allow_permission_prompts: false,
-            hooks: Default::default(),
+            hooks: HashMap::new(),
             hook_runner: None,
+            tool_permission_context: allthecodes_tools::tool::ToolAppState::default()
+                .tool_permission_context,
         };
 
         backend.spawn(config).await.unwrap();
@@ -592,6 +606,42 @@ mod tests {
             vec!["Message from lead: go".to_string()]
         );
         assert!(InProcessBackend::take_pending_user_messages("task-1").is_empty());
+        setup();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn has_task_id_reports_registry_attachment() {
+        setup();
+        assert!(!InProcessBackend::has_task_id("task-1"));
+
+        InProcessBackend::register_task(InProcessTeammateTaskState {
+            id: "task-1".into(),
+            status: TaskStatus::Running,
+            identity: TeammateIdentity {
+                agent_id: "worker@team".into(),
+                agent_name: "worker".into(),
+                team_name: "team".into(),
+                color: None,
+                plan_mode_required: false,
+                parent_session_id: "session".into(),
+            },
+            prompt: "initial".into(),
+            model: None,
+            abort_handle: None,
+            cancellation_token: None,
+            awaiting_plan_approval: false,
+            permission_mode: PermissionMode::Default,
+            error: None,
+            pending_user_messages: vec![],
+            is_idle: true,
+            shutdown_requested: false,
+            last_reported_tool_count: 0,
+            last_reported_token_count: 0,
+        });
+
+        assert!(InProcessBackend::has_task_id("task-1"));
+        assert!(!InProcessBackend::has_task_id("missing-task"));
         setup();
     }
 

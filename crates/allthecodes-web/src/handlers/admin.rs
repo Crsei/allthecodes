@@ -1055,7 +1055,13 @@ pub async fn command_handler(
         session_id: state.engine().current_session_id(),
     };
 
-    match cmd.handler.execute(&req.args, &mut ctx).await {
+    let command_result =
+        allthecodes_commands::runtime::scope_hook_runner(state.engine().hook_runner(), async {
+            cmd.handler.execute(&req.args, &mut ctx).await
+        })
+        .await;
+
+    match command_result {
         Ok(result) => {
             // Apply any state mutations from the command
             state.engine().update_app_state(|s| {

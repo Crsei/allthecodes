@@ -2,6 +2,7 @@ use super::*;
 use allthecodes_bootstrap::SessionId;
 use allthecodes_engine::types::app_state::AppState;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn make_ctx() -> allthecodes_commands::CommandContext {
     allthecodes_commands::CommandContext {
@@ -52,6 +53,19 @@ async fn spawn_without_team_reports_error() {
     let mut ctx = make_ctx();
     let s = execute_team_command("spawn researcher find-bugs", &mut ctx).await;
     assert!(s.contains("No active team"));
+}
+
+#[tokio::test]
+async fn spawn_uses_command_scoped_hook_runner() {
+    let inherited: Arc<dyn allthecodes_types::hooks::HookRunner> =
+        Arc::new(allthecodes_types::hooks::NoopHookRunner::new());
+
+    let resolved = allthecodes_commands::runtime::scope_hook_runner(inherited.clone(), async {
+        hook_runner_for_team_spawn()
+    })
+    .await;
+
+    assert!(Arc::ptr_eq(&resolved, &inherited));
 }
 
 #[tokio::test]

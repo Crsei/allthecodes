@@ -17,6 +17,37 @@ use super::output::{EventSeq, OutputReadBatch};
 // AgentEvent (Backend → Frontend)
 // ===========================================================================
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCompletionStatus {
+    #[default]
+    Completed,
+    Failed,
+    Killed,
+}
+
+impl AgentCompletionStatus {
+    pub const fn from_had_error(had_error: bool) -> Self {
+        if had_error {
+            Self::Failed
+        } else {
+            Self::Completed
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+        }
+    }
+
+    pub const fn had_error(self) -> bool {
+        matches!(self, Self::Failed | Self::Killed)
+    }
+}
+
 #[derive(Serialize, Debug, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -37,9 +68,16 @@ pub enum AgentEvent {
         agent_id: String,
         result_preview: String,
         had_error: bool,
+        completion_status: AgentCompletionStatus,
         duration_ms: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
+        total_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         output_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_uses: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
     },
     Error {
         agent_id: String,
