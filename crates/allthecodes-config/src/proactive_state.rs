@@ -12,6 +12,7 @@ pub const DEFAULT_PROACTIVE_TICK_INTERVAL_MS: u64 = 30_000;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DurableProactiveState {
     pub schema_version: u32,
+    #[serde(default)]
     pub active: bool,
     pub next_tick_at: Option<DateTime<Utc>>,
     #[serde(default)]

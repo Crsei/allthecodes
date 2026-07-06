@@ -15,7 +15,6 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -470,36 +469,7 @@ fn clear_durable_proactive_context_block() -> Result<()> {
         return Ok(());
     }
 
-    let existing: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-    let active = existing
-        .get("active")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let now = Utc::now();
-    let next_tick_at = if active {
-        json!(now + Duration::milliseconds(30_000))
-    } else {
-        Value::Null
-    };
-    let state = json!({
-        "schema_version": 2,
-        "active": active,
-        "next_tick_at": next_tick_at,
-        "context_blocked": false,
-        "blocked_reason": null,
-        "updated_at": now,
-    });
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_file_name(format!(
-        "proactive-state.json.{}.{}.tmp",
-        std::process::id(),
-        now.timestamp_micros()
-    ));
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&state)?)?;
-    std::fs::rename(tmp, path)?;
+    allthecodes_config::proactive_state::write_proactive_context_blocked(false, "context_ready")?;
     Ok(())
 }
 
@@ -902,6 +872,38 @@ mod tests {
         .expect("parse durable state");
         assert_eq!(persisted["active"], true);
         assert_eq!(persisted["context_blocked"], false);
+        assert!(persisted["blocked_reason"].is_null());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn clear_durable_proactive_context_block_missing_active_stays_inactive() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+        let durable_path = home.path().join("daemon").join("proactive-state.json");
+        std::fs::create_dir_all(durable_path.parent().unwrap()).expect("create daemon dir");
+        std::fs::write(
+            &durable_path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": 2,
+                "next_tick_at": null,
+                "context_blocked": true,
+                "blocked_reason": "plan_mode",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }))
+            .expect("serialize durable state"),
+        )
+        .expect("write durable state");
+
+        clear_durable_proactive_context_block().unwrap();
+
+        let persisted: Value = serde_json::from_slice(
+            &std::fs::read(&durable_path).expect("durable proactive state should remain"),
+        )
+        .expect("parse durable state");
+        assert_eq!(persisted["active"], false);
+        assert_eq!(persisted["context_blocked"], false);
+        assert!(persisted["next_tick_at"].is_null());
         assert!(persisted["blocked_reason"].is_null());
     }
 

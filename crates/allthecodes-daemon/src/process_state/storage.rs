@@ -523,25 +523,8 @@ pub fn write_proactive_context_blocked(
     blocked: bool,
     reason: &str,
 ) -> Result<DaemonProactiveState> {
-    let current = read_proactive_state()?;
-    let active = current.as_ref().map(|state| state.active).unwrap_or(true);
-    let next_tick_at = if blocked {
-        None
-    } else if active {
-        Some(
-            Utc::now()
-                + chrono::Duration::milliseconds(crate::tick::DEFAULT_TICK_INTERVAL_MS as i64),
-        )
-    } else {
-        None
-    };
     let state = map_durable_proactive_state(
-        allthecodes_services::proactive::write_durable_state_with_context(
-            active,
-            next_tick_at,
-            blocked,
-            blocked.then(|| reason.trim().to_string()),
-        )?,
+        allthecodes_config::proactive_state::write_proactive_context_blocked(blocked, reason)?,
     );
     write_proactive_state_sqlite_backup(&state);
     Ok(state)
@@ -904,6 +887,26 @@ mod sleep_tests {
             .expect("fresh proactive state should be mirrored to sqlite");
         assert!(!mirrored.active);
         assert!(mirrored.next_tick_at.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn proactive_context_blocked_without_existing_state_does_not_activate() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+
+        let blocked = write_proactive_context_blocked(true, "context_limit").unwrap();
+
+        assert!(!blocked.active);
+        assert!(blocked.next_tick_at.is_none());
+        assert!(blocked.context_blocked);
+        assert_eq!(blocked.blocked_reason.as_deref(), Some("context_limit"));
+
+        let persisted = read_proactive_state()
+            .unwrap()
+            .expect("context blocked state should be persisted");
+        assert!(!persisted.active);
+        assert!(persisted.next_tick_at.is_none());
     }
 }
 
