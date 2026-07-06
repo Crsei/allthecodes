@@ -84,18 +84,16 @@ impl GatewayCommandSink for GatewayDaemonBridge {
             self.assistant_session_id.as_deref(),
         );
         if command.kind == GatewayCommandKind::Submit && should_wake_sleep_for_payload(&payload) {
-            allthecodes_services::proactive::clear_sleep_state("gateway_submit").map_err(
-                |error| {
-                    GatewayError::new(
-                        GatewayDiagnostic::new(
-                            "daemon_sleep_clear_failed",
-                            "The daemon bridge could not clear proactive sleep before dispatching work.",
-                            "Check daemon state directory permissions and retry the request.",
-                        )
-                        .with_context(format!("run_id={}, error={error:#}", command.run_id)),
+            crate::process_state::clear_sleep_state().map_err(|error| {
+                GatewayError::new(
+                    GatewayDiagnostic::new(
+                        "daemon_sleep_clear_failed",
+                        "The daemon bridge could not clear proactive sleep before dispatching work.",
+                        "Check daemon state directory permissions and retry the request.",
                     )
-                },
-            )?;
+                    .with_context(format!("run_id={}, error={error:#}", command.run_id)),
+                )
+            })?;
         }
         let queued = super::protocol_store()
             .enqueue_command(
@@ -1224,7 +1222,7 @@ mod tests {
     fn bridge_submit_clears_active_sleep_for_non_proactive_payload() {
         let temp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
-        allthecodes_services::proactive::write_sleep_state(300, "waiting").unwrap();
+        crate::process_state::write_sleep_state(300, "waiting").unwrap();
         let bridge = GatewayDaemonBridge::for_worker("assistant-session-1");
 
         bridge
@@ -1237,7 +1235,7 @@ mod tests {
             })
             .unwrap();
 
-        assert!(allthecodes_services::proactive::active_sleep_state()
+        assert!(crate::process_state::active_sleep_state()
             .unwrap()
             .is_none());
     }
@@ -1247,7 +1245,7 @@ mod tests {
     fn bridge_submit_preserves_active_sleep_for_proactive_tick_payload() {
         let temp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
-        allthecodes_services::proactive::write_sleep_state(300, "waiting").unwrap();
+        crate::process_state::write_sleep_state(300, "waiting").unwrap();
         let bridge = GatewayDaemonBridge::for_worker("assistant-session-1");
 
         bridge
@@ -1260,7 +1258,7 @@ mod tests {
             })
             .unwrap();
 
-        assert!(allthecodes_services::proactive::active_sleep_state()
+        assert!(crate::process_state::active_sleep_state()
             .unwrap()
             .is_some());
     }
