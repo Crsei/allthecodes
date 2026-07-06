@@ -32,7 +32,7 @@ daemon 状态位于 `{ALLTHECODES_HOME:-~/.allthecodes}/daemon/`：
 
 ## CLI 管理命令
 
-`daemon start` 和隐藏 `--daemon` 运行面需要 `FEATURE_KAIROS=1` 或 `FEATURE_PROACTIVE=1`。管理命令可以从另一个 CLI 进程操作同一个后台 supervisor。
+`daemon start` 管理命令仍需要 `FEATURE_KAIROS=1`。隐藏 `--daemon` 运行面接受 `FEATURE_KAIROS=1` 或 `FEATURE_PROACTIVE=1`，用于 standalone proactive daemon。管理命令可以从另一个 CLI 进程操作同一个后台 supervisor。
 
 ```bash
 FEATURE_KAIROS=1 allthecodes daemon start
