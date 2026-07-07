@@ -23,10 +23,17 @@ user-facing features.
 - `FEATURE_MCP_SKILLS`: MCP `skill://` resource ingestion remains experimental.
 - `FEATURE_EXPERIMENTAL_SKILL_SEARCH`: local skill search prefetch and turn-zero
   discovery scaffolding remains experimental.
+- `FEATURE_REMOTE_URL_DISCOVERY`: remote skill/plugin/MCP URL discovery remains
+  hidden/default-off. When disabled, discovery outputs mark remote URL state as
+  `feature_disabled`; when enabled, the current implementation still only marks
+  remote URL work as `deferred` and performs no network fetch, registry refresh,
+  install, enable, or trust decision.
 
 Source references:
 
 - `crates/allthecodes-config/src/features.rs`
+- `crates/allthecodes-tools/src/discovery_search.rs`
+- `crates/allthecodes-services/src/skill_search_prefetch.rs`
 - `crates/allthecodes-daemon/src/team_memory_proxy.rs`
 - `crates/allthecodes/src/dashboard.rs`
 - `crates/allthecodes/src/startup/mode_router.rs`

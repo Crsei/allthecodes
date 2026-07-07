@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use crate::common::{string_param, validate_enum};
 use crate::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, Tools, ValidationResult};
+use allthecodes_config::features::{self, Feature};
 use allthecodes_types::message::AssistantMessage;
 
 pub type DiscoverySearchProvider =
@@ -379,8 +380,13 @@ impl DiscoverySearchResult {
     }
 
     pub fn with_remote_state_placeholder(mut self) -> Self {
-        self.remote_url_todo = true;
-        self.remote_source = Some("deferred".to_string());
+        if features::enabled(Feature::RemoteUrlDiscovery) {
+            self.remote_url_todo = true;
+            self.remote_source = Some("deferred".to_string());
+        } else {
+            self.remote_url_todo = false;
+            self.remote_source = Some("feature_disabled".to_string());
+        }
         self
     }
 }
@@ -431,7 +437,7 @@ pub fn search_items_in(
     let source_filter = normalized_filter(source_filter);
     let mut matches = items
         .into_iter()
-        .filter(|item| source_matches(item, source_filter.as_deref()))
+        .filter(|item| source_matches(item, source_filter))
         .filter_map(|mut item| {
             let (score, reasons) = score_item(query, &item);
             if score == 0 {
@@ -927,7 +933,23 @@ impl Tool for PluginSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allthecodes_config::features::{self, FeatureFlags};
     use serial_test::serial;
+
+    struct FeatureGuard;
+
+    impl FeatureGuard {
+        fn set(flags: FeatureFlags) -> Self {
+            features::set_runtime_override(flags);
+            Self
+        }
+    }
+
+    impl Drop for FeatureGuard {
+        fn drop(&mut self) {
+            features::clear_runtime_override();
+        }
+    }
 
     fn rust_plugin() -> DiscoverySearchResult {
         DiscoverySearchResult::new(DiscoveryResultKind::Plugin, "rust-tools")
@@ -1027,6 +1049,9 @@ mod tests {
     #[test]
     #[serial]
     fn plugin_search_remote_state_fields_are_present_but_inert() {
+        let mut flags = FeatureFlags::all_disabled();
+        flags.remote_url_discovery = true;
+        let _features = FeatureGuard::set(flags);
         install_discovery_search_runtime(
             DiscoverySearchRuntime::new().with_plugin_items_provider(|| vec![rust_plugin()]),
         );
@@ -1042,6 +1067,28 @@ mod tests {
         let result = &output.data["results"][0];
         assert_eq!(result["remote_url_todo"], true);
         assert_eq!(result["remote_source"], "deferred");
+        assert!(result.get("remote_url").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn plugin_search_marks_remote_url_discovery_feature_disabled_when_gate_is_off() {
+        let _features = FeatureGuard::set(FeatureFlags::all_disabled());
+        install_discovery_search_runtime(
+            DiscoverySearchRuntime::new().with_plugin_items_provider(|| vec![rust_plugin()]),
+        );
+
+        let output = run_plugin_search(DiscoverySearchInput {
+            query: "rust".to_string(),
+            source_filter: Some("all".to_string()),
+            max_results: 5,
+            include_summaries: true,
+        })
+        .unwrap();
+
+        let result = &output.data["results"][0];
+        assert_eq!(result["remote_url_todo"], false);
+        assert_eq!(result["remote_source"], "feature_disabled");
         assert!(result.get("remote_url").is_none());
     }
 

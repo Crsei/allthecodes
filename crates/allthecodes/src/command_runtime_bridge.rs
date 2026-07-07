@@ -1196,9 +1196,25 @@ fn plugin_status_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allthecodes_config::features::{self, FeatureFlags};
     use allthecodes_plugins::marketplace::MarketplacePluginEntry;
     use allthecodes_plugins::{PluginEntry, PluginSource, PluginStatus};
     use allthecodes_tools::discovery_search::DiscoveryResultKind;
+
+    struct FeatureGuard;
+
+    impl FeatureGuard {
+        fn set(flags: FeatureFlags) -> Self {
+            features::set_runtime_override(flags);
+            Self
+        }
+    }
+
+    impl Drop for FeatureGuard {
+        fn drop(&mut self) {
+            features::clear_runtime_override();
+        }
+    }
 
     fn plugin_entry(id: &str, status: PluginStatus) -> PluginEntry {
         PluginEntry {
@@ -1243,7 +1259,12 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn plugin_discovery_rows_cover_installed_active_and_marketplace_cache() {
+        let mut flags = FeatureFlags::all_disabled();
+        flags.remote_url_discovery = true;
+        let _features = FeatureGuard::set(flags);
+
         let rows = plugin_discovery_rows_from_sources(
             vec![plugin_entry("disabled-tools", PluginStatus::Disabled)],
             vec![plugin_entry("rust-tools", PluginStatus::Installed)],

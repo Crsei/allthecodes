@@ -1,6 +1,6 @@
 # 工具发现当前实现情况
 
-日期：2026-07-05
+日期：2026-07-07
 
 范围：内置工具、root-owned 工具、MCP 工具、插件工具、技能工具、延迟工具发现和运行时过滤。
 
@@ -181,9 +181,9 @@ provider，搜索工具不直接依赖 MCP/plugin 实现 crate。provider panic 
 `/mcp status`、`/plugin status`、`/skills diagnostics`、`SystemStatus`，精确
 callable schema 仍在 `ToolSearch`。
 
-## MCP Skill 与 Skill Prefetch Gates
+## MCP Skill、Skill Prefetch 与 Remote URL Gates
 
-`allthecodes-config` 现在暴露两个上游 parity gate：
+`allthecodes-config` 现在暴露三个发现相关 gate：
 
 - `FEATURE_MCP_SKILLS` / `Feature::McpSkills`：控制 MCP `skill://` resource
   ingestion。关闭时不注册 MCP-provided skills，但普通 MCP tools/resources 保持
@@ -191,11 +191,24 @@ callable schema 仍在 `ToolSearch`。
 - `FEATURE_EXPERIMENTAL_SKILL_SEARCH` / `Feature::ExperimentalSkillSearch`：
   控制本地 skill-search prefetch、turn-zero discovery 和 remote-state 占位。关闭
   时不做 prefetch enrichment，但显式本地 `SkillSearch` 仍可用。
+- `FEATURE_REMOTE_URL_DISCOVERY` / `Feature::RemoteUrlDiscovery`：控制远程
+  skill/plugin/MCP URL discovery 的占位状态。默认关闭；关闭时 discovery 输出
+  `remote_source="feature_disabled"` 或 prefetch `remote_state="feature_disabled"`。
+  开启时当前实现仍只返回 `remote_source="deferred"` / `remote_state="deferred"`，
+  不做网络访问。
 
 当前 prefetch 只读取本地 skill 元数据（name、description、source、
 `when_to_use`、argument hint/name、paths、assets、entry docs、dependencies 和
-prompt body），remote state 只返回 `not_configured` 或 `deferred`，不会 fetch
-remote URL、刷新远程 registry 或安装任何内容。
+prompt body）。remote state 只用于说明状态：
+
+- `not_configured`：`FEATURE_EXPERIMENTAL_SKILL_SEARCH` 关闭，未做 prefetch。
+- `feature_disabled`：本地 prefetch 已执行，但 `FEATURE_REMOTE_URL_DISCOVERY`
+  关闭。
+- `deferred`：remote URL discovery gate 已开启，但远程 fetch/registry/install
+  仍未实现。
+
+无论上述哪种状态，当前实现都不会 fetch remote URL、刷新远程 registry、安装、
+启用或信任远程内容。
 
 ## Kairos / Proactive Search Tips
 
@@ -204,6 +217,11 @@ remote URL、刷新远程 registry 或安装任何内容。
 - tip kind 覆盖 skill、MCP、plugin。
 - 只有 `FEATURE_KAIROS` 或 `FEATURE_PROACTIVE` 开启时生成。
 - 对同一 session/kind/id 做去重和 cooldown。
+- 持久 dismiss/remind-later 写入
+  `~/.allthecodes/search-tip-dismissals.json`（或 `ALLTHECODES_HOME` 下同名文件），
+  JSON 形状兼容 LSP recommendation dismissal：`plugin_id`、`dismissed_at`、
+  `remind_after_secs`。`remind_after_secs=null`/缺失表示永久 dismiss；有秒数时
+  到期后重新允许提示。
 - 输出仍复用现有 `PromptSuggestion` / `BackendMessage::Suggestions`，不会新增
   IPC message。
 - tip 是 advisory 文本，提示用户运行 `/skills ...`、`/mcp search ...`、
@@ -224,5 +242,6 @@ prefetch-derived skill candidates；Rust TUI 路径在
 - deferred discovered state 主要是运行时状态和 compact metadata，不是独立的长期持久索引。
 - MCP 连接失败不会阻塞会话启动；失败信息通过状态面暴露，工具不会进入可执行集合。
 - 插件/MCP 工具是否可见取决于当前 provider 和 manager 刷新结果；没有把所有外部工具固定写入静态清单。
-- 远程 skill/plugin/MCP URL discovery 仍是显式 deferred TODO；当前实现只保留
-  `remote_url_todo` / `remote_source` 之类占位字段，不做网络访问。
+- 远程 skill/plugin/MCP URL discovery 仍是显式 deferred TODO，并已由
+  `FEATURE_REMOTE_URL_DISCOVERY` 独立 gate 控制。当前实现只保留
+  `remote_url_todo` / `remote_source` / `remote_state` 之类状态字段，不做网络访问。

@@ -58,19 +58,24 @@ pub fn start_skill_discovery_prefetch(context: SkillPrefetchContext) -> SkillPre
     }
 
     let skills = local_skill_metadata(&context.query);
+    let remote_state = if features::enabled(Feature::RemoteUrlDiscovery) {
+        "deferred"
+    } else {
+        "feature_disabled"
+    };
     SkillPrefetchHandle {
         result: SkillPrefetchResult {
             session_id: context.session_id,
             query: context.query,
             skills,
-            remote_state: "deferred".to_string(),
+            remote_state: remote_state.to_string(),
         },
     }
 }
 
 pub fn collect_skill_discovery_prefetch(handle: SkillPrefetchHandle) -> SkillPrefetchResult {
     let result = handle.result;
-    if result.remote_state == "deferred" {
+    if result.remote_state != "not_configured" {
         TURN_ZERO
             .lock()
             .insert(result.session_id.clone(), result.clone());
@@ -92,7 +97,7 @@ pub fn ensure_turn_zero_skill_discovery(session_id: &str, query: &str) -> SkillP
 }
 
 pub fn candidates_from_prefetch(result: &SkillPrefetchResult) -> Vec<SearchTipCandidate> {
-    if result.remote_state != "deferred" {
+    if result.remote_state == "not_configured" || result.skills.is_empty() {
         return Vec::new();
     }
 
@@ -272,6 +277,7 @@ mod tests {
     fn prefetch_collects_local_skill_metadata_only() {
         let mut flags = FeatureFlags::all_disabled();
         flags.experimental_skill_search = true;
+        flags.remote_url_discovery = true;
         let _features = FeatureGuard::set(flags);
         let _skills = SkillRegistryGuard::new(vec![make_skill(
             "rust-review",
@@ -299,6 +305,28 @@ mod tests {
         let json = serde_json::to_string(&result).unwrap();
         assert!(!json.contains("http://"));
         assert!(!json.contains("https://"));
+    }
+
+    #[test]
+    #[serial]
+    fn remote_url_discovery_gate_controls_remote_state_without_blocking_local_prefetch() {
+        let mut flags = FeatureFlags::all_disabled();
+        flags.experimental_skill_search = true;
+        flags.remote_url_discovery = false;
+        let _features = FeatureGuard::set(flags);
+        let _skills = SkillRegistryGuard::new(vec![make_skill(
+            "rust-review",
+            "Review Rust code without remote fetch",
+        )]);
+
+        let result = collect_skill_discovery_prefetch(start_skill_discovery_prefetch(context(
+            "session-remote-disabled",
+            "rust",
+        )));
+
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.remote_state, "feature_disabled");
+        assert_eq!(candidates_from_prefetch(&result).len(), 1);
     }
 
     #[test]

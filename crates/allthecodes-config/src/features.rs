@@ -30,6 +30,7 @@ pub enum Feature {
     Proactive,
     McpSkills,
     ExperimentalSkillSearch,
+    RemoteUrlDiscovery,
     TeamMemory,
     SubagentDashboard,
     AgentTeams,
@@ -96,6 +97,12 @@ const FEATURE_DESCRIPTORS: &[FeatureDescriptor] = &[
         env_var: "FEATURE_EXPERIMENTAL_SKILL_SEARCH",
         label: "experimental_skill_search",
         description: "local skill search prefetch and turn-zero discovery scaffolding",
+    },
+    FeatureDescriptor {
+        feature: Feature::RemoteUrlDiscovery,
+        env_var: "FEATURE_REMOTE_URL_DISCOVERY",
+        label: "remote_url_discovery",
+        description: "remote skill/plugin/MCP URL discovery",
     },
     FeatureDescriptor {
         feature: Feature::TeamMemory,
@@ -166,6 +173,7 @@ pub struct FeatureFlags {
     pub proactive: bool,
     pub mcp_skills: bool,
     pub experimental_skill_search: bool,
+    pub remote_url_discovery: bool,
     pub team_memory: bool,
     pub subagent_dashboard: bool,
     pub agent_teams: bool,
@@ -210,6 +218,7 @@ impl FeatureFlags {
         let team_memory = read("FEATURE_TEAMMEM");
         let mcp_skills = read("FEATURE_MCP_SKILLS");
         let experimental_skill_search = read("FEATURE_EXPERIMENTAL_SKILL_SEARCH");
+        let remote_url_discovery = read("FEATURE_REMOTE_URL_DISCOVERY");
         let subagent_dashboard = read("FEATURE_SUBAGENT_DASHBOARD");
         let agent_teams = read_optional("FEATURE_AGENT_TEAMS")
             .or_else(|| read_optional("ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS"))
@@ -276,6 +285,7 @@ impl FeatureFlags {
             proactive,
             mcp_skills,
             experimental_skill_search,
+            remote_url_discovery,
             team_memory,
             subagent_dashboard,
             agent_teams,
@@ -298,6 +308,7 @@ impl FeatureFlags {
             proactive: true,
             mcp_skills: true,
             experimental_skill_search: true,
+            remote_url_discovery: true,
             team_memory: true,
             subagent_dashboard: true,
             agent_teams: true,
@@ -325,6 +336,7 @@ impl FeatureFlags {
             Feature::Proactive => self.proactive,
             Feature::McpSkills => self.mcp_skills,
             Feature::ExperimentalSkillSearch => self.experimental_skill_search,
+            Feature::RemoteUrlDiscovery => self.remote_url_discovery,
             Feature::TeamMemory => self.team_memory,
             Feature::SubagentDashboard => self.subagent_dashboard,
             Feature::AgentTeams => self.agent_teams,
@@ -402,6 +414,7 @@ mod tests {
         assert!(!f.coordinator);
         assert!(!f.mcp_skills);
         assert!(!f.experimental_skill_search);
+        assert!(!f.remote_url_discovery);
         assert!(
             f.workflow_scripts,
             "full-build workflow tools default enabled"
@@ -500,6 +513,7 @@ mod tests {
         assert!(!f.is_enabled(Feature::KairosChannels));
         assert!(!f.is_enabled(Feature::McpSkills));
         assert!(!f.is_enabled(Feature::ExperimentalSkillSearch));
+        assert!(!f.is_enabled(Feature::RemoteUrlDiscovery));
         assert!(f.is_enabled(Feature::Proactive));
     }
 
@@ -516,6 +530,10 @@ mod tests {
             !f.experimental_skill_search,
             "FEATURE_KAIROS must not imply FEATURE_EXPERIMENTAL_SKILL_SEARCH"
         );
+        assert!(
+            !f.remote_url_discovery,
+            "FEATURE_KAIROS must not imply FEATURE_REMOTE_URL_DISCOVERY"
+        );
     }
 
     #[test]
@@ -523,11 +541,14 @@ mod tests {
         let f = flags(&[
             ("FEATURE_MCP_SKILLS", "1"),
             ("FEATURE_EXPERIMENTAL_SKILL_SEARCH", "true"),
+            ("FEATURE_REMOTE_URL_DISCOVERY", "yes"),
         ]);
         assert!(f.mcp_skills);
         assert!(f.experimental_skill_search);
+        assert!(f.remote_url_discovery);
         assert!(f.is_enabled(Feature::McpSkills));
         assert!(f.is_enabled(Feature::ExperimentalSkillSearch));
+        assert!(f.is_enabled(Feature::RemoteUrlDiscovery));
     }
 
     #[test]
@@ -606,7 +627,7 @@ mod tests {
     #[test]
     fn feature_descriptors_are_unique_and_complete() {
         let descriptors = feature_descriptors();
-        assert_eq!(descriptors.len(), 16);
+        assert_eq!(descriptors.len(), 17);
 
         let mut labels: Vec<_> = descriptors
             .iter()
@@ -639,6 +660,16 @@ mod tests {
             "FEATURE_EXPERIMENTAL_SKILL_SEARCH"
         );
         assert_eq!(experimental_skill_search.label, "experimental_skill_search");
+
+        let remote_url_discovery = descriptors
+            .iter()
+            .find(|descriptor| descriptor.feature == Feature::RemoteUrlDiscovery)
+            .expect("remote URL discovery descriptor is exposed");
+        assert_eq!(remote_url_discovery.env_var, "FEATURE_REMOTE_URL_DISCOVERY");
+        assert_eq!(remote_url_discovery.label, "remote_url_discovery");
+        assert!(remote_url_discovery
+            .description
+            .contains("skill/plugin/MCP"));
 
         let agent_teams = descriptors
             .iter()

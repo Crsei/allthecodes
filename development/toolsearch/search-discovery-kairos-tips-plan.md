@@ -21,13 +21,30 @@
 - Kairos tips are advisory. They must not install plugins, enable plugins, connect MCP servers, reload state, or execute skills automatically.
 - Preserve path isolation: all persisted allthecodes data uses `~/.allthecodes/` and `.allthecodes/`, not original Codex paths.
 
+## 2026-07-07 Status Update
+
+- `FEATURE_MCP_SKILLS` and `FEATURE_EXPERIMENTAL_SKILL_SEARCH` are implemented
+  as hidden/default-off gates.
+- Remote skill/plugin/MCP URL discovery is now split into its own hidden gate:
+  `FEATURE_REMOTE_URL_DISCOVERY` / `Feature::RemoteUrlDiscovery`.
+- With `FEATURE_REMOTE_URL_DISCOVERY` disabled, local discovery still works but
+  remote state is reported as `feature_disabled`.
+- With `FEATURE_REMOTE_URL_DISCOVERY` enabled, the current implementation still
+  reports `deferred` and performs no remote URL fetch, registry refresh, install,
+  enable, reload, or remote trust action.
+- Search tips now support persistent dismiss/remind-later using the same JSON
+  shape as LSP recommendation dismissal records: `plugin_id`, `dismissed_at`,
+  `remind_after_secs`, stored under
+  `~/.allthecodes/search-tip-dismissals.json` or the `ALLTHECODES_HOME`
+  equivalent.
+
 ## Current State
 
 - `ToolSearch` lives in `crates/allthecodes-tools/src/runtime/tool_search.rs` and indexes runtime tools plus model-invocable skills. It can filter `source=plugin|mcp|skill` and hydrate schemas.
 - `DiscoverSkills` lives in `crates/allthecodes-tools/src/skills/mod.rs` and already searches bundled, user, project, plugin, and MCP skills.
 - Upstream `docs/features/mcp-skills.md` defines `FEATURE_MCP_SKILLS=1`: MCP servers expose skills through `skill://` resources, fetched only when resources are supported, converted into prompt/skill commands, refreshed on prompt/resource list changes, and cleared on disconnect.
-- Rust already has MCP `skill://` ingestion in `crates/allthecodes-engine/src/mcp_tool_adapter.rs` through `discover_mcp_skill_resources_for_context(...)`, producing `SkillSource::Mcp(server)`. The current Rust feature list does not yet expose `FEATURE_MCP_SKILLS`, and the search plan must make stale MCP skill cleanup explicit.
-- Upstream `docs/features/experimental-skill-search.md` defines `FEATURE_EXPERIMENTAL_SKILL_SEARCH=1`: `DiscoverSkills`, local search, prefetch, turn-zero discovery, signals, telemetry, remote loader, and remote state are wired but stubbed. In this Rust plan, local search is real, while remote URL/registry loading stays deferred.
+- Rust has MCP `skill://` ingestion in `crates/allthecodes-engine/src/mcp_tool_adapter.rs` through `discover_mcp_skill_resources_for_context(...)`, producing `SkillSource::Mcp(server)`, gated by `FEATURE_MCP_SKILLS`.
+- Upstream `docs/features/experimental-skill-search.md` defines `FEATURE_EXPERIMENTAL_SKILL_SEARCH=1`: `DiscoverSkills`, local search, prefetch, turn-zero discovery, signals, telemetry, remote loader, and remote state are wired but stubbed. In this Rust plan, local search is real, while remote URL/registry loading is separately gated by `FEATURE_REMOTE_URL_DISCOVERY` and still deferred.
 - `/plugin marketplace search <q>` exists in `crates/allthecodes-commands/src/plugin_cmd.rs`, but top-level plugin discovery and model-facing `PluginSearch` do not exist.
 - `/mcp` has list/status/config/runtime subcommands in `crates/allthecodes-commands/src/mcp/`, but no `McpSearch` command/tool exists.
 - Rust TUI command surfaces already exist for skills, MCP, and plugins under `crates/allthecodes/src/ui/command_surface/surfaces/`.
@@ -98,7 +115,8 @@
 - Modify `crates/allthecodes-config/src/features.rs`
   - Add `Feature::McpSkills` with env var `FEATURE_MCP_SKILLS`.
   - Add `Feature::ExperimentalSkillSearch` with env var `FEATURE_EXPERIMENTAL_SKILL_SEARCH`.
-  - Keep both disabled by default and included in `/experimental list` / `FeatureFlags::all_enabled()`.
+  - Add `Feature::RemoteUrlDiscovery` with env var `FEATURE_REMOTE_URL_DISCOVERY`.
+  - Keep all three disabled by default and included in `/experimental list` / `FeatureFlags::all_enabled()`.
 
 - Create `crates/allthecodes-tools/src/discovery_search.rs`
   - Shared result structs: `DiscoverySearchInput`, `DiscoverySearchResult`, `DiscoveryResultKind`, `DiscoveryStatusSummary`, `DiscoveryNextAction`.
@@ -172,9 +190,10 @@
 **Interfaces:**
 - Produces `Feature::McpSkills` / `FeatureFlags::mcp_skills`.
 - Produces `Feature::ExperimentalSkillSearch` / `FeatureFlags::experimental_skill_search`.
+- Produces `Feature::RemoteUrlDiscovery` / `FeatureFlags::remote_url_discovery`.
 
-- [ ] Add descriptors for `FEATURE_MCP_SKILLS` and `FEATURE_EXPERIMENTAL_SKILL_SEARCH`.
-- [ ] Keep both flags disabled by default and enabled by `FeatureFlags::all_enabled()`.
+- [ ] Add descriptors for `FEATURE_MCP_SKILLS`, `FEATURE_EXPERIMENTAL_SKILL_SEARCH`, and `FEATURE_REMOTE_URL_DISCOVERY`.
+- [ ] Keep all three flags disabled by default and enabled by `FeatureFlags::all_enabled()`.
 - [ ] Update feature descriptor count tests and `/experimental list` expectations.
 - [ ] Add tests that `FEATURE_KAIROS` does not imply either search flag.
 
@@ -284,7 +303,7 @@
 - [ ] Gate generation on `Feature::Kairos` or `Feature::Proactive`.
 - [ ] Gate prefetch/turn-zero skill discovery on `Feature::ExperimentalSkillSearch`.
 - [ ] Implement prefetch using local skill metadata only: names, descriptions, `when_to_use`, source, argument hints, paths, assets, dependencies, and prompt body.
-- [ ] Store remote skill state as `not_configured` / `deferred` and never fetch remote URLs.
+- [ ] Store remote skill state as `not_configured` / `feature_disabled` / `deferred` and never fetch remote URLs.
 - [ ] Apply dedupe and cooldown so the same domain item is not repeated in short intervals.
 - [ ] Format tips as advisory prompts, never as automatic actions.
 - [ ] Add tests for feature gate disabled, no candidates, one high-confidence candidate, prefetch collection, turn-zero retrieval, dedupe, cooldown, and remote URL exclusion.
@@ -318,7 +337,7 @@ cargo build --workspace --release
 - [ ] Confirm `FEATURE_MCP_SKILLS=0` prevents MCP `skill://` resource registration while preserving normal MCP tools/resources.
 - [ ] Confirm `FEATURE_EXPERIMENTAL_SKILL_SEARCH=0` suppresses prefetch/turn-zero enrichment while preserving explicit local `SkillSearch`.
 - [ ] Confirm Kairos/proactive tips are absent when feature gates are disabled.
-- [ ] Confirm remote URL discovery remains inert and marked as deferred.
+- [ ] Confirm remote URL discovery remains inert: `feature_disabled` while the gate is off, `deferred` while the gate is on.
 
 ## Deferred TODO: Remote URL Discovery
 

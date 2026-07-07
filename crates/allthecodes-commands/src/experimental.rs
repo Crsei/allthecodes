@@ -112,6 +112,8 @@ mod tests {
         assert!(text.contains("FEATURE_MCP_SKILLS"));
         assert!(text.contains("experimental_skill_search"));
         assert!(text.contains("FEATURE_EXPERIMENTAL_SKILL_SEARCH"));
+        assert!(text.contains("remote_url_discovery"));
+        assert!(text.contains("FEATURE_REMOTE_URL_DISCOVERY"));
     }
 
     #[test]

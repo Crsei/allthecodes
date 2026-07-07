@@ -159,6 +159,10 @@ pub fn skill_usage_path() -> PathBuf {
     data_root().join("skill-usage.json")
 }
 
+pub fn search_tip_dismissals_path() -> PathBuf {
+    data_root().join("search-tip-dismissals.json")
+}
+
 pub fn teams_dir() -> PathBuf {
     data_root().join("teams")
 }
@@ -461,6 +465,10 @@ mod tests {
         assert_eq!(session_insights_dir(), base.join("session-insights"));
         assert_eq!(plugins_dir(), base.join("plugins"));
         assert_eq!(skills_dir_global(), base.join("skills"));
+        assert_eq!(
+            search_tip_dismissals_path(),
+            base.join("search-tip-dismissals.json")
+        );
         assert_eq!(teams_dir(), base.join("teams"));
         assert_eq!(tasks_dir(), base.join("tasks"));
         assert_eq!(goals_dir(), base.join("goals"));

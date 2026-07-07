@@ -359,7 +359,7 @@ mod tests {
 
         assert_eq!(
             payload["proactive"]["skill_discovery"]["remote_state"],
-            "deferred"
+            "feature_disabled"
         );
         assert_eq!(payload["proactive"]["skill_discovery"]["count"], 1);
         let body = serde_json::to_string(&payload).unwrap();

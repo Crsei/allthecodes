@@ -88,6 +88,11 @@ impl PromptSuggestionService {
         self.enabled
     }
 
+    pub fn with_search_tip_service(mut self, search_tip_service: SearchTipService) -> Self {
+        self.search_tip_service = search_tip_service;
+        self
+    }
+
     /// Determine if suggestions should be suppressed, and if so, why.
     pub fn get_suppression_reason(
         &self,
@@ -467,7 +472,8 @@ mod tests {
         let mut flags = FeatureFlags::all_disabled();
         flags.proactive = true;
         let _features = FeatureGuard::set(flags);
-        let mut svc = PromptSuggestionService::new(true);
+        let mut svc = PromptSuggestionService::new(true)
+            .with_search_tip_service(SearchTipService::new().without_persistence());
         let candidates = vec![SearchTipCandidate {
             kind: SearchTipKind::Skill,
             id: "rust-review".to_string(),
