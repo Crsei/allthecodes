@@ -113,13 +113,13 @@ const FEATURE_DESCRIPTORS: &[FeatureDescriptor] = &[
         feature: Feature::AgentTeams,
         env_var: "ALLTHECODES_EXPERIMENTAL_AGENT_TEAMS",
         label: "agent_teams",
-        description: "experimental Agent Teams slash command/tooling",
+        description: "beta Agent Teams slash command/tooling",
     },
     FeatureDescriptor {
         feature: Feature::Coordinator,
         env_var: "ALLTHECODES_COORDINATOR_MODE",
         label: "coordinator",
-        description: "coordinator mode prompt and orchestration gate",
+        description: "beta coordinator mode prompt and orchestration gate",
     },
     FeatureDescriptor {
         feature: Feature::WorkflowScripts,
@@ -143,7 +143,7 @@ const FEATURE_DESCRIPTORS: &[FeatureDescriptor] = &[
         feature: Feature::MultiAgentV2,
         env_var: "ALLTHECODES_MULTI_AGENT_V2",
         label: "multi_agent_v2",
-        description: "multi-agent v2 spawn/send/followup/wait/close tools",
+        description: "multi-agent v2 list/followup/wait/close tool aliases",
     },
 ];
 
@@ -639,6 +639,30 @@ mod tests {
             "FEATURE_EXPERIMENTAL_SKILL_SEARCH"
         );
         assert_eq!(experimental_skill_search.label, "experimental_skill_search");
+
+        let agent_teams = descriptors
+            .iter()
+            .find(|descriptor| descriptor.feature == Feature::AgentTeams)
+            .expect("agent teams descriptor is exposed");
+        assert!(
+            agent_teams.description.contains("beta"),
+            "Agent Teams is a released beta surface, not a hidden experiment"
+        );
+
+        let multi_agent_v2 = descriptors
+            .iter()
+            .find(|descriptor| descriptor.feature == Feature::MultiAgentV2)
+            .expect("multi-agent v2 descriptor is exposed");
+        assert!(
+            multi_agent_v2
+                .description
+                .contains("list/followup/wait/close"),
+            "MultiAgentV2 should describe the currently gated v2 aliases"
+        );
+        assert!(
+            !multi_agent_v2.description.contains("spawn/send"),
+            "TeamSpawn and SendMessage are controlled by AgentTeams, not MultiAgentV2"
+        );
     }
 
     #[test]
