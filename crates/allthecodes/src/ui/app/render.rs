@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthChar;
 
 use super::App;
 use crate::ui::agents::agents_menu::AgentsMenuState;
@@ -18,6 +19,7 @@ use crate::ui::notifications::in_app::{NotificationPriority, NotificationTone};
 use crate::ui::overlays::{render_prompt_adjacent_dialog_lines, CenteredOverlayFrame};
 use crate::ui::panel_layout::PanelSizePreset;
 use crate::ui::prompt_input::PromptInputRenderContext;
+use crate::ui::theme::identity::{agent_identity_style, AgentIdentity};
 use crate::ui::theme::{Theme, ThemeColors};
 use crate::ui::transcript::{self, TranscriptInputMode, ViewMode};
 use crate::ui::welcome;
@@ -76,6 +78,8 @@ impl App {
                 Vec::new()
             };
 
+        self.refresh_context_layer();
+
         let current_notification = self.current_notification();
         let immediate_notification = current_notification
             .is_some_and(|notification| notification.priority == NotificationPriority::Immediate);
@@ -100,6 +104,7 @@ impl App {
         let paste_notice_height =
             u16::from(self.prompt.large_paste_notice().is_some() && !immediate_notification);
         let notification_height = u16::from(current_notification.is_some());
+        let context_height = u16::from(!self.runtime_view.context_layer().items().is_empty());
         let agent_footer_height = if self.agent_footer_visible() && !immediate_notification {
             self.agent_footer_height()
         } else {
@@ -120,6 +125,7 @@ impl App {
             command_palette: command_palette_height,
             command_arg_help: command_arg_help_height,
             notification: notification_height,
+            context: context_height,
             agent_footer: agent_footer_height,
             status: status_height,
         };
@@ -238,7 +244,7 @@ impl App {
             }
         }
 
-        // Bottom area: spinner + suggestions + paste_notice + completion_popup + palette + arg_help + input + notification + agent_footer + status
+        // Bottom area: spinner + suggestions + paste_notice + completion_popup + palette + arg_help + input + notification + context + agent_footer + status
         let has_suggestions = suggestion_height > 0;
         let bottom_chunks = bottom_pane.split(bottom_area);
         self.render_layout.prompt_area = Some(bottom_chunks.input);
@@ -283,6 +289,10 @@ impl App {
 
         if notification_height > 0 {
             self.render_notification(bottom_chunks.notification, frame.buffer_mut());
+        }
+
+        if context_height > 0 {
+            self.render_context_layer(bottom_chunks.context, frame.buffer_mut());
         }
 
         if agent_footer_height > 0 {
@@ -415,26 +425,88 @@ impl App {
         buf.set_line(area.x, area.y, &line, area.width);
     }
 
+    fn render_context_layer(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        if area.height == 0 {
+            return;
+        }
+        let items = self.runtime_view.context_layer().items();
+        if items.is_empty() {
+            return;
+        }
+        let lines = crate::ui::context_layer::render_context_layer(
+            &items,
+            area.width as usize,
+            &self.theme,
+        );
+        if let Some(line) = lines.first() {
+            buf.set_line(area.x, area.y, line, area.width);
+        }
+    }
+
     fn render_agent_footer(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         if area.height == 0 || !self.agent_footer_visible() {
             return;
         }
 
-        for (idx, text) in self
-            .agent_footer_lines()
-            .into_iter()
-            .take(area.height as usize)
-            .enumerate()
-        {
-            let line = if idx == 0 {
-                Line::from(vec![
-                    Span::styled(" agents ", self.theme.info),
-                    Span::styled(text, self.theme.dim),
-                ])
+        let entries = self.agent_footer_entries();
+        if entries.is_empty() {
+            return;
+        }
+
+        let agent_label = if entries.len() == 1 {
+            "agent"
+        } else {
+            "agents"
+        };
+        let summary = format!(
+            "Running {} {agent_label}... Ctrl+X Ctrl+A open tree",
+            entries.len()
+        );
+        let summary_line = Line::from(vec![
+            Span::styled(" agents ", self.theme.info),
+            Span::styled(summary, self.theme.dim),
+        ]);
+        buf.set_line(area.x, area.y, &summary_line, area.width);
+
+        let visible_count = entries.len().min(3);
+        let colors = self.design_theme_provider.colors();
+        for (index, entry) in entries.iter().take(visible_count).enumerate() {
+            let y_offset = 1 + index as u16;
+            if y_offset >= area.height {
+                break;
+            }
+            let branch = if index + 1 == visible_count {
+                "`-"
             } else {
-                Line::from(Span::styled(text, self.theme.dim))
+                "|-"
             };
-            buf.set_line(area.x, area.y + idx as u16, &line, area.width);
+            let line = Line::from(vec![
+                Span::styled(format!("   {branch} "), self.theme.dim),
+                Span::styled(
+                    truncate_display_width(&entry.label, 32),
+                    agent_identity_style(
+                        colors,
+                        AgentIdentity {
+                            agent_id: &entry.thread_id,
+                            role: entry.role.as_deref(),
+                            is_primary: entry.is_primary,
+                        },
+                    ),
+                ),
+                Span::styled(format!(" | {}", entry.status), self.theme.dim),
+            ]);
+            buf.set_line(area.x, area.y + y_offset, &line, area.width);
+        }
+
+        if entries.len() > visible_count {
+            let y_offset = 1 + visible_count as u16;
+            if y_offset < area.height {
+                let line = Line::from(Span::styled(
+                    format!("   ... {} more", entries.len() - visible_count),
+                    self.theme.dim,
+                ));
+                buf.set_line(area.x, area.y + y_offset, &line, area.width);
+            }
         }
     }
 
@@ -770,7 +842,7 @@ fn buffer_to_plain_text(buf: &Buffer) -> String {
 
 fn notification_style(tone: NotificationTone, theme: &Theme) -> Style {
     match tone {
-        NotificationTone::Info => theme.info,
+        NotificationTone::Info => theme.context_info_text,
         NotificationTone::Warning => theme.warning,
         NotificationTone::Error => theme.error,
         NotificationTone::Dim => theme.dim,
@@ -1008,7 +1080,7 @@ fn render_agent_tree_overlay(
         return;
     }
 
-    let mut lines = dialog.render_lines(state, current_thread_id, theme);
+    let mut lines = dialog.render_lines(state, current_thread_id, theme, colors);
     let total = state.thread_count();
     let menu =
         AgentsMenuState::default_with_counts(total, 1.min(total), 0, total.saturating_sub(1))
@@ -1042,6 +1114,40 @@ fn visible_window_start(total: usize, selected: usize, max_rows: usize) -> usize
     }
 
     selected.saturating_add(1).saturating_sub(max_rows)
+}
+
+fn truncate_display_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let mut width = 0usize;
+    let mut out = String::new();
+    let mut truncated = false;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > max_width {
+            truncated = true;
+            break;
+        }
+        width += ch_width;
+        out.push(ch);
+    }
+
+    if truncated && max_width > 3 {
+        while display_width(&out) + 3 > max_width {
+            out.pop();
+        }
+        out.push_str("...");
+    }
+
+    out
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars()
+        .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+        .sum()
 }
 
 /// Truncate a string to a max character width, adding "..." if truncated.
@@ -1112,10 +1218,7 @@ impl App {
         {
             let selected = idx == state.selected;
             let style = if selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::White)
-                    .add_modifier(Modifier::BOLD)
+                self.theme.selected
             } else {
                 Style::default().fg(Color::White)
             };
@@ -1149,5 +1252,29 @@ impl App {
         }
 
         Paragraph::new(lines).render(inner, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_info_label_is_blue_but_body_is_not() {
+        let theme = Theme::default();
+
+        assert_eq!(theme.info.fg, Some(Color::Rgb(130, 200, 255)));
+        assert_eq!(
+            notification_style(NotificationTone::Info, &theme).fg,
+            theme.context_info_text.fg
+        );
+        assert_ne!(
+            notification_style(NotificationTone::Info, &theme).fg,
+            theme.info.fg
+        );
+        assert_eq!(
+            notification_style(NotificationTone::Dim, &theme).fg,
+            theme.dim.fg
+        );
     }
 }

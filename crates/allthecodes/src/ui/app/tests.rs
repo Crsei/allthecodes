@@ -10,10 +10,13 @@ use allthecodes_keybindings::action::Action;
 use allthecodes_services::prompt_suggestion::{PromptSuggestion, SuggestionCategory};
 use allthecodes_types::agent_events::AgentEvent;
 use allthecodes_types::callbacks::AskUserRequestPayload;
-use allthecodes_types::message::{AssistantMessage, ContentBlock, MessageContent, UserMessage};
+use allthecodes_types::message::{
+    AssistantMessage, ContentBlock, MessageContent, ToolResultContent, UserMessage,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 use serial_test::serial;
 use std::path::Path;
@@ -493,6 +496,212 @@ fn backend_notification_event_is_routed_to_in_app_notification() {
     assert_eq!(notification.key, "backend-notification");
     assert_eq!(notification.text, "Background task finished");
     assert_eq!(notification.priority, NotificationPriority::Medium);
+}
+
+#[test]
+fn app_context_layer_includes_available_runtime_state() {
+    let mut app = App::new();
+    app.set_cwd("/repo/workspace".to_string());
+    app.set_model_name("codex-high".to_string());
+    app.update_goal_status(
+        "updated",
+        &serde_json::json!({
+            "objective": "ship the release",
+            "status": "active",
+            "tokens_used": 42,
+            "time_used_seconds": 9
+        }),
+    );
+    app.update_session_usage(120, 30, 10, 5, 2, None, None);
+    app.runtime_view
+        .upsert_agent(crate::ui::app::agent_navigation::AgentThreadEntry {
+            thread_id: "worker-1".to_string(),
+            agent_nickname: Some("Build worker".to_string()),
+            agent_role: Some("executor".to_string()),
+            is_primary: false,
+            is_closed: false,
+        });
+    app.runtime_view
+        .set_current_agent_thread(Some("worker-1".to_string()));
+    app.runtime_view
+        .agent_nav_mut()
+        .mark_tool_use("worker-1", "tool-1", "Bash", "cargo test");
+    app.show_permission_dialog("Bash", r#"{"command":"cargo test"}"#, "Run command?");
+    app.add_notification(
+        InAppNotification::new("backend-error", NotificationPriority::High, "Build failed")
+            .with_tone(NotificationTone::Error),
+    );
+
+    app.refresh_context_layer();
+    let items = app.runtime_view.context_layer().items();
+
+    assert_context_item(&items, "repo", "/repo/workspace");
+    assert_context_item(&items, "model", "codex-high");
+    assert_context_item(&items, "plan", "active ship the release");
+    assert_context_item(&items, "ctx", "165t");
+    assert_context_item(&items, "agent", "Build worker");
+    assert_context_item(&items, "tool", "Bash cargo test");
+    assert_context_item(&items, "permission", "pending approval");
+    assert_context_item(&items, "error", "Build failed");
+}
+
+#[test]
+fn ordinary_info_notification_does_not_create_sticky_context_item() {
+    let mut app = App::new();
+    app.add_notification(
+        InAppNotification::new(
+            "backend-notification",
+            NotificationPriority::Medium,
+            "Background task finished",
+        )
+        .with_tone(NotificationTone::Info),
+    );
+
+    app.refresh_context_layer();
+    let items = app.runtime_view.context_layer().items();
+
+    assert!(items
+        .iter()
+        .all(|item| !item.value.contains("Background task finished")));
+    assert_eq!(
+        app.current_notification()
+            .map(|notification| notification.tone),
+        Some(NotificationTone::Info)
+    );
+}
+
+#[test]
+fn context_layer_tool_summary_uses_latest_summary_without_duplicate_tool_name() {
+    let mut app = App::new();
+    app.runtime_view
+        .upsert_agent(crate::ui::app::agent_navigation::AgentThreadEntry {
+            thread_id: "worker-1".to_string(),
+            agent_nickname: Some("Build worker".to_string()),
+            agent_role: Some("executor".to_string()),
+            is_primary: false,
+            is_closed: false,
+        });
+    app.runtime_view
+        .set_current_agent_thread(Some("worker-1".to_string()));
+    app.runtime_view
+        .agent_nav_mut()
+        .mark_tool_use("worker-1", "z-old", "Bash", "Bash old command");
+    app.runtime_view
+        .agent_nav_mut()
+        .mark_tool_use("worker-1", "a-new", "Bash", "Bash new command");
+
+    app.refresh_context_layer();
+    let items = app.runtime_view.context_layer().items();
+    let tool = items
+        .iter()
+        .find(|item| item.label == "tool")
+        .expect("tool context item");
+
+    assert_eq!(tool.value, "Bash new command");
+}
+
+#[test]
+fn context_layer_drops_current_tool_after_tool_result() {
+    let mut app = App::new();
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::AgentEvent {
+            event: spawned_agent_event("worker-1", "Build worker", Some("executor")),
+        }),
+    });
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::AgentEvent {
+            event: AgentEvent::ToolUse {
+                agent_id: "worker-1".to_string(),
+                tool_use_id: "tool-1".to_string(),
+                tool_name: "Bash".to_string(),
+                input: serde_json::json!({ "command": "cargo test" }),
+            },
+        }),
+    });
+
+    app.refresh_context_layer();
+    let items = app.runtime_view.context_layer().items();
+    assert_context_item(&items, "tool", "Bash");
+
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::AgentEvent {
+            event: AgentEvent::ToolResult {
+                agent_id: "worker-1".to_string(),
+                tool_use_id: "tool-1".to_string(),
+                output: "finished".to_string(),
+                is_error: false,
+            },
+        }),
+    });
+
+    app.refresh_context_layer();
+    let items = app.runtime_view.context_layer().items();
+    assert!(
+        items.iter().all(|item| item.label != "tool"),
+        "completed tool should not remain current in {items:?}"
+    );
+}
+
+#[test]
+fn tool_result_user_message_does_not_clear_latest_sticky_error() {
+    let mut app = App::new();
+    app.add_notification(
+        InAppNotification::new("backend-error", NotificationPriority::High, "Build failed")
+            .with_tone(NotificationTone::Error),
+    );
+    app.remove_notification("backend-error");
+
+    app.add_message(Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 0,
+        role: "user".to_string(),
+        content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: "tool-1".to_string(),
+            content: ToolResultContent::Text("command output".to_string()),
+            is_error: false,
+        }]),
+        is_meta: false,
+        tool_use_result: Some("command output".to_string()),
+        source_tool_assistant_uuid: None,
+    }));
+
+    app.refresh_context_layer();
+    let items = app.runtime_view.context_layer().items();
+
+    assert_context_item(&items, "error", "Build failed");
+}
+
+#[test]
+fn prompt_render_populates_context_row_between_notification_and_agent_footer() {
+    let mut app = App::new();
+    add_user_message(&mut app, "hello");
+    app.runtime_view
+        .upsert_agent(crate::ui::app::agent_navigation::AgentThreadEntry {
+            thread_id: "worker-1".to_string(),
+            agent_nickname: Some("Build worker".to_string()),
+            agent_role: Some("executor".to_string()),
+            is_primary: false,
+            is_closed: false,
+        });
+    app.runtime_view
+        .set_current_agent_thread(Some("worker-1".to_string()));
+    app.add_notification(
+        InAppNotification::new("system-ready", NotificationPriority::Medium, "System ready")
+            .with_tone(NotificationTone::Info),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let content = buffer_to_lines(terminal.backend().buffer(), 100, 24);
+    let notification_row = row_containing(&content, "System ready");
+    let context_row = row_containing(&content, "agent: Build worker");
+    let footer_row = row_containing(&content, "Running 1 agent");
+    assert!(
+        notification_row < context_row && context_row < footer_row,
+        "context row should sit between notification and agent footer\n{}",
+        content.join("\n")
+    );
 }
 
 #[test]
@@ -982,6 +1191,37 @@ fn completion_popup_renders_above_prompt_input() {
         completions_row < prompt_row,
         "completion popup should render above the prompt input"
     );
+}
+
+#[test]
+fn completion_popup_selected_row_uses_theme_selected() {
+    let mut app = App::new();
+    app.completion_state.active = true;
+    app.completion_state.items = vec![
+        CompletionItem::new(CompletionKind::Command, "/help", "/help", 0..0),
+        CompletionItem::new(CompletionKind::Command, "/status", "/status", 0..0),
+    ];
+    app.completion_state.selected = 1;
+    let selected_style = app.theme.selected;
+    assert_eq!(selected_style.fg, Some(Color::Rgb(0, 0, 0)));
+    assert_eq!(selected_style.bg, Some(Color::Rgb(130, 200, 255)));
+    assert!(selected_style.add_modifier.contains(Modifier::BOLD));
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let buffer = terminal.backend().buffer();
+    let selected_cell = (0..24)
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .map(|(x, y)| &buffer[(x, y)])
+        .find(|cell| cell.style().bg == selected_style.bg)
+        .expect("selected completion cell with theme background");
+    let cell_style = selected_cell.style();
+    assert_eq!(cell_style.fg, selected_style.fg);
+    assert_eq!(cell_style.bg, selected_style.bg);
+    assert!(cell_style
+        .add_modifier
+        .contains(selected_style.add_modifier));
 }
 
 #[test]
@@ -1540,6 +1780,26 @@ fn buffer_to_lines(buf: &ratatui::buffer::Buffer, width: u16, height: u16) -> Ve
         lines.push(line);
     }
     lines
+}
+
+fn row_containing(lines: &[String], needle: &str) -> usize {
+    lines
+        .iter()
+        .position(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} row\n{}", lines.join("\n")))
+}
+
+fn assert_context_item(
+    items: &[crate::ui::context_layer::ContextLayerItem],
+    label: &str,
+    expected_value_fragment: &str,
+) {
+    assert!(
+        items
+            .iter()
+            .any(|item| { item.label == label && item.value.contains(expected_value_fragment) }),
+        "missing {label}={expected_value_fragment:?} in {items:?}"
+    );
 }
 
 fn add_user_message(app: &mut App, text: &str) {

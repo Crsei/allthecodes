@@ -73,6 +73,7 @@ pub struct AgentThreadRuntimeInfo {
     pub status_summary: Option<String>,
     pub duration_ms: Option<u64>,
     tool_uses: BTreeMap<String, AgentToolActivitySummary>,
+    last_tool_use_id: Option<String>,
 }
 
 impl Default for AgentThreadRuntimeInfo {
@@ -82,6 +83,7 @@ impl Default for AgentThreadRuntimeInfo {
             status_summary: None,
             duration_ms: None,
             tool_uses: BTreeMap::new(),
+            last_tool_use_id: None,
         }
     }
 }
@@ -91,8 +93,19 @@ impl AgentThreadRuntimeInfo {
         self.tool_uses.len()
     }
 
-    pub fn recent_tool_uses(&self) -> impl DoubleEndedIterator<Item = &AgentToolActivitySummary> {
-        self.tool_uses.values()
+    pub fn latest_tool_use(&self) -> Option<&AgentToolActivitySummary> {
+        self.last_tool_use_id
+            .as_deref()
+            .and_then(|tool_use_id| self.tool_uses.get(tool_use_id))
+    }
+
+    pub fn active_tool_use(&self) -> Option<&AgentToolActivitySummary> {
+        matches!(
+            self.status,
+            AgentThreadStatus::ToolRunning | AgentThreadStatus::WaitingPermission
+        )
+        .then(|| self.latest_tool_use())
+        .flatten()
     }
 }
 
@@ -160,14 +173,16 @@ impl AgentNavigationState {
     ) {
         let runtime = self.runtime.entry(thread_id.to_string()).or_default();
         runtime.status = AgentThreadStatus::ToolRunning;
+        let summary = normalize_tool_summary(tool_name, summary.into());
         runtime.tool_uses.insert(
             tool_use_id.to_string(),
             AgentToolActivitySummary {
                 tool_use_id: tool_use_id.to_string(),
                 tool_name: tool_name.to_string(),
-                summary: summary.into(),
+                summary,
             },
         );
+        runtime.last_tool_use_id = Some(tool_use_id.to_string());
     }
 
     pub fn runtime_info(&self, thread_id: &str) -> Option<&AgentThreadRuntimeInfo> {
@@ -284,6 +299,26 @@ pub(super) fn short_thread_id(thread_id: &str) -> &str {
     thread_id.get(..8).unwrap_or(thread_id)
 }
 
+fn normalize_tool_summary(tool_name: &str, summary: String) -> String {
+    let summary = summary.trim();
+    let tool_name = tool_name.trim();
+    if summary.is_empty() {
+        return tool_name.to_string();
+    }
+    if tool_name.is_empty() || summary_has_tool_name(tool_name, summary) {
+        return summary.to_string();
+    }
+    format!("{tool_name} {summary}")
+}
+
+fn summary_has_tool_name(tool_name: &str, summary: &str) -> bool {
+    summary == tool_name
+        || summary
+            .strip_prefix(tool_name)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(char::is_whitespace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +367,19 @@ mod tests {
         assert!(rendered.contains("Primary"));
         assert!(rendered.contains("> builder"));
         assert!(rendered.contains("closed"));
+    }
+
+    #[test]
+    fn latest_tool_use_tracks_event_order_not_tool_id_sort_order() {
+        let mut state = AgentNavigationState::default();
+        state.upsert(entry("worker-thread"));
+
+        state.mark_tool_use("worker-thread", "z-old", "Bash", "Bash old command");
+        state.mark_tool_use("worker-thread", "a-new", "Bash", "Bash new command");
+
+        let runtime = state.runtime_info("worker-thread").expect("runtime");
+        let latest = runtime.latest_tool_use().expect("latest tool");
+        assert_eq!(latest.tool_use_id, "a-new");
+        assert_eq!(latest.summary, "Bash new command");
     }
 }

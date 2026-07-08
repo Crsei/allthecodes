@@ -42,6 +42,14 @@ pub struct Theme {
     pub warning: Style,
     /// Style for informational text.
     pub info: Style,
+    /// Sticky context info label/icon/border style.
+    pub context_info_label: Style,
+    /// Sticky context info body style; intentionally not blue.
+    pub context_info_text: Style,
+    /// Sticky context warning style.
+    pub context_warning: Style,
+    /// Sticky context error style.
+    pub context_error: Style,
     /// Style for the input prompt symbol (e.g. "> ").
     pub prompt: Style,
     /// Style for borders and separators.
@@ -111,7 +119,7 @@ impl Default for Theme {
                 .fg(Color::Rgb(180, 180, 180))
                 .add_modifier(Modifier::ITALIC),
             tool_name: Style::default()
-                .fg(Color::Rgb(255, 200, 100))
+                .fg(Color::Rgb(130, 200, 255))
                 .add_modifier(Modifier::BOLD),
             tool_result: Style::default().fg(Color::Rgb(160, 160, 160)),
             error: Style::default()
@@ -119,6 +127,12 @@ impl Default for Theme {
                 .add_modifier(Modifier::BOLD),
             warning: Style::default().fg(Color::Rgb(255, 200, 80)),
             info: Style::default().fg(Color::Rgb(130, 200, 255)),
+            context_info_label: Style::default().fg(Color::Rgb(130, 200, 255)),
+            context_info_text: Style::default().fg(Color::Rgb(220, 220, 220)),
+            context_warning: Style::default().fg(Color::Rgb(255, 200, 80)),
+            context_error: Style::default()
+                .fg(Color::Rgb(255, 100, 100))
+                .add_modifier(Modifier::BOLD),
             prompt: Style::default()
                 .fg(Color::Rgb(100, 200, 255))
                 .add_modifier(Modifier::BOLD),
@@ -158,7 +172,7 @@ impl Default for Theme {
                 .add_modifier(Modifier::BOLD),
             selected: Style::default()
                 .fg(Color::Rgb(0, 0, 0))
-                .bg(Color::Rgb(100, 200, 255))
+                .bg(Color::Rgb(130, 200, 255))
                 .add_modifier(Modifier::BOLD),
             unselected: Style::default().fg(Color::Rgb(200, 200, 200)),
             progress_fill: Style::default().fg(Color::Rgb(100, 220, 100)),

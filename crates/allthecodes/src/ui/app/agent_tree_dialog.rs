@@ -1,7 +1,8 @@
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
-use crate::ui::theme::Theme;
+use crate::ui::theme::identity::{agent_identity_style, AgentIdentity};
+use crate::ui::theme::{Theme, ThemeColors};
 
 use super::agent_navigation::{short_thread_id, AgentNavigationDirection, AgentNavigationState};
 
@@ -51,6 +52,7 @@ impl AgentTreeDialog {
         state: &AgentNavigationState,
         current_thread_id: &str,
         theme: &Theme,
+        colors: &ThemeColors,
     ) -> Vec<Line<'static>> {
         self.sync_selection(state, current_thread_id);
 
@@ -79,7 +81,14 @@ impl AgentTreeDialog {
             let mut label_style = if entry.is_closed {
                 theme.warning
             } else {
-                theme.bold
+                agent_identity_style(
+                    colors,
+                    AgentIdentity {
+                        agent_id: &entry.thread_id,
+                        role: entry.agent_role.as_deref(),
+                        is_primary: entry.is_primary,
+                    },
+                )
             };
             if is_current {
                 label_style = label_style.add_modifier(Modifier::BOLD);
@@ -129,5 +138,35 @@ impl AgentTreeDialog {
             .ordered_threads()
             .first()
             .map(|entry| entry.thread_id.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::app::agent_navigation::{AgentNavigationState, AgentThreadEntry};
+    use crate::ui::theme::{get_theme, Theme, ThemeName};
+
+    #[test]
+    fn agent_tree_uses_role_identity_colours() {
+        let mut state = AgentNavigationState::default();
+        state.upsert(AgentThreadEntry {
+            thread_id: "planner-1".to_string(),
+            agent_nickname: Some("Plan agent".to_string()),
+            agent_role: Some("planner".to_string()),
+            is_primary: false,
+            is_closed: false,
+        });
+
+        let mut dialog = AgentTreeDialog::from_state(&state, "planner-1");
+        let colors = get_theme(&ThemeName::Dark);
+        let lines = dialog.render_lines(&state, "planner-1", &Theme::default(), colors);
+        let label_span = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref().contains("Plan agent"))
+            .expect("planner label span");
+
+        assert_eq!(label_span.style.fg, Some(colors.agentPlanner));
     }
 }

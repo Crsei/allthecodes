@@ -4,6 +4,7 @@ use crossterm::event::KeyCode;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 
 use crate::ui::theme::Theme;
@@ -99,6 +100,32 @@ fn command_aliases_render_without_gap_before_details() {
     let rendered = buffer_text(&buf, area);
     assert!(rendered.contains("/assistant(kairos)"));
     assert!(rendered.contains("Command details"));
+}
+
+#[test]
+fn command_palette_selected_row_uses_theme_selected() {
+    let mut palette = CommandPalette::new();
+    palette.sync_from_input("/", Path::new("/repo"));
+    let theme = Theme::default();
+    assert_eq!(theme.selected.fg, Some(Color::Rgb(0, 0, 0)));
+    assert_eq!(theme.selected.bg, Some(Color::Rgb(130, 200, 255)));
+    assert!(theme.selected.add_modifier.contains(Modifier::BOLD));
+
+    let area = Rect::new(0, 0, 100, palette.preferred_height());
+    let mut buf = Buffer::empty(area);
+    palette.render(area, &mut buf, &theme);
+
+    let selected_cell = (area.y..area.y + area.height)
+        .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
+        .map(|(x, y)| &buf[(x, y)])
+        .find(|cell| cell.style().bg == theme.selected.bg)
+        .expect("selected command cell with theme background");
+    let selected_style = selected_cell.style();
+    assert_eq!(selected_style.fg, theme.selected.fg);
+    assert_eq!(selected_style.bg, theme.selected.bg);
+    assert!(selected_style
+        .add_modifier
+        .contains(theme.selected.add_modifier));
 }
 
 #[test]

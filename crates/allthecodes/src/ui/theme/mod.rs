@@ -12,6 +12,7 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 
 pub mod color;
+pub mod identity;
 
 // ---------------------------------------------------------------------------
 // Theme name
@@ -228,6 +229,14 @@ pub struct ThemeColors {
     pub agentBlue: Color,
     pub agentPurple: Color,
     pub agentPink: Color,
+
+    // -- Agent identity roles --
+    pub agentPlanner: Color,
+    pub agentExecutor: Color,
+    pub agentReviewer: Color,
+    pub agentTester: Color,
+    pub agentResearcher: Color,
+    pub agentBackground: Color,
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +280,7 @@ fn dark_theme() -> ThemeColors {
         blockquoteBorder: Color::Rgb(80, 80, 85),
         hr: Color::Rgb(80, 80, 85),
 
-        selection: Color::Rgb(100, 200, 255),
+        selection: Color::Rgb(130, 200, 255),
         selectionText: Color::Rgb(0, 0, 0),
         cursor: Color::Rgb(255, 255, 255),
         cursorText: Color::Rgb(0, 0, 0),
@@ -314,6 +323,13 @@ fn dark_theme() -> ThemeColors {
         agentBlue: Color::Rgb(80, 160, 255),
         agentPurple: Color::Rgb(190, 140, 255),
         agentPink: Color::Rgb(255, 130, 200),
+
+        agentPlanner: Color::Rgb(139, 167, 255),
+        agentExecutor: Color::Rgb(79, 199, 184),
+        agentReviewer: Color::Rgb(255, 177, 92),
+        agentTester: Color::Rgb(141, 230, 255),
+        agentResearcher: Color::Rgb(108, 191, 255),
+        agentBackground: Color::Rgb(154, 136, 184),
     }
 }
 
@@ -397,6 +413,13 @@ fn light_theme() -> ThemeColors {
         agentBlue: Color::Rgb(30, 100, 200),
         agentPurple: Color::Rgb(130, 80, 220),
         agentPink: Color::Rgb(200, 70, 140),
+
+        agentPlanner: Color::Rgb(70, 95, 190),
+        agentExecutor: Color::Rgb(20, 130, 125),
+        agentReviewer: Color::Rgb(170, 95, 25),
+        agentTester: Color::Rgb(20, 130, 170),
+        agentResearcher: Color::Rgb(35, 105, 190),
+        agentBackground: Color::Rgb(120, 105, 145),
     }
 }
 
@@ -416,6 +439,8 @@ fn light_daltonized_theme() -> ThemeColors {
     c.syntaxKeyword = Color::Rgb(200, 80, 40);
     c.syntaxString = Color::Rgb(50, 130, 220);
     c.syntaxBuiltin = Color::Rgb(200, 140, 20);
+    c.agentExecutor = Color::Rgb(50, 150, 180);
+    c.agentReviewer = Color::Rgb(210, 120, 40);
     c
 }
 
@@ -433,6 +458,8 @@ fn dark_daltonized_theme() -> ThemeColors {
     c.syntaxKeyword = Color::Rgb(240, 120, 60);
     c.syntaxString = Color::Rgb(80, 160, 240);
     c.syntaxBuiltin = Color::Rgb(240, 180, 40);
+    c.agentExecutor = Color::Rgb(50, 150, 180);
+    c.agentReviewer = Color::Rgb(210, 120, 40);
     c
 }
 
@@ -606,7 +633,7 @@ impl Theme {
                         .fg(theme_color("dim", colors.dim))
                         .add_modifier(Modifier::ITALIC),
                     tool_name: Style::default()
-                        .fg(theme_color("code", colors.code))
+                        .fg(theme_color("info", colors.info))
                         .add_modifier(Modifier::BOLD),
                     tool_result: Style::default().fg(colors.diffContext),
                     error: Style::default()
@@ -614,6 +641,12 @@ impl Theme {
                         .add_modifier(Modifier::BOLD),
                     warning: Style::default().fg(colors.warning),
                     info: Style::default().fg(colors.info),
+                    context_info_label: Style::default().fg(colors.info),
+                    context_info_text: Style::default().fg(colors.surfaceText),
+                    context_warning: Style::default().fg(colors.warning),
+                    context_error: Style::default()
+                        .fg(colors.error)
+                        .add_modifier(Modifier::BOLD),
                     prompt: Style::default()
                         .fg(colors.suggestion)
                         .add_modifier(Modifier::BOLD),
@@ -851,5 +884,41 @@ mod tests {
         let provider = ThemeProvider::with_name(ThemeName::Light);
         let legacy = provider.legacy_theme();
         assert_eq!(legacy.info.fg, Some(provider.colors().info));
+    }
+
+    #[test]
+    fn dark_theme_uses_blue_tool_name_and_info() {
+        let provider = ThemeProvider::with_name(ThemeName::Dark);
+        let colors = provider.colors();
+        let legacy = provider.legacy_theme();
+
+        assert_eq!(colors.info, ratatui::style::Color::Rgb(130, 200, 255));
+        assert_eq!(
+            legacy.info.fg,
+            Some(ratatui::style::Color::Rgb(130, 200, 255))
+        );
+        assert_eq!(
+            legacy.tool_name.fg,
+            Some(ratatui::style::Color::Rgb(130, 200, 255))
+        );
+        assert!(legacy
+            .tool_name
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD));
+    }
+
+    #[test]
+    fn dark_theme_context_info_body_is_not_blue() {
+        let provider = ThemeProvider::with_name(ThemeName::Dark);
+        let legacy = provider.legacy_theme();
+
+        assert_eq!(
+            legacy.context_info_label.fg,
+            Some(ratatui::style::Color::Rgb(130, 200, 255))
+        );
+        assert_ne!(
+            legacy.context_info_text.fg,
+            Some(ratatui::style::Color::Rgb(130, 200, 255))
+        );
     }
 }

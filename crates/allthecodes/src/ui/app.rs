@@ -23,7 +23,7 @@ use allthecodes_keybindings::KeybindingRegistry;
 use allthecodes_services::prompt_suggestion::PromptSuggestion;
 use allthecodes_types::agent_events::{AgentEvent, TeamEvent};
 use allthecodes_types::callbacks::AskUserRequestPayload;
-use allthecodes_types::message::{Message, ProgressMessage};
+use allthecodes_types::message::{ContentBlock, Message, MessageContent, ProgressMessage};
 use allthecodes_types::tool_operation::{OperationKind, ToolOperation};
 use allthecodes_voice::VoiceController;
 use ratatui::layout::Rect;
@@ -108,6 +108,15 @@ struct SessionScrollbarState {
 enum MouseFocus {
     Messages,
     Prompt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AgentFooterEntry {
+    pub thread_id: String,
+    pub label: String,
+    pub role: Option<String>,
+    pub is_primary: bool,
+    pub status: String,
 }
 
 fn notification_from_app_event(
@@ -429,9 +438,13 @@ impl App {
     // Public API
 
     pub fn add_message(&mut self, msg: Message) {
+        let clears_latest_error = is_new_user_turn_message(&msg);
         // Dismiss welcome screen on first user or assistant message.
         if self.show_welcome && matches!(msg, Message::User(_) | Message::Assistant(_)) {
             self.show_welcome = false;
+        }
+        if clears_latest_error {
+            self.clear_latest_error();
         }
         self.conversation.add_message(msg);
         self.sync_primary_agent_thread();
@@ -467,6 +480,7 @@ impl App {
         self.conversation.clear();
         self.runtime_view.agent_nav_mut().clear();
         self.runtime_view.set_current_agent_thread(None);
+        self.runtime_view.context_layer_mut().clear();
         self.sync_primary_agent_thread();
         self.dirty = true;
     }
@@ -785,6 +799,9 @@ impl App {
     }
 
     pub fn add_notification(&mut self, notification: InAppNotification) {
+        if notification.tone.is_actionable_error() {
+            self.record_latest_error(&notification.text);
+        }
         if self.notifications.add_notification(notification) {
             self.dirty = true;
         }
@@ -887,64 +904,36 @@ impl App {
         (1 + visible_agents + overflow_row) as u16
     }
 
-    pub(super) fn agent_footer_lines(&self) -> Vec<String> {
-        let active_agent_ids = self.active_agent_thread_ids();
-        if active_agent_ids.is_empty() {
-            return Vec::new();
-        }
-
-        let mut lines = Vec::with_capacity(1 + active_agent_ids.len().min(3));
-        let agent_label = if active_agent_ids.len() == 1 {
-            "agent"
-        } else {
-            "agents"
-        };
-        lines.push(format!(
-            "Running {} {agent_label}... Ctrl+X Ctrl+A open tree",
-            active_agent_ids.len()
-        ));
-
-        let visible_count = active_agent_ids.len().min(3);
-        for (index, agent_id) in active_agent_ids.iter().take(visible_count).enumerate() {
-            let Some(entry) = self.runtime_view.agent_nav().entry(agent_id) else {
-                continue;
-            };
-            let branch = if index + 1 == visible_count {
-                "`-"
-            } else {
-                "|-"
-            };
-            let runtime = self.runtime_view.agent_nav().runtime_info(agent_id);
-            let status = runtime
-                .map(|info| info.status.label())
-                .unwrap_or(if entry.is_closed { "closed" } else { "active" });
-            let tool_count = runtime.map_or(0, |info| info.tool_use_count());
-            let mut parts = vec![
-                compact_inline(&entry.label(), 32),
-                status.to_string(),
-                format!("{tool_count} tool uses"),
-            ];
-            if let Some(duration) = runtime.and_then(|info| info.duration_ms) {
-                parts.push(format_duration_ms(duration));
-            }
-            if let Some(summary) = runtime.and_then(|info| info.status_summary.as_deref()) {
-                if !summary.is_empty() {
-                    parts.push(compact_inline(summary, 48));
+    pub(super) fn agent_footer_entries(&self) -> Vec<AgentFooterEntry> {
+        self.runtime_view
+            .agent_nav()
+            .ordered_threads()
+            .into_iter()
+            .filter(|entry| !entry.is_primary && !entry.is_closed)
+            .map(|entry| {
+                let runtime = self.runtime_view.agent_nav().runtime_info(&entry.thread_id);
+                let status = runtime.map(|info| info.status.label()).unwrap_or("active");
+                let tool_count = runtime.map_or(0, |info| info.tool_use_count());
+                let mut status_parts = vec![status.to_string(), format!("{tool_count} tool uses")];
+                if let Some(duration) = runtime.and_then(|info| info.duration_ms) {
+                    status_parts.push(format_duration_ms(duration));
                 }
-            } else if let Some(tool) = runtime.and_then(|info| info.recent_tool_uses().next_back())
-            {
-                parts.push(compact_inline(&tool.summary, 48));
-            }
-            lines.push(format!("   {branch} {}", parts.join(" | ")));
-        }
-
-        if active_agent_ids.len() > visible_count {
-            lines.push(format!(
-                "   ... {} more",
-                active_agent_ids.len() - visible_count
-            ));
-        }
-        lines
+                if let Some(summary) = runtime.and_then(|info| info.status_summary.as_deref()) {
+                    if !summary.is_empty() {
+                        status_parts.push(compact_inline(summary, 48));
+                    }
+                } else if let Some(tool) = runtime.and_then(|info| info.active_tool_use()) {
+                    status_parts.push(compact_inline(&tool.summary, 48));
+                }
+                AgentFooterEntry {
+                    thread_id: entry.thread_id.clone(),
+                    label: entry.label(),
+                    role: entry.agent_role.clone(),
+                    is_primary: entry.is_primary,
+                    status: status_parts.join(" | "),
+                }
+            })
+            .collect()
     }
 
     pub(super) fn active_agent_thread_ids(&self) -> Vec<String> {
@@ -974,6 +963,161 @@ impl App {
                     .map(|entry| entry.thread_id.as_str())
             })
             .unwrap_or("")
+    }
+
+    pub(super) fn refresh_context_layer(&mut self) {
+        use crate::ui::context_layer::{ContextLayerItem, ContextLayerKey, ContextTone};
+
+        let repo = (!self.session_ui.cwd.is_empty()).then(|| self.session_ui.cwd.clone());
+        let model =
+            (!self.session_ui.model_name.is_empty()).then(|| self.session_ui.model_name.clone());
+        let plan = self.active_goal.as_ref().map(|goal| {
+            format!(
+                "{} {}",
+                render_context_goal_status(&goal.status),
+                truncate_status_text_for_context(&goal.objective, 28)
+            )
+        });
+        let context_usage = self.context_usage_summary();
+        let current_thread_id = self
+            .runtime_view
+            .current_agent_thread_id()
+            .cloned()
+            .or_else(|| {
+                let thread_id = self.current_agent_thread_id();
+                (!thread_id.is_empty()).then(|| thread_id.to_string())
+            });
+        let current_agent = current_thread_id
+            .as_deref()
+            .and_then(|thread_id| self.runtime_view.agent_nav().entry(thread_id))
+            .map(|entry| entry.label());
+        let current_tool = current_thread_id
+            .as_deref()
+            .and_then(|thread_id| self.runtime_view.agent_nav().runtime_info(thread_id))
+            .and_then(|runtime| runtime.active_tool_use())
+            .map(|tool| compact_inline(&tool.summary, 96))
+            .filter(|summary| !summary.is_empty());
+        let pending_permission = self.overlays.permission_dialog.is_some();
+        let notification_error = self
+            .current_notification()
+            .filter(|notification| notification.tone.is_actionable_error())
+            .map(|notification| compact_inline(&notification.text, 96))
+            .filter(|text| !text.is_empty());
+
+        let context = self.runtime_view.context_layer_mut();
+        if let Some(repo) = repo {
+            context.upsert(ContextLayerItem::keyed(
+                ContextLayerKey::Repo,
+                ContextTone::Info,
+                "repo",
+                repo,
+            ));
+        }
+        if let Some(model) = model {
+            context.upsert(ContextLayerItem::keyed(
+                ContextLayerKey::Model,
+                ContextTone::Info,
+                "model",
+                model,
+            ));
+        }
+        if let Some(plan) = plan {
+            context.upsert(ContextLayerItem::keyed(
+                ContextLayerKey::Plan,
+                ContextTone::Info,
+                "plan",
+                plan,
+            ));
+        } else {
+            context.remove(&ContextLayerKey::Plan);
+        }
+        if let Some(context_usage) = context_usage {
+            context.upsert(ContextLayerItem::keyed(
+                ContextLayerKey::ContextUsage,
+                ContextTone::Info,
+                "ctx",
+                context_usage,
+            ));
+        }
+        if let Some(current_agent) = current_agent {
+            context.upsert(ContextLayerItem::keyed(
+                ContextLayerKey::CurrentAgent,
+                ContextTone::Info,
+                "agent",
+                current_agent,
+            ));
+        } else {
+            context.remove(&ContextLayerKey::CurrentAgent);
+        }
+        if let Some(current_tool) = current_tool {
+            context.upsert(ContextLayerItem::keyed(
+                ContextLayerKey::CurrentTool,
+                ContextTone::Info,
+                "tool",
+                current_tool,
+            ));
+        } else {
+            context.remove(&ContextLayerKey::CurrentTool);
+        }
+        if pending_permission {
+            context.upsert(ContextLayerItem::keyed(
+                ContextLayerKey::PendingPermission,
+                ContextTone::Warning,
+                "permission",
+                "pending approval",
+            ));
+        } else {
+            context.remove(&ContextLayerKey::PendingPermission);
+        }
+        if let Some(notification_error) = notification_error {
+            context.upsert(ContextLayerItem::keyed(
+                ContextLayerKey::LastError,
+                ContextTone::Error,
+                "error",
+                notification_error,
+            ));
+        }
+    }
+
+    pub(in crate::ui) fn upsert_context_layer_item(
+        &mut self,
+        item: crate::ui::context_layer::ContextLayerItem,
+    ) {
+        self.runtime_view.context_layer_mut().upsert(item);
+        self.dirty = true;
+    }
+
+    fn record_latest_error(&mut self, error_text: &str) {
+        use crate::ui::context_layer::{ContextLayerItem, ContextLayerKey, ContextTone};
+
+        let text = compact_inline(error_text, 96);
+        if text.is_empty() {
+            return;
+        }
+        self.runtime_view
+            .context_layer_mut()
+            .upsert(ContextLayerItem::keyed(
+                ContextLayerKey::LastError,
+                ContextTone::Error,
+                "error",
+                text,
+            ));
+    }
+
+    fn clear_latest_error(&mut self) {
+        self.runtime_view
+            .context_layer_mut()
+            .remove(&crate::ui::context_layer::ContextLayerKey::LastError);
+    }
+
+    fn context_usage_summary(&self) -> Option<String> {
+        let total_tokens = self
+            .session_usage
+            .input_tokens
+            .saturating_add(self.session_usage.output_tokens)
+            .saturating_add(self.session_usage.cache_read_tokens)
+            .saturating_add(self.session_usage.cache_creation_tokens);
+        (total_tokens > 0).then(|| format!("{total_tokens}t"))
     }
 
     pub(super) fn toggle_agent_tree_dialog(&mut self) {
@@ -1050,6 +1194,9 @@ impl App {
                 duration_ms,
                 ..
             } => {
+                if *had_error {
+                    self.record_latest_error(result_preview);
+                }
                 self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     if *had_error {
@@ -1070,6 +1217,7 @@ impl App {
                 error,
                 duration_ms,
             } => {
+                self.record_latest_error(error);
                 self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Failed,
@@ -1217,6 +1365,9 @@ impl App {
                 } else {
                     compact_inline(output, 80)
                 };
+                if *is_error {
+                    self.record_latest_error(&summary);
+                }
                 self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Running,
@@ -1394,6 +1545,9 @@ impl App {
             },
             Some(compact_inline(result_preview, 80)),
         );
+        if had_error {
+            self.record_latest_error(result_preview);
+        }
         self.runtime_view
             .agent_nav_mut()
             .set_duration_ms(agent_id, Some(duration_ms));
@@ -1607,6 +1761,53 @@ fn backend_message_updates_tasks(message: &BackendMessage) -> bool {
             | BackendMessage::AgentEvent { .. }
             | BackendMessage::TeamEvent { .. }
     )
+}
+
+fn is_new_user_turn_message(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::User(user)
+            if user.tool_use_result.is_none()
+                && !message_content_contains_tool_result(&user.content)
+    )
+}
+
+fn message_content_contains_tool_result(content: &MessageContent) -> bool {
+    match content {
+        MessageContent::Blocks(blocks) => blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolResult { .. })),
+        _ => false,
+    }
+}
+
+fn render_context_goal_status(status: &str) -> &str {
+    match status {
+        "active" => "active",
+        "paused" => "paused",
+        "blocked" => "blocked",
+        "usage_limited" => "usage-limited",
+        "budget_limited" => "budget-limited",
+        "complete" | "completed" => "complete",
+        other => other,
+    }
+}
+
+fn truncate_status_text_for_context(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let count = trimmed.chars().count();
+    if count <= max_chars {
+        return trimmed.to_string();
+    }
+    if max_chars <= 3 {
+        return trimmed.chars().take(max_chars).collect();
+    }
+    let mut out = trimmed
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    out.push_str("...");
+    out
 }
 
 fn compact_inline(value: &str, max_chars: usize) -> String {

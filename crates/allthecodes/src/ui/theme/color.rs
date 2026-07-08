@@ -79,6 +79,11 @@ fn resolve_theme_key(key: &str, colors: &ThemeColors) -> Option<Color> {
         "warning" => Some(colors.warning),
         "suggestion" => Some(colors.suggestion),
         "info" => Some(colors.info),
+        "contextinfoborder" => Some(colors.info),
+        "contextinfolabel" => Some(colors.info),
+        "contextinfotext" => Some(colors.surfaceText),
+        "contextwarning" => Some(colors.warning),
+        "contexterror" => Some(colors.error),
 
         // Surface
         "surface" => Some(colors.surface),
@@ -152,6 +157,12 @@ fn resolve_theme_key(key: &str, colors: &ThemeColors) -> Option<Color> {
         "agentblue" => Some(colors.agentBlue),
         "agentpurple" => Some(colors.agentPurple),
         "agentpink" => Some(colors.agentPink),
+        "agentplanner" => Some(colors.agentPlanner),
+        "agentexecutor" => Some(colors.agentExecutor),
+        "agentreviewer" => Some(colors.agentReviewer),
+        "agenttester" => Some(colors.agentTester),
+        "agentresearcher" => Some(colors.agentResearcher),
+        "agentbackground" => Some(colors.agentBackground),
 
         _ => None,
     }
@@ -273,6 +284,21 @@ mod tests {
     fn resolve_key_with_hyphen() {
         let c = dark_colors();
         assert_eq!(resolve_color("border-focus", c), Some(c.borderFocus));
+    }
+
+    #[test]
+    fn resolve_context_info_keys() {
+        let c = dark_colors();
+        assert_eq!(resolve_color("context.info.label", c), None);
+        assert_eq!(resolve_color("context-info-label", c), Some(c.info));
+        assert_eq!(resolve_color("context_info_text", c), Some(c.surfaceText));
+    }
+
+    #[test]
+    fn resolve_agent_identity_role_keys() {
+        let c = dark_colors();
+        assert_eq!(resolve_color("agent-planner", c), Some(c.agentPlanner));
+        assert_eq!(resolve_color("agent_executor", c), Some(c.agentExecutor));
     }
 
     #[test]

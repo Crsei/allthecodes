@@ -29,6 +29,12 @@ pub enum NotificationTone {
     Dim,
 }
 
+impl NotificationTone {
+    pub fn is_actionable_error(self) -> bool {
+        matches!(self, Self::Error)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InAppNotification {
     pub key: String,
@@ -379,5 +385,13 @@ mod tests {
             notification.rendered.expect("rendered")[0].content.as_ref(),
             "custom"
         );
+    }
+
+    #[test]
+    fn only_error_notifications_are_actionable_sticky_errors() {
+        assert!(NotificationTone::Error.is_actionable_error());
+        assert!(!NotificationTone::Warning.is_actionable_error());
+        assert!(!NotificationTone::Info.is_actionable_error());
+        assert!(!NotificationTone::Dim.is_actionable_error());
     }
 }

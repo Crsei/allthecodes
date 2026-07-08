@@ -35,6 +35,8 @@ pub mod chat_composer;
 pub mod chatwidget;
 pub mod command_palette;
 pub mod command_surface;
+#[path = "context_layer.rs"]
+pub mod context_layer;
 #[cfg(test)]
 #[path = "components/cwd_prompt.rs"]
 pub mod cwd_prompt;
@@ -288,6 +290,52 @@ fn production_symbol_anchors() {
     let _ = messages::assistant_tool_use_message::ToolUseState::WaitingForPermission;
     let _ = messages::assistant_tool_use_message::ToolUseState::ClassifierChecking;
     let _ = messages::user_tool_result_message::utils::line_to_text(&Line::from("tool output"));
+
+    let mut context_state = context_layer::ContextLayerState::default();
+    for (key, tone) in [
+        (
+            context_layer::ContextLayerKey::Repo,
+            context_layer::ContextTone::Info,
+        ),
+        (
+            context_layer::ContextLayerKey::Branch,
+            context_layer::ContextTone::Info,
+        ),
+        (
+            context_layer::ContextLayerKey::Plan,
+            context_layer::ContextTone::Info,
+        ),
+        (
+            context_layer::ContextLayerKey::CurrentAgent,
+            context_layer::ContextTone::Info,
+        ),
+        (
+            context_layer::ContextLayerKey::CurrentTool,
+            context_layer::ContextTone::Info,
+        ),
+        (
+            context_layer::ContextLayerKey::ContextUsage,
+            context_layer::ContextTone::Warning,
+        ),
+        (
+            context_layer::ContextLayerKey::PendingPermission,
+            context_layer::ContextTone::Warning,
+        ),
+        (
+            context_layer::ContextLayerKey::LastError,
+            context_layer::ContextTone::Error,
+        ),
+    ] {
+        let label = format!("{key:?}");
+        context_state.upsert(context_layer::ContextLayerItem::keyed(
+            key, tone, label, "value",
+        ));
+    }
+    context_state.remove(&context_layer::ContextLayerKey::ContextUsage);
+    let _ =
+        context_layer::ContextLayerItem::new(context_layer::ContextTone::Info, "label", "value");
+    let context_items = context_state.items();
+    let _ = context_layer::render_context_layer(&context_items, 80, &render_theme);
 
     let mut activity = tool_activity::ToolActivity::new("Read", tool_activity::ToolState::Running);
     activity.progress = Some((1, 2));

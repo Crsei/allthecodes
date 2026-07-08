@@ -17,6 +17,7 @@ pub struct BottomPaneHeights {
     pub command_palette: u16,
     pub command_arg_help: u16,
     pub notification: u16,
+    pub context: u16,
     pub agent_footer: u16,
     pub status: u16,
 }
@@ -31,6 +32,7 @@ impl BottomPaneHeights {
             + self.command_palette
             + self.command_arg_help
             + self.notification
+            + self.context
             + self.agent_footer
             + self.status
     }
@@ -45,6 +47,7 @@ impl BottomPaneHeights {
             Constraint::Length(self.command_arg_help),
             Constraint::Length(self.input),
             Constraint::Length(self.notification),
+            Constraint::Length(self.context),
             Constraint::Length(self.agent_footer),
             Constraint::Length(self.status),
         ])
@@ -59,8 +62,9 @@ impl BottomPaneHeights {
             command_arg_help: chunks[5],
             input: chunks[6],
             notification: chunks[7],
-            agent_footer: chunks[8],
-            status: chunks[9],
+            context: chunks[8],
+            agent_footer: chunks[9],
+            status: chunks[10],
         }
     }
 }
@@ -75,6 +79,7 @@ pub struct BottomPaneAreas {
     pub command_palette: Rect,
     pub command_arg_help: Rect,
     pub notification: Rect,
+    pub context: Rect,
     pub agent_footer: Rect,
     pub status: Rect,
 }
@@ -182,11 +187,12 @@ mod tests {
             command_palette: 4,
             command_arg_help: 2,
             notification: 1,
+            context: 1,
             agent_footer: 1,
             status: 1,
         };
 
-        assert_eq!(heights.total(), 16);
+        assert_eq!(heights.total(), 17);
         let areas = heights.split(Rect::new(0, 0, 80, 24));
         assert_eq!(areas.spinner.height, 1);
         assert_eq!(areas.input.height, 3);
@@ -194,6 +200,8 @@ mod tests {
         assert!(areas.completion_popup.y < areas.input.y);
         assert!(areas.command_palette.y < areas.input.y);
         assert!(areas.notification.y > areas.input.y);
+        assert!(areas.context.y > areas.input.y);
+        assert!(areas.context.y < areas.status.y);
         assert!(areas.status.y > areas.input.y);
     }
 }

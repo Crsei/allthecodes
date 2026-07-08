@@ -1,5 +1,6 @@
 use crate::ui::app::agent_navigation::{AgentNavigationState, AgentThreadEntry};
 use crate::ui::command_surface::{TaskSurfaceItem, TasksSurface};
+use crate::ui::context_layer::ContextLayerState;
 #[cfg(test)]
 use crate::ui::tasks::TaskStatus;
 use allthecodes_ipc_protocol::BackendMessage;
@@ -8,6 +9,7 @@ use allthecodes_ipc_protocol::BackendMessage;
 pub(super) struct RuntimeViewState {
     agent_nav: AgentNavigationState,
     current_agent_thread_id: Option<String>,
+    context_layer: ContextLayerState,
     live_task_items: Vec<TaskSurfaceItem>,
     backend_task_items: Vec<TaskSurfaceItem>,
     task_items: Vec<TaskSurfaceItem>,
@@ -19,6 +21,7 @@ impl Default for RuntimeViewState {
         Self {
             agent_nav: AgentNavigationState::default(),
             current_agent_thread_id: None,
+            context_layer: ContextLayerState::default(),
             task_items: live_task_items.clone(),
             live_task_items,
             backend_task_items: Vec::new(),
@@ -45,6 +48,14 @@ impl RuntimeViewState {
 
     pub(super) fn current_agent_thread_id(&self) -> Option<&String> {
         self.current_agent_thread_id.as_ref()
+    }
+
+    pub(super) fn context_layer(&self) -> &ContextLayerState {
+        &self.context_layer
+    }
+
+    pub(super) fn context_layer_mut(&mut self) -> &mut ContextLayerState {
+        &mut self.context_layer
     }
 
     pub(super) fn task_items(&self) -> &[TaskSurfaceItem] {
@@ -93,6 +104,8 @@ mod tests {
 
     #[test]
     fn runtime_view_state_tracks_current_agent_thread() {
+        use crate::ui::context_layer::{ContextLayerItem, ContextLayerKey, ContextTone};
+
         let mut state = RuntimeViewState::default();
         state.refresh_task_items(&[]);
         state.upsert_agent(AgentThreadEntry {
@@ -115,5 +128,13 @@ mod tests {
             source: crate::ui::command_surface::TaskSurfaceSource::Tool,
         });
         assert_eq!(state.tasks().len(), 1);
+
+        state.context_layer_mut().upsert(ContextLayerItem::keyed(
+            ContextLayerKey::Repo,
+            ContextTone::Info,
+            "repo",
+            "allthecodes",
+        ));
+        assert_eq!(state.context_layer().items().len(), 1);
     }
 }

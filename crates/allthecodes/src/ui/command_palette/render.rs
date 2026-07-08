@@ -74,10 +74,7 @@ impl CommandPalette {
         {
             let selected = idx == self.selected;
             let style = if selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::White)
-                    .add_modifier(Modifier::BOLD)
+                theme.selected
             } else {
                 theme.unselected
             };
