@@ -19,7 +19,7 @@ Token 预算跟踪（Token Budget）为对话设置输出 token 使用上限。�
 
 ### 2.1 Token 预算决策
 
-文件：`crates/allthecodes-query/src/token_budget.rs`
+文件：`crates/allthecodes-engine/src/query/token_budget.rs`
 
 ```rust
 pub fn check_token_budget(
@@ -105,7 +105,7 @@ pub struct BudgetCompletionEvent {
 
 ### 2.7 查询循环集成
 
-文件：`crates/allthecodes-query/src/loop_impl.rs`
+文件：`crates/allthecodes-engine/src/query/loop_impl.rs`
 
 在查询循环中，每轮迭代后检查 token 预算：
 
@@ -192,6 +192,6 @@ let config = QueryEngineConfig {
 
 | 文件 | 职责 |
 |------|------|
-| `crates/allthecodes-query/src/token_budget.rs` | Token 预算决策逻辑 |
-| `crates/allthecodes-query/src/loop_impl.rs` | 查询循环集成 |
-| `crates/allthecodes-query/src/loop_tests.rs` | 预算补丁测试 |
+| `crates/allthecodes-engine/src/query/token_budget.rs` | Token 预算决策逻辑 |
+| `crates/allthecodes-engine/src/query/loop_impl.rs` | 查询循环集成 |
+| `crates/allthecodes-engine/src/query/loop_tests.rs` | 预算补丁测试 |

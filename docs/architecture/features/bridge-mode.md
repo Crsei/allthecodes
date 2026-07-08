@@ -25,7 +25,7 @@ Bridge Mode 是 allthecodes 进程与前端进程（IDE 插件、Web UI、TUI）
 | `subsystem_types` | `subsystem_types.rs` | 子系统状态快照类型 |
 | `lsp` | `lsp.rs` | LSP 相关类型（补全、文档变更） |
 
-**allthecodes-ipc-transport** — 传输层
+**allthecodes-ipc::transport** — 传输层
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
@@ -200,7 +200,7 @@ sink.send_many(msgs);                 // 批量发送
 | `crates/allthecodes-ipc-protocol/src/protocol.rs` | 前后端消息枚举 |
 | `crates/allthecodes-ipc-protocol/src/normalized.rs` | 标准化事件模型 |
 | `crates/allthecodes-ipc-protocol/src/subsystem_events.rs` | 子系统事件 |
-| `crates/allthecodes-ipc-transport/src/jsonl.rs` | JSONL stdio 传输 |
-| `crates/allthecodes-ipc-transport/src/frame.rs` | 帧与 IO trait |
-| `crates/allthecodes-ipc-transport/src/sink.rs` | 前端输出 sink |
-| `crates/allthecodes-ipc-transport/src/event_class.rs` | 事件分类与队列管理 |
+| `crates/allthecodes-ipc/src/transport/jsonl.rs` | JSONL stdio 传输 |
+| `crates/allthecodes-ipc/src/transport/frame.rs` | 帧与 IO trait |
+| `crates/allthecodes-ipc/src/transport/sink.rs` | 前端输出 sink |
+| `crates/allthecodes-ipc/src/transport/event_class.rs` | 事件分类与队列管理 |

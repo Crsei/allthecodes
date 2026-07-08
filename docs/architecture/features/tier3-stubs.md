@@ -20,7 +20,7 @@
 
 ### 2.1 MockDeps
 
-文件：`crates/allthecodes-query/src/loop_tests.rs:34-115`
+文件：`crates/allthecodes-engine/src/query/loop_tests.rs:34-115`
 
 `MockDeps` 是所有查询循环测试的核心 mock 实现：
 
@@ -248,5 +248,5 @@ assert!(items.iter().any(|item| matches!(item, QueryYield::Message(Message::Assi
 
 | 文件 | 职责 |
 |------|------|
-| `crates/allthecodes-query/src/loop_tests.rs` | MockDeps 定义 + 所有测试用例 |
-| `crates/allthecodes-query/src/loop_impl.rs` | 被测试的查询循环实现 |
+| `crates/allthecodes-engine/src/query/loop_tests.rs` | MockDeps 定义 + 所有测试用例 |
+| `crates/allthecodes-engine/src/query/loop_impl.rs` | 被测试的查询循环实现 |

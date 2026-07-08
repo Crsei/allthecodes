@@ -1,18 +1,18 @@
 ---
 title: "智能体循环 - allthecodes 的 Agentic Loop 核心机制"
-description: "深入解析 allthecodes (Rust port of Claude Code) 的 query() 流式循环——从上下文预处理、流式 API 调用、工具并行执行、错误恢复到终止条件的完整状态机，基于 crates/allthecodes-query/src/ 的源码级分析。"
+description: "深入解析 allthecodes (Rust port of Claude Code) 的 query() 流式循环——从上下文预处理、流式 API 调用、工具并行执行、错误恢复到终止条件的完整状态机，基于 crates/allthecodes-engine/src/query/ 的源码级分析。"
 keywords: ["Agentic Loop", "query loop", "tool_use", "状态机", "auto-compact", "streaming", "recovery"]
 sourceRef: "ea4e6ab2 (2026-05-28)"
 ---
 
-{/* 本章目标：基于 crates/allthecodes-query/src/ 揭示 Agentic Loop 的完整状态机 */}
+{/* 本章目标：基于 crates/allthecodes-engine/src/query/ 揭示 Agentic Loop 的完整状态机 */}
 
 ## 什么是 Agentic Loop
 
 传统聊天机器人：你问一句，它答一句。
 allthecodes 不一样：你说一个需求，它可能连续执行十几步操作才给你最终结果。
 
-这背后的机制叫做 **Agentic Loop**（智能体循环），核心实现在 `crates/allthecodes-query/src/loop_impl.rs` 的 `query()` 函数。它是一个 `'query_loop: loop { }` 无限循环，每次迭代代表一次"思考→行动→观察"周期。
+这背后的机制叫做 **Agentic Loop**（智能体循环），核心实现在 `crates/allthecodes-engine/src/query/loop_impl.rs` 的 `query()` 函数。它是一个 `'query_loop: loop { }` 无限循环，每次迭代代表一次"思考→行动→观察"周期。
 
 ## 循环的完整结构
 
@@ -37,7 +37,7 @@ State 解构
 `turn_context::prepare_model_request()` 实现上下文压缩管道：
 
 ```rust
-// crates/allthecodes-query/src/turn_context.rs
+// crates/allthecodes-engine/src/query/turn_context.rs
 // prepare_model_request() 的处理流程
 messages（当前对话）
   ↓ microcompact()    — 工具结果截断（微压缩）
@@ -160,7 +160,7 @@ Stop hook 注入阻塞消息 → 追加到对话 → `continue`
 ## 状态机：QueryLoopState 对象
 
 ```rust
-// crates/allthecodes-query/src/turn_context.rs（间接）
+// crates/allthecodes-engine/src/query/turn_context.rs（间接）
 // 对应 TypeScript State 类型
 struct QueryLoopState {
     messages: Vec<Message>,

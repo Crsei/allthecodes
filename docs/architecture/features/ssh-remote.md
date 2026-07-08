@@ -19,7 +19,7 @@ SSH Remote 功能本身不在专用 crate 中实现，而是作为 Gateway 框�
 |-------|------|
 | `allthecodes-gateway` | 远程源身份、会话密钥、策略、运行管理 |
 | `allthecodes-daemon` | 执行宿主、网桥、HTTP/SSE 服务 |
-| `allthecodes-ipc-transport` | 传输层复用（JSONL/Frame） |
+| `allthecodes-ipc::transport` | 传输层复用（JSONL/Frame） |
 
 ### 2.2 Gateway 远程源模型
 

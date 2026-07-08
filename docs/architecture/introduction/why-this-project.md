@@ -152,11 +152,11 @@ tree-sitter-bash = "0.21"
 
 在 TypeScript 中调用 Tree-sitter 需要通过 N-API 桥接（`tree-sitter` npm 包本质上是 C 扩展的 wrapper）。在 Rust 中，Tree-sitter 本身就是 C 库，Rust 的 FFI 调用是直接的、零开销的。
 
-## 40-crate 的 Workspace 结构
+## Workspace 结构
 
-allthecodes 使用 Cargo workspace 管理 40 个独立 crate。这种拆分方式远超常规 Rust 项目的 crate 数量，背后有其设计考量。
+allthecodes 使用 Cargo workspace 管理约 42 个职责 crate。这种拆分方式远超常规 Rust 项目的 crate 数量，背后有其设计考量；同时近期也在主动合并过小的 re-export crate，避免 crate 数量本身变成过度设计。
 
-### 为什么会拆成 40 个 crate？
+### 为什么会拆成多个 crate？
 
 ```mermaid
 graph TD
@@ -184,8 +184,7 @@ graph TD
 | **应用** | `allthecodes` | CLI 入口、TUI 界面、模式选择 | 依赖几乎所有 crate |
 | **应用** | `allthecodes-startup` | 启动流程、快速路径、日志初始化 | 依赖 config/engine |
 | **应用** | `allthecodes-bootstrap` | 进程状态初始化 | 独立 |
-| **核心** | `allthecodes-engine` | QueryEngine、生命周期、提示词系统 | 依赖 types/query |
-| **核心** | `allthecodes-query` | Agentic loop 实现 | 依赖 types |
+| **核心** | `allthecodes-engine` | QueryEngine、生命周期、提示词系统、`src/query` agentic loop | 依赖 types/tools/api/session |
 | **工具** | `allthecodes-tools` | 工具注册、工具实现 | 依赖 types/mcp |
 | **工具** | `allthecodes-mcp` | MCP 协议客户端 | 独立 |
 | **工具** | `allthecodes-computer-use` | 桌面控制工具 | 独立 |
@@ -194,9 +193,8 @@ graph TD
 | **工具** | `allthecodes-browser` | Chrome 集成 | 独立 |
 | **工具** | `allthecodes-shell-command` | Shell 命令执行（PTY） | 独立 |
 | **工具** | `allthecodes-lsp-service` | LSP 语言服务集成 | 依赖 types |
-| **通信** | `allthecodes-api` | API 客户端、多 provider | 依赖 types/models |
+| **通信** | `allthecodes-api` | API 客户端、多 provider | 依赖 types/models metadata |
 | **通信** | `allthecodes-types` | 核心类型定义 | 无依赖（基础类型） |
-| **通信** | `allthecodes-models` | 模型标识、别名、能力 | 独立 |
 | **基础设施** | `allthecodes-config` | 配置加载、路径管理 | 独立 |
 | **基础设施** | `allthecodes-auth` | API key、OAuth、Keychain | 独立 |
 | **基础设施** | `allthecodes-permissions` | 权限决策、策略管理 | 依赖 types |
@@ -211,11 +209,9 @@ graph TD
 | **扩展** | `allthecodes-tasks` | 任务系统 | 依赖 types |
 | **扩展** | `allthecodes-teams` | 团队协作功能 | 依赖 types |
 | **扩展** | `allthecodes-gateway` | API 网关 | 依赖 types |
-| **IPC** | `allthecodes-ipc` | IPC 入口（headless 运行） | 依赖 ipc-* |
+| **IPC** | `allthecodes-ipc` | IPC 运行时、transport/client/adapter、headless 运行 | 依赖 ipc-protocol/engine |
 | **IPC** | `allthecodes-ipc-protocol` | IPC 协议类型定义 | 独立 |
-| **IPC** | `allthecodes-ipc-transport` | IPC 传输层（stdio/TCP/WS） | 依赖 protocol |
-| **IPC** | `allthecodes-ipc-adapters` | IPC 适配层 | 依赖 protocol/engine |
-| **IPC** | `allthecodes-ipc-client` | IPC 客户端 SDK | 依赖 protocol |
+| **协议** | `allthecodes-protocol` | Web/API endpoint metadata、协议定义与生成基础 | 依赖 types |
 | **守护** | `allthecodes-daemon` | 后台守护进程 | 依赖 engine |
 | **守护** | `allthecodes-voice` | 语音输入支持 | 独立 |
 | **守护** | `allthecodes-web` | Web UI 服务 | 依赖 engine |
@@ -223,7 +219,7 @@ graph TD
 
 ### Crate 拆分收益
 
-**编译缓存粒度**：单一 crate 中修改一个文件会重新编译整个 crate。40 个 crate 意味着修改只影响一个 crate 的编译单元，增量编译缓存命中率更高。对于开发阶段的频繁修改，这可以显著减少等待编译的时间。
+**编译缓存粒度**：单一 crate 中修改一个文件会重新编译整个 crate。多个职责 crate 意味着修改只影响相关编译单元，增量编译缓存命中率更高。对于开发阶段的频繁修改，这可以显著减少等待编译的时间。
 
 **接口契约强制**：crate 之间的可见性由 `pub` 关键字严格管控。一个 crate 只能访问另一个 crate 通过 `pub` 导出的内容。这种强制比 TypeScript 的模块边界更严格——没有 `export` 等于没有访问，不存在 TypeScript 中 `declare module` 绕过的可能性。
 
@@ -235,7 +231,7 @@ graph TD
 graph LR
     subgraph "基础层"
         TP[allthecodes-types]
-        MD[allthecodes-models]
+        MD[allthecodes-types::models]
     end
 
     subgraph "工具层"
@@ -245,7 +241,7 @@ graph LR
 
     subgraph "核心层"
         EN[allthecodes-engine]
-        QY[allthecodes-query]
+        QY[allthecodes-engine::query]
     end
 
     subgraph "应用层"

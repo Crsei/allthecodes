@@ -81,7 +81,7 @@ allthecodes 继承了 Claude Code 的核心定位，但选择了不同的实现�
 | **内存安全** | 编译时消除空指针、数据竞争、内存泄漏 | 长时间运行的 agent 进程更稳定 |
 | **真并发** | tokio 多线程异步运行时 | 工具执行真正的并行，CPU 密集型不阻塞 |
 | **强类型系统** | enum + match + trait | 状态机（agentic loop）精确表达，JSON Schema 自动派生 |
-| **编译时模块边界** | Cargo workspace + crate 可见性 | 40 个 crate 之间严格的接口契约 |
+| **编译时模块边界** | Cargo workspace + crate 可见性 | 约 42 个职责 crate 之间严格的接口契约，并持续合并过小边界 |
 | **FFI 零开销** | 直接调用 C 库 | Tree-sitter 代码解析无需 N-API 桥接 |
 | **进程控制** | tokio::process + PTY | Shell 工具精确的进程组、超时、信号管理 |
 
@@ -139,31 +139,28 @@ allthecodes 与 Claude Code 可以完全共存，互不干扰：
 - **故意保留的缩减需显式说明**：在 PR 描述中标注，并在文档标记为"故意保留"
 - **历史 `Deferred` 清单需重评**：不再默认等于"不做"，触及这些条目时按上游完整实现对齐
 
-### 已完成的核心能力
+### 当前完成度快照
+
+`development/` 下的最新状态文档显示：核心 agent 运行时、会话、工具、权限、TUI、Headless/Web 后端和审计链路已经形成可用闭环；近期完成重点集中在 runtime 可观测性、MCP 隔离、worktree session、TUI 语义化展示和成本日志。更细的来源和边界见 `docs/architecture/introduction/architecture-overview.md` 的“Development 状态汇总”小节。
 
 | 能力领域 | 状态 | 说明 |
 |---------|------|------|
-| **流式对话引擎** | 完整 | QueryEngine 生命周期实现：消息提交、流式响应、工具调用、预算控制 |
-| **Rust TUI** | 完整 | ratatui + crossterm 终端界面，支持 markdown 渲染、语法高亮、分屏面板、多主题 |
-| **Headless IPC** | 完整 | JSONL over stdio 协议，5-crate IPC 协议栈（protocol/transport/adapters/client） |
-| **文件工具** | 完整 | Read、Write、Edit、Glob、Grep，支持文件快照和 undo |
-| **Shell 执行** | 完整 | Bash 执行，PTY 支持，超时控制，进程组管理 |
-| **权限与沙箱** | 完整 | auto/acd/bypass 三种权限模式，工具级别 + 沙箱级别控制；auto mode 安全分类器 |
-| **Skills 系统** | 完整 | 内置 skill、用户自定义 skill、插件 skill、MCP skill |
-| **多后端模型** | 完整 | Anthropic Direct、AWS Bedrock、Google Vertex、OpenAI 兼容、Azure、OpenAI Codex |
-| **会话持久化** | 完整 | 会话保存、恢复、--continue 指定 session、--resume 最新 session |
-| **上下文压缩** | 完整 | autocompact 管道：budget 评估 → snip → 摘要 → 替换 |
-| **Daemon 模式** | 完整 | 常驻后台进程，HTTP API，团队记忆服务器，GitHub PR 活动路由 |
-| **Web UI 模式** | 完整 | 浏览器可访问聊天界面 |
-| **子 Agent 系统** | 完整 | Agent fork/delegate，监督者模式，深度限制 |
-| **Plugin 系统** | 完整 | 插件发现、安装、manifest 解析、LSP 声明、命令注册 |
-| **优雅关闭** | 完整 | Phase I shutdown：子进程清理、状态持久化、skill usage 保存 |
-| **LSP 集成** | 完整 | LSP 服务器管理、语言推荐、diagnostics 收集 |
-| **Computer Use** | 完整 | 截图、鼠标点击、键盘输入、滚轮、拖拽等桌面控制 |
-| **Chrome 集成** | 完整 | Chrome native messaging host、MCP 桥接 |
-| **遥测与审计** | 完整 | Langfuse 集成、事件审计日志、InteractionSpan |
-| **Keybinding 系统** | 完整 | 用户可配置键位绑定，编辑模式支持 |
-| **Voice 模式** | 初始 | 语音输入支持 |
+| **流式对话引擎** | 已形成闭环 | QueryEngine 生命周期、流式响应、工具调用、预算控制和 fallback/recovery 路径已在 `allthecodes-engine` 内实现；query loop 当前位于 `allthecodes-engine/src/query/`，不再是独立 `allthecodes-query` crate。 |
+| **Rust TUI** | 已可用，近期语义展示已完成 | ratatui + crossterm 终端界面；`allthecodes-tool-display` 已接入 operation row/batch、result summary、TodoWrite checklist 和 verbose raw mode。 |
+| **Headless IPC** | 已可用 | JSONL over stdio 由 `allthecodes-ipc-protocol` + 合并后的 `allthecodes-ipc` 承载；legacy agent event、normalized IPC、Web IPC replay/bridge 已支持 execution record。 |
+| **文件与 Shell 工具** | 已可用 | 文件读写编辑搜索、Bash/PowerShell、PTY、超时和进程控制已接入；shell 结构化结果会进入 runtime execution record。 |
+| **权限与沙箱** | 已集中治理 | `allthecodes-permissions` 统一处理 permission mode、规则、hook、auto review/classifier、dangerous command、路径边界、Plan mode 和 sandbox allowed commands。 |
+| **Skills / Plugin / MCP 工具** | 已可用 | 技能、插件、MCP、deferred tools 和 ToolSearch 合并为分层 runtime tool catalog；MCP 支持 Streamable HTTP/OAuth 和 global/project/session/thread binding isolation。 |
+| **多后端模型** | 已可用 | Anthropic Direct、AWS Bedrock、Google Vertex、OpenAI 兼容、Azure、OpenAI Codex 等 provider 路径存在；成本准确性依赖本地 pricing metadata 是否覆盖模型名。 |
+| **会话持久化** | 已形成闭环 | 新写入优先走 SQLite 状态库，同时保留 `~/.allthecodes/sessions/*.json` 兼容快照；支持恢复、继续、归档、分支、导出和 record/replay 事件。 |
+| **Worktree-aware session** | 已实现 | `WorktreeSessionRecord`、SQLite store、migration、Enter/ExitWorktree、Agent isolation、orphan reconciliation 和 Web/API 查询已落地。 |
+| **上下文压缩** | 已可用 | autocompact、collapse、snip、budget tracking 等管道已接入 query/submit 生命周期。 |
+| **Daemon / Web 后端** | 已可用 | Daemon、HTTP API、Web/API handler、gateway/logs 相关 work 正在持续收敛；npm release 默认是 backend-only，不内嵌 sibling Web SPA。 |
+| **Web API 页面能力** | 多项 gap 已关闭 | Usage、Memory、Files、Skills、Backend Services、Jobs/Cron、Kanban、Group Chat 已有当前 worktree 后端 MVP handler。 |
+| **子 Agent / Team / Worktree isolation** | 已可用 | Agent fork/delegate、supervisor、agent worktree isolation、MCP server allowlist/binding 已接入。 |
+| **遥测、审计与执行记录** | 已增强 | audit events、Langfuse/no-op telemetry、dashboard NDJSON、AgentRuntimeExecutionRecord、cost/session usage 事件已进入主要输出通道。 |
+| **成本观测** | 已实现当前计划，归因继续增强 | runtime/session/Web usage 可用；session cost log 计划已标记 Implemented；per-tool/per-agent 精细归因仍是后续统一 ledger 方向。 |
+| **Voice 模式** | 非核心/初始 | 不应作为核心完成能力依赖；历史分析中 voice 后端仍存在 null/YAGNI 风险。 |
 
 ## 关键架构差异（与 TypeScript 原版）
 
@@ -174,8 +171,8 @@ allthecodes 与 Claude Code 可以完全共存，互不干扰：
 | **运行时** | Node.js 或 Bun | 无（静态二进制） |
 | **启动方式** | `npx @anthropic-ai/claude-code` | `./allthecodes` |
 | **TUI 框架** | React/Ink（虚拟 DOM + Yoga Flexbox 布局） | ratatui + crossterm（即时模式渲染，无虚拟 DOM） |
-| **模块系统** | npm 包 + TypeScript 模块 | Cargo workspace + 40 独立 crate |
-| **IPC 协议** | 内置（前后端耦合） | 显式 JSONL 协议（4 层独立 IPC crate） |
+| **模块系统** | npm 包 + TypeScript 模块 | Cargo workspace + 约 42 个职责 crate；过小 IPC/model/query re-export crate 已合并到当前 owner |
+| **IPC 协议** | 内置（前后端耦合） | 显式 JSONL 协议；protocol 与 runtime IPC 分离，transport/client/adapter 已合并进 `allthecodes-ipc` |
 | **工具定义** | 类 + 装饰器模式 | Trait 对象 + 工厂函数 + JSON Schema 派生 |
 | **权限模型** | 工具级别 + 命令级别 | 工具级别 + 沙箱级别 + Auto Mode 安全分类器 |
 | **System Prompt** | 函数式组合 | 静态段 + 动态段 + Hook 注入 |

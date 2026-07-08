@@ -105,7 +105,7 @@ pub struct DaemonProtocolStore {
 
 ### 2.3 IPC 传输层
 
-文件：`crates/allthecodes-ipc-transport/src/`
+文件：`crates/allthecodes-ipc/src/transport/`
 
 #### 帧协议
 
@@ -260,8 +260,8 @@ echo '{"type":"submit_prompt","text":"hello","id":"123"}' > /path/to/daemon/comm
 |------|------|
 | `crates/allthecodes-daemon/src/protocol.rs` | 守护进程协议（命令/事件 DTO + 存储） |
 | `crates/allthecodes-daemon/src/gateway_bridge.rs` | Gateway 桥接 |
-| `crates/allthecodes-ipc-transport/src/lib.rs` | IPC 传输 traits |
-| `crates/allthecodes-ipc-transport/src/frame.rs` | IPC 帧定义 |
-| `crates/allthecodes-ipc-transport/src/jsonl.rs` | JSONL stdio 传输实现 |
+| `crates/allthecodes-ipc/src/transport/mod.rs` | IPC 传输 traits |
+| `crates/allthecodes-ipc/src/transport/frame.rs` | IPC 帧定义 |
+| `crates/allthecodes-ipc/src/transport/jsonl.rs` | JSONL stdio 传输实现 |
 | `crates/allthecodes-ipc/src/headless.rs` | Headless 运行时 |
 | `crates/allthecodes-ipc-protocol/src/protocol/mod.rs` | 协议消息定义 |

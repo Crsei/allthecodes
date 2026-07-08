@@ -9,7 +9,7 @@ sourceRef: "ea4e6ab2 (2026-05-28)"
 
 ## 单轮 vs 多轮：架构层面的差异
 
-- **单轮**（一次 Agentic Loop）：`query()` 函数的一次完整执行——`crates/allthecodes-query/src/loop_impl.rs` 中的 `'query_loop` 循环，从上下文预处理到工具执行到最终终止
+- **单轮**（一次 Agentic Loop）：`query()` 函数的一次完整执行——`crates/allthecodes-engine/src/query/loop_impl.rs` 中的 `'query_loop` 循环，从上下文预处理到工具执行到最终终止
 - **多轮**（一个 Session）：`crates/allthecodes-session/` 管理的完整会话——跨越数十次 `query()` 调用，持续数小时，存储于磁盘
 
 allthecodes 将会话管理从查询循环中解耦，专门封装为 `allthecodes-session` crate，包含持久化、录制、恢复和导出功能：
@@ -277,7 +277,7 @@ struct SessionExport {
 ```
 用户输入
   ↓
-query() Agentic Loop（allthecodes-query）
+query() Agentic Loop（allthecodes-engine::query）
   ↓  yield 每个事件
 UI 层（TUI/REPL）
   ↓  turn 结束

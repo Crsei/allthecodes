@@ -1,6 +1,6 @@
 ---
 title: "架构全景 - allthecodes 五层架构详解"
-description: "从入口层到通信层，详解 allthecodes 的五层架构设计。基于 main.rs、engine、query、tools、api 等 crate 的源码级数据流分析，包含 mermaid 架构图。"
+description: "从入口层到通信层，详解 allthecodes 的五层架构设计。基于 startup、engine/query、tools、api、ipc 等 crate 的源码级数据流分析，包含 mermaid 架构图。"
 keywords: ["allthecodes 架构", "五层架构", "QueryEngine", "Agentic Loop", "Rust TUI", "数据流"]
 ---
 
@@ -37,7 +37,7 @@ graph TD
     end
 
     subgraph "Layer 4: 工具执行层"
-        C1 --> D1[Agentic Loop<br/>allthecodes-query]
+        C1 --> D1[Agentic Loop<br/>allthecodes-engine/src/query]
         D1 --> D2[工具调度<br/>tool_runtime]
         D2 --> D3[文件工具<br/>fs]
         D2 --> D4[Shell 执行<br/>exec]
@@ -65,7 +65,7 @@ graph TD
 | **Layer 1** | 参数解析、快速路径、模式选择 | `allthecodes`, `allthecodes-startup` | Phase A, Phase B, bootstrap |
 | **Layer 2** | 终端 UI、用户输入、消息展示 | `allthecodes/src/ui/`, `allthecodes-ipc` | ratatui, crossterm, headless |
 | **Layer 3** | 会话管理、生命周期、提示词 | `allthecodes-engine` | QueryEngine, lifecycle |
-| **Layer 4** | Agentic loop、工具调度、MCP | `allthecodes-query`, `allthecodes-tools`, `allthecodes-mcp` | agentic loop, tool exec |
+| **Layer 4** | Agentic loop、工具调度、MCP | `allthecodes-engine::query`, `allthecodes-tools`, `allthecodes-mcp` | agentic loop, tool exec |
 | **Layer 5** | API 客户端、多 provider、流式 | `allthecodes-api` | streaming, provider, retry |
 
 ## Layer 1: 入口/CLI 层
@@ -162,14 +162,13 @@ TUI 支持的功能包括：markdown 渲染、语法高亮（syntect）、分屏
 
 ### Headless IPC 模式
 
-通过 `--headless` 启用，使 allthecodes 在没有 TUI 的情况下运行，通过标准输入输出以 JSONL 格式通信。IPC 栈分四层：
+通过 `--headless` 启用，使 allthecodes 在没有 TUI 的情况下运行，通过标准输入输出以 JSONL 格式通信。IPC 栈当前按协议 crate、运行时 IPC crate 和 Web/API 协议 crate 分工：
 
 | crate | 职责 |
 |-------|------|
 | `allthecodes-ipc-protocol` | 协议类型定义（事件枚举、序列化） |
-| `allthecodes-ipc-transport` | 传输层（stdio、TCP、WebSocket） |
-| `allthecodes-ipc-adapters` | 适配层（协议 ↔ 引擎调用） |
-| `allthecodes-ipc-client` | 客户端 SDK（外部前端集成） |
+| `allthecodes-ipc` | 运行时 IPC crate，包含 JSONL stdio、transport、adapter、client/helper、subsystem handler facade 等合并后的实现 |
+| `allthecodes-protocol` | Web/API 协议定义、endpoint metadata、路由/代码生成基础 |
 
 ```jsonl
 // 客户端 → allthecodes
@@ -182,7 +181,7 @@ TUI 支持的功能包括：markdown 渲染、语法高亮（syntect）、分屏
 ### Daemon & Web 模式
 
 - **Daemon**（`--daemon`）：基于 axum HTTP 服务器，支持后台运行、团队记忆（Team Memory）、GitHub PR 活动路由、定时 tick 循环（KAIROS 模式）
-- **Web**（`--web`）：内嵌 Web 前端，浏览器可访问的聊天界面
+- **Web**（`--web`）：启动后端 HTTP/API/WS 服务；npm release 默认不内嵌 sibling `allthecodes-web` SPA，浏览器前端应由独立 Web 仓库连接该后端
 
 ## Layer 3: 编排层（QueryEngine）
 
@@ -257,9 +256,9 @@ stateDiagram-v2
 
 工具执行层包括 Agentic Loop 和工具系统两大部分。
 
-### Agentic Loop（allthecodes-query）
+### Agentic Loop（allthecodes-engine::query）
 
-`allthecodes-query` crate 实现了完整的 agentic loop 逻辑，是一个 `AsyncGenerator` 风格的循环：
+当前 query loop 由 `allthecodes-engine/src/query/` 持有。历史上的独立 `allthecodes-query` crate 已删除，避免 engine 主路径与独立 query loop 产生行为漂移。循环本身仍是一个 `AsyncGenerator` 风格的流式 agentic loop：
 
 ```
 loop {
@@ -424,7 +423,7 @@ sequenceDiagram
 
 ## Crate 依赖关系
 
-40 个 crate 按职责分组，依赖关系清晰：
+当前 workspace 约 42 个 crate 按职责分组，依赖关系以“基础类型/协议 → domain/service → runtime → UI/binary glue”为方向。近期结构收敛已合并过小 re-export crate：IPC transport/client/adapters 已进入 `allthecodes-ipc`，模型/pricing 元数据已进入 `allthecodes-types::models`，query loop 已进入 `allthecodes-engine/src/query`。
 
 ```mermaid
 graph TD
@@ -433,17 +432,17 @@ graph TD
         S[startup]
     end
     subgraph "核心"
-        E[engine]
-        Q[query]
+        E[engine<br/>含 query loop]
     end
     subgraph "工具"
         T[tools] --> M[mcp]
         T --> CU[computer-use]
         T --> SF[safety]
         T --> SB[sandbox]
+        TD[tool-display]
     end
     subgraph "API"
-        API[api] --> MD[models]
+        API[api] --> MD[types::models]
     end
     subgraph "基础"
         CF[config]  AU[auth]  TP[types]
@@ -457,17 +456,45 @@ graph TD
         TK[tasks]    TM[teams]
     end
     subgraph "IPC & 守护"
-        IP[ipc* x4]  DM[daemon]  VO[voice]
+        IP[ipc + ipc-protocol]  DM[daemon]  VO[voice]
         WB[web]      WT[worktree]
     end
 
     A --> E & S
-    E --> Q & T & API & CF & AU & TP & UT
+    E --> T & API & CF & AU & TP & UT
     E --> SN & SK & SV & PL & BR & LS & TK & TM & VO & WB & WT
     T --> M & CU & SF & SB
+    TD --> TP
     API --> MD
     A --> IP & DM
 ```
+
+## Development 状态汇总
+
+根据 `development/` 下的当前状态文档和完成记录，项目完成度可以概括为：
+
+| 领域 | 当前完成信息 |
+| --- | --- |
+| Runtime execution record | 已完成。`AgentRuntimeExecutionRecord` 稳定输出 session、agent、tool、shell digest、retry/fallback、model、permission decision 等字段，并进入 headless、dashboard NDJSON、normalized IPC 和 Web IPC replay/bridge；当前不是写入 SQLite 表。 |
+| 会话管理 | 已形成运行时闭环。新写入优先走共享 SQLite 状态库，同时保留 `~/.allthecodes/sessions/*.json` 兼容快照；支持恢复、继续、归档、分支、导出和 record/replay 事件。 |
+| 工具发现 | 已形成分层注册体系。内置工具、root-owned 工具、MCP、插件、技能、deferred tools 和 ToolSearch 共同组成 runtime tool catalog。 |
+| 权限治理 | 已集中到 `allthecodes-permissions` 决策引擎，覆盖 permission mode、规则、hook、auto review/classifier、dangerous command、路径边界、Plan mode、sandbox allowed commands 和 TUI/Web 授权。 |
+| MCP HTTP/OAuth | 已完成。支持 Streamable HTTP、HTTP header/bearer/OAuth 鉴权、session recovery、手动与 loopback OAuth、token store mode、CLI/IPC/Web REST OAuth 控制面。 |
+| MCP scope isolation | 已实现。支持 global/project/session/thread binding；engine、agent、skill fork 按 context 过滤 MCP tools，并在 MCP tool call 前做权限二次校验。 |
+| Worktree-aware session | 已实现。`WorktreeSessionRecord`、SQLite store、migration、Enter/ExitWorktree、Agent isolation、orphan reconciliation 和 Web/API 查询已落地。 |
+| TUI semantic operation | 已完成主计划。`allthecodes-tool-display` 共享 classifier、operation row/batch、verbose raw mode、TodoWrite checklist、result summary 和 Always Allow 链路已接入。 |
+| Cost/session usage | 已实现当前计划。runtime/session/Web usage 可用，session cost log 计划标记 Implemented；per-tool/per-agent 精细归因仍是后续统一 ledger 方向。 |
+| Web API gap | Usage、Memory、Files、Skills、Backend Services、Jobs/Cron、Kanban、Group Chat 当前不再是 gap；Gateway 与 Logs/Diagnostics 已有 handler work。 |
+
+仍需重点收敛的边界：
+
+1. 工具执行边界仍过宽：`execute_tool_impl` 一类路径同时承担 validation、hook、permission、sandbox、tool call、post hook、audit、Langfuse、runtime record，后续要收敛为 `ToolExecutionPlan` / `ToolExecutionPipeline`。
+2. Query/submit 生命周期仍需状态机化：目标是拆出 `QueryTurnState`、恢复策略模块和 `SubmitTransaction`，让 query 产出 typed turn events，submit 消费事件并提交 side effects。
+3. Session/record-replay 真相源仍在迁移：当前 SQLite、legacy JSON 和 record/replay JSONL 并存；方向是 JSONL transcript truth + SQLite index/query cache + legacy JSON 兼容输入。
+4. API/IPC dispatcher 仍有 legacy adapter：`allthecodes-protocol` 已提供基础，但完整 dispatcher、WebSocket IPC 和传输层抽象仍需继续接入。
+5. Hook 系统需要补齐行为矩阵：Full Build 阶段不能保留静默 success placeholder；未实现项要显式记录为 intentional gap。
+6. MCP bridge dependency health 仍是计划状态，不是已完成项；需要补 proof-of-life/probe、错误分类、重试/circuit breaker 和 UI/IPC 状态面。
+
 
 ## 四个核心设计原则
 
