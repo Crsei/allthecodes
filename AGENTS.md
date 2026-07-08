@@ -70,6 +70,52 @@ Known build warnings on this machine:
 - `crates/allthecodes/src/tools/exec/process_control.rs` currently has an
   unused Unix `CommandExt` import.
 
+Latest local test follow-up (2026-07-07):
+
+- The timed worktree run found two concrete failures: clippy `-D warnings` and
+  the `/proactive` command palette snapshot. Both were fixed in the working
+  tree.
+- Verified after fixes: `cargo fmt --all --check`, full workspace clippy, the
+  `/proactive` snapshot test, and the daemon stop e2e smoke test all exited 0.
+- A fresh `cargo test --workspace` rerun reached `pty_tui_e2e` but no final exit
+  code was captured. Do not treat full workspace tests as passing until a new
+  run completes with exit 0. See
+  `docs/development/test/cargo-build-test-followup-2026-07-07.md`.
+- The current unresolved test-risk area is `pty_tui_e2e`
+  `commands_mcp_plugin`, especially the batch case that reaches `/chrome`; check
+  MCP bridge descendant cleanup before assuming a cargo-level timeout.
+
+### Local verification timing baseline
+
+Measured on 2026-07-07 from a detached worktree at commit `98f628d9`, using
+`CARGO_TARGET_DIR=/tmp/allthecodes-test-timing.Lsqhx0-target`. Treat these as a
+cold-ish local baseline for timeout triage, not a pass/fail guarantee.
+
+| Step | Status | Time |
+|------|--------|------|
+| `cargo --version` | pass | 0.085s |
+| `rustc --version` | pass | 0.079s |
+| `rustup show active-toolchain` | pass | 0.066s |
+| `bash -n scripts/cargo-build-test.sh` | pass | 0.020s |
+| `bash scripts/test-cargo-build-test.sh` | pass | 0.199s |
+| `cargo fmt --all --check` | pass | 5.799s |
+| `cargo clippy --workspace --all-targets -- -D warnings` | failed exit 101 | 56.615s |
+| `cargo test --workspace` | failed exit 101 | 215.985s |
+| `cargo test -p allthecodes-tools --no-default-features --features contract` | pass | 19.349s |
+| `cargo test -p allthecodes-tools --features full` | pass | 94.549s |
+| `cargo nextest run --workspace --no-fail-fast` | skipped: `cargo-nextest` unavailable | 0.000s |
+| `cargo build --workspace --release` | pass | 267.069s |
+
+The two failures above were not timeouts: clippy failed on a derivable
+`Default` impl in `allthecodes-types`, and the workspace test failed on the
+`command_argument_help_all_commands_110w` UI snapshot after `/proactive` appeared.
+
+When a build or test appears stuck, first check the active step log and process
+activity. If `current-step.txt` is unchanged for 15 minutes, the corresponding
+log has not grown, and no `cargo`/`rustc`/`cc`/`ld` process is active, treat it
+as stalled and investigate locks, target directory problems, disk pressure, or a
+dead child process before increasing timeouts.
+
 ## npm Release / Web UI Packaging
 
 The npm release package is backend-only by default:
