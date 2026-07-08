@@ -841,6 +841,9 @@ async fn disconnect_plugin_runtime_configs(
     refresh_plugin_runtime_configs(configs, PluginRuntimeRefreshMode::Disconnect).await
 }
 
+// Runtime refresh mutates the shared MCP manager and must keep operations
+// serialized against the live client map.
+#[allow(clippy::await_holding_invalid_type)]
 async fn refresh_plugin_runtime_configs(
     configs: Vec<McpServerConfig>,
     mode: PluginRuntimeRefreshMode,

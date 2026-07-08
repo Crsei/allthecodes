@@ -29,6 +29,7 @@ fn daemon_allowed_by_features() -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::daemon_allowed_by_features;
 
@@ -105,11 +106,10 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
             server_mode,
             allthecodes_server::ServerMode::Daemon { .. }
                 | allthecodes_server::ServerMode::All { .. }
-        ) {
-            if !daemon_allowed_by_features() {
-                eprintln!("error: --daemon requires FEATURE_KAIROS=1 or FEATURE_PROACTIVE=1");
-                return Ok(ExitCode::FAILURE);
-            }
+        ) && !daemon_allowed_by_features()
+        {
+            eprintln!("error: --daemon requires FEATURE_KAIROS=1 or FEATURE_PROACTIVE=1");
+            return Ok(ExitCode::FAILURE);
         }
 
         let exit_code = crate::full_init::run_server_mode(

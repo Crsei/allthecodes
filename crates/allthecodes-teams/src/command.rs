@@ -193,7 +193,7 @@ fn status(ctx: &allthecodes_commands::CommandContext) -> String {
                     tag,
                     color,
                     m.model.as_deref().unwrap_or("inherit"),
-                    m.backend_type.unwrap_or(BackendType::InProcess).to_string(),
+                    m.backend_type.unwrap_or(BackendType::InProcess),
                     task_state,
                     attachment_label(runtime_attached),
                     support_label(resume_supported),
@@ -598,19 +598,21 @@ mod task_10_status_diagnostics_tests {
     }
 
     fn make_ctx(team_file: &TeamFile) -> allthecodes_commands::CommandContext {
-        let mut app_state = AppState::default();
-        app_state.team_context = Some(TeamContext {
-            team_name: team_file.name.clone(),
-            team_file_path: helpers::team_config_path(&team_file.name)
-                .to_string_lossy()
-                .into_owned(),
-            lead_agent_id: team_file.lead_agent_id.clone(),
-            self_agent_id: Some(team_file.lead_agent_id.clone()),
-            self_agent_name: Some(constants::TEAM_LEAD_NAME.into()),
-            is_leader: Some(true),
-            self_agent_color: None,
-            teammates: Default::default(),
-        });
+        let app_state = AppState {
+            team_context: Some(TeamContext {
+                team_name: team_file.name.clone(),
+                team_file_path: helpers::team_config_path(&team_file.name)
+                    .to_string_lossy()
+                    .into_owned(),
+                lead_agent_id: team_file.lead_agent_id.clone(),
+                self_agent_id: Some(team_file.lead_agent_id.clone()),
+                self_agent_name: Some(constants::TEAM_LEAD_NAME.into()),
+                is_leader: Some(true),
+                self_agent_color: None,
+                teammates: Default::default(),
+            }),
+            ..Default::default()
+        };
 
         allthecodes_commands::CommandContext {
             messages: Vec::new(),

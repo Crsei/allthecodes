@@ -388,6 +388,8 @@ async fn socket_reader_task<R: tokio::io::AsyncReadExt + Unpin>(
 // Tool call forwarding
 // ---------------------------------------------------------------------------
 
+// The native host protocol requires serialized writes to one async writer.
+#[allow(clippy::await_holding_invalid_type)]
 async fn forward_tool_call(
     connections: &NativeConnectionStore,
     method: &str,

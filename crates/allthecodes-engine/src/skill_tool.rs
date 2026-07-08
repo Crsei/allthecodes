@@ -416,6 +416,8 @@ mod tests {
         allthecodes_skills::clear_skills();
     }
 
+    // These tests mutate the process-global skill registry across awaits.
+    #[allow(clippy::await_holding_invalid_type)]
     #[tokio::test]
     async fn test_validate_missing_skill_name() {
         let _guard = SKILL_REGISTRY_TEST_LOCK.lock().await;
@@ -488,6 +490,8 @@ mod tests {
         ));
     }
 
+    // These tests mutate the process-global skill registry across awaits.
+    #[allow(clippy::await_holding_invalid_type)]
     #[tokio::test]
     async fn test_validate_existing_skill() {
         let _guard = SKILL_REGISTRY_TEST_LOCK.lock().await;

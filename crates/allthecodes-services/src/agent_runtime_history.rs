@@ -344,9 +344,7 @@ async fn fetch_events(
     }
     .context("failed to query sqlite agent runtime events")?;
 
-    rows.into_iter()
-        .map(|row| event_item_from_row(row))
-        .collect()
+    rows.into_iter().map(event_item_from_row).collect()
 }
 
 async fn fetch_execution_records(
@@ -385,7 +383,7 @@ async fn fetch_execution_records(
     .context("failed to query sqlite agent runtime execution records")?;
 
     rows.into_iter()
-        .map(|row| execution_record_item_from_row(row))
+        .map(execution_record_item_from_row)
         .collect()
 }
 

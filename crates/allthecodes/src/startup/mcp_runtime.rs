@@ -15,6 +15,10 @@ pub(crate) struct McpRuntime {
 pub(crate) struct McpRuntimeBuilder;
 
 impl McpRuntimeBuilder {
+    // Startup connects configured MCP servers and derives their tools from one
+    // coherent manager snapshot, so the guard is intentionally held across the
+    // async connection and discovery calls.
+    #[allow(clippy::await_holding_invalid_type)]
     pub(crate) async fn build(
         startup: &StartupContext,
         _settings: &SettingsRuntime,

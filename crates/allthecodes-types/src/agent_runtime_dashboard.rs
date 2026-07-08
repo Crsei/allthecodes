@@ -18,7 +18,7 @@ pub struct AgentRuntimeDashboardQuery {
 }
 
 /// Derived lifecycle state for one subagent.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntimeAgentStatus {
@@ -26,13 +26,8 @@ pub enum AgentRuntimeAgentStatus {
     Completed,
     Failed,
     Cancelled,
+    #[default]
     Unknown,
-}
-
-impl Default for AgentRuntimeAgentStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

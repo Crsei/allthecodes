@@ -443,6 +443,10 @@ impl HeadlessRuntimeHost for RootHeadlessHost {
     }
 }
 
+// MCP skill discovery needs a stable manager view while querying one server's
+// resources, so this refresh intentionally holds the manager guard across the
+// adapter's async discovery call.
+#[allow(clippy::await_holding_invalid_type)]
 fn schedule_mcp_skill_resource_refresh(server_name: String) {
     if !allthecodes_config::features::enabled(allthecodes_config::features::Feature::McpSkills) {
         return;

@@ -8,6 +8,10 @@
 //! LSP servers are managed per-language (determined by file extension).
 //! Each server is a subprocess communicating via stdin/stdout using JSON-RPC 2.0.
 
+// This legacy manager serializes client lifecycle operations through a global
+// async registry. Narrowing those lock scopes is a separate LSP refactor.
+#![allow(clippy::await_holding_invalid_type)]
+
 pub mod client;
 pub mod conversions;
 pub mod recommendation;

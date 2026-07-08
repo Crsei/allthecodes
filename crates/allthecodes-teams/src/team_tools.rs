@@ -371,8 +371,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _home = EnvGuard::set("ALLTHECODES_HOME", tmp.path().to_str().unwrap());
 
-        let mut app_state = ToolAppState::default();
-        app_state.team_context = Some(active_team_context("existing-team"));
+        let app_state = ToolAppState {
+            team_context: Some(active_team_context("existing-team")),
+            ..Default::default()
+        };
 
         let err = TeamCreateTool
             .call(

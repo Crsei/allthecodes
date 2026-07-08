@@ -659,6 +659,8 @@ impl McpClient {
     /// Write a JSON-RPC line to the active transport with an HTTP read bound.
     /// On session expiry for streamable-http, automatically re-initializes
     /// and reruns the current JSON-RPC operation.
+    // Stdio MCP writes must be serialized through one async stdin writer.
+    #[allow(clippy::await_holding_invalid_type)]
     async fn write_line_with_timeout(&self, line: &str, timeout_secs: u64) -> Result<()> {
         if self.streamable_http_sender.is_some() {
             let method = extract_method_name(line);
@@ -729,6 +731,8 @@ impl McpClient {
     ///
     /// Reruns the current operation after recovery. This intentionally matches
     /// the upstream Streamable HTTP behavior, including tool calls.
+    // Recovery is serialized so concurrent expired requests do not race setup.
+    #[allow(clippy::await_holding_invalid_type)]
     async fn recover_session(&self, failed_line: &str, timeout_secs: u64) -> Result<()> {
         let method = extract_method_name(failed_line);
         let _guard = self.streamable_http_recovery_lock.lock().await;

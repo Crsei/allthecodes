@@ -93,6 +93,9 @@ pub async fn handle_mcp_command_with_runtime(cmd: McpCommand, cwd: &Path) -> Vec
     }
 }
 
+// Runtime connect/reconnect/disconnect mutates the shared MCP manager and must
+// keep the manager guard across the async operation to preserve sequencing.
+#[allow(clippy::await_holding_invalid_type)]
 pub async fn run_mcp_runtime_operation(
     cwd: &Path,
     operation: McpRuntimeOperation,

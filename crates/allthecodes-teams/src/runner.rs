@@ -357,6 +357,7 @@ fn append_prompt_section(existing: Option<String>, section: String) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drive_engine_turn(
     engine: &QueryEngine,
     prompt: &str,
@@ -981,6 +982,9 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
+    // The guard serializes process-global environment and mailbox state for this
+    // async integration test.
+    #[allow(clippy::await_holding_lock)]
     async fn teammate_idle_hook_records_payload_and_mailbox_notification() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();

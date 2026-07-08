@@ -92,6 +92,9 @@ fn first_supported_tool(
         .map(|name| (*name).to_string())
 }
 
+// The manager owns the live MCP client; keeping the guard preserves the
+// existing per-manager serialization while the client sends the request.
+#[allow(clippy::await_holding_invalid_type)]
 async fn call_browser_tool(
     manager: &tokio::sync::Mutex<allthecodes_mcp::manager::McpManager>,
     server_name: &str,

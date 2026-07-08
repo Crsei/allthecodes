@@ -53,6 +53,8 @@ pub trait HeadlessRuntimeHost: Send + Sync + 'static {
         sink: &'a FrontendSink,
     ) -> BoxHeadlessFuture<'a, bool>;
 
+    // Mirrors the background-agent completion event fields without bundling.
+    #[allow(clippy::too_many_arguments)]
     fn background_agent_completed(
         &self,
         agent_id: &str,

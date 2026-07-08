@@ -139,6 +139,8 @@ impl ChromeSink {
         }
     }
 
+    // Chrome stdout frames must be serialized through one async writer.
+    #[allow(clippy::await_holding_invalid_type)]
     async fn send(&self, value: &Value) -> Result<()> {
         let bytes = serde_json::to_vec(value).context("serialize Chrome message")?;
         let mut guard = self.inner.lock().await;

@@ -28,6 +28,9 @@ impl SerializationLayer {
 
     const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
+    // The guard is intentionally held while the future runs; this is the
+    // serialization boundary for per-process/per-connection scoped requests.
+    #[allow(clippy::await_holding_invalid_type)]
     pub async fn run_scoped<K, F, Fut, R>(&self, scope: &SerializationScope, key: K, f: F) -> R
     where
         K: Into<String>,

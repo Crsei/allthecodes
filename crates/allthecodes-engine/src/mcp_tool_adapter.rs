@@ -45,6 +45,9 @@ pub struct McpToolWrapper {
     pub binding_context: McpBindingContext,
 }
 
+// MCP tool calls keep the manager guard while checking permissions and using
+// the selected client, preserving the current serialized manager access model.
+#[allow(clippy::await_holding_invalid_type)]
 #[async_trait]
 impl Tool for McpToolWrapper {
     fn name(&self) -> &str {

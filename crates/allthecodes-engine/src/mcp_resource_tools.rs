@@ -101,6 +101,9 @@ impl Tool for ListMcpResourcesTool {
 
 pub struct ReadMcpResourceTool;
 
+// Resource reads keep the manager guard while delegating to the selected MCP
+// client, preserving the current serialized manager access model.
+#[allow(clippy::await_holding_invalid_type)]
 #[async_trait]
 impl Tool for ReadMcpResourceTool {
     fn name(&self) -> &str {

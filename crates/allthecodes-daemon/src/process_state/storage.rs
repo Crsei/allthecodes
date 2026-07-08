@@ -477,7 +477,7 @@ pub fn read_sleep_state() -> Result<Option<DaemonSleepState>> {
             }
             Err(err) => return Err(err),
         };
-        return Ok(reconcile_sleep_states(sqlite_state, json_state));
+        Ok(reconcile_sleep_states(sqlite_state, json_state))
     }
 
     #[cfg(not(feature = "sqlite-storage"))]
@@ -555,7 +555,7 @@ pub fn read_proactive_state() -> Result<Option<DaemonProactiveState>> {
             }
             Err(err) => return Err(err),
         };
-        return Ok(reconcile_proactive_states(sqlite_state, json_state));
+        Ok(reconcile_proactive_states(sqlite_state, json_state))
     }
 
     #[cfg(not(feature = "sqlite-storage"))]
@@ -750,6 +750,7 @@ fn write_proactive_state_json_backup(state: &DaemonProactiveState) {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod sleep_tests {
     use super::*;
     use serial_test::serial;

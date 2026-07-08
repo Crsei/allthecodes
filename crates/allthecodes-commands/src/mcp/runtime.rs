@@ -77,6 +77,9 @@ struct McpRuntimeReport {
     text: String,
 }
 
+// MCP runtime operations mutate the shared manager and its live clients; keep
+// the manager guard across the async operation to preserve existing sequencing.
+#[allow(clippy::await_holding_invalid_type)]
 async fn run_mcp_runtime_operation(
     cwd: &std::path::Path,
     operation: McpRuntimeOperation,

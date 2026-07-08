@@ -1230,11 +1230,13 @@ mod child_tool_boundary_tests {
         let _tengu = EnvGuard::remove("TENGU_SCRATCH");
         let _claude = EnvGuard::remove("CLAUDE_CODE_TENGU_SCRATCH");
 
-        let mut app_state = ToolAppState::default();
-        app_state.team_context = Some(allthecodes_types::teams::TeamContext {
-            team_name: "Team A".to_string(),
+        let app_state = ToolAppState {
+            team_context: Some(allthecodes_types::teams::TeamContext {
+                team_name: "Team A".to_string(),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         let ctx = test_tool_context(app_state, "session-123");
 
         let child = build_child_config(
@@ -1280,11 +1282,13 @@ mod child_tool_boundary_tests {
         let _tengu = EnvGuard::remove("TENGU_SCRATCH");
         let _claude = EnvGuard::remove("CLAUDE_CODE_TENGU_SCRATCH");
 
-        let mut app_state = ToolAppState::default();
-        app_state.team_context = Some(allthecodes_types::teams::TeamContext {
-            team_name: "Team A".to_string(),
+        let app_state = ToolAppState {
+            team_context: Some(allthecodes_types::teams::TeamContext {
+                team_name: "Team A".to_string(),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         let ctx = test_tool_context(app_state, "session-123");
 
         let child = build_child_config(

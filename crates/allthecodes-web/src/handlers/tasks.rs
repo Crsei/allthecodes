@@ -107,7 +107,7 @@ impl Processor for TaskDetailProcessor {
             .iter()
             .find(|task| task.id == params.id)
             .map(scheduled_task_item)
-            .ok_or_else(|| ProtocolApiError::NotFound {
+            .ok_or(ProtocolApiError::NotFound {
                 entity: "task",
                 id: params.id,
             })?;

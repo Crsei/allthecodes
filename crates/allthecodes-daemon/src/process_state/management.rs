@@ -12,7 +12,7 @@ use super::platform::{configure_detached, process_matches_record};
 use super::storage::{
     cleanup_stale_state_before_start, clear_sleep_state, ensure_daemon_dir,
     list_bridge_session_states, read_bridge_session_state, read_control_token, read_worker_state,
-    request_shutdown, status_snapshot, tail_log, write_sleep_state,
+    request_shutdown, status_snapshot, tail_log, write_sleep_state, write_stopped,
 };
 use super::types::{
     DaemonBridgeSessionState, DaemonProcessState, DaemonStatusSnapshot, StaleStateCleanupReport,
@@ -181,14 +181,17 @@ fn wait_until_not_matching(state: &DaemonProcessState, timeout: Duration) -> Res
     while Instant::now() < deadline {
         let identity = process_matches_record(state.pid, state.process_start_key.as_deref());
         if !identity.is_current_process_record() {
-            if matches!(
-                identity,
-                super::types::ProcessIdentityStatus::Mismatched { .. }
-            ) {
-                let mut stale = state.clone();
-                stale.status = super::types::DaemonRunStatus::Stale;
-                stale.updated_at = chrono::Utc::now();
-                super::storage::write_state(&stale)?;
+            match identity {
+                super::types::ProcessIdentityStatus::Dead => {
+                    write_stopped(state.port, &state.cwd)?;
+                }
+                super::types::ProcessIdentityStatus::Mismatched { .. } => {
+                    let mut stale = state.clone();
+                    stale.status = super::types::DaemonRunStatus::Stale;
+                    stale.updated_at = chrono::Utc::now();
+                    super::storage::write_state(&stale)?;
+                }
+                _ => {}
             }
             return Ok(true);
         }

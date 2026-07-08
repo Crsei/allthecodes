@@ -64,7 +64,7 @@ pub fn claim_due_scheduled_tasks(now: DateTime<Utc>) -> Result<Vec<ScheduledAgen
     let now_string = now.to_rfc3339();
 
     for task in &mut tasks {
-        if !task.enabled || !task_due_at(task).is_some_and(|due_at| due_at <= now) {
+        if !task.enabled || task_due_at(task).is_none_or(|due_at| due_at > now) {
             continue;
         }
         due.push(task.clone());
@@ -87,7 +87,7 @@ pub fn claim_due_scheduled_tasks(now: DateTime<Utc>) -> Result<Vec<ScheduledAgen
 fn task_due_at(task: &ScheduledAgentTask) -> Option<DateTime<Utc>> {
     task.next_run_at
         .as_deref()
-        .or_else(|| match &task.schedule {
+        .or(match &task.schedule {
             ScheduleSpec::Once { run_at } => Some(run_at.as_str()),
             ScheduleSpec::Interval { .. } => None,
         })
@@ -223,7 +223,7 @@ mod tests {
         let now = Utc::now();
         let saved = task("persisted", now.to_rfc3339(), true);
 
-        save_scheduled_tasks(&[saved.clone()]).unwrap();
+        save_scheduled_tasks(std::slice::from_ref(&saved)).unwrap();
 
         assert_eq!(
             scheduled_tasks_path(),
