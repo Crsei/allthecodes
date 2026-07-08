@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>allthecodes architecture docs update summary</title>
+  <style>
+    :root { color: #26221d; background: #f4efe6; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.5; --ink: #26221d; --muted: #6d665c; --paper: #fffaf1; --line: #d8cab8; --accent: #b45f2a; --accent-2: #2f6f68; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; min-height: 100vh; background: linear-gradient(90deg, rgba(38, 34, 29, 0.045) 1px, transparent 1px) 0 0 / 28px 28px, linear-gradient(rgba(38, 34, 29, 0.035) 1px, transparent 1px) 0 0 / 28px 28px, #f4efe6; }
+    code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 0.92em; color: #2d463f; background: #ede3d2; border: 1px solid #d8cab8; padding: 0.12rem 0.35rem; border-radius: 0.25rem; }
+    .page-shell { max-width: 1180px; margin: 0 auto; padding: 42px 28px 72px; }
+    .hero-panel { position: relative; border: 1px solid var(--ink); background: var(--paper); padding: clamp(28px, 5vw, 58px); box-shadow: 10px 10px 0 #26221d; }
+    .hero-panel::before { content: ""; position: absolute; inset: 14px; border: 1px dashed #c1aa90; pointer-events: none; }
+    .eyebrow, .section-kicker { color: var(--accent); font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.82rem; letter-spacing: 0.11em; text-transform: uppercase; margin-bottom: 14px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 760px; color: var(--ink); font-size: clamp(3rem, 8vw, 6.8rem); line-height: 0.92; letter-spacing: -0.07em; margin-bottom: 28px; }
+    h2 { color: var(--ink); font-size: clamp(1.7rem, 3.5vw, 3rem); line-height: 1; letter-spacing: -0.04em; margin-bottom: 18px; }
+    h3 { color: var(--accent-2); font-size: 1.1rem; margin-bottom: 12px; }
+    .lead { max-width: 780px; color: var(--muted); font-size: clamp(1.05rem, 2vw, 1.35rem); }
+    .hero-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin-top: 44px; border: 1px solid var(--ink); background: var(--ink); }
+    .hero-grid div { background: #f7edda; padding: 22px; }
+    .hero-grid strong { display: block; color: var(--accent-2); font-size: 2.4rem; line-height: 1; margin-bottom: 8px; }
+    .hero-grid span { color: var(--muted); font-size: 0.95rem; }
+    .section { margin-top: 52px; border-top: 2px solid var(--ink); padding-top: 26px; }
+    .split { display: grid; grid-template-columns: minmax(220px, 0.9fr) minmax(280px, 1.2fr); gap: 48px; }
+    .split p:last-child, .section > p:not(.section-kicker) { color: var(--muted); font-size: 1.12rem; }
+    .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 34px; }
+    .card { min-height: 190px; background: #fffaf1; border: 1px solid var(--line); padding: 22px; }
+    .card:nth-child(2n) { background: #f0eadf; }
+    .card-topline { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .card-topline span { color: var(--ink); font-weight: 750; }
+    mark { background: #dce8df; color: #1f554e; border: 1px solid #98b8ae; padding: 0.1rem 0.38rem; white-space: nowrap; }
+    .card p, .convergence li, .verification li { color: var(--muted); }
+    .before-after { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--ink); border: 1px solid var(--ink); }
+    .before-after > div { background: var(--paper); padding: 26px; }
+    ul, ol { margin: 0; padding-left: 1.2rem; }
+    li + li { margin-top: 10px; }
+    .convergence ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 32px; counter-reset: item; list-style: none; padding-left: 0; }
+    .convergence li { position: relative; padding: 16px 16px 16px 54px; background: #efe5d5; border-left: 4px solid var(--accent); }
+    .convergence li::before { counter-increment: item; content: counter(item, decimal-leading-zero); position: absolute; left: 14px; top: 18px; color: var(--accent); font-family: "SFMono-Regular", Consolas, monospace; font-weight: 700; }
+    .file-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .file-grid code { display: block; padding: 12px; overflow-wrap: anywhere; }
+    .verification { background: #e8ddcd; border: 1px solid var(--line); padding: 28px; }
+    @media (max-width: 860px) { .page-shell { padding: 24px 16px 52px; } .hero-panel { box-shadow: 6px 6px 0 #26221d; } .hero-grid, .cards, .before-after, .convergence ol, .file-grid, .split { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main class="page-shell">
+    <section class="hero-panel" aria-labelledby="title">
+      <div class="eyebrow">allthecodes architecture docs refresh</div>
+      <h1 id="title">这次我更新了什么</h1>
+      <p class="lead">我根据 <code>development/</code> 中的当前状态、完成记录和测试计划，整理出项目最新完成信息，并把过期的 architecture 文档从旧 crate / lite-era 表述同步到当前 Full Build 状态。</p>
+      <div class="hero-grid" aria-label="Summary metrics"><div><strong>10</strong><span>个 architecture 文档被更新</span></div><div><strong>51</strong><span>个 markdown 文件完成 sanity check</span></div><div><strong>0</strong><span>旧 source path / stale IPC marker 残留</span></div></div>
+    </section>
+    <section class="section split"><div><p class="section-kicker">Core change</p><h2>新增 Development 状态汇总</h2></div><p>在 <code>architecture-overview.md</code> 中新增 “Development 状态汇总”，集中解释哪些能力已经完成、哪些仍是后续架构收敛边界，避免阅读者继续根据旧 archive 或 lite-era 文档判断项目状态。</p></section>
+    <section class="cards" aria-label="Completed capability cards">
+      <article class="card"><div class="card-topline"><span>Runtime execution record</span><mark>已完成</mark></div><p>以结构化 execution_record 事件输出 session、agent、tool、shell digest、retry/fallback、model 和 permission decision；当前进入 headless、dashboard NDJSON、normalized IPC 与 Web IPC replay，不是写入 SQLite。</p></article>
+      <article class="card"><div class="card-topline"><span>MCP HTTP / OAuth</span><mark>已完成</mark></div><p>补齐 Streamable HTTP、header/bearer/OAuth 鉴权、session recovery、loopback OAuth、token store mode 和 CLI/IPC/Web 控制面。</p></article>
+      <article class="card"><div class="card-topline"><span>MCP scope isolation</span><mark>已实现</mark></div><p>把 MCP server binding 明确到 global / project / session / thread，并在 engine、agent、skill fork 和 tool call 前做 context 过滤与二次权限校验。</p></article>
+      <article class="card"><div class="card-topline"><span>Worktree-aware session</span><mark>已实现</mark></div><p>新增 WorktreeSessionRecord、SQLite store、migration、Enter/ExitWorktree、Agent isolation、orphan reconciliation 和 Web/API 查询说明。</p></article>
+      <article class="card"><div class="card-topline"><span>TUI semantic operation</span><mark>主计划已完成</mark></div><p>记录 allthecodes-tool-display、operation row/batch、verbose raw mode、TodoWrite checklist、result summary 和 Always Allow 链路。</p></article>
+      <article class="card"><div class="card-topline"><span>Cost / session usage</span><mark>当前计划已实现</mark></div><p>说明 runtime/session/Web usage 可用，session cost log 已标记 Implemented，per-tool/per-agent 细粒度归因仍是后续 ledger 方向。</p></article>
+    </section>
+    <section class="section"><p class="section-kicker">Outdated references fixed</p><h2>把 architecture 文档中的旧 crate 结构改成当前结构</h2><div class="before-after"><div><h3>旧表述</h3><ul><li><code>allthecodes-query</code> 独立 crate</li><li><code>allthecodes-ipc-client</code> / <code>transport</code> / <code>adapters</code> 分拆 crate</li><li><code>allthecodes-models</code> 独立 crate</li><li>固定 “40 个 crate” / “4 层 IPC” / “5-crate IPC”</li></ul></div><div><h3>当前表述</h3><ul><li><code>allthecodes-engine/src/query</code> 持有 query loop</li><li><code>allthecodes-ipc</code> 持有 transport / client / adapter runtime</li><li><code>allthecodes-types::models</code> 持有 models / pricing metadata</li><li>约 42 个职责 crate，并说明持续合并过小边界</li></ul></div></div></section>
+    <section class="section convergence"><p class="section-kicker">What remains</p><h2>没有把计划写成已完成</h2><ol><li>工具执行边界仍过宽，需要 ToolExecutionPlan / ToolExecutionPipeline 收敛 validation、hook、permission、sandbox、audit 与 runtime record。</li><li>Query / submit 生命周期仍需状态机化，目标是 QueryTurnState、恢复策略模块和 SubmitTransaction。</li><li>Session / record-replay 真相源仍在迁移，方向是 JSONL transcript truth + SQLite index/query cache + legacy JSON 兼容输入。</li><li>API / IPC dispatcher 仍有 legacy adapter；allthecodes-protocol 已有基础，但完整 dispatcher、WebSocket IPC 和传输层抽象还要继续接入。</li><li>Hook 系统需要补齐行为矩阵，Full Build 阶段不能保留静默 success placeholder。</li><li>MCP bridge dependency health 仍是计划状态，需要 proof-of-life/probe、错误分类、retry/circuit breaker 和 UI/IPC 状态面。</li></ol></section>
+    <section class="section docs-list"><p class="section-kicker">Files touched</p><h2>这次同步的 architecture 文档</h2><div class="file-grid"><code>docs/architecture/introduction/architecture-overview.md</code><code>docs/architecture/introduction/what-is-allthecodes.md</code><code>docs/architecture/introduction/why-this-project.md</code><code>docs/architecture/conversation/the-loop.md</code><code>docs/architecture/conversation/multi-turn.md</code><code>docs/architecture/features/token-budget.md</code><code>docs/architecture/features/tier3-stubs.md</code><code>docs/architecture/features/bridge-mode.md</code><code>docs/architecture/features/uds-inbox.md</code><code>docs/architecture/features/ssh-remote.md</code></div></section>
+    <section class="section verification"><p class="section-kicker">Verification</p><h2>已做的检查</h2><ul><li><code>git diff --check -- docs/architecture</code> 通过。</li><li>扫描 51 个 architecture markdown：code fence 配对正常。</li><li>确认没有旧 <code>crates/allthecodes-query/src</code> 路径。</li><li>确认没有旧 IPC split crate、旧 models crate、过期 “5-crate IPC” 等 marker。</li></ul></section>
+  </main>
+</body>
+</html>
