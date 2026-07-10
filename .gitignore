@@ -72,6 +72,10 @@ AGENTS.md
 board.md
 architecture/
 tests/
+!crates/allthecodes/tests/
+crates/allthecodes/tests/*
+!crates/allthecodes/tests/pty_tui_e2e/
+!crates/allthecodes/tests/pty_tui_e2e/**
 !crates/allthecodes-api/src/api/client/tests/
 !crates/allthecodes-api/src/api/client/tests/**
 !crates/allthecodes-engine/src/query/tests/
