@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 //! Integration tests for `allthecodes-server`.
 //!
 //! These tests start real Axum servers on `:0` (OS-assigned port) and verify
@@ -87,6 +89,18 @@ async fn unused_loopback_addr() -> SocketAddr {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[test]
+fn non_loopback_web_startup_requires_explicit_control_secret() {
+    let mode = allthecodes_server::ServerMode::Web {
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 17322),
+    };
+
+    let error = allthecodes_server::ServerManager::new_with_web_control_secret(mode, false)
+        .expect_err("startup must fail before binding an unauthenticated public listener");
+
+    assert!(error.to_string().contains("control secret"));
+}
 
 #[tokio::test]
 async fn test_start_web_server() {

@@ -368,12 +368,9 @@ impl Tool for DynamicWorkflowTool {
                 };
             }
             if let Some(items) = stage.get("items") {
-                if !items.is_array()
-                    || !items
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .all(|v| v.as_str().is_some())
+                if !items
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(|v| v.as_str().is_some()))
                 {
                     return ValidationResult::Error {
                         message: format!("stage '{}' items must be an array of strings", id),
@@ -383,12 +380,9 @@ impl Tool for DynamicWorkflowTool {
             }
             // depends_on must be an array of strings if present
             if let Some(deps) = stage.get("depends_on") {
-                if !deps.is_array()
-                    || !deps
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .all(|v| v.as_str().is_some())
+                if !deps
+                    .as_array()
+                    .is_some_and(|deps| deps.iter().all(|v| v.as_str().is_some()))
                 {
                     return ValidationResult::Error {
                         message: format!("stage '{}' depends_on must be an array of strings", id),
@@ -398,7 +392,7 @@ impl Tool for DynamicWorkflowTool {
             }
         }
 
-        if let Err(err) = validate_workflow_plan(input.get("plan").unwrap()) {
+        if let Err(err) = validate_workflow_plan(&Value::Object(plan.clone())) {
             return ValidationResult::Error {
                 message: err.to_string(),
                 error_code: 400,

@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "allthecodes-worktree"
 version = "0.1.0"
 edition = "2021"
@@ -24,3 +25,6 @@ uuid = { workspace = true }
 [dev-dependencies]
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

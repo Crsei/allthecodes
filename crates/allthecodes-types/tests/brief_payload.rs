@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use allthecodes_types::brief::{
     brief_payload_from_tool_result, BriefMessageLevel, BriefMessageStatus, BRIEF_TOOL_NAME,
     SEND_USER_MESSAGE_TOOL_NAME,

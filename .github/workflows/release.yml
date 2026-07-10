@@ -116,19 +116,19 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
             pkg-config libssl-dev libcap-dev
-          cargo build --release --target ${{ matrix.target }} --bin allthecodes
+          cargo build --locked --release --target ${{ matrix.target }} --bin allthecodes
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin allthecodes
+          cargo build --locked --release --target ${{ matrix.target }} --bin allthecodes
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin allthecodes
+          cargo build --locked --release --target ${{ matrix.target }} --bin allthecodes
 
       - name: Stage binary (Linux/macOS)
         if: runner.os != 'Windows'
@@ -318,6 +318,10 @@ jobs:
       contents: read
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -379,12 +383,13 @@ jobs:
 
           # Publish platform packages first, then root wrapper.
           publish_if_missing() {
-            local version_spec="$1"
-            local tarball="$2"
-            local tag="${3:-}"
+            local package_name="$1"
+            local version="$2"
+            local tarball="$3"
+            local tag="${4:-}"
 
-            if npm view "allthecodes@${version_spec}" version >/dev/null 2>&1; then
-              echo "Skipping ${version_spec}; already published."
+            if npm view "${package_name}@${version}" version >/dev/null 2>&1; then
+              echo "Skipping ${package_name}@${version}; already published."
               return 0
             fi
 
@@ -399,10 +404,13 @@ jobs:
             filename="$(basename "${tarball}")"
             platform="${filename#allthecodes-npm-}"
             platform="${platform%-${VERSION}.tgz}"
+            package_name="allthecodes-${platform}"
             echo "Publishing ${filename} with tag ${platform}..."
-            publish_if_missing "${VERSION}-${platform}" "${tarball}" "${platform}"
+            publish_if_missing "${package_name}" "${VERSION}" "${tarball}" "${platform}"
           done
 
-          # Publish root wrapper with the default tag (latest).
-          echo "Publishing root wrapper..."
-          publish_if_missing "${VERSION}" "${root_tarball}"
+          # Stable releases update latest. Pre-releases use their channel and
+          # can never move the latest dist-tag.
+          root_tag="$(scripts/npm-dist-tag.sh "${VERSION}")"
+          echo "Publishing root wrapper with tag ${root_tag}..."
+          publish_if_missing "allthecodes" "${VERSION}" "${root_tarball}" "${root_tag}"

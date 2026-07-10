@@ -10,10 +10,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use regex::Regex;
 use std::sync::LazyLock;
 
 use allthecodes_config::constants::bash::{default_timeout, max_timeout, MAX_COMMAND_LENGTH};
+
+use crate::safe_regex::SafeRegex;
 
 // =============================================================================
 // Command parsing
@@ -137,12 +138,11 @@ pub fn extract_command_name(command: &str) -> Option<String> {
 /// Patterns that indicate commands containing heredoc syntax.
 /// Note: Rust regex doesn't support backreferences, so we use separate
 /// patterns for single-quoted, double-quoted, and unquoted delimiters.
-static HEREDOC_SINGLE_QUOTED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<<-?\s*'\w+'").expect("invalid heredoc single-quoted regex"));
-static HEREDOC_DOUBLE_QUOTED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"<<-?\s*"\w+""#).expect("invalid heredoc double-quoted regex"));
-static HEREDOC_UNQUOTED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<<-?\s*\\?\w+").expect("invalid heredoc unquoted regex"));
+static HEREDOC_SINGLE_QUOTED: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"<<-?\s*'\w+'"));
+static HEREDOC_DOUBLE_QUOTED: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r#"<<-?\s*"\w+""#));
+static HEREDOC_UNQUOTED: LazyLock<SafeRegex> = LazyLock::new(|| SafeRegex::new(r"<<-?\s*\\?\w+"));
 
 /// Patterns for detecting unterminated/malformed quoting.
 ///
@@ -176,10 +176,8 @@ pub fn has_unterminated_quotes(command: &str) -> bool {
 }
 
 /// Patterns to exclude bit-shift operators from heredoc detection.
-static BIT_SHIFT_DIGIT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\d\s*<<\s*\d").expect("invalid bit-shift digit regex"));
-static ARITH_SHIFT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\$\(\(.*<<.*\)\)").expect("invalid arithmetic shift regex"));
+static BIT_SHIFT_DIGIT: LazyLock<SafeRegex> = LazyLock::new(|| SafeRegex::new(r"\d\s*<<\s*\d"));
+static ARITH_SHIFT: LazyLock<SafeRegex> = LazyLock::new(|| SafeRegex::new(r"\$\(\(.*<<.*\)\)"));
 
 /// Check if a command contains heredoc syntax (`<<EOF`, `<<'EOF'`, etc.).
 pub fn contains_heredoc(command: &str) -> bool {
@@ -404,13 +402,10 @@ fn next_non_whitespace(chars: &[char], after: usize) -> Option<char> {
 }
 
 /// Patterns for detecting multiline strings inside quotes.
-static SINGLE_QUOTE_MULTILINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"'(?:[^'\\]|\\.)*\n(?:[^'\\]|\\.)*'").expect("invalid single-quote multiline regex")
-});
-static DOUBLE_QUOTE_MULTILINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#""(?:[^"\\]|\\.)*\n(?:[^"\\]|\\.)*""#)
-        .expect("invalid double-quote multiline regex")
-});
+static SINGLE_QUOTE_MULTILINE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"'(?:[^'\\]|\\.)*\n(?:[^'\\]|\\.)*'"));
+static DOUBLE_QUOTE_MULTILINE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r#""(?:[^"\\]|\\.)*\n(?:[^"\\]|\\.)*""#));
 
 /// Check if a command contains multiline strings inside quotes.
 pub fn contains_multiline_string(command: &str) -> bool {
@@ -477,9 +472,8 @@ pub fn should_add_stdin_redirect(command: &str) -> bool {
 pub fn rewrite_windows_null_redirect(command: &str) -> String {
     // Rust regex doesn't support lookahead. We match the full pattern including
     // the trailing boundary character and put it back, or handle end-of-string.
-    static NUL_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(\d?&?>+\s*)[Nn][Uu][Ll]([\s|&;)\n]|$)").expect("invalid nul redirect regex")
-    });
+    static NUL_RE: LazyLock<SafeRegex> =
+        LazyLock::new(|| SafeRegex::new(r"(\d?&?>+\s*)[Nn][Uu][Ll]([\s|&;)\n]|$)"));
     NUL_RE.replace_all(command, "${1}/dev/null${2}").to_string()
 }
 

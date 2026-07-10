@@ -15,6 +15,7 @@ use allthecodes_protocol::ApiError as ProtocolApiError;
 
 use allthecodes_protocol::v1::prompts::PromptMutationResponse as ProtocolPromptMutationResponse;
 use allthecodes_protocol::v1::prompts::PromptsListResponse as ProtocolPromptsListResponse;
+use allthecodes_protocol::v1::prompts::QuickPrompt as ProtocolQuickPrompt;
 use allthecodes_protocol::ApiMethod;
 use allthecodes_protocol::NoParams;
 use async_trait::async_trait;
@@ -58,11 +59,17 @@ impl Processor for PromptsListProcessor {
 
     async fn handle(&self, _request: NoParams) -> Result<Self::Response, Self::Error> {
         let store = load_store().map_err(|e| ProtocolApiError::Internal { message: e })?;
-        let prompts: Vec<allthecodes_protocol::v1::prompts::QuickPrompt> =
-            sorted_prompts(store.prompts)
-                .into_iter()
-                .map(|p| serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap())
-                .collect();
+        let prompts: Vec<ProtocolQuickPrompt> = sorted_prompts(store.prompts)
+            .into_iter()
+            .map(|prompt| ProtocolQuickPrompt {
+                id: prompt.id,
+                name: prompt.name,
+                content: prompt.content,
+                description: prompt.description,
+                created_at: prompt.created_at,
+                updated_at: prompt.updated_at,
+            })
+            .collect();
         Ok(ProtocolPromptsListResponse { prompts })
     }
 }

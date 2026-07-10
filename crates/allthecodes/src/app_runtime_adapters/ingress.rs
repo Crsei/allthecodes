@@ -14,7 +14,7 @@ use allthecodes_services::prompt_suggestion::PromptSuggestionService;
 use allthecodes_types::commands::CommandDispatcher;
 use allthecodes_types::message::{ContentBlock, Message, MessageContent};
 
-use super::query_runner::spawn_query_turn;
+use super::sdk_mapper::handle_sdk_message;
 use crate::ui::completions::{
     CombinedCompleter, CommandCompletionProvider, CompletionContext, CompletionItem, CompletionKind,
 };
@@ -59,6 +59,15 @@ pub(crate) async fn dispatch(
                 return true;
             }
 
+            if runtime.current_turn().is_some() {
+                let _ = sink.send(&BackendMessage::Error {
+                    message: "A query turn is already running; abort or wait for it to finish."
+                        .to_string(),
+                    recoverable: true,
+                });
+                return true;
+            }
+
             let app_state = engine.app_state();
             let classifier =
                 allthecodes_commands::plan_workflow::classify_plan_entry(&text, &app_state);
@@ -98,14 +107,21 @@ pub(crate) async fn dispatch(
                 }
             }
 
-            runtime.begin_turn(id.clone());
-            spawn_query_turn(
+            if !allthecodes_ipc::client::query_runner::spawn_managed_query_turn(
+                runtime.clone(),
                 engine.clone(),
                 text,
                 id,
                 suggestion_svc.clone(),
                 sink.clone(),
-            );
+                handle_sdk_message,
+            ) {
+                let _ = sink.send(&BackendMessage::Error {
+                    message: "A query turn is already running; abort or wait for it to finish."
+                        .to_string(),
+                    recoverable: true,
+                });
+            }
         }
 
         FrontendMessage::AbortQuery => {
@@ -156,7 +172,15 @@ pub(crate) async fn dispatch(
 
         FrontendMessage::SlashCommand { raw } => {
             debug!("headless: slash command: {}", raw);
-            handle_slash_command(&raw, engine, suggestion_svc, sink).await;
+            if runtime.current_turn().is_some() {
+                let _ = sink.send(&BackendMessage::Error {
+                    message: "Cannot run a slash command while a query turn is running."
+                        .to_string(),
+                    recoverable: true,
+                });
+                return true;
+            }
+            handle_slash_command(&raw, engine, runtime, suggestion_svc, sink).await;
         }
 
         FrontendMessage::Resize { cols, rows } => {
@@ -531,6 +555,7 @@ fn send_ready_snapshot(engine: &QueryEngine, sink: &FrontendSink) {
 async fn handle_slash_command(
     raw: &str,
     engine: &Arc<QueryEngine>,
+    runtime: &SessionRuntime,
     suggestion_svc: &Arc<Mutex<PromptSuggestionService>>,
     sink: &FrontendSink,
 ) {
@@ -623,6 +648,14 @@ async fn handle_slash_command(
                 messages,
                 notice,
             } => {
+                if runtime.set_session_id(session_id.to_string()).is_err() {
+                    let _ = sink.send(&BackendMessage::Error {
+                        message: "Cannot switch sessions while a query turn is running."
+                            .to_string(),
+                        recoverable: true,
+                    });
+                    return;
+                }
                 engine.set_current_session_id(session_id);
                 engine.replace_messages(messages.clone());
                 send_conversation_replaced(&messages, sink);
@@ -634,6 +667,7 @@ async fn handle_slash_command(
             }
             CommandResult::Clear => {
                 engine.start_new_session();
+                let _ = runtime.set_session_id(engine.current_session_id().to_string());
                 send_conversation_replaced(&[], sink);
                 send_ready_snapshot(engine, sink);
                 let _ = sink.send(&BackendMessage::SystemInfo {
@@ -666,14 +700,22 @@ async fn handle_slash_command(
                     .collect::<Vec<_>>()
                     .join("\n");
 
-                if !prompt_text.is_empty() {
-                    spawn_query_turn(
+                if !prompt_text.is_empty()
+                    && !allthecodes_ipc::client::query_runner::spawn_managed_query_turn(
+                        runtime.clone(),
                         engine.clone(),
                         prompt_text,
                         uuid::Uuid::new_v4().to_string(),
                         suggestion_svc.clone(),
                         sink.clone(),
-                    );
+                        handle_sdk_message,
+                    )
+                {
+                    let _ = sink.send(&BackendMessage::Error {
+                        message: "A query turn is already running; command query was not started."
+                            .to_string(),
+                        recoverable: true,
+                    });
                 }
             }
             CommandResult::None => {

@@ -244,6 +244,8 @@ pub async fn run_headless(config: HeadlessRuntimeConfig) -> anyhow::Result<()> {
         reason: close_reason,
     });
 
+    runtime.shutdown_turn().await;
+
     let cancelled = config
         .host
         .shutdown_background_agents("headless runtime exit")

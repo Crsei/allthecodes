@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::{Local, Utc};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use allthecodes_config::features::{self, Feature};
@@ -164,7 +165,12 @@ impl WorkerRegistry {
     fn start_all(&mut self) -> Result<()> {
         let ids: Vec<String> = self.specs.keys().cloned().collect();
         for id in ids {
-            self.start_worker(&id, 0)?;
+            if let Err(err) = self.start_worker(&id, 0) {
+                if let Err(rollback_err) = self.terminate_all() {
+                    warn!(error = %rollback_err, "failed to roll back partially started workers");
+                }
+                return Err(err);
+            }
         }
         Ok(())
     }
@@ -242,19 +248,34 @@ impl WorkerRegistry {
     }
 
     fn terminate_all(&mut self) -> Result<()> {
+        let mut first_error: Option<anyhow::Error> = None;
         for (worker_id, managed) in &mut self.workers {
-            if let Some(state) = process_state::read_worker_state(worker_id)? {
+            let state = match process_state::read_worker_state(worker_id) {
+                Ok(state) => state,
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                    None
+                }
+            };
+            if let Some(state) = state {
                 if let Some(pid) = state.pid {
                     let identity = process_state::process_matches_record(
                         pid,
                         state.process_start_key.as_deref(),
                     );
                     if identity.is_current_process_record() {
-                        process_state::terminate_process_tree(
+                        if let Err(err) = process_state::terminate_process_tree(
                             pid,
                             state.process_start_key.as_deref(),
-                        )
-                        .with_context(|| format!("failed to terminate worker {worker_id}"))?;
+                        ) {
+                            if first_error.is_none() {
+                                first_error = Some(
+                                    err.context(format!("failed to terminate worker {worker_id}")),
+                                );
+                            }
+                        }
                     } else {
                         warn!(
                             worker_id,
@@ -265,12 +286,22 @@ impl WorkerRegistry {
                     }
                 }
             } else {
-                let _ = managed.child.kill();
+                let pid = managed.child.id();
+                let start_key = process_state::process_start_key(pid);
+                if let Err(err) = process_state::terminate_process_tree(pid, start_key.as_deref()) {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
             }
-            process_state::write_worker_stopped(worker_id, None)?;
+            if let Err(err) = process_state::write_worker_stopped(worker_id, None) {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
         }
         self.workers.clear();
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     fn start_worker(&mut self, worker_id: &str, restart_count: u32) -> Result<()> {
@@ -297,22 +328,77 @@ pub fn default_worker_specs(cwd: &Path) -> Vec<WorkerSpec> {
     specs
 }
 
-pub async fn run_supervisor_loop(cwd: PathBuf, port: u16) -> Result<()> {
+pub struct SupervisorHandle {
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<Result<()>>,
+}
+
+impl SupervisorHandle {
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
+    pub async fn shutdown(mut self, grace: Duration) -> Result<()> {
+        self.cancel.cancel();
+        match tokio::time::timeout(grace, &mut self.task).await {
+            Ok(result) => result.context("daemon supervisor task panicked")?,
+            Err(_) => {
+                self.task.abort();
+                let _ = (&mut self.task).await;
+                anyhow::bail!("daemon supervisor did not stop within {grace:?}")
+            }
+        }
+    }
+}
+
+impl Drop for SupervisorHandle {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+pub fn start_supervisor(cwd: PathBuf, port: u16) -> Result<SupervisorHandle> {
     let mut registry = WorkerRegistry::new(default_worker_specs(&cwd));
     registry.start_all()?;
-    process_state::write_supervisor_heartbeat(port, &cwd)?;
+    if let Err(err) = process_state::write_supervisor_heartbeat(port, &cwd) {
+        if let Err(rollback_err) = registry.terminate_all() {
+            warn!(error = %rollback_err, "failed to roll back workers after supervisor state failure");
+        }
+        return Err(err);
+    }
+    let cancel = CancellationToken::new();
+    let task_cancel = cancel.clone();
+    let task =
+        tokio::spawn(
+            async move { run_supervisor_registry(registry, cwd, port, task_cancel).await },
+        );
+    Ok(SupervisorHandle { cancel, task })
+}
 
+async fn run_supervisor_registry(
+    mut registry: WorkerRegistry,
+    cwd: PathBuf,
+    port: u16,
+    cancel: CancellationToken,
+) -> Result<()> {
     let mut tick = tokio::time::interval(REGISTRY_TICK_INTERVAL);
     loop {
-        tick.tick().await;
-        if process_state::shutdown_requested() {
-            info!("daemon supervisor shutdown requested");
-            registry.terminate_all()?;
-            process_state::write_supervisor_heartbeat(port, &cwd)?;
-            return Ok(());
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                info!("daemon supervisor cancellation requested");
+            }
+            _ = tick.tick() => {
+                if !process_state::shutdown_requested() {
+                    registry.poll().await?;
+                    process_state::write_supervisor_heartbeat(port, &cwd)?;
+                    continue;
+                }
+            }
         }
-        registry.poll().await?;
+        info!("daemon supervisor shutdown requested");
+        registry.terminate_all()?;
         process_state::write_supervisor_heartbeat(port, &cwd)?;
+        return Ok(());
     }
 }
 
@@ -327,34 +413,56 @@ pub async fn run_worker_mode(kind: &str, worker_id: &str, cwd: PathBuf) -> Resul
 }
 
 async fn run_assistant_worker_mode(kind: WorkerKind, worker_id: &str, cwd: PathBuf) -> Result<()> {
-    let mut runtime = AssistantWorkerRuntime::new(&cwd)?;
+    let runtime = AssistantWorkerRuntime::new(&cwd)?;
     ensure_worker_state(kind, worker_id, &cwd)?;
 
-    let mut tick = tokio::time::interval(WORKER_HEARTBEAT_INTERVAL);
+    let mut heartbeat = tokio::time::interval(WORKER_HEARTBEAT_INTERVAL);
+    let mut command_poll = tokio::time::interval(Duration::from_millis(50));
+    let mut submit: Option<tokio::task::JoinHandle<Result<bool>>> = None;
     loop {
-        tick.tick().await;
-        if process_state::shutdown_requested() {
-            process_state::write_worker_stopped(worker_id, None)?;
-            return Ok(());
-        }
-        process_state::write_worker_heartbeat(worker_id)?;
-        let mut processed = 0usize;
-        while let Some(command) =
-            super::protocol_store().claim_next_pending_command(worker_id, kind.as_str())?
-        {
-            processed += 1;
-            let shutdown_requested =
-                handle_worker_command(worker_id, &mut runtime, command).await?;
-            if shutdown_requested {
-                process_state::write_worker_stopped(worker_id, None)?;
-                return Ok(());
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                if process_state::shutdown_requested() {
+                    runtime.abort();
+                    if let Some(handle) = submit.take() {
+                        let _ = handle.await;
+                    }
+                    process_state::write_worker_stopped(worker_id, None)?;
+                    return Ok(());
+                }
+                process_state::write_worker_heartbeat(worker_id)?;
             }
-        }
-        if processed > 0 {
-            info!(
-                worker_id,
-                processed, "daemon worker processed command files"
-            );
+            _ = command_poll.tick() => {
+                let command = if submit.is_some() {
+                    super::protocol_store().claim_next_control_command(worker_id, kind.as_str())?
+                } else {
+                    super::protocol_store().claim_next_pending_command(worker_id, kind.as_str())?
+                };
+                let Some(command) = command else { continue };
+                if command.kind == super::protocol::DaemonCommandKind::Submit {
+                    let runtime = runtime.clone();
+                    let worker_id = worker_id.to_string();
+                    submit = Some(tokio::spawn(async move {
+                        handle_worker_command(&worker_id, &runtime, command).await
+                    }));
+                } else if handle_worker_command(worker_id, &runtime, command).await? {
+                    runtime.abort();
+                    if let Some(handle) = submit.take() {
+                        let _ = handle.await;
+                    }
+                    process_state::write_worker_stopped(worker_id, None)?;
+                    return Ok(());
+                }
+            }
+            result = async {
+                match submit.as_mut() {
+                    Some(handle) => handle.await,
+                    None => std::future::pending().await,
+                }
+            }, if submit.is_some() => {
+                result.context("assistant submit task panicked")??;
+                submit = None;
+            }
         }
     }
 }
@@ -539,6 +647,11 @@ fn spawn_worker(spec: WorkerSpec, restart_count: u32) -> Result<ManagedWorker> {
         .with_context(|| format!("failed to clone worker log {}", spec.log_path.display()))?;
 
     let mut cmd = Command::new(exe);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     cmd.arg("--daemon-worker")
         .arg(spec.kind.as_str())
         .arg("--worker-id")
@@ -551,10 +664,10 @@ fn spawn_worker(spec: WorkerSpec, restart_count: u32) -> Result<ManagedWorker> {
         cmd.env(key, value);
     }
 
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to spawn daemon worker {}", spec.worker_id))?;
-    process_state::write_worker_running(
+    if let Err(err) = process_state::write_worker_running(
         &spec.worker_id,
         spec.kind.as_str(),
         child.id(),
@@ -562,7 +675,13 @@ fn spawn_worker(spec: WorkerSpec, restart_count: u32) -> Result<ManagedWorker> {
         &spec.log_path,
         restart_count,
         spec.required,
-    )?;
+    ) {
+        let start_key = process_state::process_start_key(child.id());
+        let _ = process_state::terminate_process_tree(child.id(), start_key.as_deref());
+        let _ = child.wait();
+        return Err(err)
+            .with_context(|| format!("failed to persist daemon worker {} state", spec.worker_id));
+    }
     info!(
         worker_id = %spec.worker_id,
         pid = child.id(),

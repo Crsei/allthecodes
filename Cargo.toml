@@ -2,6 +2,9 @@
 resolver = "2"
 members = ["crates/*"]
 
+[workspace.package]
+license = "Apache-2.0"
+
 # ============================================================
 # Shared dependency versions.
 # ------------------------------------------------------------
@@ -51,7 +54,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # LRU 缓存
-lru = "0.12"
+lru = "0.16"
 
 # 日志
 tracing = "0.1"
@@ -75,7 +78,7 @@ dirs = "6"
 regex = "1"
 
 # Git 操作
-git2 = { version = "0.19", default-features = false, features = ["https", "vendored-openssl"] }
+git2 = { version = "0.21", default-features = false, features = ["https", "vendored-openssl"] }
 
 # 文本 Diff
 similar = "2"
@@ -174,7 +177,6 @@ axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 hmac = "0.12"
-notify-rust = "4"
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio-rustls",
     "sqlite",

@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::transport::{classify_event, event_type, EventClass};
 
 const DEFAULT_SERVER_REQUEST_TIMEOUT_MS: u64 = 30_000;
+const TURN_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub type PendingPermissions =
     Arc<Mutex<HashMap<String, oneshot::Sender<PermissionResponsePayload>>>>;
@@ -128,12 +129,20 @@ impl PendingInteractions {
         tool_use_id: &str,
         response: PermissionResponsePayload,
     ) -> bool {
-        if let (Some(session_id), Some(turn_id)) = (session_id, turn_id) {
+        if session_id.is_some() || turn_id.is_some() {
+            let (Some(session_id), Some(turn_id)) = (session_id, turn_id) else {
+                return false;
+            };
             let key = ScopedInteractionKey::new(session_id, turn_id, tool_use_id);
-            if let Some(tx) = self.scoped_permissions.lock().remove(&key) {
-                self.server_requests.lock().remove(tool_use_id);
-                return tx.send(response).is_ok();
-            }
+            return self
+                .scoped_permissions
+                .lock()
+                .remove(&key)
+                .map(|tx| {
+                    self.server_requests.lock().remove(tool_use_id);
+                    tx.send(response).is_ok()
+                })
+                .unwrap_or(false);
         }
 
         self.legacy_permissions
@@ -153,12 +162,20 @@ impl PendingInteractions {
         id: &str,
         text: String,
     ) -> bool {
-        if let (Some(session_id), Some(turn_id)) = (session_id, turn_id) {
+        if session_id.is_some() || turn_id.is_some() {
+            let (Some(session_id), Some(turn_id)) = (session_id, turn_id) else {
+                return false;
+            };
             let key = ScopedInteractionKey::new(session_id, turn_id, id);
-            if let Some(tx) = self.scoped_questions.lock().remove(&key) {
-                self.server_requests.lock().remove(id);
-                return tx.send(text).is_ok();
-            }
+            return self
+                .scoped_questions
+                .lock()
+                .remove(&key)
+                .map(|tx| {
+                    self.server_requests.lock().remove(id);
+                    tx.send(text).is_ok()
+                })
+                .unwrap_or(false);
         }
 
         self.legacy_questions
@@ -173,6 +190,9 @@ impl PendingInteractions {
 
     pub fn try_answer_any_question(&self, text: String) -> Option<String> {
         let mut pending = self.legacy_questions.lock();
+        if pending.len() != 1 {
+            return None;
+        }
         let pending_id = pending.keys().next().cloned()?;
         let tx = pending.remove(&pending_id)?;
         drop(pending);
@@ -228,18 +248,32 @@ pub struct PendingCleanup {
 
 #[derive(Clone)]
 pub struct SessionRuntime {
-    session_id: String,
     run_id: String,
-    current_turn: Arc<Mutex<Option<TurnRuntime>>>,
+    turn_state: Arc<Mutex<TurnState>>,
     pending: PendingInteractions,
+}
+
+#[derive(Default)]
+struct TurnState {
+    session_id: String,
+    current: Option<TurnRuntime>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnAlreadyRunning {
+    pub session_id: String,
+    pub turn_id: String,
 }
 
 impl SessionRuntime {
     pub fn new(session_id: impl Into<String>) -> Self {
         Self {
-            session_id: session_id.into(),
             run_id: uuid::Uuid::new_v4().to_string(),
-            current_turn: Arc::new(Mutex::new(None)),
+            turn_state: Arc::new(Mutex::new(TurnState {
+                session_id: session_id.into(),
+                ..TurnState::default()
+            })),
             pending: PendingInteractions::new(),
         }
     }
@@ -252,8 +286,20 @@ impl SessionRuntime {
         Self::new(session_id)
     }
 
-    pub fn session_id(&self) -> &str {
-        &self.session_id
+    pub fn session_id(&self) -> String {
+        self.turn_state.lock().session_id.clone()
+    }
+
+    pub fn set_session_id(&self, session_id: impl Into<String>) -> Result<(), TurnAlreadyRunning> {
+        let mut state = self.turn_state.lock();
+        if let Some(current) = state.current.as_ref() {
+            return Err(TurnAlreadyRunning {
+                session_id: current.session_id.clone(),
+                turn_id: current.turn_id.clone(),
+            });
+        }
+        state.session_id = session_id.into();
+        Ok(())
     }
 
     pub fn run_id(&self) -> &str {
@@ -264,18 +310,85 @@ impl SessionRuntime {
         &self.pending
     }
 
-    pub fn begin_turn(&self, turn_id: impl Into<String>) -> TurnRuntime {
+    pub fn begin_turn(
+        &self,
+        turn_id: impl Into<String>,
+    ) -> Result<TurnRuntime, TurnAlreadyRunning> {
+        self.try_begin_turn(turn_id)
+    }
+
+    pub fn try_begin_turn(
+        &self,
+        turn_id: impl Into<String>,
+    ) -> Result<TurnRuntime, TurnAlreadyRunning> {
+        let mut state = self.turn_state.lock();
+        if state.task.as_ref().is_some_and(|task| task.is_finished()) {
+            state.task.take();
+            state.current.take();
+        }
+        if let Some(current) = state.current.as_ref() {
+            return Err(TurnAlreadyRunning {
+                session_id: current.session_id.clone(),
+                turn_id: current.turn_id.clone(),
+            });
+        }
         let turn = TurnRuntime {
-            session_id: self.session_id.clone(),
+            session_id: state.session_id.clone(),
             turn_id: turn_id.into(),
             run_id: self.run_id.clone(),
         };
-        *self.current_turn.lock() = Some(turn.clone());
-        turn
+        state.current = Some(turn.clone());
+        Ok(turn)
+    }
+
+    pub fn attach_turn_task(
+        &self,
+        turn: &TurnRuntime,
+        task: tokio::task::JoinHandle<()>,
+    ) -> Result<(), tokio::task::JoinHandle<()>> {
+        let mut state = self.turn_state.lock();
+        let matches = state.current.as_ref().is_some_and(|current| {
+            current.turn_id == turn.turn_id && current.run_id == turn.run_id
+        });
+        if !matches {
+            task.abort();
+            return Err(task);
+        }
+        if task.is_finished() {
+            state.current.take();
+        } else {
+            state.task = Some(task);
+        }
+        Ok(())
+    }
+
+    pub fn finish_turn(&self, turn: &TurnRuntime) {
+        let mut state = self.turn_state.lock();
+        if state
+            .current
+            .as_ref()
+            .is_some_and(|current| current.turn_id == turn.turn_id && current.run_id == turn.run_id)
+        {
+            state.current.take();
+        }
+    }
+
+    pub async fn shutdown_turn(&self) -> bool {
+        let task = {
+            let mut state = self.turn_state.lock();
+            state.current.take();
+            state.task.take()
+        };
+        let Some(task) = task else {
+            return false;
+        };
+        task.abort();
+        let _ = tokio::time::timeout(TURN_SHUTDOWN_TIMEOUT, task).await;
+        true
     }
 
     pub fn current_turn(&self) -> Option<TurnRuntime> {
-        self.current_turn.lock().clone()
+        self.turn_state.lock().current.clone()
     }
 }
 
@@ -455,7 +568,7 @@ impl IpcRuntime {
     ) -> IpcPayload {
         IpcPayload::Ready(ServerReady {
             accepted_version: IPC_V2_PROTOCOL_VERSION,
-            session_id: self.session.session_id().to_string(),
+            session_id: self.session.session_id(),
             model: model.into(),
             cwd: cwd.into(),
             permission_mode: permission_mode.into(),
@@ -763,6 +876,30 @@ mod tests {
     }
 
     #[test]
+    fn scoped_permission_never_falls_back_to_legacy_on_scope_mismatch() {
+        let pending = PendingInteractions::new();
+        let (tx, rx) = oneshot::channel();
+        pending.insert_legacy_permission("tool-1".to_string(), tx);
+
+        assert!(!pending.complete_permission(
+            Some("session-1"),
+            Some("wrong-turn"),
+            "tool-1",
+            PermissionResponsePayload::decision("allow"),
+        ));
+        assert!(pending.complete_permission(
+            None,
+            None,
+            "tool-1",
+            PermissionResponsePayload::decision("deny"),
+        ));
+        assert_eq!(
+            rx.blocking_recv().unwrap(),
+            PermissionResponsePayload::decision("deny")
+        );
+    }
+
+    #[test]
     fn legacy_permission_fallback_still_resolves() {
         let pending = PendingInteractions::new();
         let (tx, rx) = oneshot::channel();
@@ -799,14 +936,97 @@ mod tests {
     }
 
     #[test]
+    fn scoped_question_never_falls_back_to_legacy_on_scope_mismatch() {
+        let pending = PendingInteractions::new();
+        let (tx, rx) = oneshot::channel();
+        pending.insert_legacy_question("question-1".to_string(), tx);
+
+        assert!(!pending.complete_question(
+            Some("other-session"),
+            Some("turn-1"),
+            "question-1",
+            "wrong".to_string(),
+        ));
+        assert!(pending.complete_question(None, None, "question-1", "right".to_string(),));
+        assert_eq!(rx.blocking_recv().unwrap(), "right");
+    }
+
+    #[test]
+    fn legacy_submit_does_not_guess_between_multiple_questions() {
+        let pending = PendingInteractions::new();
+        let (first_tx, _first_rx) = oneshot::channel();
+        let (second_tx, _second_rx) = oneshot::channel();
+        pending.insert_legacy_question("question-1".to_string(), first_tx);
+        pending.insert_legacy_question("question-2".to_string(), second_tx);
+
+        assert_eq!(
+            pending.try_answer_any_question("ambiguous".to_string()),
+            None
+        );
+        assert_eq!(pending.legacy_questions().lock().len(), 2);
+    }
+
+    #[test]
     fn session_runtime_tracks_current_turn() {
         let runtime = SessionRuntime::new("session-1");
-        let turn = runtime.begin_turn("turn-1");
+        let turn = runtime.begin_turn("turn-1").unwrap();
 
         assert_eq!(turn.session_id, "session-1");
         assert_eq!(runtime.current_turn().unwrap().turn_id, "turn-1");
         assert_eq!(runtime.session_id(), "session-1");
         assert!(!runtime.run_id().is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_runtime_enforces_single_flight_and_shutdown_joins_turn() {
+        let runtime = SessionRuntime::new("session-1");
+        let first = runtime.try_begin_turn("turn-1").expect("first turn");
+        let (started_tx, started_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        runtime
+            .attach_turn_task(&first, handle)
+            .expect("attach task");
+        started_rx.await.unwrap();
+
+        assert!(runtime.try_begin_turn("turn-2").is_err());
+        assert_eq!(runtime.current_turn().unwrap().turn_id, "turn-1");
+
+        assert!(runtime.shutdown_turn().await);
+        assert!(runtime.current_turn().is_none());
+        assert!(runtime.try_begin_turn("turn-2").is_ok());
+    }
+
+    #[tokio::test]
+    async fn attaching_after_shutdown_aborts_the_orphaned_turn_task() {
+        let runtime = SessionRuntime::new("session-1");
+        let turn = runtime.try_begin_turn("turn-1").unwrap();
+        assert!(!runtime.shutdown_turn().await);
+
+        let handle = tokio::spawn(std::future::pending::<()>());
+        let rejected = runtime
+            .attach_turn_task(&turn, handle)
+            .expect_err("shutdown cleared the turn before attach");
+        let joined = tokio::time::timeout(Duration::from_millis(50), rejected)
+            .await
+            .expect("rejected task should be aborted")
+            .expect_err("aborted task should not complete normally");
+        assert!(joined.is_cancelled());
+    }
+
+    #[test]
+    fn new_turn_uses_updated_session_without_relabeling_old_turn() {
+        let runtime = SessionRuntime::new("session-1");
+        let old = runtime.try_begin_turn("turn-1").unwrap();
+        assert!(runtime.set_session_id("session-2").is_err());
+        runtime.finish_turn(&old);
+
+        runtime.set_session_id("session-2").unwrap();
+        let new = runtime.try_begin_turn("turn-2").unwrap();
+        assert_eq!(old.session_id, "session-1");
+        assert_eq!(new.session_id, "session-2");
     }
 
     #[test]

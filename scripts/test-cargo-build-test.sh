@@ -24,16 +24,16 @@ assert_not_contains() {
 
 full_output="$("${script}" --dry-run full)"
 assert_contains "${full_output}" "+ cargo fmt --all --check"
-assert_contains "${full_output}" "+ cargo clippy --workspace --all-targets -- -D warnings"
-assert_contains "${full_output}" "+ cargo test --workspace"
-assert_contains "${full_output}" "+ cargo build --workspace --release"
+assert_contains "${full_output}" "+ cargo clippy --locked --workspace --all-targets -- -D warnings"
+assert_contains "${full_output}" "+ cargo test --locked --workspace"
+assert_contains "${full_output}" "+ cargo build --locked --workspace --release"
 
 ci_no_toolchain="$("${script}" --dry-run --no-toolchain ci)"
 assert_not_contains "${ci_no_toolchain}" "+ cargo --version"
-assert_contains "${ci_no_toolchain}" "+ cargo test -p allthecodes-tools --features full"
+assert_contains "${ci_no_toolchain}" "+ cargo test --locked -p allthecodes-tools --features full"
 
 nextest_output="$("${script}" --dry-run nextest)"
-assert_contains "${nextest_output}" "+ cargo nextest run --workspace --no-fail-fast"
+assert_contains "${nextest_output}" "+ cargo nextest run --locked --workspace --no-fail-fast"
 
 unknown_output="$(mktemp "${TMPDIR:-/tmp}/allthecodes-script-test.XXXXXX")"
 trap 'rm -f "${unknown_output}"' EXIT

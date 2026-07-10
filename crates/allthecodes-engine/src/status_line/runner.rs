@@ -21,6 +21,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::tools::exec::process_control::{configure_process_group, terminate_process_tree};
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
@@ -224,53 +225,51 @@ async fn spawn_and_capture(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-
-    let spawn_fut = async {
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to spawn '{}': {}", command, e))?;
-
-        // Write the payload to stdin, then close it so the child can exit.
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(e) = stdin.write_all(payload_json.as_bytes()).await {
-                return Err(format!("write stdin failed: {}", e));
-            }
-            if let Err(e) = stdin.shutdown().await {
-                return Err(format!("close stdin failed: {}", e));
-            }
-        }
-
-        let output = child
-            .wait_with_output()
+    configure_process_group(&mut cmd);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn '{}': {}", command, e))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(payload_json.as_bytes())
             .await
-            .map_err(|e| format!("wait failed: {}", e))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "command exited with {} — {}",
-                output
-                    .status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".into()),
-                stderr.trim()
-            ));
-        }
-        let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        // Trim a single trailing newline so the bar doesn't end with empty space.
-        if stdout.ends_with('\n') {
-            stdout.pop();
-            if stdout.ends_with('\r') {
-                stdout.pop();
-            }
-        }
-        Ok(stdout)
-    };
-
-    match tokio::time::timeout(Duration::from_millis(timeout_ms), spawn_fut).await {
-        Ok(result) => result,
-        Err(_) => Err(format!("timed out after {} ms", timeout_ms)),
+            .map_err(|e| format!("write stdin failed: {}", e))?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|e| format!("close stdin failed: {}", e))?;
     }
+    let pid = child.id();
+    let output_future = child.wait_with_output();
+    tokio::pin!(output_future);
+    let output = tokio::select! {
+        result = &mut output_future => result.map_err(|e| format!("wait failed: {}", e))?,
+        _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+            terminate_process_tree(pid).await.map_err(|e| format!("terminate failed: {}", e))?;
+            let _ = tokio::time::timeout(Duration::from_secs(5), &mut output_future).await;
+            return Err(format!("timed out after {} ms", timeout_ms));
+        }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "command exited with {} — {}",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            stderr.trim()
+        ));
+    }
+    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if stdout.ends_with('\n') {
+        stdout.pop();
+        if stdout.ends_with('\r') {
+            stdout.pop();
+        }
+    }
+    Ok(stdout)
 }
 
 #[cfg(unix)]

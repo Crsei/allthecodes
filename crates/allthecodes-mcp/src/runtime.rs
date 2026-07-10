@@ -35,6 +35,22 @@ pub fn current_manager() -> Option<SharedMcpManager> {
     MANAGER.read().clone()
 }
 
+/// Disconnect every live client without holding the manager lock across I/O.
+pub async fn disconnect_all(manager: &SharedMcpManager) {
+    let clients = manager.lock().await.take_all_clients();
+    let mut disconnected = Vec::with_capacity(clients.len());
+    for (name, mut client) in clients {
+        client.disconnect().await;
+        clear_mcp_skills_for_server(&name);
+        disconnected.push(name);
+    }
+
+    let mut manager = manager.lock().await;
+    for name in disconnected {
+        manager.mark_disconnected(&name);
+    }
+}
+
 pub fn install_mcp_skill_cleanup_hook<F>(hook: F)
 where
     F: Fn(&str) + Send + Sync + 'static,

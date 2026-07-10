@@ -13,5 +13,6 @@ pub mod git;
 pub mod git_operation_tracking;
 pub mod hash;
 pub mod messages;
+mod safe_regex;
 pub mod shell;
 pub mod tokens;

@@ -342,13 +342,15 @@ fn is_ipv4(value: &str) -> bool {
         && value.split('.').count() == 4
 }
 
-static URL_IN_TEXT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(?:https?|ssh|ftp|git)://[^\s'"<>()]+"#).expect("valid URL-in-text regex")
-});
+static URL_IN_TEXT_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r#"(?i)\b(?:https?|ssh|ftp|git)://[^\s'"<>()]+"#));
 
 fn extract_hosts_from_text(command: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for matched in URL_IN_TEXT_RE.find_iter(command) {
+    let Ok(regex) = URL_IN_TEXT_RE.as_ref() else {
+        return out;
+    };
+    for matched in regex.find_iter(command) {
         if let Ok(url) = url::Url::parse(matched.as_str()) {
             if let Some(host) = url.host_str() {
                 out.push(normalize_host(host));

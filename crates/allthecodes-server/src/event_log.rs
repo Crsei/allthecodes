@@ -74,7 +74,11 @@ where
             return SequencedEvent::new(seq, build(seq));
         }
 
-        let mut events = self.inner.events.lock().expect("event log mutex poisoned");
+        let mut events = self
+            .inner
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let seq = self.inner.next_seq.fetch_add(1, Ordering::SeqCst);
         let event = SequencedEvent::new(seq, build(seq));
         if events.len() >= self.inner.capacity {
@@ -85,7 +89,11 @@ where
     }
 
     pub fn replay_after(&self, after_seq: Option<EventSeq>) -> ReplayBatch<T> {
-        let events = self.inner.events.lock().expect("event log mutex poisoned");
+        let events = self
+            .inner
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let high_watermark = events
             .back()
             .map(|event| event.seq)
@@ -116,7 +124,7 @@ where
         self.inner
             .events
             .lock()
-            .expect("event log mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .front()
             .map(|event| event.seq)
     }

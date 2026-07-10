@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(feature = "sqlite-storage")]
 use tracing::warn;
 
@@ -425,7 +426,15 @@ pub fn read_control_token() -> Result<Option<DaemonControlToken>> {
 
 pub fn verify_control_token(candidate: &str) -> Result<bool> {
     Ok(read_control_token()?
-        .map(|stored| stored.token == candidate)
+        .map(|stored| {
+            let candidate = Sha256::digest(candidate.as_bytes());
+            let expected = Sha256::digest(stored.token.as_bytes());
+            candidate
+                .iter()
+                .zip(expected.iter())
+                .fold(0_u8, |different, (left, right)| different | (left ^ right))
+                == 0
+        })
         .unwrap_or(false))
 }
 
@@ -1233,6 +1242,9 @@ pub(super) fn ensure_daemon_dir() -> Result<()> {
         .with_context(|| format!("failed to create {}", workers_dir().display()))?;
     fs::create_dir_all(logs_dir())
         .with_context(|| format!("failed to create {}", logs_dir().display()))?;
+    super::set_private_dir_permissions(&daemon_dir())?;
+    super::set_private_dir_permissions(&workers_dir())?;
+    super::set_private_dir_permissions(&logs_dir())?;
     Ok(())
 }
 

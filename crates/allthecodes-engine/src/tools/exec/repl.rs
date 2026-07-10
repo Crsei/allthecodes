@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tracing::debug;
 
+use crate::tools::exec::process_control::{configure_process_group, terminate_process_tree};
 use allthecodes_engine::types::tool::{
     InterruptBehavior, Tool, ToolProgress, ToolResult, ToolUseContext, ValidationResult,
 };
@@ -101,7 +102,7 @@ impl Tool for ReplTool {
     async fn call(
         &self,
         input: Value,
-        _ctx: &ToolUseContext,
+        ctx: &ToolUseContext,
         _parent_message: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
@@ -144,13 +145,47 @@ impl Tool for ReplTool {
         cmd.arg(temp_file.as_os_str());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        configure_process_group(&mut cmd);
+        cmd.kill_on_drop(true);
 
         let timeout_duration = resolve_timeout(Some(timeout_ms));
-
-        let result = tokio::time::timeout(timeout_duration, cmd.output()).await;
+        let child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                return Ok(ToolResult {
+                    data: json!({ "error": format!("Failed to execute {}: {}", interpreter, e) }),
+                    new_messages: vec![],
+                    ..Default::default()
+                })
+            }
+        };
+        let pid = child.id();
+        let output_future = child.wait_with_output();
+        tokio::pin!(output_future);
+        let mut abort_signal = ctx.abort_signal.clone();
+        enum Completion {
+            Output(std::io::Result<std::process::Output>),
+            TimedOut,
+            Cancelled,
+        }
+        let result = tokio::select! {
+            output = &mut output_future => Completion::Output(output),
+            _ = tokio::time::sleep(timeout_duration) => {
+                terminate_process_tree(pid).await?;
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), &mut output_future).await;
+                Completion::TimedOut
+            }
+            changed = abort_signal.changed() => {
+                if matches!(changed, Ok(())) && *abort_signal.borrow() {
+                    terminate_process_tree(pid).await?;
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), &mut output_future).await;
+                    Completion::Cancelled
+                } else { Completion::Output(output_future.await) }
+            }
+        };
 
         match result {
-            Ok(Ok(output)) => {
+            Completion::Output(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                 let exit_code = output.status.code().unwrap_or(-1);
@@ -181,13 +216,18 @@ impl Tool for ReplTool {
                     ..Default::default()
                 })
             }
-            Ok(Err(e)) => Ok(ToolResult {
+            Completion::Output(Err(e)) => Ok(ToolResult {
                 data: json!({ "error": format!("Failed to execute {}: {}", interpreter, e) }),
                 new_messages: vec![],
                 ..Default::default()
             }),
-            Err(_) => Ok(ToolResult {
+            Completion::TimedOut => Ok(ToolResult {
                 data: json!({ "error": format!("Execution timed out after {}ms", timeout_duration.as_millis()) }),
+                new_messages: vec![],
+                ..Default::default()
+            }),
+            Completion::Cancelled => Ok(ToolResult {
+                data: json!({ "error": "Execution cancelled", "cancelled": true }),
                 new_messages: vec![],
                 ..Default::default()
             }),

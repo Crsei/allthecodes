@@ -735,8 +735,7 @@ pub(crate) fn read_oauth_store() -> Result<OAuthStore> {
 }
 
 pub(crate) fn write_oauth_store(store: &OAuthStore) -> Result<()> {
-    write_json_atomic(token_store_path(), store)?;
-    set_private_permissions(&token_store_path())
+    write_json_atomic(token_store_path(), store)
 }
 
 pub(crate) fn read_pending_store() -> Result<OAuthPendingStore> {
@@ -754,8 +753,13 @@ where
     if !path.exists() {
         return Ok(T::default());
     }
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
     if content.trim().is_empty() {
         return Ok(T::default());
     }
@@ -776,22 +780,7 @@ where
     std::fs::write(&tmp, pretty).with_context(|| format!("failed to write {}", tmp.display()))?;
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
-
-    // Set private permissions (0600) on Unix so the file is readable only
-    // by the owning user.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-            warn!(
-                path = %path.display(),
-                error = %e,
-                "failed to set 0600 permissions on OAuth store"
-            );
-        }
-    }
-
-    Ok(())
+    set_private_permissions(&path)
 }
 
 pub(crate) fn server_auth_key(config: &McpServerConfig) -> String {
@@ -912,19 +901,10 @@ pub(crate) fn resource_for_tokens(config: &McpServerConfig) -> Option<String> {
         .or_else(|| config.url.clone())
 }
 
-/// Set Unix 0600 permissions on a file (no-op on non-Unix platforms).
+/// Restrict a credential file to the current user.
 pub(crate) fn set_private_permissions(path: &std::path::Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("failed to set 0600 on {}", path.display()))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+    allthecodes_config::paths::set_private_file_permissions(path)
+        .with_context(|| format!("failed to set private permissions on {}", path.display()))
 }
 
 /// Start an automatic OAuth authorization flow with a loopback callback server.

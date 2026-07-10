@@ -83,6 +83,7 @@ def install_native_components(
         [
             "cargo",
             "build",
+            "--locked",
             "--release",
             "--bin",
             "allthecodes",

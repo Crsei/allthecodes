@@ -7,6 +7,9 @@ use serde_json::{json, Value};
 use crate::types::message::{AssistantMessage, ToolResultContent};
 use crate::types::tool::*;
 
+const MAX_MCP_RESOURCE_MODEL_BYTES: usize = 256 * 1024;
+const MCP_RESOURCE_TRUNCATION_MARKER: &str = "\n[MCP resource content truncated]";
+
 pub fn tools() -> Tools {
     vec![
         Arc::new(ListMcpResourcesTool) as Arc<dyn Tool>,
@@ -225,26 +228,75 @@ fn format_resource_contents(
         return format!("MCP resource from '{}' returned no content.", server);
     }
 
-    contents
-        .iter()
-        .map(|content| {
-            if let Some(text) = &content.text {
-                format!("[Resource from {}: {}]\n{}", server, content.uri, text)
-            } else if content.blob.is_some() {
-                let mime = content
-                    .mime_type
-                    .as_deref()
-                    .unwrap_or("application/octet-stream");
-                format!(
-                    "[Resource from {}: {} ({}) binary content omitted]",
-                    server, content.uri, mime
-                )
-            } else {
-                format!("[Resource from {}: {}]", server, content.uri)
+    let mut output = String::new();
+    for (index, content) in contents.iter().enumerate() {
+        let mime = content
+            .mime_type
+            .as_deref()
+            .unwrap_or("application/octet-stream");
+        let pieces = if let Some(text) = content.text.as_deref() {
+            vec![
+                (index > 0).then_some("\n"),
+                Some("[Resource from "),
+                Some(server),
+                Some(": "),
+                Some(content.uri.as_str()),
+                Some("]\n"),
+                Some(text),
+            ]
+        } else if content.blob.is_some() {
+            vec![
+                (index > 0).then_some("\n"),
+                Some("[Resource from "),
+                Some(server),
+                Some(": "),
+                Some(content.uri.as_str()),
+                Some(" ("),
+                Some(mime),
+                Some(") binary content omitted]"),
+            ]
+        } else {
+            vec![
+                (index > 0).then_some("\n"),
+                Some("[Resource from "),
+                Some(server),
+                Some(": "),
+                Some(content.uri.as_str()),
+                Some("]"),
+            ]
+        };
+
+        for piece in pieces.into_iter().flatten() {
+            if !append_resource_piece(&mut output, piece) {
+                return output;
             }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        }
+    }
+    output
+}
+
+fn append_resource_piece(output: &mut String, piece: &str) -> bool {
+    if output.len().saturating_add(piece.len()) <= MAX_MCP_RESOURCE_MODEL_BYTES {
+        output.push_str(piece);
+        return true;
+    }
+
+    let content_budget = MAX_MCP_RESOURCE_MODEL_BYTES - MCP_RESOURCE_TRUNCATION_MARKER.len();
+    if output.len() > content_budget {
+        let mut boundary = content_budget;
+        while !output.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        output.truncate(boundary);
+    } else {
+        let mut remaining = (content_budget - output.len()).min(piece.len());
+        while !piece.is_char_boundary(remaining) {
+            remaining -= 1;
+        }
+        output.push_str(&piece[..remaining]);
+    }
+    output.push_str(MCP_RESOURCE_TRUNCATION_MARKER);
+    false
 }
 
 #[cfg(test)]
@@ -393,5 +445,30 @@ mod tests {
         );
         assert!(text.contains("binary content omitted"));
         assert!(!text.contains("AAAA"));
+    }
+
+    #[test]
+    fn format_resource_contents_enforces_utf8_safe_total_budget() {
+        let oversized = "界".repeat(MAX_MCP_RESOURCE_MODEL_BYTES);
+        let contents = vec![
+            allthecodes_mcp::McpResourceContent {
+                uri: "file:///first".to_string(),
+                mime_type: Some("text/plain".to_string()),
+                text: Some(oversized),
+                blob: None,
+            },
+            allthecodes_mcp::McpResourceContent {
+                uri: "file:///second".to_string(),
+                mime_type: Some("text/plain".to_string()),
+                text: Some("must not bypass the total budget".to_string()),
+                blob: None,
+            },
+        ];
+
+        let formatted = format_resource_contents("demo", &contents);
+
+        assert!(formatted.len() <= MAX_MCP_RESOURCE_MODEL_BYTES);
+        assert!(formatted.contains("[MCP resource content truncated]"));
+        assert!(std::str::from_utf8(formatted.as_bytes()).is_ok());
     }
 }

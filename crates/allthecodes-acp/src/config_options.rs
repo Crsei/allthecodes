@@ -172,6 +172,15 @@ pub fn apply_config_option(
         return Err(v2::Error::invalid_params().data(format!("invalid {config_id} value: {value}")));
     }
 
+    let parsed_mode = if config_id == CONFIG_MODE {
+        Some(
+            PermissionMode::parse_configured(Some(value)).map_err(|error| {
+                v2::Error::invalid_params().data(format!("invalid mode value: {error}"))
+            })?,
+        )
+    } else {
+        None
+    };
     let value = value.to_string();
     session.engine.update_app_state(|state| match config_id {
         CONFIG_MODEL => {
@@ -181,8 +190,9 @@ pub fn apply_config_option(
             state.effort_value = Some(value.clone());
         }
         CONFIG_MODE => {
-            state.tool_permission_context.mode = PermissionMode::parse_configured(Some(&value))
-                .expect("mode value was validated from static option set");
+            if let Some(mode) = parsed_mode {
+                state.tool_permission_context.mode = mode;
+            }
         }
         _ => unreachable!("config_id was validated above"),
     });

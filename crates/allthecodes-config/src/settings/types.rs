@@ -158,10 +158,10 @@ pub struct SandboxSettings {
     /// Sandbox profile identifier: `read-only`, `workspace`, or `full` (off).
     pub mode: Option<String>,
     /// When `true` and the OS primitive is unavailable, fail hard instead of
-    /// falling back to unsandboxed execution (default: `false`).
+    /// falling back to unsandboxed execution (defaults to `true` when enabled).
     pub fail_if_unavailable: Option<bool>,
     /// When `false`, reject the `dangerouslyDisableSandbox` escape hatch
-    /// regardless of permission rules (default: `true`).
+    /// regardless of permission rules (defaults to `false` when enabled).
     pub allow_unsandboxed_commands: Option<bool>,
     /// When `true` in managed settings, only managed `allowRead` entries are
     /// respected; user/project/local entries are ignored. `denyRead` still

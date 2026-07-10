@@ -154,7 +154,10 @@ fn tool_available_in_registry(tool: &dyn Tool) -> bool {
 
 /// Filter tools by their current dynamic enablement state.
 pub fn filter_tools_for_enabled_state(tools: Tools) -> Tools {
-    tools.into_iter().filter(|tool| tool.is_enabled()).collect()
+    tools
+        .into_iter()
+        .filter(|tool| tool_available_in_registry(tool.as_ref()))
+        .collect()
 }
 
 /// Filter tools controlled by runtime feature gates.

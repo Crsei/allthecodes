@@ -49,12 +49,10 @@ static INSTANCE: OnceLock<Box<dyn EngineTelemetry>> = OnceLock::new();
 
 /// Install the global telemetry bridge.
 ///
-/// Must be called once during Phase B startup, before any submit_message
-/// call. Panics if called a second time.
-pub fn install(bridge: Box<dyn EngineTelemetry>) {
-    INSTANCE
-        .set(bridge)
-        .unwrap_or_else(|_| panic!("telemetry bridge already installed"));
+/// Must be called once during Phase B startup, before any submit_message call.
+/// Returns the supplied bridge when another bridge is already installed.
+pub fn install(bridge: Box<dyn EngineTelemetry>) -> Result<(), Box<dyn EngineTelemetry>> {
+    INSTANCE.set(bridge)
 }
 
 /// Access the bridge and call `f` with it.

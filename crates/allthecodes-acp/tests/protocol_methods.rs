@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 //! Tests: JSON-RPC request cancellation before ACK.
 //!
 //! Verifies that cancelling a `session/prompt` request via `$/cancel_request`

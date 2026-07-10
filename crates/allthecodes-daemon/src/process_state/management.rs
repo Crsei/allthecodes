@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use crate::{operation_lock, protocol, readiness};
 
 use super::paths::{daemon_dir, health_url, state_path, worker_log_path};
-use super::platform::{configure_detached, process_matches_record};
+use super::platform::{configure_detached, process_matches_record, process_start_key};
 use super::storage::{
     cleanup_stale_state_before_start, clear_sleep_state, ensure_daemon_dir,
     list_bridge_session_states, read_bridge_session_state, read_control_token, read_worker_state,
@@ -117,16 +117,25 @@ fn start_daemon(args: &[String], cwd: &Path, fallback_port: u16) -> Result<()> {
         .stderr(Stdio::from(log_file_err));
 
     configure_detached(&mut cmd);
-    let child = cmd.spawn().context("failed to spawn daemon supervisor")?;
+    let mut child = cmd.spawn().context("failed to spawn daemon supervisor")?;
     let ready_url = readiness::ready_url(port);
-    let readiness = readiness::wait_for_ready(port).with_context(|| {
-        format!(
-            "daemon start failed readiness check: pid={} ready={} log={}",
-            child.id(),
-            ready_url,
-            log_path.display()
-        )
-    })?;
+    let readiness = match readiness::wait_for_ready(port) {
+        Ok(readiness) => readiness,
+        Err(err) => {
+            let pid = child.id();
+            let start_key = process_start_key(pid);
+            let _ = super::platform::terminate_process_tree(pid, start_key.as_deref());
+            let wait_result = child.wait();
+            return Err(err).with_context(|| {
+                format!(
+                    "daemon start failed readiness check: pid={pid} ready={} log={} spawned daemon terminated={} ",
+                    ready_url,
+                    log_path.display(),
+                    wait_result.is_ok()
+                )
+            });
+        }
+    };
     println!(
         "daemon started: pid={} health={} ready={} attempts={} elapsed_ms={} log={}",
         child.id(),

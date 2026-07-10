@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonCommandKind {
     Submit,
@@ -245,8 +245,30 @@ impl DaemonProtocolStore {
         worker_id: &str,
         worker_kind: &str,
     ) -> Result<Option<DaemonCommand>> {
-        for command in self.read_worker_commands(worker_id)? {
+        self.claim_next_pending_command_matching(worker_id, worker_kind, |_| true)
+    }
+
+    pub fn claim_next_control_command(
+        &self,
+        worker_id: &str,
+        worker_kind: &str,
+    ) -> Result<Option<DaemonCommand>> {
+        self.claim_next_pending_command_matching(worker_id, worker_kind, |kind| kind.is_control())
+    }
+
+    fn claim_next_pending_command_matching(
+        &self,
+        worker_id: &str,
+        worker_kind: &str,
+        include: impl Fn(DaemonCommandKind) -> bool,
+    ) -> Result<Option<DaemonCommand>> {
+        let mut commands = self.read_worker_commands(worker_id)?;
+        commands.sort_by_key(|command| command_priority(command.kind));
+        for command in commands {
             if command.status != DaemonCommandStatus::Pending {
+                continue;
+            }
+            if !include(command.kind) {
                 continue;
             }
 
@@ -351,6 +373,22 @@ impl DaemonProtocolStore {
     }
 }
 
+impl DaemonCommandKind {
+    pub(crate) fn is_control(self) -> bool {
+        !matches!(self, Self::Submit)
+    }
+}
+
+fn command_priority(kind: DaemonCommandKind) -> u8 {
+    match kind {
+        DaemonCommandKind::Shutdown => 0,
+        DaemonCommandKind::Abort => 1,
+        DaemonCommandKind::PermissionResponse | DaemonCommandKind::AskUserResponse => 2,
+        DaemonCommandKind::Resize | DaemonCommandKind::ReloadConfig => 3,
+        DaemonCommandKind::Submit => 4,
+    }
+}
+
 pub fn event_to_ndjson_line(event: &DaemonEvent) -> serde_json::Result<String> {
     let mut line = serde_json::to_string(event)?;
     line.push('\n');
@@ -401,12 +439,14 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
+        allthecodes_config::paths::set_private_directory_permissions(parent)?;
     }
     let tmp = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(value)?;
     fs::write(&tmp, bytes).with_context(|| format!("failed to write {}", tmp.display()))?;
     fs::rename(&tmp, path)
         .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))?;
+    allthecodes_config::paths::set_private_file_permissions(path)?;
     Ok(())
 }
 
@@ -813,6 +853,115 @@ mod tests {
 
         assert_eq!(stored.status, DaemonCommandStatus::Handled);
         assert!(events.iter().any(|event| event.event_type == "abort_ack"));
+    }
+
+    #[test]
+    #[serial]
+    fn control_commands_are_claimed_before_an_older_submit() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DaemonProtocolStore::new(temp.path().join("daemon"));
+        let submit = store
+            .enqueue_command(
+                "assistant-session-1",
+                DaemonCommandKind::Submit,
+                json!({ "text": "slow" }),
+                None,
+            )
+            .unwrap();
+        let abort = store
+            .enqueue_command(
+                "assistant-session-1",
+                DaemonCommandKind::Abort,
+                json!({}),
+                None,
+            )
+            .unwrap();
+
+        let claimed = store
+            .claim_next_pending_command("assistant-session-1", "assistant-session")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(claimed.command_id, abort.command_id);
+        assert_eq!(
+            store
+                .read_command("assistant-session-1", &submit.command_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            DaemonCommandStatus::Pending
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn control_claim_does_not_claim_submit() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DaemonProtocolStore::new(temp.path().join("daemon"));
+        store
+            .enqueue_command(
+                "assistant-session-1",
+                DaemonCommandKind::Submit,
+                json!({ "text": "slow" }),
+                None,
+            )
+            .unwrap();
+
+        assert!(store
+            .claim_next_control_command("assistant-session-1", "assistant-session")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn active_submit_can_claim_abort_interaction_responses_and_shutdown() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DaemonProtocolStore::new(temp.path().join("daemon"));
+        let submit = store
+            .enqueue_command(
+                "assistant-session-1",
+                DaemonCommandKind::Submit,
+                json!({ "text": "slow" }),
+                None,
+            )
+            .unwrap();
+        for kind in [
+            DaemonCommandKind::Abort,
+            DaemonCommandKind::PermissionResponse,
+            DaemonCommandKind::AskUserResponse,
+            DaemonCommandKind::Shutdown,
+        ] {
+            store
+                .enqueue_command("assistant-session-1", kind, json!({}), None)
+                .unwrap();
+        }
+
+        let mut claimed = Vec::new();
+        while let Some(command) = store
+            .claim_next_control_command("assistant-session-1", "assistant-session")
+            .unwrap()
+        {
+            claimed.push(command.kind);
+        }
+
+        assert_eq!(
+            claimed,
+            vec![
+                DaemonCommandKind::Shutdown,
+                DaemonCommandKind::Abort,
+                DaemonCommandKind::PermissionResponse,
+                DaemonCommandKind::AskUserResponse,
+            ]
+        );
+        assert_eq!(
+            store
+                .read_command("assistant-session-1", &submit.command_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            DaemonCommandStatus::Pending
+        );
     }
 
     #[test]

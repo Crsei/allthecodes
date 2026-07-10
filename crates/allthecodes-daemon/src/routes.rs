@@ -1054,9 +1054,12 @@ mod tests {
         event: Option<&str>,
         delivery_id: Option<&str>,
     ) -> anyhow::Result<Option<crate::runtime::GithubPrActivityRouteOutcome>> {
-        assert_eq!(event, Some("pull_request"));
-        assert_eq!(delivery_id, Some("delivery-42"));
-        assert_eq!(payload["repository"]["name"], "allthecodes");
+        anyhow::ensure!(event == Some("pull_request"), "unexpected event");
+        anyhow::ensure!(delivery_id == Some("delivery-42"), "unexpected delivery id");
+        anyhow::ensure!(
+            payload["repository"]["name"] == "allthecodes",
+            "unexpected repository"
+        );
         Ok(Some(crate::runtime::GithubPrActivityRouteOutcome {
             matched: 1,
             delivered: 1,

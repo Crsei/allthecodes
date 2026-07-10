@@ -55,6 +55,100 @@ type PendingRequest = oneshot::Sender<Result<Value>>;
 pub(crate) type PendingRequests = Arc<Mutex<HashMap<u64, PendingRequest>>>;
 const STREAMABLE_HTTP_RETRY_DELAYS_MS: [u64; 2] = [250, 1_000];
 
+#[derive(Clone)]
+enum RequestCancellationTransport {
+    Stdio(Arc<Mutex<tokio::process::ChildStdin>>),
+    Sse(SseHttpSender),
+    StreamableHttp(StreamableHttpSender),
+}
+
+impl RequestCancellationTransport {
+    // Stdio JSON-RPC writes must remain serialized for the complete write and
+    // flush operation so cancellation frames cannot interleave with requests.
+    #[allow(clippy::await_holding_invalid_type)]
+    async fn send(self, request_id: u64) {
+        let notification = JsonRpcNotification::new(
+            "notifications/cancelled",
+            Some(json!({
+                "requestId": request_id,
+                "reason": "client request cancelled"
+            })),
+        );
+        let Ok(mut line) = serde_json::to_string(&notification) else {
+            return;
+        };
+        let result = match self {
+            Self::Stdio(writer) => {
+                line.push('\n');
+                let mut writer = writer.lock().await;
+                async {
+                    writer.write_all(line.as_bytes()).await?;
+                    writer.flush().await
+                }
+                .await
+                .map_err(anyhow::Error::from)
+            }
+            Self::Sse(sender) => sender.post_json(&line).await,
+            Self::StreamableHttp(sender) => sender.post_json(&line).await,
+        };
+        if let Err(error) = result {
+            debug!(request_id, %error, "MCP: failed to send request cancellation");
+        }
+    }
+}
+
+struct PendingRequestGuard {
+    id: u64,
+    pending: PendingRequests,
+    cancellation_transport: Option<RequestCancellationTransport>,
+    armed: bool,
+}
+
+impl PendingRequestGuard {
+    fn new(
+        id: u64,
+        pending: PendingRequests,
+        cancellation_transport: Option<RequestCancellationTransport>,
+    ) -> Self {
+        Self {
+            id,
+            pending,
+            cancellation_transport,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.try_lock() {
+            pending.remove(&self.id);
+        } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let pending = self.pending.clone();
+            let id = self.id;
+            runtime.spawn(async move {
+                pending.lock().await.remove(&id);
+            });
+        }
+
+        if self.armed {
+            if let (Some(transport), Ok(runtime)) = (
+                self.cancellation_transport.take(),
+                tokio::runtime::Handle::try_current(),
+            ) {
+                let id = self.id;
+                runtime.spawn(async move {
+                    transport.send(id).await;
+                });
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // McpClient
 // ---------------------------------------------------------------------------
@@ -67,6 +161,8 @@ pub struct McpClient {
     pub config: McpServerConfig,
     /// Current connection state.
     pub state: McpConnectionState,
+    /// State shared with background transport readers.
+    pub(super) live_state: Arc<StdMutex<McpConnectionState>>,
     /// Tools discovered from this server.
     pub tools: Vec<McpToolDef>,
     /// Resources discovered from this server.
@@ -109,6 +205,7 @@ impl McpClient {
         Self {
             config,
             state: McpConnectionState::Pending,
+            live_state: Arc::new(StdMutex::new(McpConnectionState::Pending)),
             tools: Vec::new(),
             resources: Vec::new(),
             server_capabilities: ServerCapabilities::default(),
@@ -135,6 +232,28 @@ impl McpClient {
             .unwrap_or_default()
     }
 
+    pub fn connection_state(&self) -> McpConnectionState {
+        self.live_state
+            .lock()
+            .map(|state| {
+                if *state == McpConnectionState::Pending
+                    && self.state != McpConnectionState::Pending
+                {
+                    self.state.clone()
+                } else {
+                    state.clone()
+                }
+            })
+            .unwrap_or_else(|_| self.state.clone())
+    }
+
+    fn set_connection_state(&mut self, state: McpConnectionState) {
+        self.state = state.clone();
+        if let Ok(mut live_state) = self.live_state.lock() {
+            *live_state = state;
+        }
+    }
+
     pub fn stderr_tail_dropped_line_count(&self) -> u64 {
         self.stderr_tail_dropped_line_count.load(Ordering::SeqCst)
     }
@@ -146,6 +265,19 @@ impl McpClient {
         }
         if let Some(sender) = &mut self.streamable_http_sender {
             sender.set_event_sink(event_sink);
+        }
+    }
+
+    fn request_cancellation_transport(&self) -> Option<RequestCancellationTransport> {
+        if let Some(sender) = &self.streamable_http_sender {
+            Some(RequestCancellationTransport::StreamableHttp(sender.clone()))
+        } else if let Some(sender) = &self.sse_sender {
+            Some(RequestCancellationTransport::Sse(sender.clone()))
+        } else {
+            self.stdin_writer
+                .as_ref()
+                .cloned()
+                .map(RequestCancellationTransport::Stdio)
         }
     }
 
@@ -249,7 +381,7 @@ impl McpClient {
             runtime: self.runtime.clone(),
         });
         self.replace_reader_handle(Some(reader_handle));
-        self.state = McpConnectionState::Connected;
+        self.set_connection_state(McpConnectionState::Connected);
 
         self.runtime
             .emit_event(super::McpSubsystemEvent::ServerStateChanged {
@@ -301,7 +433,7 @@ impl McpClient {
             self.pending.clone(),
             self.runtime.clone(),
         ));
-        self.state = McpConnectionState::Connected;
+        self.set_connection_state(McpConnectionState::Connected);
 
         self.runtime
             .emit_event(super::McpSubsystemEvent::ServerStateChanged {
@@ -316,7 +448,7 @@ impl McpClient {
 
     /// Initialize the MCP connection -- exchange capabilities with the server.
     pub async fn initialize(&mut self) -> Result<()> {
-        if self.state != McpConnectionState::Connected {
+        if self.connection_state() != McpConnectionState::Connected {
             bail!("cannot initialize: not connected (state: {:?})", self.state);
         }
 
@@ -395,7 +527,9 @@ impl McpClient {
         self.abort_reader_handle();
 
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill().await;
+            if let Err(error) = crate::process_control::terminate_child_tree(&mut child).await {
+                warn!(server = %self.config.name, %error, "MCP: failed to terminate stdio process tree");
+            }
         }
 
         {
@@ -405,7 +539,7 @@ impl McpClient {
             }
         }
 
-        self.state = McpConnectionState::Disconnected;
+        self.set_connection_state(McpConnectionState::Disconnected);
 
         self.runtime
             .emit_event(super::McpSubsystemEvent::ServerStateChanged {
@@ -421,7 +555,7 @@ impl McpClient {
 
     /// List available tools from the MCP server.
     pub async fn list_tools(&mut self) -> Result<Vec<McpToolDef>> {
-        if self.state != McpConnectionState::Connected {
+        if self.connection_state() != McpConnectionState::Connected {
             bail!("cannot list tools: not connected");
         }
 
@@ -465,7 +599,7 @@ impl McpClient {
 
     /// Call a tool on the MCP server.
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<CallToolResult> {
-        if self.state != McpConnectionState::Connected {
+        if self.connection_state() != McpConnectionState::Connected {
             bail!("cannot call tool: not connected");
         }
 
@@ -509,7 +643,7 @@ impl McpClient {
 
     /// List resources from the MCP server.
     pub async fn list_resources(&mut self) -> Result<Vec<McpResource>> {
-        if self.state != McpConnectionState::Connected {
+        if self.connection_state() != McpConnectionState::Connected {
             bail!("cannot list resources: not connected");
         }
 
@@ -550,7 +684,7 @@ impl McpClient {
 
     /// Read a resource from the MCP server.
     pub async fn read_resource(&self, uri: &str) -> Result<ReadResourceResult> {
-        if self.state != McpConnectionState::Connected {
+        if self.connection_state() != McpConnectionState::Connected {
             bail!("cannot read resource: not connected");
         }
 
@@ -602,6 +736,11 @@ impl McpClient {
             let mut pending = self.pending.lock().await;
             pending.insert(id, tx);
         }
+        let mut pending_guard = PendingRequestGuard::new(
+            id,
+            self.pending.clone(),
+            self.request_cancellation_transport(),
+        );
 
         if let Err(error) = self
             .write_line_with_timeout(&request_json, timeout_secs)
@@ -614,8 +753,12 @@ impl McpClient {
 
         let timeout = std::time::Duration::from_secs(timeout_secs);
         match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(result)) => result,
+            Ok(Ok(result)) => {
+                pending_guard.disarm();
+                result
+            }
             Ok(Err(_)) => {
+                pending_guard.disarm();
                 bail!(
                     "MCP server '{}' closed connection while waiting for response to '{}'",
                     self.config.name,
@@ -674,15 +817,13 @@ impl McpClient {
                 let result = self
                     .post_streamable_line_without_recovery(line, timeout_secs)
                     .await;
-                match result {
-                    Err(ref error) if is_session_expired_error(error) => {
+                match (result, retry_delay_ms) {
+                    (Err(ref error), _) if is_session_expired_error(error) => {
                         return self.recover_session(line, timeout_secs).await;
                     }
-                    Err(ref error)
-                        if retry_delay_ms.is_some()
-                            && is_retryable_streamable_http_error(method.as_deref(), error) =>
+                    (Err(ref error), Some(delay_ms))
+                        if is_retryable_streamable_http_error(method.as_deref(), error) =>
                     {
-                        let delay_ms = retry_delay_ms.expect("checked is_some");
                         warn!(
                             server = %self.config.name,
                             method = ?method,
@@ -693,7 +834,7 @@ impl McpClient {
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     }
-                    other => return other,
+                    (other, _) => return other,
                 }
             }
             unreachable!("streamable HTTP retry loop always returns on final attempt");
@@ -821,6 +962,11 @@ impl McpClient {
             let mut pending = self.pending.lock().await;
             pending.insert(id, tx);
         }
+        let mut pending_guard = PendingRequestGuard::new(
+            id,
+            self.pending.clone(),
+            self.request_cancellation_transport(),
+        );
 
         if let Err(error) = self
             .post_streamable_line_without_recovery(&request_json, timeout_secs)
@@ -833,8 +979,12 @@ impl McpClient {
 
         let timeout = std::time::Duration::from_secs(timeout_secs);
         match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(result)) => result,
+            Ok(Ok(result)) => {
+                pending_guard.disarm();
+                result
+            }
             Ok(Err(_)) => {
+                pending_guard.disarm();
                 bail!(
                     "MCP server '{}' closed connection while waiting for response to '{}'",
                     self.config.name,
@@ -900,7 +1050,7 @@ impl McpClient {
         let mut reader_handle = self
             .reader_handle
             .lock()
-            .expect("MCP reader handle mutex poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(existing) = reader_handle.take() {
             existing.abort();
         }
@@ -930,7 +1080,11 @@ impl Drop for McpClient {
     fn drop(&mut self) {
         self.abort_reader_handle();
         if let Some(ref mut child) = self.child {
-            let _ = child.start_kill();
+            if let Some(pid) = child.id() {
+                if let Err(error) = crate::process_control::force_terminate_tree(pid) {
+                    warn!(server = %self.config.name, %error, "MCP: failed to force-terminate stdio process tree during drop");
+                }
+            }
         }
     }
 }

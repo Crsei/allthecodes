@@ -6,7 +6,10 @@ use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 
-use crate::api::providers::{AnthropicEndpointKind, ProviderCapabilities};
+use crate::api::providers::{
+    AnthropicEndpointKind, ProviderCapabilities, ProviderProtocol, ProviderSupportStatus,
+    StreamingSupport,
+};
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -244,33 +247,56 @@ impl ApiProvider {
                     crate::api::providers::compatible_anthropic_capabilities()
                 } else {
                     crate::api::providers::capabilities_for_provider_name("anthropic")
-                        .expect("anthropic capability matrix entry must exist")
+                        .unwrap_or_else(|| {
+                            missing_provider_capabilities(ProviderProtocol::Anthropic)
+                        })
                 }
             }
-            ApiProvider::Azure { .. } => {
-                crate::api::providers::capabilities_for_provider_name("azure")
-                    .expect("azure capability matrix entry must exist")
-            }
+            ApiProvider::Azure { .. } => crate::api::providers::capabilities_for_provider_name(
+                "azure",
+            )
+            .unwrap_or_else(|| missing_provider_capabilities(ProviderProtocol::OpenAiCompat)),
             ApiProvider::OpenAiCompat { name, .. } => {
                 crate::api::providers::capabilities_for_provider_name(name).unwrap_or_else(|| {
-                    let info = crate::api::providers::get_provider("openai")
-                        .expect("openai capability matrix entry must exist");
-                    crate::api::providers::capabilities_for_provider_info(info)
+                    crate::api::providers::capabilities_for_provider_name("openai").unwrap_or_else(
+                        || missing_provider_capabilities(ProviderProtocol::OpenAiCompat),
+                    )
                 })
             }
             ApiProvider::Google { .. } => {
                 crate::api::providers::capabilities_for_provider_name("google")
-                    .expect("google capability matrix entry must exist")
+                    .unwrap_or_else(|| missing_provider_capabilities(ProviderProtocol::Google))
             }
             ApiProvider::Bedrock { .. } => {
                 crate::api::providers::capabilities_for_provider_name("bedrock")
-                    .expect("bedrock capability matrix entry must exist")
+                    .unwrap_or_else(|| missing_provider_capabilities(ProviderProtocol::Anthropic))
             }
             ApiProvider::Vertex { .. } => {
                 crate::api::providers::capabilities_for_provider_name("vertex")
-                    .expect("vertex capability matrix entry must exist")
+                    .unwrap_or_else(|| missing_provider_capabilities(ProviderProtocol::Anthropic))
             }
         }
+    }
+}
+
+fn missing_provider_capabilities(protocol: ProviderProtocol) -> ProviderCapabilities {
+    ProviderCapabilities {
+        name: "missing-provider-metadata",
+        auth_sources: &[],
+        protocol,
+        endpoint_kind: None,
+        streaming: StreamingSupport::None,
+        tool_use: false,
+        thinking: false,
+        prompt_cache: false,
+        prompt_cache_marker: false,
+        prompt_cache_ttl_1h: false,
+        prompt_cache_global_scope: false,
+        anthropic_beta_header: false,
+        advisor: false,
+        status: ProviderSupportStatus::Unsupported {
+            reason: "Provider capability metadata is missing",
+        },
     }
 }
 
@@ -398,4 +424,23 @@ pub struct ApiClient {
     pub config: ApiClientConfig,
     pub http: reqwest::Client,
     pub stream_provider: Box<dyn crate::api::stream_provider::StreamProvider>,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::api::providers::{ProviderProtocol, StreamingSupport};
+
+    use super::missing_provider_capabilities;
+
+    #[test]
+    fn missing_provider_capabilities_are_conservative() {
+        let capabilities = missing_provider_capabilities(ProviderProtocol::OpenAiCompat);
+
+        assert!(!capabilities.is_usable());
+        assert_eq!(capabilities.streaming, StreamingSupport::None);
+        assert!(!capabilities.tool_use);
+        assert!(!capabilities.thinking);
+        assert!(!capabilities.prompt_cache);
+        assert!(!capabilities.advisor);
+    }
 }

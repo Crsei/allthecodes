@@ -16,7 +16,9 @@ use allthecodes_config::paths;
 
 use allthecodes_protocol::ApiError as ProtocolApiError;
 
+use allthecodes_protocol::v1::kanban::KanbanBoardSummary as ProtocolKanbanBoardSummary;
 use allthecodes_protocol::v1::kanban::KanbanBoardsResponse as ProtocolKanbanBoardsResponse;
+use allthecodes_protocol::v1::kanban::KanbanColumn as ProtocolKanbanColumn;
 use allthecodes_protocol::v1::kanban::KanbanTaskMutationResponse as ProtocolKanbanTaskMutationResponse;
 use allthecodes_protocol::ApiMethod;
 use async_trait::async_trait;
@@ -62,11 +64,31 @@ impl Processor for KanbanBoardsProcessor {
 
     async fn handle(&self, query: Self::Request) -> Result<Self::Response, Self::Error> {
         let store = read_store().map_err(|e| ProtocolApiError::Internal { message: e })?;
-        let boards: Vec<allthecodes_protocol::v1::kanban::KanbanBoardSummary> = store
+        let boards: Vec<ProtocolKanbanBoardSummary> = store
             .boards
             .iter()
             .map(|b| {
-                serde_json::from_value(serde_json::to_value(board_summary(b)).unwrap()).unwrap()
+                let summary = board_summary(b);
+                ProtocolKanbanBoardSummary {
+                    id: summary.id,
+                    name: summary.name,
+                    description: summary.description,
+                    profile_id: summary.profile_id,
+                    revision: summary.revision,
+                    columns: summary
+                        .columns
+                        .into_iter()
+                        .map(|column| ProtocolKanbanColumn {
+                            id: column.id,
+                            title: column.title,
+                            status: column.status,
+                            order: column.order,
+                            wip_limit: column.wip_limit,
+                        })
+                        .collect(),
+                    task_count: summary.task_count,
+                    updated_at: summary.updated_at,
+                }
             })
             .collect();
         Ok(ProtocolKanbanBoardsResponse {

@@ -260,7 +260,9 @@ impl McpManager {
             }
         }
 
-        Err(last_error.expect("retry loop should have returned on final attempt"))
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("MCP connect retry loop ended without attempting a connection")
+        }))
     }
 
     async fn connect_ready_client(&self, config: McpServerConfig) -> Result<McpClient> {
@@ -326,6 +328,7 @@ impl McpManager {
     pub fn all_tools(&self) -> Vec<McpToolDef> {
         self.clients
             .values()
+            .filter(|client| client.connection_state() == super::McpConnectionState::Connected)
             .flat_map(|c| c.tools.iter().cloned())
             .collect()
     }
@@ -333,6 +336,9 @@ impl McpManager {
     pub fn runtime_capabilities(&self) -> RuntimeCapabilityRegistry {
         let mut registry = RuntimeCapabilityRegistry::new();
         for (server_id, client) in &self.clients {
+            if client.connection_state() != super::McpConnectionState::Connected {
+                continue;
+            }
             for tool in &client.tools {
                 let server_name = if tool.server_name.is_empty() {
                     server_id.as_str()
@@ -359,11 +365,8 @@ impl McpManager {
                 continue;
             };
             let display_name = self.server_display_name(&server_id);
-            let status_state = self
-                .health
-                .get(&server_id)
-                .map(|snapshot| snapshot.state.clone())
-                .unwrap_or_else(|| mcp_client_state_name(&client.state).to_string());
+            let live_state = client.connection_state();
+            let status_state = mcp_client_state_name(&live_state).to_string();
             let status_detail = self
                 .health
                 .get(&server_id)
@@ -670,6 +673,17 @@ impl McpManager {
         let names: Vec<String> = self.clients.keys().cloned().collect();
         for name in names {
             self.disconnect_server(&name).await;
+        }
+    }
+
+    pub(crate) fn take_all_clients(&mut self) -> HashMap<String, McpClient> {
+        std::mem::take(&mut self.clients)
+    }
+
+    pub(crate) fn mark_disconnected(&mut self, name: &str) {
+        if let Some(snapshot) = self.health.get_mut(name) {
+            snapshot.state = "disconnected".to_string();
+            snapshot.next_retry_at = None;
         }
     }
 

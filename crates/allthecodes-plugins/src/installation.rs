@@ -22,9 +22,9 @@ use crate::manifest::{
     load_manifest, validate_official_manifest, PluginManifest, SkillContribution,
 };
 use crate::marketplace::{self, validate_official_download_url, OFFICIAL_MARKETPLACE_SOURCE_NAME};
-use crate::mcpb::{parse_mcpb_from_bytes, verify_mcpb_integrity};
+use crate::mcpb::{parse_mcpb, verify_mcpb_integrity};
 use crate::policy::{PluginPolicyEnforcer, PolicyDecision};
-use crate::sources::{resolve_source, ResolveSource};
+use crate::sources::{resolve_source, response_to_bytes_limited, ResolveSource};
 use crate::versioning::check_engine_compatibility;
 use crate::zip_cache::{extract_tgz_to, extract_zip_to, extract_zip_to_strict, StrictZipLimits};
 use crate::{PluginEntry, PluginSource, PluginStatus};
@@ -197,7 +197,7 @@ pub async fn install_plugin(
                 "MCPB integrity check failed".to_string(),
             ));
         }
-        let bundle = parse_mcpb_from_bytes(&std::fs::read(&resolved_plugin.path)?)?;
+        let bundle = parse_mcpb(&resolved_plugin.path)?;
         let extract_dir = dest_dir.join("extracted");
         // Extract payload (which is a ZIP)
         extract_zip_to(&bundle.payload, &extract_dir)?;
@@ -358,8 +358,7 @@ pub async fn install_official_plugin(
         }
     }
 
-    let bytes = response
-        .bytes()
+    let bytes = response_to_bytes_limited(response, MAX_OFFICIAL_ZIP_BYTES)
         .await
         .map_err(|e| InstallError::DownloadFailed(e.to_string()))?;
     if bytes.len() as u64 > MAX_OFFICIAL_ZIP_BYTES {

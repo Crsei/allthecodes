@@ -133,7 +133,7 @@ impl PluginRuntimeBuilder {
                         .start_interaction(session_id.to_string(), submit_id.to_string());
                     self.active_spans
                         .lock()
-                        .expect("active_spans lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .insert(id, span);
                     id
                 }
@@ -148,7 +148,7 @@ impl PluginRuntimeBuilder {
                     if let Some(mut span) = self
                         .active_spans
                         .lock()
-                        .expect("active_spans lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .remove(&span_id)
                     {
                         span.finish(model, input_tokens as u32, output_tokens as u32);
@@ -163,7 +163,7 @@ impl PluginRuntimeBuilder {
                     );
                     self.active_hooks
                         .lock()
-                        .expect("active_hooks lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .insert(id, span);
                     id
                 }
@@ -172,7 +172,7 @@ impl PluginRuntimeBuilder {
                     if let Some(mut span) = self
                         .active_hooks
                         .lock()
-                        .expect("active_hooks lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .remove(&span_id)
                     {
                         if _result == "error" {
@@ -190,7 +190,8 @@ impl PluginRuntimeBuilder {
                 active_spans: Mutex::new(std::collections::HashMap::new()),
                 active_hooks: Mutex::new(std::collections::HashMap::new()),
             };
-            telemetry_bridge::install(Box::new(bridge));
+            telemetry_bridge::install(Box::new(bridge))
+                .map_err(|_| anyhow::anyhow!("telemetry bridge already installed"))?;
             info!("telemetry bridge installed");
         }
 

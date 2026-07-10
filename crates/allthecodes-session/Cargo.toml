@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "allthecodes-session"
 version = "0.1.0"
 edition = "2021"
@@ -37,3 +38,6 @@ allthecodes-compact = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 serial_test = { workspace = true }
+
+[lints]
+workspace = true

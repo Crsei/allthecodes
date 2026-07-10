@@ -201,10 +201,10 @@ impl Tool for ConfigTool {
                     Value::Null
                 };
 
-                settings
-                    .as_object_mut()
-                    .expect("settings guaranteed to be an object")
-                    .insert(key.to_string(), parsed_value.clone());
+                let Value::Object(settings_object) = &mut settings else {
+                    return Err(anyhow::anyhow!("settings must be a JSON object"));
+                };
+                settings_object.insert(key.to_string(), parsed_value.clone());
                 Self::save_settings(&settings_path, &settings)?;
 
                 debug!(key = key, "Config set");

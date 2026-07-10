@@ -42,14 +42,114 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Validate CI and build scripts
+        run: |
+          bash -n scripts/cargo-build-test.sh scripts/test-cargo-build-test.sh \
+            scripts/npm-dist-tag.sh scripts/test-npm-dist-tag.sh
+          bash scripts/test-cargo-build-test.sh
+          bash scripts/test-npm-dist-tag.sh
+          python3 scripts/test_ci_quality_gates.py
+
+      - name: Workspace Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Representative feature Clippy
+        run: |
+          cargo clippy --locked -p allthecodes --all-targets --all-features -- -D warnings
+          cargo clippy --locked -p allthecodes-protocol -p allthecodes-tools --all-targets -- -D warnings
 
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
       - name: Run tools contract tests
-        run: cargo test -p allthecodes-tools --no-default-features --features contract
+        run: cargo test --locked -p allthecodes-tools --no-default-features --features contract
 
       - name: Run tools full feature tests
-        run: cargo test -p allthecodes-tools --features full
+        run: cargo test --locked -p allthecodes-tools --features full
+
+      - name: Check CLI without default features
+        run: cargo check --locked -p allthecodes --no-default-features
+
+      - name: Check protocol schema and codegen binaries
+        run: cargo check --locked -p allthecodes-protocol --features codegen --bins
+
+      - name: Check alternative JSON storage features
+        run: |
+          cargo check --locked -p allthecodes-services --no-default-features --features json-storage
+          cargo check --locked -p allthecodes-tasks --no-default-features --features json-storage
+
+  npm-smoke:
+    name: npm launcher and package staging
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run npm packaging smoke
+        run: python3 scripts/test_npm_packaging.py
+
+  supply-chain:
+    name: dependency policy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: Audit Rust dependencies
+        # RSA is an unreachable SQLx MySQL-only lock entry and has no fixed
+        # release. All other RustSec vulnerabilities remain blocking.
+        run: cargo audit --ignore RUSTSEC-2023-0071
+      - name: Enforce dependency license, ban, and source policy
+        run: cargo deny --locked check advisories bans licenses sources --warn unmaintained --warn unsound --hide-inclusion-graph
+
+  platform-check:
+    name: check-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-22.04
+          - name: macos
+            os: macos-14
+          - name: windows
+            os: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.1
+      - name: Cache platform check
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-platform-${{ matrix.name }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}
+          cache-targets: true
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libcap-dev
+      - name: Check platform-conditional CLI code
+        run: cargo check --locked -p allthecodes --all-targets
+
+      - name: Verify private Windows ACL enforcement
+        if: runner.os == 'Windows'
+        run: >-
+          cargo test --locked -p allthecodes-config
+          paths::tests::private_windows_acl_disables_inheritance_and_allows_only_current_user
+          -- --exact

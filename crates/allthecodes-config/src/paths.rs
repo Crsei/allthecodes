@@ -51,12 +51,96 @@ pub fn data_root() -> PathBuf {
 /// it already existed.
 pub fn ensure_data_root() -> std::io::Result<bool> {
     let root = data_root();
-    if root.exists() {
-        return Ok(false);
-    }
+    let created = !root.exists();
     std::fs::create_dir_all(&root)?;
-    let _ = std::fs::create_dir_all(root.join("logs"));
-    Ok(true)
+    let logs = root.join("logs");
+    std::fs::create_dir_all(&logs)?;
+    set_private_directory_permissions(&root)?;
+    set_private_directory_permissions(&logs)?;
+    Ok(created)
+}
+
+#[cfg(unix)]
+pub fn set_private_directory_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(unix)]
+pub fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(windows)]
+pub fn set_private_directory_permissions(path: &Path) -> std::io::Result<()> {
+    set_private_windows_acl(path, true)
+}
+
+#[cfg(windows)]
+pub fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
+    set_private_windows_acl(path, false)
+}
+
+#[cfg(windows)]
+fn set_private_windows_acl(path: &Path, directory: bool) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+
+    const SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$path = $env:ALLTHECODES_ACL_PATH
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+if ($env:ALLTHECODES_ACL_DIRECTORY -eq '1') {
+    $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $sid,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        $inheritance,
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow)
+} else {
+    $acl = [System.Security.AccessControl.FileSecurity]::new()
+    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $sid,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        [System.Security.AccessControl.AccessControlType]::Allow)
+}
+$acl.SetAccessRuleProtection($true, $false)
+$acl.SetOwner($sid)
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $path -AclObject $acl
+"#;
+
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .env("ALLTHECODES_ACL_PATH", path.as_os_str())
+        .env(
+            "ALLTHECODES_ACL_DIRECTORY",
+            if directory { "1" } else { "0" },
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "failed to apply private Windows ACL to {}: {status}",
+            path.display()
+        )))
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn set_private_directory_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn set_private_file_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 // ----- Global paths (under data_root) --------------------------------------
@@ -445,6 +529,69 @@ mod tests {
         assert!(data_root().join("logs").exists());
         // Second call is idempotent
         assert!(!ensure_data_root().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn ensure_data_root_enforces_private_directory_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("private_root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let _g = EnvGuard::set("ALLTHECODES_HOME", root.to_str().unwrap());
+
+        assert!(!ensure_data_root().unwrap());
+
+        let root_mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        let logs_mode = std::fs::metadata(root.join("logs"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(root_mode, 0o700);
+        assert_eq!(logs_mode, 0o700);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_windows_acl_disables_inheritance_and_allows_only_current_user() {
+        const VERIFY_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$acl = Get-Acl -LiteralPath $env:ALLTHECODES_ACL_PATH
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$rules = @($acl.Access)
+if (-not $acl.AreAccessRulesProtected) { exit 2 }
+if ($rules.Count -ne 1) { exit 3 }
+$ruleSid = $rules[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])
+if ($ruleSid.Value -ne $sid.Value) { exit 4 }
+if ($rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { exit 5 }
+"#;
+
+        fn verify(path: &Path) {
+            let status = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", VERIFY_SCRIPT])
+                .env("ALLTHECODES_ACL_PATH", path.as_os_str())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "private ACL verification failed: {status}"
+            );
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let directory = tmp.path().join("private");
+        std::fs::create_dir(&directory).unwrap();
+        set_private_directory_permissions(&directory).unwrap();
+        verify(&directory);
+
+        let file = directory.join("secret.json");
+        std::fs::write(&file, b"secret").unwrap();
+        set_private_file_permissions(&file).unwrap();
+        verify(&file);
     }
 
     #[test]

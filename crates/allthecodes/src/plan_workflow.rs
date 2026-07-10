@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_types::plan_workflow::PlanWorkflowRecord;
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 const DEFAULT_OWNER: &str = "main";
 
@@ -31,14 +31,16 @@ pub fn enter_engine_plan_mode(
             description,
             classifier_reason,
         );
-        *slot_for_update.lock().expect("plan workflow slot poisoned") = Some(record);
+        *slot_for_update
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(record);
     });
 
     let record = slot
         .lock()
-        .expect("plan workflow slot poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
-        .expect("plan workflow update should set record");
+        .context("plan workflow update did not set a record")?;
     allthecodes_commands::plan_workflow::persist(&cwd, &record)?;
     Ok(record)
 }
@@ -62,14 +64,16 @@ pub fn reject_engine_plan(
             source,
             feedback,
         );
-        *slot_for_update.lock().expect("plan workflow slot poisoned") = Some(record);
+        *slot_for_update
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(record);
     });
 
     let record = slot
         .lock()
-        .expect("plan workflow slot poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
-        .expect("plan workflow update should set record");
+        .context("plan workflow update did not set a record")?;
     allthecodes_commands::plan_workflow::persist(&cwd, &record)?;
     Ok(record)
 }

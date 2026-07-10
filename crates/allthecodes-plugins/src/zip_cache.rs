@@ -20,14 +20,35 @@ const DEFAULT_CACHE_CAPACITY: usize = 100;
 /// Strict extraction limits for official plugin ZIP artifacts.
 #[derive(Debug, Clone, Copy)]
 pub struct StrictZipLimits {
+    pub max_compressed_bytes: u64,
     pub max_entries: usize,
     pub max_total_uncompressed_bytes: u64,
     pub max_file_uncompressed_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ArchiveLimits {
+    pub max_compressed_bytes: u64,
+    pub max_entries: usize,
+    pub max_total_uncompressed_bytes: u64,
+    pub max_file_uncompressed_bytes: u64,
+}
+
+impl Default for ArchiveLimits {
+    fn default() -> Self {
+        Self {
+            max_compressed_bytes: 128 * 1024 * 1024,
+            max_entries: 10_000,
+            max_total_uncompressed_bytes: 512 * 1024 * 1024,
+            max_file_uncompressed_bytes: 256 * 1024 * 1024,
+        }
+    }
+}
+
 impl Default for StrictZipLimits {
     fn default() -> Self {
         Self {
+            max_compressed_bytes: 128 * 1024 * 1024,
             max_entries: 10_000,
             max_total_uncompressed_bytes: 512 * 1024 * 1024,
             max_file_uncompressed_bytes: 256 * 1024 * 1024,
@@ -104,53 +125,7 @@ pub fn cache_key(url: &str, checksum: Option<&str>) -> String {
 /// This function protects against path traversal attacks by rejecting entries
 /// that would escape the destination directory.
 pub fn extract_zip_to(zip_data: &[u8], dest_dir: &Path) -> Result<()> {
-    let cursor = std::io::Cursor::new(zip_data);
-    let mut archive = zip::ZipArchive::new(cursor).context("Failed to open ZIP archive")?;
-
-    std::fs::create_dir_all(dest_dir).with_context(|| {
-        format!(
-            "Failed to create destination directory: {}",
-            dest_dir.display()
-        )
-    })?;
-
-    for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .with_context(|| format!("Failed to read ZIP entry at index {}", i))?;
-
-        let entry_name = match entry.enclosed_name() {
-            Some(name) => name.to_string_lossy().to_string(),
-            None => {
-                anyhow::bail!(
-                    "Path traversal detected: entry at index {} would escape destination '{}'",
-                    i,
-                    dest_dir.display()
-                );
-            }
-        };
-
-        let entry_path = dest_dir.join(&entry_name);
-
-        if entry.is_dir() {
-            std::fs::create_dir_all(&entry_path)
-                .with_context(|| format!("Failed to create directory: {}", entry_path.display()))?;
-        } else {
-            if let Some(parent) = entry_path.parent() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create parent directory: {}", parent.display())
-                })?;
-            }
-
-            let mut output_file = std::fs::File::create(&entry_path)
-                .with_context(|| format!("Failed to create file: {}", entry_path.display()))?;
-
-            std::io::copy(&mut entry, &mut output_file)
-                .with_context(|| format!("Failed to extract entry: {}", entry_name))?;
-        }
-    }
-
-    Ok(())
+    extract_zip_to_strict(zip_data, dest_dir, StrictZipLimits::default())
 }
 
 /// Strict extraction for official plugin ZIP archives.
@@ -159,6 +134,12 @@ pub fn extract_zip_to_strict(
     dest_dir: &Path,
     limits: StrictZipLimits,
 ) -> Result<()> {
+    if zip_data.len() as u64 > limits.max_compressed_bytes {
+        anyhow::bail!(
+            "ZIP compressed size exceeds limit {}",
+            limits.max_compressed_bytes
+        );
+    }
     let cursor = std::io::Cursor::new(zip_data);
     let mut archive = zip::ZipArchive::new(cursor).context("Failed to open ZIP archive")?;
 
@@ -187,7 +168,7 @@ pub fn extract_zip_to_strict(
             .with_context(|| format!("Failed to read ZIP entry at index {}", i))?;
         let raw_name = entry.name().to_string();
         let relative = strict_zip_relative_path(&raw_name)
-            .with_context(|| format!("Invalid ZIP entry path '{}'", raw_name))?;
+            .with_context(|| format!("Path traversal or invalid ZIP entry path '{}'", raw_name))?;
 
         if is_zip_symlink(&entry) {
             anyhow::bail!("Refusing to extract symlink ZIP entry '{}'", raw_name);
@@ -305,11 +286,40 @@ fn is_zip_symlink(entry: &zip::read::ZipFile<'_>) -> bool {
 /// by npm plugin packages and rejects absolute paths, `..`, symlinks, hard
 /// links, and special entries.
 pub fn extract_tgz_to(tgz_data: &[u8], dest_dir: &Path) -> Result<()> {
+    extract_tgz_to_strict(tgz_data, dest_dir, ArchiveLimits::default())
+}
+
+pub fn extract_tgz_to_strict(
+    tgz_data: &[u8],
+    dest_dir: &Path,
+    limits: ArchiveLimits,
+) -> Result<()> {
+    if tgz_data.len() as u64 > limits.max_compressed_bytes {
+        anyhow::bail!(
+            "TGZ compressed size exceeds limit {}",
+            limits.max_compressed_bytes
+        );
+    }
     let mut decoder = GzDecoder::new(tgz_data);
     let mut tar_data = Vec::new();
+    let tar_overhead = (limits.max_entries as u64)
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("TGZ extraction limit overflow"))?
+        .checked_mul(1024)
+        .and_then(|value| value.checked_add(1024))
+        .ok_or_else(|| anyhow::anyhow!("TGZ extraction limit overflow"))?;
+    let max_tar_bytes = limits
+        .max_total_uncompressed_bytes
+        .checked_add(tar_overhead)
+        .ok_or_else(|| anyhow::anyhow!("TGZ extraction limit overflow"))?;
     decoder
+        .by_ref()
+        .take(max_tar_bytes + 1)
         .read_to_end(&mut tar_data)
         .context("Failed to decompress gzip archive")?;
+    if tar_data.len() as u64 > max_tar_bytes {
+        anyhow::bail!("TGZ decompressed tar stream exceeds structural limit {max_tar_bytes}");
+    }
 
     std::fs::create_dir_all(dest_dir).with_context(|| {
         format!(
@@ -319,6 +329,8 @@ pub fn extract_tgz_to(tgz_data: &[u8], dest_dir: &Path) -> Result<()> {
     })?;
 
     let mut offset = 0usize;
+    let mut entries = 0usize;
+    let mut total = 0u64;
     while offset + 512 <= tar_data.len() {
         let header = &tar_data[offset..offset + 512];
         offset += 512;
@@ -326,9 +338,29 @@ pub fn extract_tgz_to(tgz_data: &[u8], dest_dir: &Path) -> Result<()> {
         if header.iter().all(|b| *b == 0) {
             break;
         }
+        entries += 1;
+        if entries > limits.max_entries {
+            anyhow::bail!("TGZ entry count exceeds limit {}", limits.max_entries);
+        }
 
         let path = tar_header_path(header)?;
         let size = tar_octal(&header[124..136])?;
+        if size as u64 > limits.max_file_uncompressed_bytes {
+            anyhow::bail!(
+                "TGZ entry '{}' exceeds single-file limit {}",
+                path,
+                limits.max_file_uncompressed_bytes
+            );
+        }
+        total = total
+            .checked_add(size as u64)
+            .ok_or_else(|| anyhow::anyhow!("TGZ expanded size overflow"))?;
+        if total > limits.max_total_uncompressed_bytes {
+            anyhow::bail!(
+                "TGZ expanded size exceeds total limit {}",
+                limits.max_total_uncompressed_bytes
+            );
+        }
         let typeflag = header[156];
         let padded = size.div_ceil(512) * 512;
         if offset + padded > tar_data.len() {
@@ -562,11 +594,75 @@ mod tests {
             &zip_buf,
             dest.path(),
             StrictZipLimits {
+                max_compressed_bytes: 1024,
                 max_entries: 1,
                 ..StrictZipLimits::default()
             },
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_tgz_enforces_single_file_limit() {
+        let tgz = make_test_tgz(&[("package/large.bin", b"12345")]);
+        let dest = tempfile::tempdir().unwrap();
+        let limits = ArchiveLimits {
+            max_compressed_bytes: 1024,
+            max_entries: 10,
+            max_total_uncompressed_bytes: 10,
+            max_file_uncompressed_bytes: 4,
+        };
+        let error = extract_tgz_to_strict(&tgz, dest.path(), limits).unwrap_err();
+        assert!(
+            error.to_string().contains("single-file limit"),
+            "unexpected error: {error:#}"
+        );
+        assert!(!dest.path().join("package/large.bin").exists());
+    }
+
+    #[test]
+    fn strict_tgz_enforces_entry_count_limit() {
+        let tgz = make_test_tgz(&[("a", b"1"), ("b", b"2")]);
+        let dest = tempfile::tempdir().unwrap();
+        let limits = ArchiveLimits {
+            max_compressed_bytes: 1024,
+            max_entries: 1,
+            max_total_uncompressed_bytes: 10,
+            max_file_uncompressed_bytes: 10,
+        };
+        let error = extract_tgz_to_strict(&tgz, dest.path(), limits).unwrap_err();
+        assert!(
+            error.to_string().contains("entry count"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    fn make_test_tgz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        let mut tar = Vec::new();
+        for (name, data) in entries {
+            let mut header = [0u8; 512];
+            header[..name.len()].copy_from_slice(name.as_bytes());
+            header[100..108].copy_from_slice(b"0000644\0");
+            header[108..116].copy_from_slice(b"0000000\0");
+            header[116..124].copy_from_slice(b"0000000\0");
+            let size = format!("{:011o}\0", data.len());
+            header[124..136].copy_from_slice(size.as_bytes());
+            header[136..148].copy_from_slice(b"00000000000\0");
+            header[148..156].fill(b' ');
+            header[156] = b'0';
+            header[257..263].copy_from_slice(b"ustar\0");
+            let checksum: u32 = header.iter().map(|b| u32::from(*b)).sum();
+            header[148..156].copy_from_slice(format!("{:06o}\0 ", checksum).as_bytes());
+            tar.extend_from_slice(&header);
+            tar.extend_from_slice(data);
+            tar.resize(tar.len().div_ceil(512) * 512, 0);
+        }
+        tar.extend_from_slice(&[0u8; 1024]);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar).unwrap();
+        encoder.finish().unwrap()
     }
 
     #[test]

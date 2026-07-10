@@ -343,7 +343,7 @@ fn test_from_provider_info_anthropic() {
     let saved = save_env(ANTHROPIC_MODEL_ENV_KEYS);
     clear_env(ANTHROPIC_MODEL_ENV_KEYS);
     let info = get_provider("anthropic").unwrap();
-    let client = ApiClient::from_provider_info(info, "sk-test");
+    let client = ApiClient::from_provider_info(info, "sk-test").unwrap();
     assert!(matches!(
         client.config().provider,
         ApiProvider::Anthropic { .. }
@@ -356,7 +356,7 @@ fn test_from_provider_info_anthropic() {
 fn test_from_provider_info_deepseek() {
     use crate::api::providers::get_provider;
     let info = get_provider("deepseek").unwrap();
-    let client = ApiClient::from_provider_info(info, "sk-ds-key");
+    let client = ApiClient::from_provider_info(info, "sk-ds-key").unwrap();
     match &client.config().provider {
         ApiProvider::OpenAiCompat { name, base_url, .. } => {
             assert_eq!(name, "deepseek");
@@ -370,7 +370,7 @@ fn test_from_provider_info_deepseek() {
 fn test_from_provider_info_google() {
     use crate::api::providers::get_provider;
     let info = get_provider("google").unwrap();
-    let client = ApiClient::from_provider_info(info, "AIza-test");
+    let client = ApiClient::from_provider_info(info, "AIza-test").unwrap();
     assert!(matches!(
         client.config().provider,
         ApiProvider::Google { .. }

@@ -333,9 +333,8 @@ static POWERSHELL_CLM_ALLOWED_TYPES: LazyLock<HashSet<&'static str>> = LazyLock:
     .collect()
 });
 
-static POWERSHELL_NEW_OBJECT_RE: LazyLock<Regex> = LazyLock::new(|| {
+static POWERSHELL_NEW_OBJECT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:^|[|;&\n({])\s*(?:[A-Za-z0-9_.-]+\\)?New-Object\b(?P<args>[^|;&\n{}]*)")
-        .expect("valid New-Object regex")
 });
 
 /// Check a PowerShell command string for generic shell hazards plus
@@ -635,7 +634,8 @@ fn is_powershell_safe_script_block_consumer(name: &str) -> bool {
 }
 
 fn powershell_new_object_type_outside_clm(command: &str) -> Option<String> {
-    for captures in POWERSHELL_NEW_OBJECT_RE.captures_iter(command) {
+    let regex = POWERSHELL_NEW_OBJECT_RE.as_ref().ok()?;
+    for captures in regex.captures_iter(command) {
         let Some(args) = captures.name("args").map(|m| m.as_str()) else {
             continue;
         };

@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "allthecodes-server"
 version = "0.1.0"
 edition = "2021"
@@ -16,3 +17,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "net", "time"] }
+
+[lints]
+workspace = true

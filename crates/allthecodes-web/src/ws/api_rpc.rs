@@ -2,7 +2,7 @@
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
@@ -10,8 +10,8 @@ use tracing::{info, warn};
 
 use allthecodes_protocol::{ApiError, JsonRpcFrame, TransportRequestId};
 use allthecodes_server::{
-    ConnectionClosedReason, ConnectionId, ConnectionOrigin, OriginRejection, OutboundRouter,
-    RouterSendError, SequencedEvent, TransportEvent, TransportKind,
+    ConnectionClosedReason, ConnectionId, ConnectionOrigin, OutboundRouter, RouterSendError,
+    SequencedEvent, TransportEvent, TransportKind,
 };
 
 use crate::api_dispatcher::{ApiConnectionId, ApiDispatcher, ApiRequestContext};
@@ -23,13 +23,7 @@ pub async fn api_rpc_ws_handler(
     headers: HeaderMap,
     State(state): State<WebState>,
 ) -> axum::response::Response {
-    let origin = match websocket_origin_from_headers(&headers) {
-        Ok(origin) => origin,
-        Err(rejection) => {
-            warn!(origin = %rejection.origin, "rejecting API JSON-RPC WebSocket origin");
-            return (StatusCode::FORBIDDEN, "Forbidden").into_response();
-        }
-    };
+    let origin = websocket_origin_from_headers(&headers);
     let connection_id = ConnectionId::next();
     let api_connection_id = ApiConnectionId(format!("api-rpc-{}", connection_id.as_str()));
 
@@ -150,6 +144,11 @@ async fn handle_api_rpc_message(
 ) -> ApiRpcSocketAction {
     match message {
         Message::Text(text) => {
+            info!(
+                connection_id = %connection_id,
+                payload_bytes = text.len(),
+                "transport incoming message"
+            );
             let text = match api_rpc_text_to_transport_event(connection_id, &text) {
                 TransportEvent::IncomingMessage { message, .. } => message,
                 _ => String::new(),
@@ -163,11 +162,12 @@ async fn handle_api_rpc_message(
     }
 }
 
-fn websocket_origin_from_headers(headers: &HeaderMap) -> Result<ConnectionOrigin, OriginRejection> {
-    let origin = headers
+fn websocket_origin_from_headers(headers: &HeaderMap) -> ConnectionOrigin {
+    headers
         .get(axum::http::header::ORIGIN)
-        .and_then(|value| value.to_str().ok());
-    ConnectionOrigin::from_websocket_origin(origin)
+        .and_then(|value| value.to_str().ok())
+        .map(ConnectionOrigin::browser)
+        .unwrap_or_else(ConnectionOrigin::local_native)
 }
 
 fn api_rpc_text_to_transport_event(
@@ -181,7 +181,7 @@ fn api_rpc_text_to_transport_event(
     }
 }
 
-fn log_transport_event<T: std::fmt::Debug>(event: TransportEvent<T>) {
+fn log_transport_event<T>(event: TransportEvent<T>) {
     match event {
         TransportEvent::ConnectionOpened {
             connection_id,
@@ -196,11 +196,10 @@ fn log_transport_event<T: std::fmt::Debug>(event: TransportEvent<T>) {
         TransportEvent::IncomingMessage {
             connection_id,
             kind,
-            message,
+            message: _,
         } => info!(
             connection_id = %connection_id,
             kind = ?kind,
-            message = ?message,
             "transport incoming message"
         ),
         TransportEvent::ConnectionClosed {
@@ -418,7 +417,7 @@ mod tests {
     fn origin_headers_allow_missing_and_loopback() {
         let headers = HeaderMap::new();
         assert_eq!(
-            websocket_origin_from_headers(&headers).unwrap(),
+            websocket_origin_from_headers(&headers),
             ConnectionOrigin::LocalNative
         );
 
@@ -428,20 +427,23 @@ mod tests {
             "http://127.0.0.1:17322".parse().unwrap(),
         );
         assert_eq!(
-            websocket_origin_from_headers(&headers).unwrap(),
+            websocket_origin_from_headers(&headers),
             ConnectionOrigin::browser("http://127.0.0.1:17322")
         );
     }
 
     #[test]
-    fn origin_headers_reject_non_loopback() {
+    fn origin_headers_capture_metadata_after_router_policy_validation() {
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::ORIGIN,
             "https://example.com".parse().unwrap(),
         );
 
-        assert!(websocket_origin_from_headers(&headers).is_err());
+        assert_eq!(
+            websocket_origin_from_headers(&headers),
+            ConnectionOrigin::browser("https://example.com")
+        );
     }
 
     #[test]

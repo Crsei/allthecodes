@@ -449,7 +449,10 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn delete_token_file_returns_false_when_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ALLTHECODES_HOME", dir.path());
         assert!(!delete_token_file("nonexistent|test|url").unwrap());
     }
 

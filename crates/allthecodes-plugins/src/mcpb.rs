@@ -23,6 +23,23 @@ const MCPB_VERSION: u16 = 1;
 /// Length of the SHA-256 hash in bytes.
 const HASH_LENGTH: usize = 32;
 
+#[derive(Debug, Clone, Copy)]
+pub struct McpbLimits {
+    pub max_bundle_bytes: usize,
+    pub max_manifest_bytes: usize,
+    pub max_payload_bytes: usize,
+}
+
+impl Default for McpbLimits {
+    fn default() -> Self {
+        Self {
+            max_bundle_bytes: 128 * 1024 * 1024,
+            max_manifest_bytes: 1024 * 1024,
+            max_payload_bytes: 128 * 1024 * 1024,
+        }
+    }
+}
+
 /// Parsed MCPB bundle.
 #[derive(Debug, Clone)]
 pub struct McpbBundle {
@@ -40,13 +57,41 @@ pub struct McpbBundle {
 
 /// Parse an MCPB binary file from a path.
 pub fn parse_mcpb(path: &Path) -> Result<McpbBundle> {
-    let data = std::fs::read(path)
+    let limits = McpbLimits::default();
+    let data = read_mcpb_file_with_limits(path, limits)?;
+    parse_mcpb_from_bytes_with_limits(&data, limits)
+}
+
+fn read_mcpb_file_with_limits(path: &Path, limits: McpbLimits) -> Result<Vec<u8>> {
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open MCPB file: {}", path.display()))?;
+    let size = file
+        .metadata()
+        .with_context(|| format!("Failed to inspect MCPB file: {}", path.display()))?
+        .len();
+    if size > limits.max_bundle_bytes as u64 {
+        anyhow::bail!("MCPB bundle exceeds size limit {}", limits.max_bundle_bytes);
+    }
+    let mut data = Vec::with_capacity(size as usize);
+    std::io::Read::by_ref(&mut file)
+        .take(limits.max_bundle_bytes as u64 + 1)
+        .read_to_end(&mut data)
         .with_context(|| format!("Failed to read MCPB file: {}", path.display()))?;
-    parse_mcpb_from_bytes(&data)
+    if data.len() > limits.max_bundle_bytes {
+        anyhow::bail!("MCPB bundle exceeds size limit {}", limits.max_bundle_bytes);
+    }
+    Ok(data)
 }
 
 /// Parse an MCPB bundle from raw bytes.
 pub fn parse_mcpb_from_bytes(data: &[u8]) -> Result<McpbBundle> {
+    parse_mcpb_from_bytes_with_limits(data, McpbLimits::default())
+}
+
+pub fn parse_mcpb_from_bytes_with_limits(data: &[u8], limits: McpbLimits) -> Result<McpbBundle> {
+    if data.len() > limits.max_bundle_bytes {
+        anyhow::bail!("MCPB bundle exceeds size limit {}", limits.max_bundle_bytes);
+    }
     let mut cursor = std::io::Cursor::new(data);
 
     // Read magic
@@ -79,6 +124,24 @@ pub fn parse_mcpb_from_bytes(data: &[u8]) -> Result<McpbBundle> {
         .read_exact(&mut manifest_len_buf)
         .context("Failed to read MCPB manifest length")?;
     let manifest_len = u32::from_le_bytes(manifest_len_buf) as usize;
+    if manifest_len > limits.max_manifest_bytes {
+        anyhow::bail!(
+            "MCPB manifest length {} exceeds limit {}",
+            manifest_len,
+            limits.max_manifest_bytes
+        );
+    }
+    let minimum = 4usize + 2 + 4 + manifest_len + HASH_LENGTH;
+    if minimum > data.len() {
+        anyhow::bail!("MCPB manifest length exceeds available bundle data");
+    }
+    let payload_len = data.len() - minimum;
+    if payload_len > limits.max_payload_bytes {
+        anyhow::bail!(
+            "MCPB payload exceeds size limit {}",
+            limits.max_payload_bytes
+        );
+    }
 
     // Read manifest JSON
     let mut manifest_bytes = vec![0u8; manifest_len];
@@ -149,11 +212,11 @@ pub fn create_mcpb(plugin_dir: &Path, output_path: &Path) -> Result<()> {
 
 /// Verify the integrity of an MCPB file by recomputing the content hash.
 pub fn verify_mcpb_integrity(path: &Path) -> Result<bool> {
-    let data = std::fs::read(path)
-        .with_context(|| format!("Failed to read MCPB file: {}", path.display()))?;
+    let limits = McpbLimits::default();
+    let data = read_mcpb_file_with_limits(path, limits)?;
 
     // Parse to extract the expected hash and the manifest+payload portion
-    let bundle = parse_mcpb_from_bytes(&data)?;
+    let bundle = parse_mcpb_from_bytes_with_limits(&data, limits)?;
 
     // Reconstruct the data that was hashed: raw manifest bytes + payload
     let mut hasher = Sha256::new();
@@ -230,6 +293,15 @@ mod tests {
         let data = b"MCPB";
         let result = parse_mcpb_from_bytes(data);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_rejects_manifest_length_over_limit_before_allocation() {
+        let mut data = b"MCPB".to_vec();
+        data.extend_from_slice(&MCPB_VERSION.to_le_bytes());
+        data.extend_from_slice(&u32::MAX.to_le_bytes());
+        let error = parse_mcpb_from_bytes_with_limits(&data, McpbLimits::default()).unwrap_err();
+        assert!(error.to_string().contains("manifest length"));
     }
 
     #[test]

@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 #[test]
 fn root_cli_dependency_surface_exposes_proactive_command_metadata() {
     let commands = allthecodes_commands::get_all_commands();

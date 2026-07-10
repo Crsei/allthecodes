@@ -7,17 +7,20 @@ use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use tracing::error;
 
+use crate::runtime::SessionRuntime;
 use crate::transport::FrontendSink;
 
 /// Spawn a query turn as a background task and map each SDK message to IPC.
-pub fn spawn_query_turn<E, Svc, SdkMessage, F>(
+pub fn spawn_managed_query_turn<E, Svc, SdkMessage, F>(
+    runtime: SessionRuntime,
     engine: Arc<E>,
     prompt_text: String,
     message_id: String,
     suggestion_svc: Arc<Mutex<Svc>>,
     sink: FrontendSink,
     mut handle_sdk_message: F,
-) where
+) -> bool
+where
     E: QueryTurnHost<SdkMessage>,
     E::Stream: Stream<Item = SdkMessage> + Send + 'static,
     Svc: Send + 'static,
@@ -26,7 +29,12 @@ pub fn spawn_query_turn<E, Svc, SdkMessage, F>(
         + Send
         + 'static,
 {
-    tokio::spawn(async move {
+    let Ok(turn) = runtime.try_begin_turn(message_id.clone()) else {
+        return false;
+    };
+    let task_runtime = runtime.clone();
+    let task_turn = turn.clone();
+    let task = tokio::spawn(async move {
         engine.reset_abort();
 
         let stream = engine.submit_client_message(&prompt_text);
@@ -40,7 +48,9 @@ pub fn spawn_query_turn<E, Svc, SdkMessage, F>(
                 break;
             }
         }
+        task_runtime.finish_turn(&task_turn);
     });
+    runtime.attach_turn_task(&turn, task).is_ok()
 }
 
 #[cfg(test)]
@@ -68,12 +78,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_query_turn_resets_submits_and_maps_stream_in_order() {
+    async fn managed_query_turn_resets_submits_and_maps_stream_in_order() {
         let engine = Arc::new(MockQueryHost::default());
         let suggestion_svc = Arc::new(Mutex::new(()));
         let sink = FrontendSink::memory();
 
-        spawn_query_turn(
+        spawn_managed_query_turn(
+            crate::runtime::SessionRuntime::new("session-1"),
             engine.clone(),
             "hello".to_string(),
             "msg-1".to_string(),
@@ -111,6 +122,54 @@ mod tests {
             &captured[1],
             BackendMessage::SystemInfo { text, .. } if text == "msg-1:second"
         ));
+    }
+
+    #[tokio::test]
+    async fn second_query_is_rejected_while_first_stream_is_pending() {
+        use futures::stream::pending;
+
+        struct PendingHost {
+            events: Mutex<Vec<String>>,
+        }
+        impl QueryTurnHost<String> for PendingHost {
+            type Stream = futures::stream::Pending<String>;
+            fn reset_abort(&self) {
+                self.events.lock().push("reset".to_string());
+            }
+            fn submit_client_message(&self, prompt_text: &str) -> Self::Stream {
+                self.events.lock().push(format!("submit:{prompt_text}"));
+                pending()
+            }
+        }
+
+        let engine = Arc::new(PendingHost {
+            events: Mutex::new(Vec::new()),
+        });
+        let runtime = crate::runtime::SessionRuntime::new("session-1");
+        let sink = FrontendSink::memory();
+        let suggestions = Arc::new(Mutex::new(()));
+
+        assert!(spawn_managed_query_turn(
+            runtime.clone(),
+            engine.clone(),
+            "one".into(),
+            "turn-1".into(),
+            suggestions.clone(),
+            sink.clone(),
+            |_, _, _, _, _| Ok(())
+        ));
+        tokio::task::yield_now().await;
+        assert!(!spawn_managed_query_turn(
+            runtime.clone(),
+            engine.clone(),
+            "two".into(),
+            "turn-2".into(),
+            suggestions,
+            sink,
+            |_, _, _, _, _| Ok(())
+        ));
+        assert_eq!(engine.events.lock().as_slice(), ["reset", "submit:one"]);
+        assert!(runtime.shutdown_turn().await);
     }
 
     async fn wait_for_messages(sink: &FrontendSink, expected: usize) {

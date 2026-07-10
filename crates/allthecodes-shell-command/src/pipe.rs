@@ -249,8 +249,8 @@ fn quote_with_eval_stdin_redirect(command: &str) -> String {
 // Continuation line joining
 // ---------------------------------------------------------------------------
 
-static BACKSLASH_NL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\\+\n").expect("invalid backslash-nl regex"));
+static BACKSLASH_NL_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"\\+\n"));
 
 /// Join shell continuation lines (backslash-newline) into a single line.
 ///
@@ -258,7 +258,10 @@ static BACKSLASH_NL_RE: LazyLock<Regex> =
 /// (the last one escapes it). Even pairs remain as literal backslashes plus
 /// newline separator.
 fn join_continuation_lines(command: &str) -> String {
-    BACKSLASH_NL_RE
+    let Ok(regex) = BACKSLASH_NL_RE.as_ref() else {
+        return command.to_string();
+    };
+    regex
         .replace_all(command, |caps: &regex::Captures| {
             let Some(m) = caps.get(0) else {
                 return String::new();

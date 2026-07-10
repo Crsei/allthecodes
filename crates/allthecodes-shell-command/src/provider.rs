@@ -241,12 +241,14 @@ fn encode_powershell_command(command: &str) -> String {
 /// Rewrite Windows CMD-style `>nul` / `2>nul` to POSIX `/dev/null`.
 ///
 /// Port of `allthecodes_utils::bash::rewrite_windows_null_redirect`.
-static NUL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-    Regex::new(r"(\d?&?>+\s*)[Nn][Uu][Ll]([\s|&;)\n]|$)").expect("invalid nul redirect regex")
-});
+static NUL_RE: std::sync::LazyLock<Result<Regex, regex::Error>> =
+    std::sync::LazyLock::new(|| Regex::new(r"(\d?&?>+\s*)[Nn][Uu][Ll]([\s|&;)\n]|$)"));
 
 fn rewrite_windows_null_redirect(command: &str) -> String {
-    NUL_RE.replace_all(command, "${1}/dev/null${2}").to_string()
+    NUL_RE.as_ref().map_or_else(
+        |_| command.to_string(),
+        |regex| regex.replace_all(command, "${1}/dev/null${2}").to_string(),
+    )
 }
 
 /// Check whether a command needs `< /dev/null` added.

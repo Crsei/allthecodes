@@ -85,6 +85,14 @@ pub async fn graceful_shutdown(engine: &QueryEngine) {
         debug!("graceful_shutdown: abort signal sent");
     }
 
+    // MCP stdio transports own subprocess trees. Disconnect them explicitly
+    // while the Tokio runtime is still alive so graceful TERM/KILL and reader
+    // cleanup are awaited instead of being left to Drop.
+    if let Some(manager) = allthecodes_mcp::runtime::current_manager() {
+        allthecodes_mcp::runtime::disconnect_all(&manager).await;
+        debug!("graceful_shutdown: MCP servers disconnected");
+    }
+
     // Step 2: Cancel supervised background agents and clean transient worktrees.
     let cancelled = allthecodes_engine::agent::supervisor::shutdown_all("graceful shutdown").await;
     if cancelled > 0 {

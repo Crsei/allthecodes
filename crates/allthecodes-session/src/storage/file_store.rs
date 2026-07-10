@@ -649,11 +649,15 @@ pub(super) fn write_session_file_to_path(session_file: &SessionFile, path: &Path
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("Failed to create session directory {}", dir.display()))?;
+        allthecodes_config::paths::set_private_directory_permissions(dir)
+            .with_context(|| format!("Failed to restrict session directory {}", dir.display()))?;
     }
 
     let json = serde_json::to_string_pretty(session_file).context("Failed to serialize session")?;
     std::fs::write(path, json)
-        .with_context(|| format!("Failed to write session file {}", path.display()))
+        .with_context(|| format!("Failed to write session file {}", path.display()))?;
+    allthecodes_config::paths::set_private_file_permissions(path)
+        .with_context(|| format!("Failed to restrict session file {}", path.display()))
 }
 
 fn is_default_session_path(session_id: &str, path: &Path) -> bool {

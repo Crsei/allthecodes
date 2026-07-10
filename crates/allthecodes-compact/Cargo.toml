@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "allthecodes-compact"
 version = "0.1.0"
 edition = "2021"
@@ -15,3 +16,6 @@ tokio = { workspace = true }
 
 allthecodes-types = { workspace = true }
 allthecodes-utils = { workspace = true }
+
+[lints]
+workspace = true

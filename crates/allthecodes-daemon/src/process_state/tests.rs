@@ -262,6 +262,34 @@ fn control_token_is_created_and_cleared_with_daemon_state() {
     assert!(read_control_token().unwrap().is_none());
 }
 
+#[cfg(unix)]
+#[test]
+#[serial]
+fn daemon_state_and_control_token_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+    write_started(DEFAULT_DAEMON_PORT, temp.path()).unwrap();
+
+    assert_eq!(
+        fs::metadata(daemon_dir()).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::metadata(state_path()).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(control_token_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}
+
 #[test]
 #[serial]
 fn sleep_state_tracks_active_and_expired_sleep() {

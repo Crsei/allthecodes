@@ -1,7 +1,7 @@
 //! MCP Channel notification protocol extension.
 //!
-//! MCP servers that support channels declare `capabilities.experimental["claude/channel"]`.
-//! When they send `notifications/claude/channel`, the content is parsed and routed
+//! MCP servers that support channels declare `capabilities.experimental["allthecodes/channel"]`.
+//! When they send `notifications/allthecodes/channel`, the content is parsed and routed
 //! through the ChannelManager.
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use serde_json::Value;
 pub fn supports_channel(capabilities: &Value) -> bool {
     capabilities
         .get("experimental")
-        .and_then(|v| v.get("claude/channel"))
+        .and_then(|v| v.get("allthecodes/channel"))
         .is_some()
 }
 
@@ -43,10 +43,10 @@ mod tests {
 
     #[test]
     fn test_supports_channel() {
-        // Server that declares claude/channel support
+        // Server that declares allthecodes/channel support
         let caps_with = json!({
             "experimental": {
-                "claude/channel": {}
+                "allthecodes/channel": {}
             }
         });
         assert!(supports_channel(&caps_with));
@@ -57,7 +57,7 @@ mod tests {
         });
         assert!(!supports_channel(&caps_no_experimental));
 
-        // Server with experimental but no claude/channel
+        // Server with experimental but no allthecodes/channel
         let caps_no_channel = json!({
             "experimental": {
                 "other_feature": true

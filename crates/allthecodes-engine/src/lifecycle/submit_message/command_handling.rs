@@ -212,9 +212,18 @@ pub(super) async fn bash_mode_result_message(prompt: &str, cwd: &str) -> anyhow:
     };
 
     command.current_dir(cwd);
-    let output = tokio::time::timeout(Duration::from_secs(30), command.output())
-        .await
-        .map_err(|_| anyhow::anyhow!("bash mode command timed out after 30s"))??;
+    crate::tools::exec::process_control::configure_process_group(&mut command);
+    command.kill_on_drop(true);
+    let child = command.spawn()?;
+    let pid = child.id();
+    let output = match tokio::time::timeout(Duration::from_secs(30), child.wait_with_output()).await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            crate::tools::exec::process_control::terminate_process_tree(pid).await?;
+            return Err(anyhow::anyhow!("bash mode command timed out after 30s"));
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

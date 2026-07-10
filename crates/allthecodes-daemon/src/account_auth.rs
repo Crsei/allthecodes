@@ -710,16 +710,9 @@ fn create_private_file(path: &std::path::Path) -> std::io::Result<fs::File> {
         .open(path)
 }
 
-#[cfg(unix)]
 fn set_private_permissions(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    allthecodes_config::paths::set_private_file_permissions(path)
         .with_context(|| format!("failed to set private permissions on {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &std::path::Path) -> Result<()> {
-    Ok(())
 }
 
 fn replace_file(tmp: &std::path::Path, path: &std::path::Path) -> Result<()> {

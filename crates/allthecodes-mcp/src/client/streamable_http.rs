@@ -5,14 +5,15 @@ use futures::TryStreamExt;
 use reqwest::header::{HeaderMap, ACCEPT, CONTENT_TYPE, USER_AGENT};
 use reqwest::StatusCode;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::sync::Mutex;
 use tokio_util::io::StreamReader;
 use tracing::debug;
 use url::Url;
 
 use super::super::transport::{
-    dispatch_response, notification_event, streamable_http_sse_reader_loop,
+    dispatch_response, notification_event, read_bounded_line, streamable_http_sse_reader_loop,
+    MAX_MCP_MESSAGE_BYTES,
 };
 use super::super::{JsonRpcResponse, McpRuntimeContext, SharedMcpEventSink};
 
@@ -155,12 +156,7 @@ impl StreamableHttpSender {
             )
             .await
         } else {
-            let response_value = response.json::<Value>().await.with_context(|| {
-                format!(
-                    "failed to parse MCP Streamable HTTP JSON response for server '{}'",
-                    self.server_name
-                )
-            })?;
+            let response_value = read_limited_json_response(response, &self.server_name).await?;
             dispatch_streamable_http_json_message(
                 response_value,
                 self.pending.clone(),
@@ -289,6 +285,44 @@ impl StreamableHttpSender {
     }
 }
 
+async fn read_limited_json_response(
+    response: reqwest::Response,
+    server_name: &str,
+) -> Result<Value> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_MCP_MESSAGE_BYTES as u64)
+    {
+        bail!(
+            "MCP Streamable HTTP JSON response for server '{}' exceeds the 8 MiB transport limit",
+            server_name
+        );
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.try_next().await.with_context(|| {
+        format!(
+            "failed to read MCP Streamable HTTP JSON response for server '{}'",
+            server_name
+        )
+    })? {
+        if body.len().saturating_add(chunk.len()) > MAX_MCP_MESSAGE_BYTES {
+            bail!(
+                "MCP Streamable HTTP JSON response for server '{}' exceeds the 8 MiB transport limit",
+                server_name
+            );
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).with_context(|| {
+        format!(
+            "failed to parse MCP Streamable HTTP JSON response for server '{}'",
+            server_name
+        )
+    })
+}
+
 async fn process_streamable_http_event_stream<R>(
     mut reader: R,
     pending: PendingRequests,
@@ -301,10 +335,11 @@ where
 {
     let mut event_name = String::new();
     let mut data_lines: Vec<String> = Vec::new();
+    let mut data_bytes = 0usize;
 
     loop {
         let mut line = String::new();
-        match reader.read_line(&mut line).await {
+        match read_bounded_line(&mut reader, &mut line).await {
             Ok(0) => break,
             Ok(_) => {
                 let line = line.trim_end_matches(['\r', '\n']);
@@ -320,6 +355,7 @@ where
                     .await?;
                     event_name.clear();
                     data_lines.clear();
+                    data_bytes = 0;
                     if matched {
                         return Ok(());
                     }
@@ -334,7 +370,17 @@ where
                 let value = value.strip_prefix(' ').unwrap_or(value);
                 match field {
                     "event" => event_name = value.to_string(),
-                    "data" => data_lines.push(value.to_string()),
+                    "data" => {
+                        let added = value.len() + usize::from(!data_lines.is_empty());
+                        if data_bytes.saturating_add(added) > MAX_MCP_MESSAGE_BYTES {
+                            bail!(
+                                "MCP Streamable HTTP SSE response for server '{}' exceeds the 8 MiB transport limit",
+                                server_name
+                            );
+                        }
+                        data_bytes += added;
+                        data_lines.push(value.to_string());
+                    }
                     _ => {}
                 }
             }

@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "allthecodes-tool-display"
 version = "0.1.0"
 edition = "2021"
@@ -9,3 +10,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 allthecodes-types = { path = "../allthecodes-types", default-features = false }
 shell-words = { workspace = true }
+
+[lints]
+workspace = true

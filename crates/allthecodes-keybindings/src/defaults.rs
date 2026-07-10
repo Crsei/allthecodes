@@ -621,17 +621,12 @@ pub const DEFAULTS: &[Default] = &[
 
 /// Iterate over the defaults as typed (chord, action) pairs.
 pub fn iter_parsed() -> impl Iterator<Item = (Context, Chord, Action)> {
-    DEFAULTS.iter().map(|d| {
-        (
+    DEFAULTS.iter().filter_map(|d| {
+        Some((
             d.context,
-            Chord::parse(d.chord).unwrap_or_else(|e| {
-                panic!(
-                    "invalid default chord '{}' for action {}: {}",
-                    d.chord, d.action, e
-                )
-            }),
+            Chord::parse(d.chord).ok()?,
             Action::new_static(d.action),
-        )
+        ))
     })
 }
 

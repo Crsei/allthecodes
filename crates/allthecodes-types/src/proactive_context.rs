@@ -17,7 +17,7 @@ pub fn register_context_blocked_callback(callback: ContextBlockedCallback) {
     let last = {
         let mut state = CONTEXT_BLOCKED_STATE
             .write()
-            .expect("context state poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.callback = Some(callback.clone());
         state.last.clone()
     };
@@ -31,7 +31,7 @@ pub fn set_context_blocked(blocked: bool, reason: &str) {
     let callback = {
         let mut state = CONTEXT_BLOCKED_STATE
             .write()
-            .expect("context state poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.last = Some((blocked, reason.trim().to_string()));
         state.callback.clone()
     };
@@ -44,7 +44,7 @@ pub fn set_context_blocked(blocked: bool, reason: &str) {
 pub fn is_context_blocked() -> bool {
     CONTEXT_BLOCKED_STATE
         .read()
-        .expect("context state poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .last
         .as_ref()
         .is_some_and(|(blocked, _)| *blocked)

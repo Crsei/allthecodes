@@ -8,71 +8,54 @@
 
 use std::sync::LazyLock;
 
-use regex::Regex;
 use serde_json::{json, Map, Value};
 
-static GIT_COMMIT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+commit\b").expect("valid git commit regex")
+use crate::safe_regex::SafeRegex;
+
+static GIT_COMMIT_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+commit\b"));
+static GIT_PUSH_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+push\b"));
+static GIT_CHERRY_PICK_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+cherry-pick\b"));
+static GIT_MERGE_RE: LazyLock<SafeRegex> = LazyLock::new(|| {
+    SafeRegex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+merge(?:\s|$|[;&|><])")
 });
-static GIT_PUSH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+push\b").expect("valid git push regex")
+static GIT_REBASE_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+rebase\b"));
+static GIT_COMMIT_ID_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\[[\w./-]+(?: \(root-commit\))? ([0-9a-fA-F]+)\]"));
+static GIT_PUSH_BRANCH_RE: LazyLock<SafeRegex> = LazyLock::new(|| {
+    SafeRegex::new(r"(?m)^\s*[+\-*!= ]?\s*(?:\[new branch\]|\S+\.\.+\S+)\s+\S+\s*->\s*(\S+)")
 });
-static GIT_CHERRY_PICK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+cherry-pick\b")
-        .expect("valid git cherry-pick regex")
+static GITHUB_PR_URL_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)"));
+static GITHUB_PR_URL_ANYWHERE_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+"));
+static PR_NUMBER_TEXT_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"[Pp]ull request (?:\S+#)?#?(\d+)"));
+static GH_PR_CREATE_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bgh\s+pr\s+create\b"));
+static GH_PR_EDIT_RE: LazyLock<SafeRegex> = LazyLock::new(|| SafeRegex::new(r"\bgh\s+pr\s+edit\b"));
+static GH_PR_MERGE_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bgh\s+pr\s+merge\b"));
+static GH_PR_COMMENT_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bgh\s+pr\s+comment\b"));
+static GH_PR_CLOSE_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bgh\s+pr\s+close\b"));
+static GH_PR_READY_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bgh\s+pr\s+ready\b"));
+static GLAB_MR_CREATE_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"\bglab\s+mr\s+create\b"));
+static CURL_RE: LazyLock<SafeRegex> = LazyLock::new(|| SafeRegex::new(r"\bcurl\b"));
+static CURL_POST_RE: LazyLock<SafeRegex> =
+    LazyLock::new(|| SafeRegex::new(r"(?i)(?:-X\s*POST\b|--request\s*=?\s*POST\b|\s-d\s)"));
+static PR_ENDPOINT_RE: LazyLock<SafeRegex> = LazyLock::new(|| {
+    SafeRegex::new(
+        r#"(?i)https?://[^\s'"]*/(?:pulls|pull-requests|merge[-_]requests)(?:[^\w/-]|$)"#,
+    )
 });
-static GIT_MERGE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+merge(?:\s|$|[;&|><])")
-        .expect("valid git merge regex")
-});
-static GIT_REBASE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+rebase\b").expect("valid git rebase regex")
-});
-static GIT_COMMIT_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[[\w./-]+(?: \(root-commit\))? ([0-9a-fA-F]+)\]")
-        .expect("valid git commit id regex")
-});
-static GIT_PUSH_BRANCH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^\s*[+\-*!= ]?\s*(?:\[new branch\]|\S+\.\.+\S+)\s+\S+\s*->\s*(\S+)")
-        .expect("valid git push branch regex")
-});
-static GITHUB_PR_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
-        .expect("valid GitHub PR URL regex")
-});
-static GITHUB_PR_URL_ANYWHERE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+")
-        .expect("valid GitHub PR URL search regex")
-});
-static PR_NUMBER_TEXT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[Pp]ull request (?:\S+#)?#?(\d+)").expect("valid PR number text regex")
-});
-static GH_PR_CREATE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bgh\s+pr\s+create\b").expect("valid gh pr create regex"));
-static GH_PR_EDIT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bgh\s+pr\s+edit\b").expect("valid gh pr edit regex"));
-static GH_PR_MERGE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bgh\s+pr\s+merge\b").expect("valid gh pr merge regex"));
-static GH_PR_COMMENT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bgh\s+pr\s+comment\b").expect("valid gh pr comment regex"));
-static GH_PR_CLOSE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bgh\s+pr\s+close\b").expect("valid gh pr close regex"));
-static GH_PR_READY_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bgh\s+pr\s+ready\b").expect("valid gh pr ready regex"));
-static GLAB_MR_CREATE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bglab\s+mr\s+create\b").expect("valid glab mr create regex"));
-static CURL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bcurl\b").expect("valid curl regex"));
-static CURL_POST_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:-X\s*POST\b|--request\s*=?\s*POST\b|\s-d\s)")
-        .expect("valid curl POST regex")
-});
-static PR_ENDPOINT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)https?://[^\s'"]*/(?:pulls|pull-requests|merge[-_]requests)(?:[^\w/-]|$)"#)
-        .expect("valid PR endpoint regex")
-});
-static AMEND_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"--amend\b").expect("valid amend regex"));
+static AMEND_RE: LazyLock<SafeRegex> = LazyLock::new(|| SafeRegex::new(r"--amend\b"));
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitOperationTracking {
@@ -163,7 +146,7 @@ pub struct GitPrOperation {
 }
 
 struct GhPrAction {
-    re: &'static LazyLock<Regex>,
+    re: &'static LazyLock<SafeRegex>,
     action: &'static str,
     op: &'static str,
 }
@@ -353,7 +336,7 @@ fn parse_pr_url(url: &str, action: &'static str) -> Option<GitPrOperation> {
     })
 }
 
-fn parse_ref_from_command(command: &str, command_re: &Regex) -> Option<String> {
+fn parse_ref_from_command(command: &str, command_re: &SafeRegex) -> Option<String> {
     let after = command_re.find(command).map(|m| &command[m.end()..])?;
     for token in after.split_whitespace() {
         if token.starts_with(['&', '|', ';', '>', '<']) {

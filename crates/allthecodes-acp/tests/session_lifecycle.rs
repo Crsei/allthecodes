@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 //! Tests: ACP session lifecycle parity.
 
 mod support;

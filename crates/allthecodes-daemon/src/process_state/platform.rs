@@ -16,8 +16,14 @@ pub(super) fn configure_detached(cmd: &mut Command) {
     cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(unix), not(windows)))]
 pub(super) fn configure_detached(_cmd: &mut Command) {}
+
+#[cfg(unix)]
+pub(super) fn configure_detached(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
 
 #[cfg(unix)]
 pub(crate) fn process_is_alive(pid: u32) -> bool {
@@ -119,20 +125,15 @@ pub(crate) fn process_matches_record(
 #[cfg(unix)]
 pub(crate) fn send_soft_terminate(pid: u32, expected_start_key: Option<&str>) -> Result<()> {
     ensure_process_identity(pid, expected_start_key)?;
-    let pid = pid as libc::pid_t;
-    unsafe {
-        libc::kill(pid, libc::SIGTERM);
-    }
-    Ok(())
+    ensure_group_leader(pid)?;
+    signal_process_group(pid, libc::SIGTERM)
 }
 
 #[cfg(unix)]
 pub(crate) fn send_force_kill(pid: u32, expected_start_key: Option<&str>) -> Result<()> {
     ensure_process_identity(pid, expected_start_key)?;
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGKILL);
-    }
-    Ok(())
+    ensure_group_leader(pid)?;
+    signal_process_group(pid, libc::SIGKILL)
 }
 
 #[cfg(windows)]
@@ -161,16 +162,51 @@ pub(crate) fn send_force_kill(pid: u32, expected_start_key: Option<&str>) -> Res
     Ok(())
 }
 
+#[cfg(unix)]
+pub(crate) fn terminate_process_tree(pid: u32, expected_start_key: Option<&str>) -> Result<()> {
+    ensure_process_identity(pid, expected_start_key)?;
+    ensure_group_leader(pid)?;
+    signal_process_group(pid, libc::SIGTERM)?;
+    std::thread::sleep(Duration::from_millis(500));
+    if process_group_is_alive(pid) {
+        signal_process_group(pid, libc::SIGKILL)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 pub(crate) fn terminate_process_tree(pid: u32, expected_start_key: Option<&str>) -> Result<()> {
     send_soft_terminate(pid, expected_start_key)?;
-    #[cfg(unix)]
-    std::thread::sleep(Duration::from_millis(500));
-    #[cfg(windows)]
     std::thread::sleep(std::time::Duration::from_millis(500));
     if process_matches_record(pid, expected_start_key).is_current_process_record() {
         send_force_kill(pid, expected_start_key)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_group_leader(pid: u32) -> Result<()> {
+    let pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+    if pgid != pid as libc::pid_t {
+        anyhow::bail!("refusing to terminate pid {pid} as a process group: pgid={pgid}");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: libc::c_int) -> Result<()> {
+    let rc = unsafe { libc::kill(-(pid as libc::pid_t), signal) };
+    if rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().into())
+    }
+}
+
+#[cfg(unix)]
+fn process_group_is_alive(pid: u32) -> bool {
+    let rc = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 fn ensure_process_identity(pid: u32, expected_start_key: Option<&str>) -> Result<()> {
@@ -184,5 +220,90 @@ fn ensure_process_identity(pid: u32, expected_start_key: Option<&str>) -> Result
         ProcessIdentityStatus::Matched
         | ProcessIdentityStatus::Unknown
         | ProcessIdentityStatus::Unrecorded => Ok(()),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::process::CommandExt;
+
+    #[test]
+    fn terminate_process_tree_kills_the_worker_process_group() {
+        let temp = tempfile::tempdir().unwrap();
+        let child_pid_path = temp.path().join("child.pid");
+        let script = format!(
+            "trap '' TERM; sleep 60 & echo $! > '{}'; wait",
+            child_pid_path.display()
+        );
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script).process_group(0);
+        let mut leader = command.spawn().unwrap();
+        let leader_pid = leader.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !child_pid_path.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let child_pid = std::fs::read_to_string(&child_pid_path)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        let start_key = process_start_key(leader_pid).unwrap();
+
+        terminate_process_tree(leader_pid, Some(&start_key)).unwrap();
+        let _ = leader.wait();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while process_is_alive(child_pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(!process_is_alive(child_pid));
+    }
+
+    #[test]
+    fn terminate_process_tree_rejects_a_mismatched_pid_identity() {
+        let mut command = Command::new("sleep");
+        command.arg("60").process_group(0);
+        let mut child = command.spawn().unwrap();
+
+        let error = terminate_process_tree(child.id(), Some("linux:not-this-process"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("identity mismatch"));
+        assert!(process_is_alive(child.id()));
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn force_kill_fallback_kills_the_daemon_process_group() {
+        let temp = tempfile::tempdir().unwrap();
+        let child_pid_path = temp.path().join("child.pid");
+        let script = format!("sleep 60 & echo $! > '{}'; wait", child_pid_path.display());
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script).process_group(0);
+        let mut leader = command.spawn().unwrap();
+        let leader_pid = leader.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !child_pid_path.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let child_pid = std::fs::read_to_string(&child_pid_path)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        let start_key = process_start_key(leader_pid).unwrap();
+
+        send_force_kill(leader_pid, Some(&start_key)).unwrap();
+        let _ = leader.wait();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while process_is_alive(child_pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(!process_is_alive(child_pid));
     }
 }

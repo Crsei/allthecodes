@@ -648,8 +648,9 @@ where
                                     };
                                 }
 
-                                let (index, _) =
-                                    open_text_like_block.expect("text-like block is open");
+                                let Some((index, _)) = open_text_like_block else {
+                                    continue;
+                                };
                                 if let Some(delta_text) = text_delta_for_block(
                                     index,
                                     &full_text,

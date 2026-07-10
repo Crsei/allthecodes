@@ -50,8 +50,20 @@ pub(crate) async fn wait_for_exit_or_termination(
     let pid = child.id();
 
     if *abort_rx.borrow() {
-        let _ = terminate_process_tree(pid).await;
-        return ControlledExit::Cancelled(child.wait().await);
+        let termination = terminate_process_tree(pid).await;
+        if let Err(error) = termination {
+            return ControlledExit::Cancelled(Err(error));
+        }
+        return ControlledExit::Cancelled(
+            tokio::time::timeout(TERMINATION_WAIT, child.wait())
+                .await
+                .unwrap_or_else(|_| {
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "process did not exit after termination",
+                    ))
+                }),
+        );
     }
 
     let wait_future = child.wait();
@@ -64,14 +76,18 @@ pub(crate) async fn wait_for_exit_or_termination(
         tokio::select! {
             status = &mut wait_future => return ControlledExit::Exited(status),
             _ = &mut timeout_future => {
-                let _ = terminate_process_tree(pid).await;
+                if let Err(error) = terminate_process_tree(pid).await {
+                    return ControlledExit::TimedOut(Err(error));
+                }
                 let status = wait_after_termination(&mut wait_future).await;
                 return ControlledExit::TimedOut(status);
             }
             changed = abort_rx.changed(), if !abort_closed => {
                 match changed {
                     Ok(()) if *abort_rx.borrow() => {
-                        let _ = terminate_process_tree(pid).await;
+                        if let Err(error) = terminate_process_tree(pid).await {
+                            return ControlledExit::Cancelled(Err(error));
+                        }
                         let status = wait_after_termination(&mut wait_future).await;
                         return ControlledExit::Cancelled(status);
                     }
@@ -98,14 +114,14 @@ where
     }
 }
 
-async fn terminate_process_tree(pid: Option<u32>) -> io::Result<()> {
+pub(crate) async fn terminate_process_tree(pid: Option<u32>) -> io::Result<()> {
     let pid =
         pid.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "process has no pid"))?;
     terminate_process_tree_by_pid(pid).await
 }
 
 #[cfg(unix)]
-async fn terminate_process_tree_by_pid(pid: u32) -> io::Result<()> {
+pub(crate) async fn terminate_process_tree_by_pid(pid: u32) -> io::Result<()> {
     send_signal_to_process_group(pid, libc::SIGTERM)?;
     tokio::time::sleep(TERMINATION_GRACE).await;
     send_signal_to_process_group(pid, libc::SIGKILL)
@@ -138,8 +154,12 @@ async fn terminate_process_tree_by_pid(pid: u32) -> io::Result<()> {
         .stderr(std::process::Stdio::null());
     configure_process_group(&mut cmd);
 
-    let _ = cmd.status().await?;
-    Ok(())
+    let status = cmd.status().await?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("taskkill failed with {status}")))
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -170,6 +190,41 @@ mod tests {
             .expect("sleeper should exit after termination")
             .expect("wait succeeds");
         assert!(!status.success());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn termination_stops_grandchild_in_process_group() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("grandchild-finished");
+        let script = dir.path().join("tree.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n(sh -c 'sleep 2; touch \\\"{}\\\"') &\nwait\n",
+                marker.display()
+            ),
+        )
+        .expect("write script");
+        let mut cmd = Command::new("sh");
+        cmd.arg(script)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        configure_process_group(&mut cmd);
+        let mut child = cmd.spawn().expect("spawn tree");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        terminate_process_tree(child.id())
+            .await
+            .expect("terminate tree");
+        tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("bounded wait")
+            .expect("wait");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(
+            !marker.exists(),
+            "grandchild survived process-group termination"
+        );
     }
 
     #[cfg(windows)]

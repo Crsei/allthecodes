@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -126,7 +128,18 @@ impl IsolatedDaemon {
     }
 
     fn get_json(&self, path: &str) -> Result<Value, String> {
-        http_get_json(self.port, path)
+        let token_path = self
+            .allthecodes_home
+            .join("daemon")
+            .join("control-token.json");
+        let token_file = std::fs::read_to_string(&token_path)
+            .map_err(|error| format!("failed to read {}: {error}", token_path.display()))?;
+        let token: Value = serde_json::from_str(&token_file)
+            .map_err(|error| format!("failed to parse {}: {error}", token_path.display()))?;
+        let token = token["token"]
+            .as_str()
+            .ok_or_else(|| format!("missing token in {}", token_path.display()))?;
+        http_get_json(self.port, path, token)
     }
 
     fn wait_for_status<F>(&self, mut accept: F) -> Value
@@ -279,7 +292,7 @@ fn unused_port() -> u16 {
     listener.local_addr().expect("local addr").port()
 }
 
-fn http_get_json(port: u16, path: &str) -> Result<Value, String> {
+fn http_get_json(port: u16, path: &str, token: &str) -> Result<Value, String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).map_err(|error| error.to_string())?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -289,7 +302,8 @@ fn http_get_json(port: u16, path: &str) -> Result<Value, String> {
         .map_err(|error| error.to_string())?;
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+         x-allthecodes-daemon-token: {token}\r\nConnection: close\r\n\r\n"
     )
     .map_err(|error| error.to_string())?;
 

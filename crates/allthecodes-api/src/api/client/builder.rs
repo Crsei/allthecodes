@@ -206,12 +206,13 @@ impl ApiClient {
     }
 
     /// Construct a new `ApiClient`, panicking on invalid config.
+    #[cfg(test)]
     pub fn new(config: ApiClientConfig) -> Self {
         Self::try_new(config).expect("invalid API client configuration")
     }
 
     /// Construct an `ApiClient` from a `ProviderInfo` and API key.
-    pub fn from_provider_info(info: &ProviderInfo, api_key: &str) -> Self {
+    pub fn from_provider_info(info: &ProviderInfo, api_key: &str) -> Result<Self> {
         let provider = match info.protocol {
             ProviderProtocol::Anthropic => ApiProvider::Anthropic {
                 auth: AnthropicAuth::ApiKey(api_key.to_string()),
@@ -230,12 +231,11 @@ impl ApiClient {
             },
         };
         let default_model = if matches!(info.protocol, ProviderProtocol::Anthropic) {
-            resolve_anthropic_default_model(AnthropicEndpointKind::DirectAnthropic)
-                .expect("invalid Anthropic default model configuration")
+            resolve_anthropic_default_model(AnthropicEndpointKind::DirectAnthropic)?
         } else {
             info.default_model.to_string()
         };
-        Self::new(ApiClientConfig {
+        Self::try_new(ApiClientConfig {
             provider,
             default_model,
             max_retries: 3,
@@ -352,7 +352,7 @@ impl ApiClient {
             .map(Some);
         }
 
-        Ok(Some(Self::from_provider_info(info, &api_key)))
+        Self::from_provider_info(info, &api_key).map(Some)
     }
 
     /// Convenience wrapper that logs and returns `None` on error.
@@ -601,7 +601,7 @@ impl ApiClient {
                 if let Some(info) = crate::api::providers::get_provider(OPENAI_PROVIDER_NAME) {
                     if let Ok(api_key) = std::env::var(info.env_key) {
                         if !api_key.trim().is_empty() {
-                            return Ok(Some(Self::from_provider_info(info, &api_key)));
+                            return Self::from_provider_info(info, &api_key).map(Some);
                         }
                     }
                 }

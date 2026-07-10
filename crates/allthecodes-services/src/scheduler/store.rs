@@ -15,9 +15,12 @@ use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(feature = "sqlite-storage")]
 use tracing::warn;
 
-use super::task::{ScheduleKind, ScheduledTask, SchedulerKind, TaskId};
+#[cfg(feature = "sqlite-storage")]
+use super::task::ScheduleKind;
+use super::task::{ScheduledTask, SchedulerKind, TaskId};
 
 /// Schema version for the on-disk JSON so we can evolve the format later
 /// without silently deserializing a mismatched layout.

@@ -438,10 +438,10 @@ async fn load_entries_from_source(
                     response.status()
                 );
             }
-            response
-                .text()
-                .await
-                .context("Failed to read marketplace index response body")?
+            String::from_utf8(
+                crate::sources::response_to_bytes_limited(response, 4 * 1024 * 1024).await?,
+            )
+            .context("Marketplace index is not valid UTF-8")?
         }
         PluginSource::GitHub { repo, ref_spec } => {
             let branch = ref_spec.as_deref().unwrap_or("main");
@@ -456,10 +456,10 @@ async fn load_entries_from_source(
                     response.status()
                 );
             }
-            response
-                .text()
-                .await
-                .context("Failed to read GitHub marketplace index response body")?
+            String::from_utf8(
+                crate::sources::response_to_bytes_limited(response, 4 * 1024 * 1024).await?,
+            )
+            .context("GitHub marketplace index is not valid UTF-8")?
         }
         PluginSource::Npm { .. } | PluginSource::Marketplace { .. } => {
             anyhow::bail!("Unsupported marketplace source kind: {:?}", source.source);

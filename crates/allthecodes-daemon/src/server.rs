@@ -5,11 +5,52 @@
 
 use std::net::SocketAddr;
 
+use axum::http::{header, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::Router;
-use tower_http::cors::CorsLayer;
 use tracing::info;
 
 use super::{gateway_routes, routes, sse, state::DaemonState};
+
+const DAEMON_TOKEN_HEADER: &str = "x-allthecodes-daemon-token";
+
+async fn require_daemon_control_token(mut request: axum::extract::Request, next: Next) -> Response {
+    let path = request.uri().path();
+    if matches!(path, "/health" | "/healthz" | "/readyz" | "/startupz")
+        || path.starts_with("/webhook/")
+        || path.starts_with("/remote-control/v1/webhooks/")
+    {
+        return next.run(request).await;
+    }
+
+    let header_token = request
+        .headers()
+        .get(DAEMON_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let bearer_token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let has_header_token = header_token.is_some();
+    let Some(candidate) = header_token.or(bearer_token).map(str::to_owned) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+
+    match super::process_state::verify_control_token(&candidate) {
+        Ok(true) => {
+            if !has_header_token {
+                if let Ok(value) = candidate.parse() {
+                    request.headers_mut().insert(DAEMON_TOKEN_HEADER, value);
+                }
+            }
+            next.run(request).await
+        }
+        Ok(false) => StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
 
 /// Build the Axum router with all daemon routes.
 ///
@@ -26,7 +67,7 @@ pub fn build_router(state: DaemonState) -> Router {
         .route("/readyz", axum::routing::get(routes::readyz))
         .route("/startupz", axum::routing::get(routes::startupz))
         .route("/events", axum::routing::get(sse::sse_handler))
-        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn(require_daemon_control_token))
         .with_state(state)
         .merge(gateway_routes::gateway_routes())
 }
@@ -51,8 +92,9 @@ mod tests {
     use allthecodes_engine::lifecycle::QueryEngine;
     use allthecodes_engine::types::config::QueryEngineConfig;
     use axum::body::{to_bytes, Body};
-    use axum::http::{Method, Request, StatusCode};
+    use axum::http::{header, Method, Request, StatusCode};
     use serde_json::{json, Value};
+    use serial_test::serial;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -119,6 +161,47 @@ mod tests {
             assert_eq!(body["service"], json!("daemon"));
             assert!(body["pid"].as_u64().is_some());
             assert!(body["timestamp_ms"].as_u64().is_some());
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn daemon_management_routes_require_the_control_token() {
+        let home = tempfile::tempdir().unwrap();
+        let previous = std::env::var("ALLTHECODES_HOME").ok();
+        std::env::set_var("ALLTHECODES_HOME", home.path());
+        let token = crate::process_state::write_control_token().unwrap();
+        let app = build_router(make_daemon_state());
+
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        let accepted = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/status")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", token.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        match previous {
+            Some(value) => std::env::set_var("ALLTHECODES_HOME", value),
+            None => std::env::remove_var("ALLTHECODES_HOME"),
         }
     }
 }

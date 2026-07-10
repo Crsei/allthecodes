@@ -141,21 +141,31 @@ fn notification_source_from_value(value: serde_json::Value) -> NotificationSourc
 // Windows Toast
 // ---------------------------------------------------------------------------
 
-/// Show a native Windows toast notification via `notify-rust`.
+/// Show a native Windows toast notification through the built-in WinRT API.
 ///
 /// On non-Windows platforms the call is a no-op (logged at debug level).
 pub fn send_windows_toast(notif: &FullNotification) {
     #[cfg(target_os = "windows")]
     {
-        if let Err(e) = notify_rust::Notification::new()
-            .appname("allthecodes")
-            .summary(&notif.title)
-            .body(&notif.body)
-            .show()
-        {
-            error!("failed to show Windows toast: {}", e);
-        } else {
-            debug!("Windows toast sent: {}", notif.title);
+        const TOAST_SCRIPT: &str = r#"
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
+[Windows.UI.Notifications.ToastTemplateType, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
+$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$nodes = $xml.GetElementsByTagName('text')
+$nodes.Item(0).AppendChild($xml.CreateTextNode($env:ALLTHECODES_TOAST_TITLE)) > $null
+$nodes.Item(1).AppendChild($xml.CreateTextNode($env:ALLTHECODES_TOAST_BODY)) > $null
+$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('allthecodes').Show($toast)
+"#;
+        let result = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", TOAST_SCRIPT])
+            .env("ALLTHECODES_TOAST_TITLE", &notif.title)
+            .env("ALLTHECODES_TOAST_BODY", &notif.body)
+            .status();
+        match result {
+            Ok(status) if status.success() => debug!("Windows toast sent: {}", notif.title),
+            Ok(status) => error!("Windows toast command exited with status {}", status),
+            Err(error) => error!("failed to show Windows toast: {}", error),
         }
     }
     #[cfg(not(target_os = "windows"))]

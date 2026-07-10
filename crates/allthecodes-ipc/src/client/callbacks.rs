@@ -14,6 +14,57 @@ use tokio::sync::oneshot;
 
 use crate::transport::FrontendSink;
 
+const DEFAULT_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+struct PendingPermissionCleanup {
+    pending: PendingPermissions,
+    id: String,
+}
+
+impl Drop for PendingPermissionCleanup {
+    fn drop(&mut self) {
+        self.pending.lock().remove(&self.id);
+    }
+}
+
+struct PendingQuestionCleanup {
+    pending: PendingQuestions,
+    id: String,
+}
+
+impl Drop for PendingQuestionCleanup {
+    fn drop(&mut self) {
+        self.pending.lock().remove(&self.id);
+    }
+}
+
+fn register_permission_then_send(
+    pending: PendingPermissions,
+    id: String,
+    send: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<(
+    oneshot::Receiver<PermissionResponsePayload>,
+    PendingPermissionCleanup,
+)> {
+    let (tx, rx) = oneshot::channel();
+    pending.lock().insert(id.clone(), tx);
+    let cleanup = PendingPermissionCleanup { pending, id };
+    send()?;
+    Ok((rx, cleanup))
+}
+
+fn register_question_then_send(
+    pending: PendingQuestions,
+    id: String,
+    send: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<(oneshot::Receiver<String>, PendingQuestionCleanup)> {
+    let (tx, rx) = oneshot::channel();
+    pending.lock().insert(id.clone(), tx);
+    let cleanup = PendingQuestionCleanup { pending, id };
+    send()?;
+    Ok((rx, cleanup))
+}
+
 /// Pending permission requests awaiting a response from the frontend.
 pub type PendingPermissions =
     Arc<Mutex<HashMap<String, oneshot::Sender<PermissionResponsePayload>>>>;
@@ -28,6 +79,24 @@ pub fn install_permission_callback<H>(
     pending: PendingPermissions,
     sink: FrontendSink,
     exit_plan_rejected: Option<ExitPlanRejectedHook<H>>,
+) where
+    H: CallbackHost + Send + Sync + 'static,
+{
+    install_permission_callback_with_timeout(
+        host,
+        pending,
+        sink,
+        exit_plan_rejected,
+        DEFAULT_RESPONSE_TIMEOUT,
+    );
+}
+
+fn install_permission_callback_with_timeout<H>(
+    host: &Arc<H>,
+    pending: PendingPermissions,
+    sink: FrontendSink,
+    exit_plan_rejected: Option<ExitPlanRejectedHook<H>>,
+    response_timeout: std::time::Duration,
 ) where
     H: CallbackHost + Send + Sync + 'static,
 {
@@ -49,20 +118,23 @@ pub fn install_permission_callback<H>(
                     allthecodes_types::tool_operation::OperationStatus::InProgress,
                 )
             });
-            let _ = sink.send(&BackendMessage::PermissionRequest {
-                tool_use_id: tool_use_id.clone(),
-                tool: tool_name.clone(),
-                command: request.legacy_command(),
-                input: tool_input,
-                options: request.options,
-                operation: Some(operation),
-            });
+            let registered =
+                register_permission_then_send(pending.clone(), tool_use_id.clone(), || {
+                    sink.send(&BackendMessage::PermissionRequest {
+                        tool_use_id: tool_use_id.clone(),
+                        tool: tool_name.clone(),
+                        command: request.legacy_command(),
+                        input: tool_input,
+                        options: request.options,
+                        operation: Some(operation),
+                    })
+                });
+            let Ok((rx, _cleanup)) = registered else {
+                return PermissionResponsePayload::deny();
+            };
 
-            let (tx, rx) = oneshot::channel();
-            pending.lock().insert(tool_use_id, tx);
-
-            match rx.await {
-                Ok(decision) => {
+            match tokio::time::timeout(response_timeout, rx).await {
+                Ok(Ok(decision)) => {
                     if tool_name == "ExitPlanMode"
                         && matches!(
                             decision.normalized_decision().as_str(),
@@ -75,7 +147,7 @@ pub fn install_permission_callback<H>(
                     }
                     decision
                 }
-                Err(_) => PermissionResponsePayload::deny(),
+                Ok(Err(_)) | Err(_) => PermissionResponsePayload::deny(),
             }
         })
     });
@@ -129,17 +201,24 @@ where
         let sink = sink.clone();
         Box::pin(async move {
             let question_id = uuid::Uuid::new_v4().to_string();
-            let _ = sink.send(&BackendMessage::QuestionRequest {
-                id: question_id.clone(),
-                text: request.question,
-                choices: request.choices,
-                allow_free_text: request.allow_free_text,
-            });
+            let registered =
+                register_question_then_send(pending.clone(), question_id.clone(), || {
+                    sink.send(&BackendMessage::QuestionRequest {
+                        id: question_id.clone(),
+                        text: request.question,
+                        choices: request.choices,
+                        allow_free_text: request.allow_free_text,
+                    })
+                });
+            let Ok((rx, _cleanup)) = registered else {
+                return String::new();
+            };
 
-            let (tx, rx) = oneshot::channel();
-            pending.lock().insert(question_id, tx);
-
-            rx.await.unwrap_or_default()
+            tokio::time::timeout(DEFAULT_RESPONSE_TIMEOUT, rx)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default()
         })
     });
     host.set_ask_user_callback(callback);
@@ -330,6 +409,86 @@ mod tests {
         let tx = pending.lock().remove(id).expect("pending sender");
         tx.send("yes".to_string()).unwrap();
         assert_eq!(task.await.unwrap(), "yes");
+    }
+
+    #[tokio::test]
+    async fn unanswered_permission_times_out_and_cleans_pending() {
+        let host = Arc::new(MockHost::default());
+        let pending: PendingPermissions = Arc::new(Mutex::new(HashMap::new()));
+        install_permission_callback_with_timeout(
+            &host,
+            pending.clone(),
+            FrontendSink::memory(),
+            None,
+            std::time::Duration::from_millis(20),
+        );
+        let callback = host.permission.lock().clone().unwrap();
+        let task = tokio::spawn(callback(PermissionRequestPayload {
+            tool_use_id: "tool-timeout".into(),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::json!({}),
+            message: "wait".into(),
+            options: vec![],
+            operation: None,
+        }));
+        tokio::task::yield_now().await;
+        assert!(pending.lock().contains_key("tool-timeout"));
+        assert_eq!(task.await.unwrap(), PermissionResponsePayload::deny());
+        assert!(pending.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_question_wait_cleans_pending() {
+        let host = MockHost::default();
+        let pending: PendingQuestions = Arc::new(Mutex::new(HashMap::new()));
+        install_ask_user_callback(&host, pending.clone(), FrontendSink::memory());
+        let callback = host.ask_user.lock().clone().unwrap();
+        let task = tokio::spawn(callback(AskUserRequestPayload {
+            question: "cancel?".into(),
+            choices: vec![],
+            allow_free_text: true,
+        }));
+        wait_until(|| !pending.lock().is_empty()).await;
+        task.abort();
+        let _ = task.await;
+        assert!(pending.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn permission_is_pending_before_send_and_fast_response_is_not_lost() {
+        let pending: PendingPermissions = Arc::new(Mutex::new(HashMap::new()));
+        let responder_pending = pending.clone();
+        let (rx, _cleanup) =
+            register_permission_then_send(pending.clone(), "fast".into(), move || {
+                let tx = responder_pending
+                    .lock()
+                    .remove("fast")
+                    .expect("registered before send");
+                tx.send(PermissionResponsePayload::decision("allow"))
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            rx.await.unwrap(),
+            PermissionResponsePayload::decision("allow")
+        );
+        assert!(pending.lock().is_empty());
+    }
+
+    #[test]
+    fn question_send_failure_cleans_pending() {
+        let pending: PendingQuestions = Arc::new(Mutex::new(HashMap::new()));
+        let result = register_question_then_send(pending.clone(), "failed".into(), || {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "closed",
+            ))
+        });
+
+        assert!(result.is_err());
+        assert!(pending.lock().is_empty());
     }
 
     #[test]

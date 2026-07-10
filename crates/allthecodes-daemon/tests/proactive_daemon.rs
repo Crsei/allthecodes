@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::ffi::{OsStr, OsString};
 
 use allthecodes_config::features::FeatureFlags;

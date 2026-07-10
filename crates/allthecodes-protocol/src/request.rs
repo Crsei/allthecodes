@@ -378,6 +378,19 @@ crate::api_definitions! {
     ChannelsCapabilities => "GET /api/channels/capabilities" {
         response: Value,
     },
+    ChannelsConfig => "GET /api/channels/config" {
+        response: v1::channels::ChannelsConfigResponse,
+    },
+    ChannelsConfigUpdate => "PATCH /api/channels/{provider}/config" {
+        params: v1::channels::ChannelConfigPatch,
+        response: v1::channels::ChannelConfigSnapshot,
+    },
+    ChannelsEnable => "POST /api/channels/{provider}/enable" {
+        response: v1::channels::ChannelConfigSnapshot,
+    },
+    ChannelsDisable => "POST /api/channels/{provider}/disable" {
+        response: v1::channels::ChannelConfigSnapshot,
+    },
     ChannelsConnect => "POST /api/channels/{provider}/connect" {
         response: Value,
     },

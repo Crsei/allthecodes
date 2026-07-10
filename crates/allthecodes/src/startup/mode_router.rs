@@ -160,11 +160,11 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
     let shutdown_token = crate::shutdown::register_shutdown_handler();
 
     let mut dashboard_companion = if subagent_dashboard_companion_enabled() {
-        match crate::dashboard::DashboardCompanion::spawn(
-            crate::dashboard::DashboardConfig::default(),
-        )
-        .await
-        {
+        let dashboard = async {
+            let config = crate::dashboard::DashboardConfig::try_default()?;
+            crate::dashboard::DashboardCompanion::spawn(config).await
+        };
+        match dashboard.await {
             Ok(child) => Some(child),
             Err(e) => {
                 warn!(error = %e, "failed to start subagent dashboard companion");

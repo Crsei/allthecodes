@@ -307,7 +307,7 @@ fn git_worktrees_response(cwd: &Path) -> GitWorktreesResponse {
     let mut worktrees = vec![worktree_summary("main", &git_root, true, false, false)];
     match repo.worktrees() {
         Ok(names) => {
-            for name in names.iter().flatten() {
+            for name in names.iter().filter_map(Result::ok).flatten() {
                 let Ok(worktree) = repo.find_worktree(name) else {
                     continue;
                 };

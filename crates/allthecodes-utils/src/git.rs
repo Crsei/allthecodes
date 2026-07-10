@@ -593,7 +593,7 @@ pub fn get_log(path: &Path, max_count: usize) -> Result<Vec<LogEntry>> {
         let sha = oid.to_string();
         let short_sha = sha[..7.min(sha.len())].to_string();
         let message = commit.message().unwrap_or("").to_string();
-        let summary = commit.summary().unwrap_or("").to_string();
+        let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
         let author = commit.author();
         let author_name = author.name().unwrap_or("").to_string();
         let author_email = author.email().unwrap_or("").to_string();
@@ -682,7 +682,10 @@ pub fn head_sha(path: &Path) -> Result<String> {
 pub fn list_branches(path: &Path) -> Result<Vec<BranchInfo>> {
     let repo = open_repo(path)?;
     let head_ref = repo.head().ok();
-    let head_name = head_ref.as_ref().and_then(|h| h.shorthand()).unwrap_or("");
+    let head_name = head_ref
+        .as_ref()
+        .and_then(|head| head.shorthand().ok())
+        .unwrap_or("");
 
     let branches = repo
         .branches(Some(BranchType::Local))
@@ -712,7 +715,7 @@ pub fn default_branch(path: &Path) -> Result<String> {
 
     // Try refs/remotes/origin/HEAD
     if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
-        if let Some(target) = reference.symbolic_target() {
+        if let Some(target) = reference.symbolic_target().ok().flatten() {
             // target is like "refs/remotes/origin/main"
             if let Some(name) = target.strip_prefix("refs/remotes/origin/") {
                 return Ok(name.to_string());
@@ -751,7 +754,7 @@ pub fn get_remote_url(path: &Path) -> Result<String> {
     remote
         .url()
         .map(|u| u.to_string())
-        .ok_or_else(|| anyhow::anyhow!("origin remote has no URL"))
+        .context("origin remote URL is not valid UTF-8")
 }
 
 /// Parse a GitHub remote URL into `owner/repo` format.

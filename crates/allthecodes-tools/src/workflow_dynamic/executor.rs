@@ -164,12 +164,12 @@ pub fn validate_workflow_plan(plan_value: &Value) -> Result<WorkflowPlan> {
     let sorted_stages: Vec<WorkflowStage> = sorted
         .iter()
         .map(|id| {
-            stages[*id_to_idx
+            let index = *id_to_idx
                 .get(id.as_str())
-                .unwrap_or_else(|| panic!("stage {} not found", id))]
-            .clone()
+                .with_context(|| format!("sorted stage '{}' was not found", id))?;
+            Ok(stages[index].clone())
         })
-        .collect();
+        .collect::<Result<_>>()?;
 
     Ok(WorkflowPlan {
         name,

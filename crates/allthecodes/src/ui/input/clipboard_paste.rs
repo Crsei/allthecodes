@@ -1,28 +1,31 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(any(test, feature = "image"))]
 #[derive(Debug, Clone)]
 pub enum PasteImageError {
     ClipboardUnavailable(String),
+    #[cfg(any(test, feature = "image"))]
     NoImage(String),
+    #[cfg(any(test, feature = "image"))]
     EncodeFailed(String),
+    #[cfg(any(test, feature = "image"))]
     IoError(String),
 }
 
-#[cfg(any(test, feature = "image"))]
 impl std::fmt::Display for PasteImageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PasteImageError::ClipboardUnavailable(msg) => write!(f, "clipboard unavailable: {msg}"),
+            #[cfg(any(test, feature = "image"))]
             PasteImageError::NoImage(msg) => write!(f, "no image on clipboard: {msg}"),
+            #[cfg(any(test, feature = "image"))]
             PasteImageError::EncodeFailed(msg) => write!(f, "could not encode image: {msg}"),
+            #[cfg(any(test, feature = "image"))]
             PasteImageError::IoError(msg) => write!(f, "io error: {msg}"),
         }
     }
 }
 
-#[cfg(any(test, feature = "image"))]
 impl std::error::Error for PasteImageError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +45,6 @@ impl EncodedImageFormat {
     }
 }
 
-#[cfg(any(test, feature = "image"))]
 #[derive(Debug, Clone)]
 pub struct PastedImageInfo {
     pub width: u32,
@@ -82,6 +84,13 @@ pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageErro
 ))]
 pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImageError> {
     platform_paste_image_to_temp_png()
+}
+
+#[cfg(all(not(test), any(not(feature = "image"), target_os = "android")))]
+pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImageError> {
+    Err(PasteImageError::ClipboardUnavailable(
+        "clipboard image paste requires the image feature on a supported desktop platform".into(),
+    ))
 }
 
 #[cfg(all(test, not(target_os = "android"), not(feature = "image")))]

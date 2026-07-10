@@ -52,7 +52,7 @@ where
         self.inner
             .writers
             .lock()
-            .expect("outbound router mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(connection_id, sender);
         receiver
     }
@@ -61,7 +61,7 @@ where
         self.inner
             .writers
             .lock()
-            .expect("outbound router mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(connection_id)
             .is_some()
     }
@@ -75,7 +75,7 @@ where
             self.inner
                 .writers
                 .lock()
-                .expect("outbound router mutex poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .get(connection_id)
                 .cloned()
         };
@@ -96,7 +96,7 @@ where
             .inner
             .writers
             .lock()
-            .expect("outbound router mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .map(|(id, sender)| (id.clone(), sender.clone()))
             .collect();
@@ -124,7 +124,7 @@ where
                 .inner
                 .writers
                 .lock()
-                .expect("outbound router mutex poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             for connection_id in stale {
                 writers.remove(&connection_id);
             }
@@ -137,7 +137,7 @@ where
         self.inner
             .writers
             .lock()
-            .expect("outbound router mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .drain()
             .count()
     }
@@ -146,7 +146,7 @@ where
         self.inner
             .writers
             .lock()
-            .expect("outbound router mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .len()
     }
 

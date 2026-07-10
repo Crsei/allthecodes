@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "allthecodes-teams"
 version = "0.1.0"
 edition = "2021"
@@ -28,3 +29,6 @@ uuid = { workspace = true }
 allthecodes-bootstrap = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

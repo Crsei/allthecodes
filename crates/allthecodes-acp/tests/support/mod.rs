@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 //! Test support for ACP runtime integration tests.
 //!
 //! Provides a `RuntimeHarness` that drives the ACP runtime dispatch path

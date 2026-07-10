@@ -35,6 +35,9 @@ pub fn try_answer_pending_question(
     text: String,
 ) -> Option<String> {
     let mut pending = pending_questions.lock();
+    if pending.len() != 1 {
+        return None;
+    }
     let pending_id = pending.keys().next().cloned()?;
     let tx = pending.remove(&pending_id)?;
     drop(pending);

@@ -4,6 +4,7 @@
 //! stdout and dispatches responses to waiting request futures via oneshot channels.
 
 use std::collections::HashMap;
+use std::io;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -18,40 +19,96 @@ use tracing::{debug, info, warn};
 use super::channel::parse_channel_notification;
 use super::{JsonRpcResponse, McpRuntimeContext, McpSubsystemEvent};
 
+pub(crate) const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) async fn read_bounded_line<R>(reader: &mut R, line: &mut String) -> io::Result<usize>
+where
+    R: AsyncBufRead + Unpin,
+{
+    line.clear();
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            let total = bytes.len();
+            *line = String::from_utf8(bytes).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("MCP transport emitted invalid UTF-8: {error}"),
+                )
+            })?;
+            return Ok(total);
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if bytes.len().saturating_add(take) > MAX_MCP_MESSAGE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MCP message exceeds the 8 MiB transport limit",
+            ));
+        }
+        bytes.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if bytes.ends_with(b"\n") {
+            let total = bytes.len();
+            *line = String::from_utf8(bytes).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("MCP transport emitted invalid UTF-8: {error}"),
+                )
+            })?;
+            return Ok(total);
+        }
+    }
+}
+
 /// Background task that reads JSON-RPC responses from the MCP server's stdout.
 ///
 /// Each line is parsed as a JSON-RPC response and dispatched to the
 /// corresponding pending request via its oneshot channel.
-pub(crate) async fn reader_loop(
-    stdout: tokio::process::ChildStdout,
+pub(crate) async fn reader_loop<R>(
+    stdout: R,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
     server_name: String,
     runtime: McpRuntimeContext,
-) {
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
+    live_state: Arc<std::sync::Mutex<crate::McpConnectionState>>,
+) where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(stdout);
 
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                let line = line.trim().to_string();
+        let mut line = String::new();
+        match read_bounded_line(&mut reader, &mut line).await {
+            Ok(0) => {
+                info!(server = %server_name, "MCP: server stdout closed (EOF)");
+                runtime.emit_event(McpSubsystemEvent::ServerStateChanged {
+                    server_name: server_name.clone(),
+                    state: "disconnected".to_string(),
+                    error: Some("MCP server closed stdout".to_string()),
+                });
+                break;
+            }
+            Ok(_) => {
+                let line = line.trim();
                 if line.is_empty() {
                     continue;
                 }
 
                 // Try to parse as a JSON-RPC response
-                match serde_json::from_str::<JsonRpcResponse>(&line) {
+                match serde_json::from_str::<JsonRpcResponse>(line) {
                     Ok(response) => {
                         dispatch_response(&pending, &server_name, response).await;
                     }
                     Err(_) => {
                         // Could be a notification from the server
-                        match serde_json::from_str::<Value>(&line) {
+                        match serde_json::from_str::<Value>(line) {
                             Ok(val) => {
                                 if val.get("id").is_some() {
                                     warn!(
                                         server = %server_name,
-                                        line = %line,
                                         "MCP: received malformed response"
                                     );
                                 } else if let Some(method) =
@@ -69,17 +126,12 @@ pub(crate) async fn reader_loop(
                                 debug!(
                                     server = %server_name,
                                     error = %e,
-                                    line = %line,
                                     "MCP: non-JSON line from server stdout"
                                 );
                             }
                         }
                     }
                 }
-            }
-            Ok(None) => {
-                info!(server = %server_name, "MCP: server stdout closed (EOF)");
-                break;
             }
             Err(e) => {
                 warn!(
@@ -93,6 +145,9 @@ pub(crate) async fn reader_loop(
     }
 
     // On exit, fail all pending requests
+    if let Ok(mut state) = live_state.lock() {
+        *state = crate::McpConnectionState::Disconnected;
+    }
     let mut pending = pending.lock().await;
     for (id, sender) in pending.drain() {
         debug!(server = %server_name, id = id, "MCP: failing pending request (reader exited)");
@@ -119,10 +174,11 @@ pub(crate) async fn sse_reader_loop<R>(
 {
     let mut event_name = String::new();
     let mut data_lines: Vec<String> = Vec::new();
+    let mut data_bytes = 0usize;
 
     loop {
         let mut line = String::new();
-        match reader.read_line(&mut line).await {
+        match read_bounded_line(&mut reader, &mut line).await {
             Ok(0) => {
                 info!(server = %server_name, "MCP: SSE stream closed (EOF)");
                 break;
@@ -141,6 +197,7 @@ pub(crate) async fn sse_reader_loop<R>(
                     .await;
                     event_name.clear();
                     data_lines.clear();
+                    data_bytes = 0;
                     continue;
                 }
 
@@ -152,7 +209,15 @@ pub(crate) async fn sse_reader_loop<R>(
                 let value = value.strip_prefix(' ').unwrap_or(value);
                 match field {
                     "event" => event_name = value.to_string(),
-                    "data" => data_lines.push(value.to_string()),
+                    "data" => {
+                        let added = value.len() + usize::from(!data_lines.is_empty());
+                        if data_bytes.saturating_add(added) > MAX_MCP_MESSAGE_BYTES {
+                            warn!(server = %server_name, "MCP: SSE event exceeds transport limit");
+                            break;
+                        }
+                        data_bytes += added;
+                        data_lines.push(value.to_string());
+                    }
                     _ => {}
                 }
             }
@@ -200,11 +265,12 @@ pub(crate) async fn streamable_http_sse_reader_loop<R>(
 {
     let mut event_name = String::new();
     let mut data_lines: Vec<String> = Vec::new();
+    let mut data_bytes = 0usize;
     let mut endpoint_sender: Option<oneshot::Sender<Result<String>>> = None;
 
     loop {
         let mut line = String::new();
-        match reader.read_line(&mut line).await {
+        match read_bounded_line(&mut reader, &mut line).await {
             Ok(0) => {
                 info!(
                     server = %server_name,
@@ -226,6 +292,7 @@ pub(crate) async fn streamable_http_sse_reader_loop<R>(
                     .await;
                     event_name.clear();
                     data_lines.clear();
+                    data_bytes = 0;
                     continue;
                 }
 
@@ -237,7 +304,15 @@ pub(crate) async fn streamable_http_sse_reader_loop<R>(
                 let value = value.strip_prefix(' ').unwrap_or(value);
                 match field {
                     "event" => event_name = value.to_string(),
-                    "data" => data_lines.push(value.to_string()),
+                    "data" => {
+                        let added = value.len() + usize::from(!data_lines.is_empty());
+                        if data_bytes.saturating_add(added) > MAX_MCP_MESSAGE_BYTES {
+                            warn!(server = %server_name, "MCP: SSE event exceeds transport limit");
+                            break;
+                        }
+                        data_bytes += added;
+                        data_lines.push(value.to_string());
+                    }
                     _ => {}
                 }
             }
@@ -281,7 +356,6 @@ async fn handle_sse_event(
                     if val.get("id").is_some() {
                         warn!(
                             server = %server_name,
-                            data = %data,
                             "MCP: received malformed SSE response"
                         );
                     } else if let Some(method) = val.get("method").and_then(|m| m.as_str()) {
@@ -297,7 +371,6 @@ async fn handle_sse_event(
                     debug!(
                         server = %server_name,
                         error = %e,
-                        data = %data,
                         "MCP: non-JSON SSE message"
                     );
                 }
@@ -338,7 +411,7 @@ fn handle_json_notification(
 
 pub(crate) fn notification_event(server_name: &str, value: &Value) -> Option<McpSubsystemEvent> {
     let method = value.get("method").and_then(|m| m.as_str())?;
-    if method != "notifications/claude/channel" {
+    if method != "notifications/allthecodes/channel" {
         return None;
     }
 
@@ -397,11 +470,23 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[tokio::test]
+    async fn bounded_line_reader_rejects_oversized_message() {
+        let input = vec![b'x'; MAX_MCP_MESSAGE_BYTES + 1];
+        let mut reader = BufReader::new(std::io::Cursor::new(input));
+        let mut line = String::new();
+
+        let error = read_bounded_line(&mut reader, &mut line).await.unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(line.len() <= MAX_MCP_MESSAGE_BYTES);
+    }
+
     #[test]
     fn notification_event_routes_channel_notification() {
         let value = json!({
             "jsonrpc": "2.0",
-            "method": "notifications/claude/channel",
+            "method": "notifications/allthecodes/channel",
             "params": {
                 "content": "Build finished",
                 "meta": {"priority": "normal"}
@@ -438,10 +523,52 @@ mod tests {
     fn notification_event_rejects_malformed_channel_payload() {
         let value = json!({
             "jsonrpc": "2.0",
-            "method": "notifications/claude/channel",
+            "method": "notifications/allthecodes/channel",
             "params": {"content": 42}
         });
 
         assert!(notification_event("server-a", &value).is_none());
+    }
+
+    #[test]
+    fn notification_event_rejects_upstream_claude_namespace() {
+        let value = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/claude/channel",
+            "params": {"content": "wrong namespace"}
+        });
+
+        assert!(notification_event("server-a", &value).is_none());
+    }
+
+    #[tokio::test]
+    async fn stdio_eof_disconnects_and_fails_pending_requests() {
+        let (reader, writer) = tokio::io::duplex(64);
+        drop(writer);
+        let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = oneshot::channel();
+        pending.lock().await.insert(7, tx);
+        let state = Arc::new(std::sync::Mutex::new(crate::McpConnectionState::Connected));
+
+        reader_loop(
+            reader,
+            pending.clone(),
+            "eof-server".into(),
+            McpRuntimeContext::new(),
+            state.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            *state.lock().unwrap(),
+            crate::McpConnectionState::Disconnected
+        );
+        assert!(pending.lock().await.is_empty());
+        assert!(rx
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("closed connection"));
     }
 }

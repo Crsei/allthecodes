@@ -29,7 +29,7 @@ static POST_SAMPLING_HOOKS: LazyLock<Mutex<Vec<PostSamplingHook>>> =
 pub fn register_post_sampling_hook(hook: PostSamplingHook) {
     POST_SAMPLING_HOOKS
         .lock()
-        .expect("POST_SAMPLING_HOOKS lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .push(hook);
 }
 
@@ -37,7 +37,7 @@ pub fn register_post_sampling_hook(hook: PostSamplingHook) {
 pub fn clear_post_sampling_hooks() {
     POST_SAMPLING_HOOKS
         .lock()
-        .expect("POST_SAMPLING_HOOKS lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clear();
 }
 
@@ -45,7 +45,7 @@ pub fn clear_post_sampling_hooks() {
 pub fn execute_post_sampling_hooks(context: &ReplHookContext) {
     let hooks = POST_SAMPLING_HOOKS
         .lock()
-        .expect("POST_SAMPLING_HOOKS lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     for hook in hooks.iter() {
         hook(context);
     }
@@ -55,7 +55,7 @@ pub fn execute_post_sampling_hooks(context: &ReplHookContext) {
 pub fn post_sampling_hook_count() -> usize {
     POST_SAMPLING_HOOKS
         .lock()
-        .expect("POST_SAMPLING_HOOKS lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .len()
 }
 

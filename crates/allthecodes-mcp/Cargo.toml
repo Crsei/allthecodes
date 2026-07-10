@@ -1,8 +1,12 @@
 [package]
+license.workspace = true
 name = "allthecodes-mcp"
 version = "0.1.0"
 edition = "2021"
 description = "Model Context Protocol client, transport, and manager for allthecodes"
+
+[lints]
+workspace = true
 
 [dependencies]
 tokio = { workspace = true }
@@ -25,6 +29,9 @@ allthecodes-config = { workspace = true }
 allthecodes-tools = { workspace = true }
 allthecodes-types = { path = "../allthecodes-types", default-features = false }
 keyring = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

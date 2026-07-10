@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "allthecodes"
 version = "0.1.11"
 edition = "2021"
@@ -174,7 +175,6 @@ axum = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 hmac = { workspace = true }
-notify-rust = { workspace = true }
 
 # AST parsing
 tree-sitter = { workspace = true, optional = true }
@@ -200,3 +200,6 @@ serial_test = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[lints]
+workspace = true

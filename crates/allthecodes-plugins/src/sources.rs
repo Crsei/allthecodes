@@ -7,6 +7,105 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
+const MAX_PLUGIN_DOWNLOAD_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_NPM_METADATA_BYTES: u64 = 4 * 1024 * 1024;
+
+struct DownloadBudget {
+    received: u64,
+    limit: u64,
+}
+
+impl DownloadBudget {
+    fn new(content_length: Option<u64>, limit: u64) -> Result<Self> {
+        if content_length.is_some_and(|length| length > limit) {
+            anyhow::bail!("download Content-Length exceeds limit {limit}");
+        }
+        Ok(Self { received: 0, limit })
+    }
+
+    fn record_chunk(&mut self, length: usize) -> Result<()> {
+        self.received = self
+            .received
+            .checked_add(length as u64)
+            .ok_or_else(|| anyhow::anyhow!("download size overflow"))?;
+        if self.received > self.limit {
+            anyhow::bail!("download body exceeds limit {}", self.limit);
+        }
+        Ok(())
+    }
+}
+
+pub(crate) async fn response_to_bytes_limited(
+    mut response: reqwest::Response,
+    limit: u64,
+) -> Result<Vec<u8>> {
+    let mut budget = DownloadBudget::new(response.content_length(), limit)?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("Failed to read response body")?
+    {
+        budget.record_chunk(chunk.len())?;
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+async fn response_to_file_limited(
+    mut response: reqwest::Response,
+    path: &Path,
+    limit: u64,
+) -> Result<String> {
+    use tokio::io::AsyncWriteExt;
+    let mut budget = DownloadBudget::new(response.content_length(), limit)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("download path has no parent"))?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .context("Failed to create destination directory")?;
+    let temporary = path.with_extension(format!(
+        "{}.{}.tmp",
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("download"),
+        std::process::id()
+    ));
+    let result = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .await
+            .with_context(|| format!("Failed to create {}", temporary.display()))?;
+        let mut hasher = Sha256::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .context("Failed to read response body")?
+        {
+            budget.record_chunk(chunk.len())?;
+            file.write_all(&chunk)
+                .await
+                .context("Failed to write download")?;
+            hasher.update(&chunk);
+        }
+        file.flush().await.context("Failed to flush download")?;
+        file.sync_all().await.context("Failed to sync download")?;
+        drop(file);
+        tokio::fs::rename(&temporary, path)
+            .await
+            .with_context(|| format!("Failed to replace {}", path.display()))?;
+        Ok::<_, anyhow::Error>(hex::encode(hasher.finalize()))
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result
+}
+
 /// Plugin source type for downloading/resolving.
 #[derive(Debug, Clone)]
 pub enum ResolveSource {
@@ -60,22 +159,11 @@ async fn resolve_url_source(url: &str, dest_dir: &Path) -> Result<ResolvedPlugin
         anyhow::bail!("HTTP {} when fetching URL: {}", response.status(), url);
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .context("Failed to read response body")?;
-
-    let checksum = hash_bytes(&bytes);
-    let extension = infer_extension(url, &bytes);
+    let extension = infer_extension(url, &[]);
     let filename = format!("plugin.{}", extension);
     let dest_path = dest_dir.join(&filename);
-
-    tokio::fs::create_dir_all(dest_dir)
-        .await
-        .context("Failed to create destination directory")?;
-    tokio::fs::write(&dest_path, &bytes)
-        .await
-        .with_context(|| format!("Failed to write to {}", dest_path.display()))?;
+    let checksum =
+        response_to_file_limited(response, &dest_path, MAX_PLUGIN_DOWNLOAD_BYTES).await?;
 
     Ok(ResolvedPlugin {
         path: dest_path,
@@ -132,19 +220,10 @@ async fn resolve_github_source(
             );
         }
 
-        let bytes = fallback_response
-            .bytes()
-            .await
-            .context("Failed to read GitHub archive response")?;
-        let checksum = hash_bytes(&bytes);
         let dest_path = dest_dir.join("plugin.zip");
-
-        tokio::fs::create_dir_all(dest_dir)
-            .await
-            .context("Failed to create destination directory")?;
-        tokio::fs::write(&dest_path, &bytes)
-            .await
-            .with_context(|| format!("Failed to write to {}", dest_path.display()))?;
+        let checksum =
+            response_to_file_limited(fallback_response, &dest_path, MAX_PLUGIN_DOWNLOAD_BYTES)
+                .await?;
 
         return Ok(ResolvedPlugin {
             path: dest_path,
@@ -154,20 +233,9 @@ async fn resolve_github_source(
         });
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .context("Failed to read response body")?;
-
-    let checksum = hash_bytes(&bytes);
     let dest_path = dest_dir.join("plugin.zip");
-
-    tokio::fs::create_dir_all(dest_dir)
-        .await
-        .context("Failed to create destination directory")?;
-    tokio::fs::write(&dest_path, &bytes)
-        .await
-        .with_context(|| format!("Failed to write to {}", dest_path.display()))?;
+    let checksum =
+        response_to_file_limited(response, &dest_path, MAX_PLUGIN_DOWNLOAD_BYTES).await?;
 
     Ok(ResolvedPlugin {
         path: dest_path,
@@ -203,10 +271,7 @@ async fn resolve_npm_source(
         );
     }
 
-    let metadata_bytes = response
-        .bytes()
-        .await
-        .context("Failed to read npm response body")?;
+    let metadata_bytes = response_to_bytes_limited(response, MAX_NPM_METADATA_BYTES).await?;
 
     let tarball_url = npm_tarball_url_from_metadata(&metadata_bytes)
         .context("Failed to resolve npm package tarball URL from registry metadata")?;
@@ -223,20 +288,9 @@ async fn resolve_npm_source(
         );
     }
 
-    let bytes = tarball_response
-        .bytes()
-        .await
-        .context("Failed to read npm tarball body")?;
-
-    let checksum = hash_bytes(&bytes);
     let dest_path = dest_dir.join("package.tgz");
-
-    tokio::fs::create_dir_all(dest_dir)
-        .await
-        .context("Failed to create destination directory")?;
-    tokio::fs::write(&dest_path, &bytes)
-        .await
-        .with_context(|| format!("Failed to write to {}", dest_path.display()))?;
+    let checksum =
+        response_to_file_limited(tarball_response, &dest_path, MAX_PLUGIN_DOWNLOAD_BYTES).await?;
 
     Ok(ResolvedPlugin {
         path: dest_path,
@@ -402,6 +456,24 @@ fn infer_extension(url: &str, _bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_budget_rejects_missing_length_body_over_limit() {
+        let mut budget = DownloadBudget::new(None, 4).unwrap();
+        budget.record_chunk(3).unwrap();
+        assert!(budget
+            .record_chunk(2)
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds limit"));
+    }
+
+    #[test]
+    fn download_budget_does_not_trust_underreported_length() {
+        let mut budget = DownloadBudget::new(Some(1), 4).unwrap();
+        budget.record_chunk(4).unwrap();
+        assert!(budget.record_chunk(1).is_err());
+    }
 
     #[test]
     fn test_hash_bytes() {

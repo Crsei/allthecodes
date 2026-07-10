@@ -15,6 +15,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use super::http_utils::{handle_sse_event_stream_status, redact_url_for_log};
 use super::sse::{SseConnectTarget, SsePostTarget};
+use super::{PendingRequestGuard, RequestCancellationTransport};
 
 const HEADER_MCP_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 const HEADER_MCP_SESSION_ID: &str = "mcp-session-id";
@@ -727,7 +728,7 @@ async fn test_streamable_http_loopback_initializes_and_lists_tools() {
         });
         let channel_notification = json!({
             "jsonrpc": "2.0",
-            "method": "notifications/claude/channel",
+            "method": "notifications/allthecodes/channel",
             "params": {
                 "content": "ready",
                 "meta": {"transport": "streamable-http"}
@@ -1442,4 +1443,50 @@ async fn test_mcp_manager_connect_all_invalid_server() {
     let result = manager.connect_all(configs).await;
     assert!(result.is_ok());
     assert!(manager.clients.is_empty());
+}
+
+#[tokio::test]
+async fn dropped_pending_request_guard_removes_pending_entry() {
+    let pending = Arc::new(Mutex::new(HashMap::new()));
+    let (tx, _rx) = oneshot::channel();
+    pending.lock().await.insert(41, tx);
+
+    let guard = PendingRequestGuard::new(41, pending.clone(), None);
+    drop(guard);
+    tokio::task::yield_now().await;
+
+    assert!(pending.lock().await.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropped_pending_request_guard_notifies_stdio_server_of_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("cancellation.jsonl");
+    let mut child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("cat > '{}'", output.display()))
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let writer = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+    let pending = Arc::new(Mutex::new(HashMap::new()));
+    let (tx, _rx) = oneshot::channel();
+    pending.lock().await.insert(42, tx);
+
+    let guard = PendingRequestGuard::new(
+        42,
+        pending,
+        Some(RequestCancellationTransport::Stdio(writer)),
+    );
+    drop(guard);
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    let line = std::fs::read_to_string(output).unwrap();
+    let value: Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(value["method"], "notifications/cancelled");
+    assert_eq!(value["params"]["requestId"], 42);
 }

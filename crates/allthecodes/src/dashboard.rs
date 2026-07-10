@@ -36,18 +36,16 @@ pub struct DashboardConfig {
     pub auto_open_browser: bool,
 }
 
-impl Default for DashboardConfig {
-    fn default() -> Self {
-        Self {
+impl DashboardConfig {
+    pub fn try_default() -> Result<Self> {
+        Ok(Self {
             port: DEFAULT_PORT,
-            // init_session_id() is called from main.rs before DashboardCompanion::spawn(),
-            // so this should always resolve. Panic is a programming error if ordering breaks.
             event_log_path: event_log_path()
-                .expect("DashboardConfig::default() called before init_session_id"),
+                .context("dashboard session id has not been initialized")?,
             auto_open_browser: std::env::var("FEATURE_SUBAGENT_DASHBOARD_OPEN")
                 .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true"))
                 .unwrap_or(false),
-        }
+        })
     }
 }
 

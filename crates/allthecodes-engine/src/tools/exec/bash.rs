@@ -252,7 +252,7 @@ impl Tool for BashTool {
                 .settings
                 .sandbox
                 .allow_unsandboxed_commands
-                .unwrap_or(true)
+                .unwrap_or(!app_state.settings.sandbox.enabled.unwrap_or(false))
         {
             return PermissionResult::Deny {
                 message: "sandbox.allowUnsandboxedCommands=false rejects \

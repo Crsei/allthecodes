@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_web as web;
+use anyhow::Context;
 use axum::Router;
 use tracing::{info, warn};
 
@@ -37,17 +38,23 @@ pub(crate) async fn run_server_mode(
     use std::sync::atomic::AtomicBool;
 
     // --- Build web router if the mode requires it ---
+    let web_control_token = std::env::var("ALLTHECODES_WEB_CONTROL_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty());
     let (web_router, _is_streaming) = if matches!(
         server_mode,
         allthecodes_server::ServerMode::Web { .. } | allthecodes_server::ServerMode::All { .. }
     ) {
         web::handlers::set_command_provider(allthecodes_commands::get_all_commands);
         let is_streaming = Arc::new(AtomicBool::new(false));
-        let web_state = web::state::WebState::new_with_version(
+        let mut web_state = web::state::WebState::new_with_version(
             engine.clone(),
             is_streaming.clone(),
             env!("CARGO_PKG_VERSION"),
         );
+        if let Some(token) = web_control_token.as_deref() {
+            web_state = web_state.with_control_token(token);
+        }
         (Some(web::build_router(web_state)), Some(is_streaming))
     } else {
         (None, None)
@@ -76,29 +83,30 @@ pub(crate) async fn run_server_mode(
     };
 
     // --- Create ServerManager ---
-    let manager = allthecodes_server::ServerManager::new(server_mode.clone());
+    let manager = allthecodes_server::ServerManager::new_with_web_control_secret(
+        server_mode.clone(),
+        web_control_token.is_some(),
+    )?;
 
     match server_mode {
         allthecodes_server::ServerMode::Web { addr } => {
             if !cli.no_open {
                 info!("Open http://{addr} in your browser");
             }
-            let (web_handle, daemon_handle) = manager
-                .start(
-                    web_router.expect("Web mode requires web_router"),
-                    Router::new(),
-                )
-                .await?;
+            let web_router = web_router.context("Web mode requires a web router")?;
+            let (web_handle, daemon_handle) = manager.start(web_router, Router::new()).await?;
             wait_for_server_shutdown(&manager, web_handle, daemon_handle, false).await?;
             Ok(ExitCode::SUCCESS)
         }
         allthecodes_server::ServerMode::Daemon { .. }
         | allthecodes_server::ServerMode::All { .. } => {
+            let daemon_router = daemon_router.context("Daemon mode requires a daemon router")?;
+            let daemon_state = daemon_state.context("Daemon mode requires daemon state")?;
             run_daemon_with_server(
                 manager,
                 web_router.unwrap_or(Router::new()),
-                daemon_router.expect("Daemon mode requires daemon_router"),
-                daemon_state.expect("Daemon mode requires daemon_state"),
+                daemon_router,
+                daemon_state,
                 engine,
                 cli,
             )
@@ -167,10 +175,8 @@ async fn run_daemon_with_server(
         allthecodes_server::ServerMode::All { daemon_addr, .. } => daemon_addr.port(),
         _ => cli.port,
     };
-    allthecodes_daemon::process_state::write_started(daemon_port, std::path::Path::new(&cwd))?;
-
     // --- Spawn team-memory-server if feature is enabled ---
-    let _team_memory_child = if features::enabled(Feature::TeamMemory) {
+    let mut team_memory_child = if features::enabled(Feature::TeamMemory) {
         match allthecodes_daemon::team_memory_proxy::spawn_team_memory_server(
             daemon_port,
             std::path::Path::new(&cwd),
@@ -194,17 +200,66 @@ async fn run_daemon_with_server(
 
     // --- Start background loops ---
     let supervisor_cwd = std::path::PathBuf::from(&cwd);
-    let _notification_handle = start_notification_consumer_if_enabled(&mut daemon_state);
-
-    let supervisor_handle = tokio::spawn(async move {
-        allthecodes_daemon::supervisor::run_supervisor_loop(supervisor_cwd, daemon_port).await
-    });
+    let mut notification_handle = start_notification_consumer_if_enabled(&mut daemon_state);
 
     // --- Start servers ---
-    let (web_handle, daemon_handle) = manager.start(web_router, daemon_router).await?;
+    let (web_handle, daemon_handle) = match manager.start(web_router, daemon_router).await {
+        Ok(handles) => handles,
+        Err(err) => {
+            manager.shutdown();
+            rollback_daemon_resources(&mut team_memory_child, &mut notification_handle).await;
+            let _ = allthecodes_daemon::process_state::write_stopped(
+                daemon_port,
+                std::path::Path::new(&cwd),
+            );
+            return Err(err);
+        }
+    };
+    if let Err(err) =
+        allthecodes_daemon::process_state::write_started(daemon_port, std::path::Path::new(&cwd))
+    {
+        manager.shutdown();
+        let _ = wait_remaining_servers_with_grace(
+            web_handle,
+            daemon_handle,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        rollback_daemon_resources(&mut team_memory_child, &mut notification_handle).await;
+        let _ = allthecodes_daemon::process_state::write_stopped(
+            daemon_port,
+            std::path::Path::new(&cwd),
+        );
+        return Err(err);
+    }
+    let supervisor_handle =
+        match allthecodes_daemon::supervisor::start_supervisor(supervisor_cwd, daemon_port) {
+            Ok(handle) => handle,
+            Err(err) => {
+                manager.shutdown();
+                let _ = wait_remaining_servers_with_grace(
+                    web_handle,
+                    daemon_handle,
+                    std::time::Duration::from_secs(5),
+                )
+                .await;
+                rollback_daemon_resources(&mut team_memory_child, &mut notification_handle).await;
+                let _ = allthecodes_daemon::process_state::write_stopped(
+                    daemon_port,
+                    std::path::Path::new(&cwd),
+                );
+                return Err(err);
+            }
+        };
     let server_result = wait_for_server_shutdown(&manager, web_handle, daemon_handle, true).await;
 
-    drop(supervisor_handle);
+    supervisor_handle.cancel();
+    if let Err(err) = supervisor_handle
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+    {
+        tracing::warn!(error = %err, "daemon supervisor required forced cancellation");
+    }
 
     // --- Cleanup ---
     if let Err(err) = allthecodes_daemon::supervisor::terminate_known_workers() {
@@ -215,9 +270,28 @@ async fn run_daemon_with_server(
     {
         tracing::warn!(error = %err, "failed to write daemon stopped state");
     }
+    rollback_daemon_resources(&mut team_memory_child, &mut notification_handle).await;
 
     server_result?;
     Ok(ExitCode::SUCCESS)
+}
+
+async fn rollback_daemon_resources(
+    team_memory_child: &mut Option<tokio::process::Child>,
+    notification_handle: &mut Option<tokio::task::JoinHandle<()>>,
+) {
+    if let Some(handle) = notification_handle.take() {
+        handle.abort();
+        if tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+            .await
+            .is_err()
+        {
+            tracing::warn!("notification consumer exceeded shutdown timeout");
+        }
+    }
+    if let Some(child) = team_memory_child.take() {
+        allthecodes_daemon::team_memory_proxy::stop_team_memory_server(child).await;
+    }
 }
 
 fn start_notification_consumer_if_enabled(

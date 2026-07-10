@@ -392,7 +392,7 @@ impl AssistantInteractionState {
 
 pub async fn handle_worker_command(
     worker_id: &str,
-    runtime: &mut AssistantWorkerRuntime,
+    runtime: &AssistantWorkerRuntime,
     command: protocol::DaemonCommand,
 ) -> Result<bool> {
     let store = super::protocol_store();
@@ -478,6 +478,7 @@ pub async fn handle_worker_command(
     }
 }
 
+#[derive(Clone)]
 pub struct AssistantWorkerRuntime {
     engine: Arc<QueryEngine>,
     interactions: Arc<AssistantInteractionState>,
@@ -683,7 +684,7 @@ impl AssistantWorkerRuntime {
         Ok(())
     }
 
-    fn abort(&self) {
+    pub(crate) fn abort(&self) {
         self.engine.abort();
     }
 }
@@ -874,6 +875,26 @@ mod tests {
             } else {
                 std::env::remove_var(self.key);
             }
+        }
+    }
+
+    struct FeatureGuard;
+
+    impl FeatureGuard {
+        fn enable_proactive() -> Self {
+            allthecodes_config::features::set_runtime_override(
+                allthecodes_config::features::FeatureFlags {
+                    proactive: true,
+                    ..Default::default()
+                },
+            );
+            Self
+        }
+    }
+
+    impl Drop for FeatureGuard {
+        fn drop(&mut self) {
+            allthecodes_config::features::clear_runtime_override();
         }
     }
 
@@ -1103,6 +1124,7 @@ mod tests {
     fn daemon_submit_producer_payloads_resolve_to_expected_query_sources() {
         let home = tempfile::tempdir().unwrap();
         let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let _features = FeatureGuard::enable_proactive();
 
         let tick = crate::tick::enqueue_proactive_tick_once(chrono::Local::now(), false)
             .unwrap()

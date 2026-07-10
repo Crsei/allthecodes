@@ -7,7 +7,6 @@ use parking_lot::Mutex;
 
 pub(crate) mod callbacks;
 mod ingress;
-mod query_runner;
 mod sdk_mapper;
 
 use allthecodes_ipc::agent_handlers::{AgentRuntimeHost, AgentTaskOutput, AgentTaskOutputBatch};

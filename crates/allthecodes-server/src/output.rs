@@ -78,7 +78,7 @@ impl OutputRetention {
                 .inner
                 .events
                 .lock()
-                .expect("output retention mutex poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             for event in retained
                 .iter()
                 .filter(|event| event.seq > requested_after_seq)
@@ -117,7 +117,7 @@ impl OutputRetention {
             .inner
             .state
             .lock()
-            .expect("output retention state mutex poisoned") = state;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state;
     }
 
     pub fn state(&self) -> OutputLifecycleState {
@@ -125,7 +125,7 @@ impl OutputRetention {
             .inner
             .state
             .lock()
-            .expect("output retention state mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn latest_seq(&self) -> EventSeq {
@@ -157,7 +157,7 @@ impl OutputRetention {
             .inner
             .events
             .lock()
-            .expect("output retention mutex poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut total = self.inner.total_bytes.load(Ordering::SeqCst) as usize;
         total = total.saturating_add(event.chunk.len());
         retained.push_back(event);

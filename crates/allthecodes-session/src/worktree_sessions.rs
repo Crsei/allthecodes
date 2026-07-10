@@ -215,7 +215,7 @@ fn git_worktree_contains(record: &WorktreeSessionRecord) -> Result<bool> {
     let names = repo
         .worktrees()
         .context("failed to list git worktrees for worktree session")?;
-    for name in names.iter().flatten() {
+    for name in names.iter().filter_map(|name| name.ok().flatten()) {
         let Ok(worktree) = repo.find_worktree(name) else {
             continue;
         };

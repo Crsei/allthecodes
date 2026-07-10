@@ -358,8 +358,8 @@ impl SandboxPolicyBuilder {
         SandboxPolicy {
             enabled,
             mode: effective_mode,
-            fail_if_unavailable: settings.fail_if_unavailable.unwrap_or(false),
-            allow_unsandboxed_commands: settings.allow_unsandboxed_commands.unwrap_or(true),
+            fail_if_unavailable: settings.fail_if_unavailable.unwrap_or(enabled),
+            allow_unsandboxed_commands: settings.allow_unsandboxed_commands.unwrap_or(!enabled),
             excluded_commands: settings.excluded_commands.clone(),
             allowed_commands: settings.allowed_commands.clone(),
             paths,
@@ -391,6 +391,22 @@ mod tests {
             .build();
         assert!(p.is_active());
         assert_eq!(p.mode, SandboxMode::Workspace);
+        assert!(p.fail_if_unavailable);
+        assert!(!p.allow_unsandboxed_commands);
+    }
+
+    #[test]
+    fn enabled_preserves_explicit_legacy_escape_hatch_settings() {
+        let p = SandboxPolicyBuilder::new(PathBuf::from("/proj"))
+            .settings(SandboxSettings {
+                enabled: Some(true),
+                fail_if_unavailable: Some(false),
+                allow_unsandboxed_commands: Some(true),
+                ..Default::default()
+            })
+            .build();
+        assert!(!p.fail_if_unavailable);
+        assert!(p.allow_unsandboxed_commands);
     }
 
     #[test]

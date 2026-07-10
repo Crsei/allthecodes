@@ -329,28 +329,40 @@ fn extract_redirections(command: &str) -> Vec<Redirection> {
 // Heredoc detection
 // ---------------------------------------------------------------------------
 
-static HEREDOC_SINGLE_QUOTED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<<-?\s*'\w+'").expect("invalid heredoc regex"));
-static HEREDOC_DOUBLE_QUOTED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"<<-?\s*"\w+""#).expect("invalid heredoc regex"));
-static HEREDOC_UNQUOTED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<<-?\s*\\?\w+").expect("invalid heredoc regex"));
-static BIT_SHIFT_DIGIT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\d\s*<<\s*\d").expect("invalid bit-shift regex"));
-static ARITH_SHIFT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\$\(\(.*<<.*\)\)").expect("invalid arith shift regex"));
+static HEREDOC_SINGLE_QUOTED: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"<<-?\s*'\w+'"));
+static HEREDOC_DOUBLE_QUOTED: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r#"<<-?\s*"\w+""#));
+static HEREDOC_UNQUOTED: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"<<-?\s*\\?\w+"));
+static BIT_SHIFT_DIGIT: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"\d\s*<<\s*\d"));
+static ARITH_SHIFT: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"\$\(\(.*<<.*\)\)"));
 
 /// Check if a command string contains heredoc syntax.
 pub fn contains_heredoc(command: &str) -> bool {
     if !command.contains("<<") {
         return false;
     }
-    if BIT_SHIFT_DIGIT.is_match(command) || ARITH_SHIFT.is_match(command) {
+    if BIT_SHIFT_DIGIT
+        .as_ref()
+        .is_ok_and(|regex| regex.is_match(command))
+        || ARITH_SHIFT
+            .as_ref()
+            .is_ok_and(|regex| regex.is_match(command))
+    {
         return false;
     }
-    HEREDOC_SINGLE_QUOTED.is_match(command)
-        || HEREDOC_DOUBLE_QUOTED.is_match(command)
-        || HEREDOC_UNQUOTED.is_match(command)
+    HEREDOC_SINGLE_QUOTED
+        .as_ref()
+        .is_ok_and(|regex| regex.is_match(command))
+        || HEREDOC_DOUBLE_QUOTED
+            .as_ref()
+            .is_ok_and(|regex| regex.is_match(command))
+        || HEREDOC_UNQUOTED
+            .as_ref()
+            .is_ok_and(|regex| regex.is_match(command))
 }
 
 /// Extract heredoc specifications from a command string (simple regex version).

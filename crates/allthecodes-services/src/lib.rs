@@ -1,6 +1,7 @@
 //! Background / utility services extracted from the root crate.
 
 pub mod agent_definitions;
+#[cfg(feature = "sqlite-storage")]
 pub mod agent_runtime_history;
 pub mod chat_modes;
 pub mod cost_ledger;

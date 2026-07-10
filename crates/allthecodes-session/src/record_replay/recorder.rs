@@ -311,9 +311,10 @@ async fn drain_pending(
 ) -> Result<()> {
     while let Some(line) = pending.front() {
         write_record_line(writer, line).await?;
-        let line = pending.pop_front().expect("front item just existed");
-        stats.last_seq = Some(line.seq);
-        stats.written_events += 1;
+        if let Some(line) = pending.pop_front() {
+            stats.last_seq = Some(line.seq);
+            stats.written_events += 1;
+        }
     }
     Ok(())
 }

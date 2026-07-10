@@ -146,7 +146,7 @@ pub fn workspace_status_from_path(cwd: &Path) -> Option<WorkspaceStatus> {
     let git_branch = repo
         .as_ref()
         .and_then(|repo| repo.head().ok())
-        .and_then(|head| head.shorthand().map(ToOwned::to_owned));
+        .and_then(|head| head.shorthand().ok().map(ToOwned::to_owned));
     let git_worktree = repo
         .as_ref()
         .and_then(|repo| git_worktree_name_from_repo(repo.path()));

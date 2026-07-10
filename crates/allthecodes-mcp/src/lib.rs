@@ -17,6 +17,7 @@ pub mod manager;
 pub mod oauth_login;
 pub mod oauth_store;
 pub mod probe;
+mod process_control;
 pub mod runtime;
 pub mod transport;
 

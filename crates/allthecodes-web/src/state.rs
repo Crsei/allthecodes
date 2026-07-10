@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Weak};
 
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
@@ -37,6 +37,7 @@ pub struct QueueEntry {
 /// swap cannot disturb an in-progress stream.
 #[derive(Clone)]
 pub struct WebState {
+    control_token: Option<Arc<str>>,
     /// Application version reported to Web API clients.
     app_version: Arc<str>,
     /// Current engine, swappable between turns.
@@ -72,6 +73,9 @@ pub struct AccountAuthMemory {
     pub pending: Option<PendingAccountLogin>,
     pub session: Option<AccountAuthSession>,
 }
+
+static PLUGIN_ACCOUNT_AUTH_STATES: LazyLock<Mutex<Vec<Weak<Mutex<AccountAuthMemory>>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 #[derive(Debug, Clone)]
 pub struct PendingAccountLogin {
@@ -110,6 +114,7 @@ impl WebState {
         let mut session_engines = HashMap::new();
         session_engines.insert(current_session_id, engine.clone());
         let state = Self {
+            control_token: None,
             app_version: Arc::from(app_version.into()),
             engine_slot: Arc::new(RwLock::new(engine)),
             is_streaming,
@@ -127,6 +132,16 @@ impl WebState {
         install_plugin_mcp_hooks();
         state.install_plugin_account_token_provider();
         state
+    }
+
+    pub fn control_token(&self) -> Option<&str> {
+        self.control_token.as_deref()
+    }
+
+    /// Require this explicit secret for protected HTTP and WebSocket routes.
+    pub fn with_control_token(mut self, token: impl Into<String>) -> Self {
+        self.control_token = Some(Arc::from(token.into()));
+        self
     }
 
     /// Application version reported to Web clients.
@@ -219,14 +234,21 @@ impl WebState {
     }
 
     fn install_plugin_account_token_provider(&self) {
-        let account_auth = self.account_auth.clone();
+        PLUGIN_ACCOUNT_AUTH_STATES
+            .lock()
+            .push(Arc::downgrade(&self.account_auth));
         allthecodes_plugins::set_plugin_account_token_provider(Some(Arc::new(move || {
-            if let Some(session) = account_auth.lock().session.clone() {
-                if account_auth_session_expired(&session) {
-                    return Err(anyhow!("desktop account session is expired"));
+            let mut states = PLUGIN_ACCOUNT_AUTH_STATES.lock();
+            states.retain(|state| state.strong_count() > 0);
+            for state in states.iter().rev().filter_map(Weak::upgrade) {
+                if let Some(session) = state.lock().session.clone() {
+                    if account_auth_session_expired(&session) {
+                        continue;
+                    }
+                    return Ok(session.access_token);
                 }
-                return Ok(session.access_token);
             }
+            drop(states);
 
             stored_account_access_token()?.ok_or_else(|| anyhow!("no desktop account session"))
         })));

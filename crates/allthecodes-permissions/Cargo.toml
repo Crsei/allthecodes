@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "allthecodes-permissions"
 version = "0.1.0"
 edition = "2021"
@@ -20,3 +21,6 @@ allthecodes-shell-command = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -211,7 +211,10 @@ async fn send_now_handler(
         let Some(pos) = queue.iter().position(|e| e.id == id) else {
             return (StatusCode::NOT_FOUND, "queue item not found").into_response();
         };
-        queue.remove(pos).expect("queue position exists")
+        let Some(removed) = queue.remove(pos) else {
+            return (StatusCode::NOT_FOUND, "queue item not found").into_response();
+        };
+        removed
     };
 
     let response = QueueSendNowResponse {

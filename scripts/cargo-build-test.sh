@@ -130,27 +130,27 @@ show_toolchain() {
 }
 
 run_quick() {
-  run cargo check --workspace
-  run cargo build -p allthecodes --release
+  run cargo check --locked --workspace
+  run cargo build --locked -p allthecodes --release
 }
 
 run_ci() {
   run cargo fmt --all --check
-  run cargo clippy --workspace --all-targets -- -D warnings
-  run cargo test --workspace
-  run cargo test -p allthecodes-tools --no-default-features --features contract
-  run cargo test -p allthecodes-tools --features full
+  run cargo clippy --locked --workspace --all-targets -- -D warnings
+  run cargo test --locked --workspace
+  run cargo test --locked -p allthecodes-tools --no-default-features --features contract
+  run cargo test --locked -p allthecodes-tools --features full
 }
 
 run_nextest() {
   if [[ "${DRY_RUN}" == "0" ]]; then
     cargo nextest --version >/dev/null 2>&1 || die "cargo-nextest is required for nextest mode. Install with: cargo install --locked cargo-nextest"
   fi
-  run cargo nextest run --workspace --no-fail-fast
+  run cargo nextest run --locked --workspace --no-fail-fast
 }
 
 run_release() {
-  run cargo build --workspace --release
+  run cargo build --locked --workspace --release
 }
 
 if [[ "${SHOW_TOOLCHAIN}" == "1" || "${MODE}" == "toolchain" ]]; then

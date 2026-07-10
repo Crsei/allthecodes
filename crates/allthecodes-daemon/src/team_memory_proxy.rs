@@ -18,6 +18,7 @@ use super::state::DaemonState;
 
 const HEALTH_CHECK_TIMEOUT_MS: u64 = 5000;
 const HEALTH_CHECK_INTERVAL_MS: u64 = 100;
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Subprocess lifecycle
@@ -80,9 +81,12 @@ pub async fn spawn_team_memory_server(
     cmd.arg("--team-mem-path")
         .arg(team_mem_path.to_string_lossy().as_ref());
 
-    let child = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    let mut child = cmd
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
 
@@ -93,10 +97,14 @@ pub async fn spawn_team_memory_server(
 
     loop {
         if tokio::time::Instant::now() >= deadline {
+            stop_team_memory_server(child).await;
             anyhow::bail!(
                 "team-memory-server failed to start within {}ms",
                 HEALTH_CHECK_TIMEOUT_MS
             );
+        }
+        if let Some(status) = child.try_wait()? {
+            anyhow::bail!("team-memory-server exited during startup with status {status}");
         }
         match client.get(&health_url).send().await {
             Ok(resp) if resp.status().is_success() => {
@@ -110,6 +118,37 @@ pub async fn spawn_team_memory_server(
     }
 
     Ok((child, port, secret))
+}
+
+/// Terminate the team-memory subprocess tree and bound process reaping.
+pub async fn stop_team_memory_server(mut child: Child) {
+    let terminator = child.id().map(|pid| {
+        tokio::task::spawn_blocking(move || crate::process_state::terminate_process_tree(pid, None))
+    });
+
+    if tokio::time::timeout(SHUTDOWN_TIMEOUT, child.wait())
+        .await
+        .is_err()
+    {
+        error!("team-memory-server did not exit within shutdown timeout");
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+    }
+
+    if let Some(terminator) = terminator {
+        match tokio::time::timeout(SHUTDOWN_TIMEOUT, terminator).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(err))) => {
+                error!(error = %err, "failed to terminate team-memory-server process tree");
+            }
+            Ok(Err(err)) => {
+                error!(error = %err, "team-memory-server terminator task failed");
+            }
+            Err(_) => {
+                error!("team-memory-server terminator exceeded shutdown timeout");
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

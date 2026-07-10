@@ -84,6 +84,24 @@ impl ServerManager {
         }
     }
 
+    /// Create a manager while enforcing the Web server's exposure policy.
+    pub fn new_with_web_control_secret(
+        mode: ServerMode,
+        has_web_control_secret: bool,
+    ) -> anyhow::Result<Self> {
+        let web_addr = match mode {
+            ServerMode::Web { addr } => Some(addr),
+            ServerMode::All { web_addr, .. } => Some(web_addr),
+            ServerMode::None | ServerMode::Daemon { .. } => None,
+        };
+        if web_addr.is_some_and(|addr| !addr.ip().is_loopback()) && !has_web_control_secret {
+            anyhow::bail!(
+                "non-loopback Web listeners require an explicit control secret; set ALLTHECODES_WEB_CONTROL_TOKEN"
+            );
+        }
+        Ok(Self::new(mode))
+    }
+
     /// Block on the active server(s).
     ///
     /// In `All` mode both servers run concurrently under `tokio::select!` —
@@ -275,4 +293,39 @@ struct BoundServer {
     listener: TcpListener,
     addr: SocketAddr,
     label: &'static str,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_loopback_web_bind_without_explicit_secret_is_rejected() {
+        let mode = ServerMode::Web {
+            addr: "0.0.0.0:17322".parse().unwrap(),
+        };
+
+        let error = ServerManager::new_with_web_control_secret(mode, false)
+            .expect_err("non-loopback web bind must require authentication");
+
+        assert!(error.to_string().contains("control secret"));
+    }
+
+    #[test]
+    fn loopback_web_bind_without_secret_is_allowed() {
+        let mode = ServerMode::Web {
+            addr: "127.0.0.1:17322".parse().unwrap(),
+        };
+
+        assert!(ServerManager::new_with_web_control_secret(mode, false).is_ok());
+    }
+
+    #[test]
+    fn non_loopback_web_bind_with_secret_is_allowed() {
+        let mode = ServerMode::Web {
+            addr: "0.0.0.0:17322".parse().unwrap(),
+        };
+
+        assert!(ServerManager::new_with_web_control_secret(mode, true).is_ok());
+    }
 }

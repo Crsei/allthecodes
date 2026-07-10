@@ -246,8 +246,9 @@ fn generate_synthetic_rollout(session_id: &str, file: &SessionFile) -> Result<st
 fn write_rollout_lines(path: &std::path::Path, lines: &[RecordLine]) -> Result<()> {
     let json_lines: Vec<String> = lines
         .iter()
-        .map(|line| serde_json::to_string(line).expect("failed to serialize record line"))
-        .collect();
+        .map(serde_json::to_string)
+        .collect::<serde_json::Result<_>>()
+        .with_context(|| format!("Failed to serialize rollout {}", path.display()))?;
     let content = format!("{}\n", json_lines.join("\n"));
     std::fs::write(path, &content)
         .with_context(|| format!("Failed to write rollout {}", path.display()))

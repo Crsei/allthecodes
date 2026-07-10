@@ -38,11 +38,15 @@ static NEXT_INDEX: std::sync::LazyLock<Mutex<usize>> = std::sync::LazyLock::new(
 ///
 /// Corresponds to TS: `assignTeammateColor(teammateId)`
 pub fn assign_teammate_color(teammate_id: &str) -> &'static str {
-    let mut cache = COLOR_CACHE.lock().expect("color cache lock");
+    let mut cache = COLOR_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(&idx) = cache.get(teammate_id) {
         return AGENT_COLORS[idx];
     }
-    let mut next = NEXT_INDEX.lock().expect("next-index lock");
+    let mut next = NEXT_INDEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let idx = *next % AGENT_COLORS.len();
     *next += 1;
     cache.insert(teammate_id.to_string(), idx);
@@ -53,7 +57,9 @@ pub fn assign_teammate_color(teammate_id: &str) -> &'static str {
 ///
 /// Corresponds to TS: `getTeammateColor(teammateId)`
 pub fn get_teammate_color(teammate_id: &str) -> Option<&'static str> {
-    let cache = COLOR_CACHE.lock().expect("color cache lock");
+    let cache = COLOR_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.get(teammate_id).map(|&idx| AGENT_COLORS[idx])
 }
 
@@ -65,7 +71,9 @@ pub fn remember_teammate_color(teammate_id: &str, color: &str) {
     else {
         return;
     };
-    let mut cache = COLOR_CACHE.lock().expect("color cache lock");
+    let mut cache = COLOR_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.insert(teammate_id.to_string(), idx);
 }
 
@@ -76,9 +84,13 @@ pub fn remember_teammate_color(teammate_id: &str, color: &str) {
 ///
 /// Corresponds to TS: `clearTeammateColors()`
 pub fn clear_teammate_colors() {
-    let mut cache = COLOR_CACHE.lock().expect("color cache lock");
+    let mut cache = COLOR_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.clear();
-    let mut next = NEXT_INDEX.lock().expect("next-index lock");
+    let mut next = NEXT_INDEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *next = 0;
 }
 

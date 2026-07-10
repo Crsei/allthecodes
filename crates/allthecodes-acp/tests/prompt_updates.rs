@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 //! Tests: prompt update ordering (ACK before first notification).
 //!
 //! Verifies that `session/prompt` always sends the JSON-RPC response

@@ -489,12 +489,12 @@ impl Tool for ExitWorktreeTool {
 
     async fn validate_input(&self, input: &Value, _ctx: &ToolUseContext) -> ValidationResult {
         let session = get_current_worktree_session();
-        if session.is_none() {
+        let Some(session) = session else {
             return ValidationResult::Error {
                 message: "No active worktree session to exit.".to_string(),
                 error_code: 1,
             };
-        }
+        };
 
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -512,7 +512,6 @@ impl Tool for ExitWorktreeTool {
             .unwrap_or(false);
 
         if action == "remove" && !discard {
-            let session = session.expect("session guaranteed Some after is_none check");
             let changes = count_worktree_changes(
                 &session.worktree_path,
                 session.original_head_commit.as_deref(),

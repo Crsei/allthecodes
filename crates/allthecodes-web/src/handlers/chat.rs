@@ -227,7 +227,7 @@ pub async fn chat_handler(
             .unwrap_or_default(),
     };
     info!(
-        message = %req.message,
+        message_bytes = req.message.len(),
         session_id = %requested_session,
         model = requested_model.as_deref().unwrap_or(""),
         mode = %mode_id,

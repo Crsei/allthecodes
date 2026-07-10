@@ -22,7 +22,9 @@ pub use paths::{
     terminal_focus_state_path, worker_log_path, worker_state_path, workers_dir,
 };
 pub(crate) use paths::{daily_log_path, team_memory_dir};
-pub(crate) use platform::{process_is_alive, process_matches_record, terminate_process_tree};
+pub(crate) use platform::{
+    process_is_alive, process_matches_record, process_start_key, terminate_process_tree,
+};
 pub use storage::{
     active_sleep_state, cleanup_stale_state_before_start, clear_control_token,
     clear_proactive_state, clear_shutdown_request, clear_sleep_state,
@@ -58,10 +60,19 @@ pub(crate) fn atomic_write_json<T: serde::Serialize>(
         .with_context(|| format!("path has no parent: {}", path.display()))?;
     std::fs::create_dir_all(parent)
         .with_context(|| format!("failed to create {}", parent.display()))?;
+    set_private_dir_permissions(parent)?;
 
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
     {
-        let mut file = std::fs::File::create(&tmp)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&tmp)
             .with_context(|| format!("failed to create {}", tmp.display()))?;
         let bytes = serde_json::to_vec_pretty(value)?;
         file.write_all(&bytes)
@@ -71,7 +82,7 @@ pub(crate) fn atomic_write_json<T: serde::Serialize>(
         file.sync_all()
             .with_context(|| format!("failed to sync {}", tmp.display()))?;
     }
-    match std::fs::rename(&tmp, path) {
+    let rename_result = match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(first_err) if path.exists() => {
             std::fs::remove_file(path)
@@ -86,5 +97,12 @@ pub(crate) fn atomic_write_json<T: serde::Serialize>(
         }
         Err(err) => Err(err)
             .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display())),
-    }
+    };
+    rename_result?;
+    allthecodes_config::paths::set_private_file_permissions(path)?;
+    Ok(())
+}
+
+pub(crate) fn set_private_dir_permissions(path: &std::path::Path) -> anyhow::Result<()> {
+    allthecodes_config::paths::set_private_directory_permissions(path).map_err(Into::into)
 }

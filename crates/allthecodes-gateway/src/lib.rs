@@ -32,7 +32,10 @@ pub use allthecodes_types::output::{
 };
 pub use api::{GatewayApiState, GatewayBusySnapshotProvider, StaticBusySnapshotProvider};
 pub use auth::{GatewayAuthMode, GatewayAuthVerifier, RemoteGatewayAuth};
-pub use config::{GatewayConfig, GatewayLimits, GatewayPersistence, GatewaySecurityConfig};
+pub use config::{
+    GatewayChannelConfigPatch, GatewayChannelConfigSnapshot, GatewayChannelsConfigResponse,
+    GatewayConfig, GatewayLimits, GatewayPersistence, GatewaySecurityConfig, PatchField,
+};
 pub use delivery::{
     CallbackDeliverySink, ChannelDeliverySink, DeliveryPayload, DeliveryRecord, DeliveryRouter,
     DeliveryStatus, DeliveryTarget,

@@ -13,7 +13,7 @@
 //!   2. Model explores (read-only tools only)
 //!   3. ExitPlanMode restores mode from `pre_plan_mode`
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -290,7 +290,7 @@ impl Tool for ExitPlanModeTool {
                         );
                     *stripped_count
                         .lock()
-                        .expect("auto mode stripped allowed prompt count poisoned") =
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                         transition.stripped_session_allow_count;
                 }
                 record
@@ -311,7 +311,7 @@ impl Tool for ExitPlanModeTool {
             result["allowed_prompt_rules"] = json!(allowed_prompt_rules);
             let stripped_count = *auto_mode_stripped_allowed_prompt_rules
                 .lock()
-                .expect("auto mode stripped allowed prompt count poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if stripped_count > 0 {
                 result["auto_mode_stripped_allowed_prompt_rules"] = json!(stripped_count);
             }
@@ -527,15 +527,17 @@ where
 
     (ctx.set_app_state)(Box::new(move |mut state| {
         let record = f(&mut state, &cwd, existing);
-        *slot_for_update.lock().expect("plan workflow slot poisoned") = Some(record);
+        *slot_for_update
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(record);
         state
     }));
 
     let record = slot
         .lock()
-        .expect("plan workflow slot poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
-        .expect("plan workflow update should set record");
+        .context("plan workflow update did not set a record")?;
     crate::workflow::plan::persist(&persist_cwd, &record)?;
     Ok(record)
 }

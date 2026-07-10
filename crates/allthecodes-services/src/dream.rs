@@ -137,13 +137,11 @@ fn local_noon(date: NaiveDate) -> chrono::DateTime<Local> {
         LocalResult::Single(value) => value,
         LocalResult::Ambiguous(earliest, _) => earliest,
         LocalResult::None => {
-            let midnight = date
-                .and_hms_opt(0, 0, 0)
-                .expect("valid NaiveDate should support midnight");
+            let midnight = date.and_time(chrono::NaiveTime::MIN);
             Local
                 .from_local_datetime(&midnight)
                 .earliest()
-                .expect("valid NaiveDate should map to local date")
+                .unwrap_or_else(|| midnight.and_utc().with_timezone(&Local))
         }
     }
 }

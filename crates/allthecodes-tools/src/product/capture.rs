@@ -8,6 +8,8 @@ use allthecodes_types::message::{AssistantMessage, ToolResultContent};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::io;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -301,6 +303,7 @@ async fn run_captured_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
+    configure_process_group(&mut command);
     let mut child = command
         .spawn()
         .with_context(|| format!("failed to spawn '{}'", spec.command))?;
@@ -351,11 +354,15 @@ async fn run_captured_process(
             ("exited".to_string(), status.code())
         }
         _ = &mut sleep => {
-            let _ = child.kill().await;
+            terminate_process_group(child.id()).await?;
+            tokio::time::timeout(Duration::from_secs(5), child.wait()).await
+                .map_err(|_| anyhow!("process did not exit after timeout termination"))??;
             ("timed_out".to_string(), None)
         }
         changed = abort_signal.changed() => {
-            let _ = child.kill().await;
+            terminate_process_group(child.id()).await?;
+            tokio::time::timeout(Duration::from_secs(5), child.wait()).await
+                .map_err(|_| anyhow!("process did not exit after cancellation termination"))??;
             match changed {
                 Ok(()) if *abort_signal.borrow() => ("cancelled".to_string(), None),
                 _ => ("interrupted".to_string(), None),
@@ -367,10 +374,10 @@ async fn run_captured_process(
         handle.abort();
     }
     if let Some(handle) = stdout_task {
-        let _ = handle.await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
     if let Some(handle) = stderr_task {
-        let _ = handle.await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
     let output = output.lock().await.clone();
@@ -393,6 +400,57 @@ async fn run_captured_process(
         elapsed_seconds: started.elapsed().as_secs(),
         output,
     })
+}
+
+fn configure_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+async fn terminate_process_group(pid: Option<u32>) -> std::io::Result<()> {
+    let pid = pid.ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "process has no pid")
+    })?;
+    #[cfg(unix)]
+    {
+        signal_process_group(pid, libc::SIGTERM)?;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        signal_process_group(pid, libc::SIGKILL)?;
+    }
+    #[cfg(windows)]
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .await?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!(
+                "taskkill failed with {status}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
+    let result = unsafe { libc::kill(-(pid as libc::pid_t), signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 fn spawn_output_reader<R>(
@@ -481,5 +539,24 @@ mod tests {
         let quoted = shell_quote("printf 'hello'");
         assert!(quoted.starts_with('\''));
         assert!(quoted.contains("\\''"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn capture_termination_stops_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let mut command = shell_command(&format!("(sleep 2; touch '{}') & wait", marker.display()));
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        configure_process_group(&mut command);
+        let mut child = command.spawn().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        terminate_process_group(child.id()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!marker.exists(), "grandchild survived capture termination");
     }
 }

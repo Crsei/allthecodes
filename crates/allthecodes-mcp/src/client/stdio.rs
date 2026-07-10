@@ -28,8 +28,8 @@ impl McpClient {
 
         info!(
             server = %self.config.name,
-            command = command,
-            args = ?args,
+            executable = %std::path::Path::new(command).file_name().and_then(|name| name.to_str()).unwrap_or("<unknown>"),
+            arg_count = args.len(),
             "MCP: spawning stdio server"
         );
 
@@ -38,6 +38,7 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        crate::process_control::configure_process_group(&mut cmd);
 
         if let Some(ref env_map) = self.config.env {
             for (k, v) in env_map {
@@ -96,13 +97,14 @@ impl McpClient {
         let pending = self.pending.clone();
         let server_name = self.config.name.clone();
         let runtime = self.runtime.clone();
+        let live_state = self.live_state.clone();
         let reader_handle = tokio::spawn(async move {
-            reader_loop(stdout, pending, server_name, runtime).await;
+            reader_loop(stdout, pending, server_name, runtime, live_state).await;
         });
         self.replace_reader_handle(Some(reader_handle));
 
         self.child = Some(child);
-        self.state = McpConnectionState::Connected;
+        self.set_connection_state(McpConnectionState::Connected);
 
         self.runtime
             .emit_event(super::super::McpSubsystemEvent::ServerStateChanged {

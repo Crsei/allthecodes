@@ -28,12 +28,14 @@ static NOTIFY_CALLBACK: LazyLock<Mutex<Option<FileChangedCallback>>> =
 pub fn set_file_changed_notifier(cb: Option<FileChangedCallback>) {
     *NOTIFY_CALLBACK
         .lock()
-        .expect("NOTIFY_CALLBACK lock poisoned") = cb;
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = cb;
 }
 
 /// Update the dynamic watch paths from hook output.
 pub fn update_watch_paths(paths: &[String]) {
-    let mut watched = WATCH_PATHS.lock().expect("WATCH_PATHS lock poisoned");
+    let mut watched = WATCH_PATHS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     watched.clear();
     for p in paths {
         watched.insert(p.clone());
@@ -44,7 +46,7 @@ pub fn update_watch_paths(paths: &[String]) {
 pub fn get_watch_paths() -> Vec<String> {
     WATCH_PATHS
         .lock()
-        .expect("WATCH_PATHS lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .iter()
         .cloned()
         .collect()
@@ -54,7 +56,7 @@ pub fn get_watch_paths() -> Vec<String> {
 pub fn handle_file_event(path: &str, event: &str) {
     if let Some(cb) = NOTIFY_CALLBACK
         .lock()
-        .expect("NOTIFY_CALLBACK lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .as_ref()
     {
         cb(path, event);
@@ -65,11 +67,11 @@ pub fn handle_file_event(path: &str, event: &str) {
 pub fn reset_file_changed_watcher() {
     WATCH_PATHS
         .lock()
-        .expect("WATCH_PATHS lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clear();
     *NOTIFY_CALLBACK
         .lock()
-        .expect("NOTIFY_CALLBACK lock poisoned") = None;
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 /// Initialize the file changed watcher for a given working directory.
