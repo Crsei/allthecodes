@@ -49,6 +49,7 @@ jobs:
           bash scripts/test-cargo-build-test.sh
           bash scripts/test-npm-dist-tag.sh
           python3 scripts/test_ci_quality_gates.py
+          python3 scripts/test_pty_tui_shards.py
 
       - name: Workspace Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -58,8 +59,8 @@ jobs:
           cargo clippy --locked -p allthecodes --all-targets --all-features -- -D warnings
           cargo clippy --locked -p allthecodes-protocol -p allthecodes-tools --all-targets -- -D warnings
 
-      - name: Run workspace tests
-        run: cargo test --locked --workspace
+      - name: Run non-PTY workspace tests
+        run: python3 scripts/pty_tui_shards.py run-non-pty
 
       - name: Run tools contract tests
         run: cargo test --locked -p allthecodes-tools --no-default-features --features contract
@@ -77,6 +78,62 @@ jobs:
         run: |
           cargo check --locked -p allthecodes-services --no-default-features --features json-storage
           cargo check --locked -p allthecodes-tasks --no-default-features --features json-storage
+
+  pty-tests:
+    name: pty-${{ matrix.shard }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - commands-mcp-plugin
+          - command-surfaces
+          - command-flows
+          - core-flows
+    env:
+      E2E_WORKSPACE: ${{ runner.temp }}/pty-workspace-${{ matrix.shard }}
+      ALLTHECODES_HOME: ${{ runner.temp }}/pty-home-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.1
+
+      - name: Cache PTY shard build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-pty-${{ matrix.shard }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}
+          cache-targets: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libcap-dev
+
+      - name: Create isolated PTY directories
+        run: mkdir -p "$E2E_WORKSPACE" "$ALLTHECODES_HOME"
+
+      - name: Verify PTY shard coverage
+        run: python3 scripts/pty_tui_shards.py verify
+
+      - name: Run PTY shard
+        timeout-minutes: 40
+        run: python3 scripts/pty_tui_shards.py run --shard "${{ matrix.shard }}"
+
+      - name: Upload failed PTY logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-logs-${{ matrix.shard }}
+          path: crates/allthecodes/logs/pty_tui_e2e_*
+          if-no-files-found: warn
+          retention-days: 7
 
   npm-smoke:
     name: npm launcher and package staging
