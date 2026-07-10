@@ -252,8 +252,10 @@ async fn list_uses_workspace_filter_when_cwd_present() {
         RuntimeHarness::new_with_factory(workspace_a.clone(), Arc::new(TestEngineFactory));
 
     let global = send_list(&mut harness, None).await;
+    let mut global_ids = result_session_ids(&global);
+    global_ids.sort();
     assert_eq!(
-        result_session_ids(&global),
+        global_ids,
         vec![
             "workspace-a-session".to_string(),
             "workspace-b-session".to_string()
