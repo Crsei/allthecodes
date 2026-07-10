@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use allthecodes_gateway::{
-    AdapterProvider, AdapterStatus, AdapterTestMessage, GatewayDiagnostic, OutputReadBatch,
-    RunEvent, RunId, RunMeta,
+    AdapterProvider, AdapterStatus, AdapterTestMessage, GatewayChannelConfigSnapshot,
+    GatewayChannelsConfigResponse, GatewayDiagnostic, OutputReadBatch, RunEvent, RunId, RunMeta,
 };
 use anyhow::Result;
 use reqwest::StatusCode;
@@ -186,6 +186,44 @@ impl LocalGatewayClient {
             .adapters)
     }
 
+    pub async fn channel_config(&self) -> Result<GatewayChannelsConfigResponse, GatewayDiagnostic> {
+        self.get_json("/remote-control/v1/adapters/config").await
+    }
+
+    pub async fn update_adapter_config(
+        &self,
+        provider: AdapterProvider,
+        patch: &Value,
+    ) -> Result<GatewayChannelConfigSnapshot, GatewayDiagnostic> {
+        self.patch_json(
+            &format!("/remote-control/v1/adapters/{}/config", provider.as_str()),
+            patch,
+        )
+        .await
+    }
+
+    pub async fn enable_adapter_config(
+        &self,
+        provider: AdapterProvider,
+    ) -> Result<GatewayChannelConfigSnapshot, GatewayDiagnostic> {
+        self.post_json(
+            &format!("/remote-control/v1/adapters/{}/enable", provider.as_str()),
+            &json!({}),
+        )
+        .await
+    }
+
+    pub async fn disable_adapter_config(
+        &self,
+        provider: AdapterProvider,
+    ) -> Result<GatewayChannelConfigSnapshot, GatewayDiagnostic> {
+        self.post_json(
+            &format!("/remote-control/v1/adapters/{}/disable", provider.as_str()),
+            &json!({}),
+        )
+        .await
+    }
+
     pub async fn connect_adapter(
         &self,
         provider: AdapterProvider,
@@ -263,6 +301,22 @@ impl LocalGatewayClient {
         let response = self
             .http
             .post(self.url(path))
+            .header(TOKEN_HEADER, &self.token)
+            .json(body)
+            .send()
+            .await
+            .map_err(http_transport_diagnostic)?;
+        decode_response(response).await
+    }
+
+    async fn patch_json<B, T>(&self, path: &str, body: &B) -> Result<T, GatewayDiagnostic>
+    where
+        B: serde::Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        let response = self
+            .http
+            .patch(self.url(path))
             .header(TOKEN_HEADER, &self.token)
             .json(body)
             .send()

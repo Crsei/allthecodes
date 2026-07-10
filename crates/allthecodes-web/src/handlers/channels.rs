@@ -81,6 +81,67 @@ pub async fn channels_capabilities_handler() -> Response {
     }
 }
 
+/// GET /api/channels/config
+pub async fn channels_config_handler() -> Response {
+    let (_daemon, client) = match running_gateway_client() {
+        Ok(pair) => pair,
+        Err(response) => return *response,
+    };
+    match client.channel_config().await {
+        Ok(config) => Json(config).into_response(),
+        Err(diagnostic) => diagnostic_response(diagnostic),
+    }
+}
+
+/// PATCH /api/channels/{provider}/config
+pub async fn channels_config_update_handler(
+    AxumPath(provider): AxumPath<String>,
+    Json(patch): Json<Value>,
+) -> Response {
+    let provider = match parse_provider(&provider) {
+        Ok(provider) => provider,
+        Err(diagnostic) => return diagnostic_response(diagnostic),
+    };
+    let (_daemon, client) = match running_gateway_client() {
+        Ok(pair) => pair,
+        Err(response) => return *response,
+    };
+    match client.update_adapter_config(provider, &patch).await {
+        Ok(config) => Json(config).into_response(),
+        Err(diagnostic) => diagnostic_response(diagnostic),
+    }
+}
+
+/// POST /api/channels/{provider}/enable
+pub async fn channels_enable_handler(AxumPath(provider): AxumPath<String>) -> Response {
+    set_channel_enabled(provider, true).await
+}
+
+/// POST /api/channels/{provider}/disable
+pub async fn channels_disable_handler(AxumPath(provider): AxumPath<String>) -> Response {
+    set_channel_enabled(provider, false).await
+}
+
+async fn set_channel_enabled(provider: String, enabled: bool) -> Response {
+    let provider = match parse_provider(&provider) {
+        Ok(provider) => provider,
+        Err(diagnostic) => return diagnostic_response(diagnostic),
+    };
+    let (_daemon, client) = match running_gateway_client() {
+        Ok(pair) => pair,
+        Err(response) => return *response,
+    };
+    let result = if enabled {
+        client.enable_adapter_config(provider).await
+    } else {
+        client.disable_adapter_config(provider).await
+    };
+    match result {
+        Ok(config) => Json(config).into_response(),
+        Err(diagnostic) => diagnostic_response(diagnostic),
+    }
+}
+
 /// POST /api/channels/{provider}/connect
 pub async fn channels_connect_handler(AxumPath(provider): AxumPath<String>) -> Response {
     let provider = match parse_provider(&provider) {
@@ -182,7 +243,10 @@ fn diagnostic_response(diagnostic: GatewayDiagnostic) -> Response {
 
 fn status_for_diagnostic(code: &str) -> StatusCode {
     match code {
-        "adapter_unsupported" | "invalid_adapter_provider" => StatusCode::BAD_REQUEST,
+        "adapter_unsupported"
+        | "invalid_adapter_provider"
+        | "invalid_channel_config"
+        | "channel_not_configured" => StatusCode::BAD_REQUEST,
         "daemon_stopped"
         | "daemon_stale"
         | "control_token_missing"

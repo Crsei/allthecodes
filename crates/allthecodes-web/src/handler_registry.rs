@@ -337,6 +337,22 @@ pub fn channel_handlers() -> HandlerRegistry {
             get(handlers::channels_capabilities_handler),
         )
         .handle(
+            ApiMethod::ChannelsConfig,
+            get(handlers::channels_config_handler),
+        )
+        .handle(
+            ApiMethod::ChannelsConfigUpdate,
+            patch(handlers::channels_config_update_handler),
+        )
+        .handle(
+            ApiMethod::ChannelsEnable,
+            post(handlers::channels_enable_handler),
+        )
+        .handle(
+            ApiMethod::ChannelsDisable,
+            post(handlers::channels_disable_handler),
+        )
+        .handle(
             ApiMethod::ChannelsConnect,
             post(handlers::channels_connect_handler),
         )

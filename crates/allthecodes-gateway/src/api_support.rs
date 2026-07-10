@@ -55,7 +55,9 @@ pub(crate) fn status_for_diagnostic(diagnostic: &GatewayDiagnostic) -> StatusCod
         | "invalid_control_token"
         | "missing_remote_token"
         | "invalid_remote_token" => StatusCode::UNAUTHORIZED,
-        "invalid_run_id" | "invalid_json" => StatusCode::BAD_REQUEST,
+        "invalid_run_id" | "invalid_json" | "invalid_channel_config" | "channel_not_configured" => {
+            StatusCode::BAD_REQUEST
+        }
         "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "run_not_found" => StatusCode::NOT_FOUND,
         "replay_unavailable" => StatusCode::SERVICE_UNAVAILABLE,

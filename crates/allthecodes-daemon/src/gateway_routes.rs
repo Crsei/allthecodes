@@ -2,8 +2,8 @@
 
 use allthecodes_gateway::auth::{invalid_token_error, missing_token_error, GatewayAuthMode};
 use allthecodes_gateway::{
-    api, BusySnapshot, GatewayAuthVerifier, GatewayBusySnapshotProvider, GatewayError,
-    GatewayPolicy, GatewayRunner, GatewayStore, SessionKeyPolicy,
+    api, BusySnapshot, GatewayAuthVerifier, GatewayBusySnapshotProvider, GatewayConfig,
+    GatewayError, GatewayPolicy, GatewayRunner, GatewayStore, SessionKeyPolicy,
 };
 use std::time::Duration;
 use tracing::warn;
@@ -58,7 +58,7 @@ impl GatewayBusySnapshotProvider for DaemonBusySnapshotProvider {
 }
 
 pub fn gateway_routes() -> axum::Router {
-    let config = allthecodes_gateway::GatewayConfig::default();
+    let config = load_gateway_config();
     let policy = GatewayPolicy::default();
     let runner = GatewayRunner::new(
         GatewayStore::new(config.persistence.clone(), SessionKeyPolicy::default()),
@@ -81,6 +81,16 @@ pub fn gateway_routes() -> axum::Router {
         config,
     );
     api::router(state)
+}
+
+fn load_gateway_config() -> GatewayConfig {
+    GatewayConfig::load().unwrap_or_else(|error| {
+        warn!(
+            error = %error,
+            "gateway config load failed; using disabled adapter defaults"
+        );
+        GatewayConfig::default()
+    })
 }
 
 #[cfg(test)]
@@ -147,6 +157,31 @@ mod tests {
 
         assert_eq!(snapshot.running, 1);
         assert_eq!(snapshot.queued, 0);
+        match previous {
+            Some(value) => std::env::set_var("ALLTHECODES_HOME", value),
+            None => std::env::remove_var("ALLTHECODES_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn gateway_routes_loads_persisted_channel_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var("ALLTHECODES_HOME").ok();
+        std::env::set_var("ALLTHECODES_HOME", tmp.path());
+
+        let mut config = allthecodes_gateway::GatewayConfig::default();
+        config.adapters.telegram.enabled = true;
+        config.adapters.telegram.bot_token = Some("test-only-not-a-real-credential".to_string());
+        config.save().unwrap();
+
+        let loaded = load_gateway_config();
+
+        assert!(loaded.adapters.telegram.enabled);
+        assert_eq!(
+            loaded.adapters.telegram.bot_token.as_deref(),
+            Some("test-only-not-a-real-credential")
+        );
         match previous {
             Some(value) => std::env::set_var("ALLTHECODES_HOME", value),
             None => std::env::remove_var("ALLTHECODES_HOME"),

@@ -2,11 +2,12 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use crate::adapters::lark::LarkAdapter;
 use crate::adapters::telegram::TelegramAdapter;
@@ -14,10 +15,10 @@ pub use crate::api_support::error_response;
 use crate::api_support::{idempotency_header, parse_json_limited, status_for_diagnostic};
 use crate::auth::{extract_gateway_token, validate_origin, GatewayAuthMode, GatewayAuthVerifier};
 use crate::{
-    AdapterProvider, AdapterRegistry, AdapterTestMessage, BusySnapshot, GatewayCommandSink,
-    GatewayConfig, GatewayDiagnostic, GatewayError, GatewayPolicy, GatewayRunAction,
-    GatewayRunSubmission, GatewayRunner, GatewayStore, RunId, RunMeta, RunRequest,
-    SessionKeyPolicy,
+    AdapterProvider, AdapterRegistry, AdapterTestMessage, BusySnapshot, GatewayChannelConfigPatch,
+    GatewayChannelConfigSnapshot, GatewayCommandSink, GatewayConfig, GatewayDiagnostic,
+    GatewayError, GatewayPolicy, GatewayRunAction, GatewayRunSubmission, GatewayRunner,
+    GatewayStore, RunId, RunMeta, RunRequest, SessionKeyPolicy,
 };
 
 const CAPABILITIES_PATH: &str = "/remote-control/v1/capabilities";
@@ -29,8 +30,12 @@ const RUN_STOP_PATH: &str = "/remote-control/v1/runs/{run_id}/stop";
 const RUN_APPROVAL_PATH: &str = "/remote-control/v1/runs/{run_id}/approval";
 const RUN_ASK_USER_PATH: &str = "/remote-control/v1/runs/{run_id}/ask-user";
 const ADAPTERS_PATH: &str = "/remote-control/v1/adapters";
+const ADAPTER_CONFIG_PATH: &str = "/remote-control/v1/adapters/config";
 const ADAPTER_CONNECT_PATH: &str = "/remote-control/v1/adapters/{provider}/connect";
 const ADAPTER_TEST_PATH: &str = "/remote-control/v1/adapters/{provider}/test-message";
+const ADAPTER_CONFIG_PROVIDER_PATH: &str = "/remote-control/v1/adapters/{provider}/config";
+const ADAPTER_ENABLE_PATH: &str = "/remote-control/v1/adapters/{provider}/enable";
+const ADAPTER_DISABLE_PATH: &str = "/remote-control/v1/adapters/{provider}/disable";
 
 type GatewayAuthVerifyFn = dyn Fn(Option<&str>) -> Result<(), GatewayError> + Send + Sync;
 type GatewayBusySnapshotFn = dyn Fn() -> BusySnapshot + Send + Sync;
@@ -81,7 +86,8 @@ pub struct GatewayApiState {
     auth_verify: Arc<GatewayAuthVerifyFn>,
     busy_snapshot: Arc<GatewayBusySnapshotFn>,
     policy: GatewayPolicy,
-    config: GatewayConfig,
+    config: Arc<RwLock<GatewayConfig>>,
+    config_path: PathBuf,
 }
 
 impl GatewayApiState {
@@ -106,8 +112,33 @@ impl GatewayApiState {
             auth_verify: Arc::new(move |candidate| auth.verify(candidate)),
             busy_snapshot: Arc::new(move || snapshot.snapshot()),
             policy,
-            config,
+            config: Arc::new(RwLock::new(config)),
+            config_path: GatewayConfig::default_config_path(),
         }
+    }
+
+    fn config_snapshot(&self) -> GatewayConfig {
+        self.config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn update_channel(
+        &self,
+        provider: AdapterProvider,
+        patch: GatewayChannelConfigPatch,
+    ) -> Result<GatewayChannelConfigSnapshot, GatewayError> {
+        let mut current = self
+            .config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut candidate = current.clone();
+        candidate.update_channel(provider, patch)?;
+        candidate.save_to(&self.config_path)?;
+        let snapshot = candidate.channel_snapshot(provider);
+        *current = candidate;
+        Ok(snapshot)
     }
 
     pub fn with_default_runner<S, A, B>(sink: S, auth: A, snapshot: B) -> Self
@@ -126,7 +157,8 @@ impl GatewayApiState {
     }
 
     fn authorize(&self, headers: &HeaderMap) -> Result<(), GatewayError> {
-        validate_origin(headers, &self.config.security.allowed_origins)?;
+        let config = self.config_snapshot();
+        validate_origin(headers, &config.security.allowed_origins)?;
         (self.auth_verify)(extract_gateway_token(headers))
     }
 }
@@ -142,8 +174,15 @@ pub fn router(state: GatewayApiState) -> Router {
         .route(RUN_APPROVAL_PATH, post(approval_response))
         .route(RUN_ASK_USER_PATH, post(ask_user_response))
         .route(ADAPTERS_PATH, get(list_adapters))
+        .route(ADAPTER_CONFIG_PATH, get(adapter_config))
         .route(ADAPTER_CONNECT_PATH, post(connect_adapter))
         .route(ADAPTER_TEST_PATH, post(test_adapter_message))
+        .route(
+            ADAPTER_CONFIG_PROVIDER_PATH,
+            patch(update_adapter_config).put(update_adapter_config),
+        )
+        .route(ADAPTER_ENABLE_PATH, post(enable_adapter))
+        .route(ADAPTER_DISABLE_PATH, post(disable_adapter))
         .with_state(state)
 }
 
@@ -158,7 +197,7 @@ async fn create_run(
     body: Bytes,
 ) -> Response {
     authorize_or_return!(state, headers);
-    let mut request: RunRequest = match parse_json_limited(&state.config.limits, &body) {
+    let mut request: RunRequest = match parse_json_limited(&state.config_snapshot().limits, &body) {
         Ok(request) => request,
         Err(error) => return error_response(error),
     };
@@ -186,7 +225,7 @@ async fn get_run(
     authorize_or_return!(state, headers);
     let run_id = run_id_or_return!(run_id);
     match GatewayStore::new(
-        state.config.persistence.clone(),
+        state.config_snapshot().persistence.clone(),
         SessionKeyPolicy::default(),
     )
     .load_run(&run_id)
@@ -205,7 +244,7 @@ async fn get_run_events(
     authorize_or_return!(state, headers);
     let run_id = run_id_or_return!(run_id);
     let store = GatewayStore::new(
-        state.config.persistence.clone(),
+        state.config_snapshot().persistence.clone(),
         SessionKeyPolicy::default(),
     );
     if let Err(error) = store.load_run(&run_id) {
@@ -230,7 +269,7 @@ async fn get_run_timeline(
     authorize_or_return!(state, headers);
     let run_id = run_id_or_return!(run_id);
     let store = GatewayStore::new(
-        state.config.persistence.clone(),
+        state.config_snapshot().persistence.clone(),
         SessionKeyPolicy::default(),
     );
     if let Err(error) = store.load_run(&run_id) {
@@ -273,10 +312,11 @@ async fn approval_response(
 ) -> Response {
     authorize_or_return!(state, headers);
     let run_id = run_id_or_return!(run_id);
-    let request: ApprovalResponseRequest = match parse_json_limited(&state.config.limits, &body) {
-        Ok(request) => request,
-        Err(error) => return error_response(error),
-    };
+    let request: ApprovalResponseRequest =
+        match parse_json_limited(&state.config_snapshot().limits, &body) {
+            Ok(request) => request,
+            Err(error) => return error_response(error),
+        };
     if request.tool_use_id.trim().is_empty() {
         return error_response(GatewayError::new(GatewayDiagnostic::new(
             "approval_id_missing",
@@ -308,10 +348,11 @@ async fn ask_user_response(
 ) -> Response {
     authorize_or_return!(state, headers);
     let run_id = run_id_or_return!(run_id);
-    let request: AskUserResponseRequest = match parse_json_limited(&state.config.limits, &body) {
-        Ok(request) => request,
-        Err(error) => return error_response(error),
-    };
+    let request: AskUserResponseRequest =
+        match parse_json_limited(&state.config_snapshot().limits, &body) {
+            Ok(request) => request,
+            Err(error) => return error_response(error),
+        };
     if request.question_id.trim().is_empty() {
         return error_response(GatewayError::new(GatewayDiagnostic::new(
             "question_id_missing",
@@ -337,7 +378,81 @@ async fn ask_user_response(
 async fn list_adapters(State(state): State<GatewayApiState>, headers: HeaderMap) -> Response {
     authorize_or_return!(state, headers);
 
-    Json(json!({ "adapters": adapter_registry(&state.config).statuses() })).into_response()
+    Json(json!({ "adapters": adapter_registry(&state.config_snapshot()).statuses() }))
+        .into_response()
+}
+
+async fn adapter_config(State(state): State<GatewayApiState>, headers: HeaderMap) -> Response {
+    authorize_or_return!(state, headers);
+    Json(state.config_snapshot().channels_config()).into_response()
+}
+
+async fn update_adapter_config(
+    State(state): State<GatewayApiState>,
+    headers: HeaderMap,
+    Path(provider): Path<String>,
+    body: Bytes,
+) -> Response {
+    authorize_or_return!(state, headers);
+    let provider = match AdapterProvider::parse(&provider) {
+        Ok(provider) => provider,
+        Err(error) => return error_response(error),
+    };
+    let patch: GatewayChannelConfigPatch =
+        match parse_json_limited(&state.config_snapshot().limits, &body) {
+            Ok(patch) => patch,
+            Err(error) => return error_response(error),
+        };
+    match state.update_channel(provider, patch) {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn enable_adapter(
+    State(state): State<GatewayApiState>,
+    headers: HeaderMap,
+    Path(provider): Path<String>,
+) -> Response {
+    set_adapter_enabled(state, headers, provider, true).await
+}
+
+async fn disable_adapter(
+    State(state): State<GatewayApiState>,
+    headers: HeaderMap,
+    Path(provider): Path<String>,
+) -> Response {
+    set_adapter_enabled(state, headers, provider, false).await
+}
+
+async fn set_adapter_enabled(
+    state: GatewayApiState,
+    headers: HeaderMap,
+    provider: String,
+    enabled: bool,
+) -> Response {
+    authorize_or_return!(state, headers);
+    let provider = match AdapterProvider::parse(&provider) {
+        Ok(provider) => provider,
+        Err(error) => return error_response(error),
+    };
+    let patch = GatewayChannelConfigPatch {
+        enabled: Some(enabled),
+        api_base_url: None,
+        test_allowlist: None,
+        test_chat_allowlist: None,
+        test_target_allowlist: None,
+        probe_updates: None,
+        secret: crate::PatchField::Missing,
+        bot_token: crate::PatchField::Missing,
+        app_id: crate::PatchField::Missing,
+        app_secret: crate::PatchField::Missing,
+        outbound_webhook_url: crate::PatchField::Missing,
+    };
+    match state.update_channel(provider, patch) {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => error_response(error),
+    }
 }
 
 async fn connect_adapter(
@@ -351,7 +466,7 @@ async fn connect_adapter(
         Ok(provider) => provider,
         Err(error) => return error_response(error),
     };
-    match adapter_registry(&state.config).connect(provider) {
+    match adapter_registry(&state.config_snapshot()).connect(provider) {
         Ok(status) => Json(status).into_response(),
         Err(error) => error_response(error),
     }
@@ -364,16 +479,17 @@ async fn test_adapter_message(
     body: Bytes,
 ) -> Response {
     authorize_or_return!(state, headers);
-    let message: AdapterTestMessage = match parse_json_limited(&state.config.limits, &body) {
-        Ok(message) => message,
-        Err(error) => return error_response(error),
-    };
+    let message: AdapterTestMessage =
+        match parse_json_limited(&state.config_snapshot().limits, &body) {
+            Ok(message) => message,
+            Err(error) => return error_response(error),
+        };
 
     let provider = match AdapterProvider::parse(&provider) {
         Ok(provider) => provider,
         Err(error) => return error_response(error),
     };
-    match adapter_registry(&state.config).test_message(provider, message) {
+    match adapter_registry(&state.config_snapshot()).test_message(provider, message) {
         Ok(status) => Json(status).into_response(),
         Err(error) => error_response(error),
     }
@@ -425,7 +541,7 @@ fn capabilities_body(state: &GatewayApiState) -> Value {
         "transports": ["http"],
         "busyPolicies": ["queue", "reject", "interrupt", "steer"],
         "supportsSteer": state.policy.supports_steer,
-        "maxPayloadBytes": state.config.limits.max_payload_bytes,
+        "maxPayloadBytes": state.config_snapshot().limits.max_payload_bytes,
         "maxRunning": state.policy.max_running,
         "maxQueued": state.policy.max_queued,
         "endpoints": [
@@ -438,6 +554,10 @@ fn capabilities_body(state: &GatewayApiState) -> Value {
             RUN_APPROVAL_PATH,
             RUN_ASK_USER_PATH,
             ADAPTERS_PATH,
+            ADAPTER_CONFIG_PATH,
+            ADAPTER_CONFIG_PROVIDER_PATH,
+            ADAPTER_ENABLE_PATH,
+            ADAPTER_DISABLE_PATH,
             ADAPTER_CONNECT_PATH,
             ADAPTER_TEST_PATH,
         ],
@@ -531,6 +651,16 @@ mod tests {
         router(state)
     }
 
+    fn test_router_at(config_path: PathBuf) -> Router {
+        let mut state = GatewayApiState::with_default_runner(
+            NoopSink,
+            RemoteGatewayAuth::new("secret").unwrap(),
+            StaticBusySnapshotProvider::default(),
+        );
+        state.config_path = config_path;
+        router(state)
+    }
+
     #[tokio::test]
     async fn capabilities_requires_auth() {
         let response = test_router()
@@ -560,6 +690,105 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn capabilities_advertise_channel_config_persistence_endpoints() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(CAPABILITIES_PATH)
+                    .header(DAEMON_TOKEN_HEADER, "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = to_json(response).await;
+        let endpoints = body["endpoints"].as_array().unwrap();
+        for endpoint in [
+            ADAPTER_CONFIG_PATH,
+            ADAPTER_CONFIG_PROVIDER_PATH,
+            ADAPTER_ENABLE_PATH,
+            ADAPTER_DISABLE_PATH,
+        ] {
+            assert!(
+                endpoints.iter().any(|value| value == endpoint),
+                "{endpoint}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_config_api_never_returns_secrets_and_preserves_omitted_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("gateway").join("config.json");
+        let app = test_router_at(config_path.clone());
+        let credential = "test-only-not-a-real-credential";
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/remote-control/v1/adapters/telegram/config")
+                    .header(DAEMON_TOKEN_HEADER, "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"botToken": credential}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_json(response).await;
+        assert_eq!(body["configured"], true);
+        assert!(!body.to_string().contains(credential));
+        assert!(!std::fs::read_to_string(&config_path)
+            .unwrap()
+            .contains(credential));
+        assert!(
+            std::fs::read_to_string(config_path.with_file_name("tokens.json"))
+                .unwrap()
+                .contains(credential)
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/remote-control/v1/adapters/telegram/config")
+                    .header(DAEMON_TOKEN_HEADER, "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(to_json(response).await["configured"], true);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/remote-control/v1/adapters/telegram/config")
+                    .header(DAEMON_TOKEN_HEADER, "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"botToken":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(to_json(response).await["configured"], false);
+        assert!(
+            !std::fs::read_to_string(config_path.with_file_name("tokens.json"))
+                .unwrap()
+                .contains(credential)
+        );
     }
 
     #[tokio::test]
