@@ -67,6 +67,7 @@
 
 ### P0：最终验收
 
+- [ ] 修复 PTY 测试源码的版本控制缺口：`crates/allthecodes/tests/pty_tui_e2e/` 当前有 30 个本地测试文件，但根 `.gitignore` 的 `tests/` 规则会忽略整个目录，且 `git ls-files crates/allthecodes/tests/pty_tui_e2e` 无输出。在这些文件被正式跟踪，或明确决定保持本地专用并同步修改验收口径前，本地 247 项 PTY 结果不能作为干净 checkout 或 CI 的有效证据。
 - [ ] 在不受 600 秒工具上限约束的环境运行完整 `cargo test --locked --workspace`，取得最终 exit 0。建议保留 runner 原生并发或按 CI 核心数设置；不要在高核心机器无上限并发启动全部 PTY。
 - [ ] 由 GitHub Actions 的 Windows runner 执行 Windows ACL 行为测试，确认真实 DACL 只允许当前用户。
 - [ ] 由 GitHub Actions 完成 Linux/macOS/Windows platform-check；本机只能交叉编译 Windows cfg，不能替代运行测试。
@@ -86,7 +87,8 @@
 
 本计划在以下条件全部满足后关闭：
 
-1. 完整 workspace test 取得 exit 0；
-2. Windows ACL 与三平台 CI 取得 exit 0；
-3. C/H/M/Q 验收矩阵逐项有源码与测试证据；
-4. OSV、cargo-audit、cargo-deny 结果已交叉复核，所有 ignore 都是窄范围且有不可达/无修复依据。
+1. PTY E2E 测试源码已被版本控制，且干净 checkout 能发现预期测试集合；
+2. 完整 workspace test 取得 exit 0；
+3. Windows ACL 与三平台 CI 取得 exit 0；
+4. C/H/M/Q 验收矩阵逐项有源码与测试证据；
+5. OSV、cargo-audit、cargo-deny 结果已交叉复核，所有 ignore 都是窄范围且有不可达/无修复依据。
