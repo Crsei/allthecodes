@@ -68,6 +68,10 @@ impl Tool for AgentTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Optional hard cap on the child agent turn count"
+                },
+                "verification_policy": {
+                    "type": "string",
+                    "description": "Verification policy to persist and forward to the child runtime"
                 }
             },
             "required": ["prompt", "description"]
@@ -99,9 +103,11 @@ impl Tool for AgentTool {
             );
         }
 
-        let cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
+        let cwd = params
+            .delegate_cwd
+            .as_deref()
+            .unwrap_or(&ctx.cwd)
+            .to_string();
         let subagent_type_owned = params
             .subagent_type
             .clone()
@@ -155,7 +161,10 @@ impl Tool for AgentTool {
             return Ok(result);
         }
 
-        let agent_id = Uuid::new_v4().to_string();
+        let agent_id = params
+            .delegate_session_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         // Determine isolation mode before logging (borrow params.isolation)
         let use_worktree = params
@@ -184,6 +193,7 @@ impl Tool for AgentTool {
             Some(json!({
                 "subagent_type": subagent_type,
                 "isolation": params.isolation,
+                "verification_policy": params.verification_policy,
             })),
         );
 
@@ -202,6 +212,9 @@ impl Tool for AgentTool {
         // -- Background path
         if params.run_in_background {
             let Some(bg_tx) = ctx.bg_agent_tx.clone() else {
+                if params.delegate_task_id.is_some() {
+                    bail!("delegated Agent requires a configured background completion channel");
+                }
                 warn!(
                     agent_id = %agent_id,
                     "run_in_background requested but no bg_agent_tx — running synchronously"
@@ -238,6 +251,10 @@ impl Tool for AgentTool {
 
             let bg_description = description.to_string();
             let bg_subagent_type = subagent_type.to_string();
+            let child_session_id = params
+                .delegate_session_id
+                .clone()
+                .unwrap_or_else(|| agent_id.clone());
 
             let launch = super::supervisor::spawn_background_agent(
                 params,
@@ -256,10 +273,18 @@ impl Tool for AgentTool {
             .await?;
 
             return Ok(ToolResult {
-                data: json!(format!(
-                    "Agent '{}' launched in background (id: {}, task: {}). You will be notified when it completes.",
-                    bg_description, agent_id, launch.task_id
-                )),
+                data: json!({
+                    "status": "running",
+                    "agent_id": agent_id,
+                    "task_id": launch.task_id,
+                    "child_session_id": child_session_id,
+                    "worktree_path": launch.worktree_path,
+                    "worktree_branch": launch.worktree_branch,
+                    "message": format!(
+                        "Agent '{}' launched in background (id: {}, task: {}). You will be notified when it completes.",
+                        bg_description, agent_id, launch.task_id
+                    )
+                }),
                 new_messages: vec![],
                 ..Default::default()
             });

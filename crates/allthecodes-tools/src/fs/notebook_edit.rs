@@ -873,6 +873,7 @@ mod tests {
         let app_state = AppState::default();
         let (_tx, rx) = tokio::sync::watch::channel(false);
         ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test".to_string(),

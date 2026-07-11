@@ -99,6 +99,7 @@ mod tests {
     fn test_context_with_app_state(session_id: &str, app_state: ToolAppState) -> ToolUseContext {
         let (_tx, rx) = tokio::sync::watch::channel(false);
         ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test".into(),

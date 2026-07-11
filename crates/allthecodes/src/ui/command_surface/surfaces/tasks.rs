@@ -390,6 +390,7 @@ impl TasksSurface {
             }
             AgentEvent::PermissionQueued { .. }
             | AgentEvent::PermissionResolved { .. }
+            | AgentEvent::RuntimeActivity { .. }
             | AgentEvent::TreeSnapshot { .. }
             | AgentEvent::ExecutionRecord { .. } => {}
         }

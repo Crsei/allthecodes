@@ -231,6 +231,7 @@ impl TaskRepository {
                         cancel_requested_at: None,
                         recovered_at: None,
                         previous_status: None,
+                        runtime_activity: None,
                         created_at: legacy.created_at,
                         updated_at: legacy.updated_at,
                         legacy_inline_output: Some(legacy.output),
@@ -300,6 +301,7 @@ impl TaskRepository {
             cancel_requested_at: record.cancel_requested_at,
             recovered_at: record.recovered_at,
             previous_status,
+            runtime_activity: record.runtime_activity,
             created_at: record.created_at,
             updated_at: record.updated_at,
         })
@@ -534,6 +536,7 @@ fn persisted_record_from_entry(entry: &TaskEntry) -> PersistedTaskRecord {
         cancel_requested_at: entry.cancel_requested_at,
         recovered_at: entry.recovered_at,
         previous_status: entry.previous_status.map(|s| s.as_str().to_string()),
+        runtime_activity: entry.runtime_activity.clone(),
         created_at: entry.created_at,
         updated_at: entry.updated_at,
         legacy_inline_output: None,

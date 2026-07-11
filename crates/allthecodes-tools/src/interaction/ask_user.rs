@@ -243,6 +243,7 @@ mod tests {
         });
 
         let ctx = ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "gpt-5.2".to_string(),

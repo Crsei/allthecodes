@@ -23,6 +23,47 @@ pub struct TaskCreateOptions {
     pub remote_session_id: Option<String>,
     pub remote_task_metadata: Option<Value>,
     pub poll_started_at: Option<i64>,
+    pub runtime_activity: Option<AgentRuntimeActivity>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimePhase {
+    #[default]
+    Queued,
+    Running,
+    WaitingForPermission,
+    Stalled,
+    NeedsManualRecovery,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl AgentRuntimePhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::WaitingForPermission => "waiting_for_permission",
+            Self::Stalled => "stalled",
+            Self::NeedsManualRecovery => "needs_manual_recovery",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRuntimeActivity {
+    pub phase: AgentRuntimePhase,
+    pub last_heartbeat_at_ms: i64,
+    pub last_progress_at_ms: i64,
+    pub task_id: String,
+    pub agent_id: String,
+    pub child_session_id: String,
+    pub partial_output_bytes: usize,
 }
 
 /// Fields accepted by task updates.
@@ -102,6 +143,7 @@ pub struct TaskEntry {
     pub cancel_requested_at: Option<i64>,
     pub recovered_at: Option<i64>,
     pub previous_status: Option<TaskStatus>,
+    pub runtime_activity: Option<AgentRuntimeActivity>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -353,6 +395,8 @@ pub struct PersistedTaskRecord {
     pub recovered_at: Option<i64>,
     #[serde(default)]
     pub previous_status: Option<String>,
+    #[serde(default)]
+    pub runtime_activity: Option<AgentRuntimeActivity>,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default, skip_serializing)]

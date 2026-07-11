@@ -143,6 +143,23 @@ fn render_tool_detail(task: &TaskEntry) -> String {
     if let Some(previous) = task.previous_status {
         out.push_str(&format!("  Previous:    {}\n", previous.as_str()));
     }
+    if let Some(activity) = &task.runtime_activity {
+        let heartbeat_age_ms = chrono::Utc::now()
+            .timestamp_millis()
+            .saturating_sub(activity.last_heartbeat_at_ms);
+        out.push_str(&format!("  Runtime:     {}\n", activity.phase.as_str()));
+        out.push_str(&format!("  Heartbeat:   {}ms ago\n", heartbeat_age_ms));
+        out.push_str(&format!("  Child sess:  {}\n", activity.child_session_id));
+        out.push_str(&format!(
+            "  Partial:     {} byte(s){}\n",
+            activity.partial_output_bytes,
+            if activity.partial_output_bytes > 0 {
+                " available"
+            } else {
+                ""
+            }
+        ));
+    }
     if let Some(parent_id) = &task.parent_id {
         out.push_str(&format!("  Parent:      {}\n", parent_id));
     }

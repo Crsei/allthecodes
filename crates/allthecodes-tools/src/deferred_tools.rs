@@ -836,6 +836,7 @@ mod tests {
     fn test_context(session_id: &str, available_tools: Tools) -> ToolUseContext {
         let (_tx, rx) = tokio::sync::watch::channel(false);
         ToolUseContext {
+            cwd: ".".to_string(),
             options: crate::tool::ToolUseOptions {
                 debug: false,
                 main_loop_model: "test-model".to_string(),

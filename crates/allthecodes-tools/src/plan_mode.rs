@@ -558,6 +558,7 @@ mod tests {
         let state_w = Arc::clone(&state);
 
         ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test".to_string(),

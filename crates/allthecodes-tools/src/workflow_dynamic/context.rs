@@ -404,6 +404,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(false);
         let fail_stage = fail_stage.map(ToOwned::to_owned);
         ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test-model".into(),

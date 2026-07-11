@@ -2,7 +2,9 @@
 
 use serde_json::Value;
 
-use crate::{TaskEntry, TaskStatus, REMOTE_TASK_TYPE_ULTRAREVIEW, TASK_KIND_REMOTE_AGENT};
+use crate::{
+    AgentRuntimePhase, TaskEntry, TaskStatus, REMOTE_TASK_TYPE_ULTRAREVIEW, TASK_KIND_REMOTE_AGENT,
+};
 
 pub const REMOTE_REVIEW_TIMEOUT_MS: i64 = 30 * 60 * 1000;
 
@@ -42,6 +44,23 @@ pub fn recover_task_after_restart(entry: &mut TaskEntry, now_seconds: i64, now_m
             return changed;
         }
         entry.updated_at = now_seconds;
+        if is_delegated_local_task(entry) {
+            if let Some(activity) = entry.runtime_activity.as_mut() {
+                activity.phase = AgentRuntimePhase::NeedsManualRecovery;
+                activity.last_heartbeat_at_ms = now_ms;
+            }
+            if let Some(child_session_id) = delegated_child_session_id(entry) {
+                let recovery = format!("/resume {child_session_id}");
+                if !entry.output.contains(&recovery) {
+                    if !entry.output.is_empty() && !entry.output.ends_with('\n') {
+                        entry.output.push('\n');
+                    }
+                    entry.output.push_str(&format!(
+                        "[Delegated child interrupted by restart; resume manually with {recovery}]"
+                    ));
+                }
+            }
+        }
         return true;
     }
 
@@ -49,9 +68,28 @@ pub fn recover_task_after_restart(entry: &mut TaskEntry, now_seconds: i64, now_m
 }
 
 pub fn is_remote_recoverable_task(entry: &TaskEntry) -> bool {
-    entry.kind == TASK_KIND_REMOTE_AGENT
-        || entry.remote_session_id.is_some()
-        || entry.remote_task_type.is_some()
+    !is_delegated_local_task(entry)
+        && (entry.kind == TASK_KIND_REMOTE_AGENT
+            || entry.remote_session_id.is_some()
+            || entry.remote_task_type.is_some())
+}
+
+fn is_delegated_local_task(entry: &TaskEntry) -> bool {
+    entry
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("delegate"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn delegated_child_session_id(entry: &TaskEntry) -> Option<String> {
+    entry
+        .runtime_activity
+        .as_ref()
+        .map(|activity| activity.child_session_id.clone())
+        .filter(|id| !id.is_empty())
+        .or_else(|| entry.remote_session_id.clone())
 }
 
 pub fn is_remote_review_task(entry: &TaskEntry) -> bool {
@@ -122,6 +160,7 @@ mod tests {
             cancel_requested_at: None,
             recovered_at: None,
             previous_status: None,
+            runtime_activity: None,
             created_at: 10,
             updated_at: 10,
         }
@@ -149,6 +188,38 @@ mod tests {
         assert_eq!(entry.recovered_at, Some(100));
         assert_eq!(entry.poll_started_at, None);
         assert_eq!(entry.updated_at, 100);
+    }
+
+    #[test]
+    fn delegated_restart_requires_manual_resume_and_keeps_worktree() {
+        let mut entry = task(TaskStatus::InProgress);
+        entry.kind = crate::TASK_KIND_LOCAL_AGENT.to_string();
+        entry.metadata = Some(json!({ "delegate": true }));
+        entry.remote_session_id = Some("child-session".to_string());
+        entry.worktree_path = Some("/tmp/kept-worktree".to_string());
+        entry.worktree_branch = Some("agent-worktree-child".to_string());
+        entry.runtime_activity = Some(crate::AgentRuntimeActivity {
+            phase: AgentRuntimePhase::Running,
+            task_id: entry.id.clone(),
+            agent_id: "child-session".to_string(),
+            child_session_id: "child-session".to_string(),
+            ..crate::AgentRuntimeActivity::default()
+        });
+
+        assert!(recover_task_after_restart(&mut entry, 20, 20_000));
+        assert_eq!(entry.status, TaskStatus::Interrupted);
+        assert_eq!(
+            entry
+                .runtime_activity
+                .as_ref()
+                .map(|activity| activity.phase),
+            Some(AgentRuntimePhase::NeedsManualRecovery)
+        );
+        assert_eq!(entry.output.matches("/resume child-session").count(), 1);
+        assert_eq!(entry.worktree_path.as_deref(), Some("/tmp/kept-worktree"));
+
+        assert!(!recover_task_after_restart(&mut entry, 21, 21_000));
+        assert_eq!(entry.output.matches("/resume child-session").count(), 1);
     }
 
     #[test]

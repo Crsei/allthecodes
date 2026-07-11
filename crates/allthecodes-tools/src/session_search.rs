@@ -300,6 +300,7 @@ mod tests {
         let (abort_tx, abort_rx) = watch::channel(false);
         let state = ToolAppState::default();
         let ctx = ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test-model".to_string(),

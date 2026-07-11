@@ -88,6 +88,7 @@ pub fn task_output_payload_with_events(
         "output_summary": entry.output_summary,
         "output_bytes": entry.output_bytes,
         "output_truncated": entry.output_truncated,
+        "runtime_activity": entry.runtime_activity,
     });
     if let Some(events) = &output_events {
         task["output_events"] = json!(events.events);

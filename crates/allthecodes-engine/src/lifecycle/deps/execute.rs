@@ -175,6 +175,7 @@ impl QueryEngineDeps {
         };
 
         let ctx = crate::types::tool::ToolUseContext {
+            cwd: self.cwd.clone(),
             options: crate::types::tool::ToolUseOptions {
                 debug: false,
                 main_loop_model: self.get_app_state().main_loop_model,

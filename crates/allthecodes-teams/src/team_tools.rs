@@ -472,6 +472,7 @@ mod tests {
         };
 
         ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test".into(),

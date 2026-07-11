@@ -71,13 +71,14 @@ pub use tool_requests::{
     TaskUpdateAction, TaskUpdateRequest,
 };
 pub use types::{
-    default_task_kind, PersistedTaskFile, PersistedTaskRecord, TaskClaimFailure,
-    TaskClaimFailureReason, TaskCreateOptions, TaskEntry, TaskOutputRetrievalStatus,
-    TaskOutputWaitResult, TaskRuntimeHandle, TaskStatus, TaskUpdateFields, TeammateTaskExitReason,
-    TodoItem, TodoWriteOutcome, UnassignTeammateTasksResult, UnassignedTaskSummary,
+    default_task_kind, AgentRuntimeActivity, AgentRuntimePhase, PersistedTaskFile,
+    PersistedTaskRecord, TaskClaimFailure, TaskClaimFailureReason, TaskCreateOptions, TaskEntry,
+    TaskOutputRetrievalStatus, TaskOutputWaitResult, TaskRuntimeHandle, TaskStatus,
+    TaskUpdateFields, TeammateTaskExitReason, TodoItem, TodoWriteOutcome,
+    UnassignTeammateTasksResult, UnassignedTaskSummary,
 };
 
-const TASK_SCHEMA_VERSION: u32 = 5;
+const TASK_SCHEMA_VERSION: u32 = 6;
 const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
 const OUTPUT_SUMMARY_MAX_CHARS: usize = 2_000;
 const TASK_OUTPUT_EVENT_LIMIT_BYTES: usize = DEFAULT_OUTPUT_RETENTION_BYTES;

@@ -18,6 +18,7 @@ fn make_ctx_with_mode(mode: PermissionMode) -> ToolUseContext {
 
     let (_tx, rx) = tokio::sync::watch::channel(false);
     ToolUseContext {
+        cwd: ".".to_string(),
         options: ToolUseOptions {
             debug: false,
             main_loop_model: "test".into(),

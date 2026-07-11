@@ -45,7 +45,7 @@ pub struct AgentTool;
 /// emit the upstream name still execute the same subagent runtime.
 pub struct TaskAgentTool;
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AgentInput {
     /// The task/prompt for the subagent to execute.
     prompt: String,
@@ -75,6 +75,22 @@ struct AgentInput {
     /// Optional hard cap on the child agent turn count.
     #[serde(default)]
     max_turns: Option<usize>,
+    /// Verification policy forwarded to the child runtime. Enforcement is
+    /// owned by the runtime verification plan.
+    #[serde(default)]
+    verification_policy: Option<String>,
+    /// Internal DelegateTask adoption envelope. These fields intentionally do
+    /// not appear in the model-visible JSON schema.
+    #[serde(default, rename = "_delegate_task_id")]
+    delegate_task_id: Option<String>,
+    #[serde(default, rename = "_delegate_task_list_id")]
+    delegate_task_list_id: Option<String>,
+    #[serde(default, rename = "_delegate_session_id")]
+    delegate_session_id: Option<String>,
+    #[serde(default, rename = "_delegate_cwd")]
+    delegate_cwd: Option<String>,
+    #[serde(default, rename = "_delegate_worktree_slug")]
+    delegate_worktree_slug: Option<String>,
 }
 
 /// Maximum depth for nested agent spawning to prevent infinite recursion.
@@ -1097,6 +1113,7 @@ mod child_tool_boundary_tests {
     fn test_tool_context(app_state: ToolAppState, session_id: &str) -> ToolUseContext {
         let (_tx, rx) = tokio::sync::watch::channel(false);
         ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "parent-model".to_string(),

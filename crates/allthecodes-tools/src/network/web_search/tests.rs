@@ -168,6 +168,7 @@ fn make_test_ctx() -> ToolUseContext {
     use std::sync::Arc;
     let state = AppState::default();
     ToolUseContext {
+        cwd: ".".to_string(),
         options: ToolUseOptions {
             debug: false,
             main_loop_model: "test".into(),

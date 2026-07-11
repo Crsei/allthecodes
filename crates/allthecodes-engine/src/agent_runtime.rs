@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::types::tool::Tool;
-use allthecodes_tasks::{TaskCreateOptions, TaskEntry, TaskRuntimeHandle, TaskStatus};
+use allthecodes_tasks::{
+    AgentRuntimeActivity, TaskCreateOptions, TaskEntry, TaskRuntimeHandle, TaskStatus,
+};
 use allthecodes_types::agent_events::AgentCompletionStatus;
 use allthecodes_types::agent_runtime_record::AgentRuntimeExecutionRecord;
 use allthecodes_types::agent_types::AgentNode;
@@ -319,25 +321,54 @@ impl TeammateSpawner for NoopTeammateSpawner {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AgentTaskRef {
+    pub task_list_id: String,
+    pub task_id: String,
+}
+
 pub trait AgentTaskStore: Send + Sync {
     fn try_create_with_options(
         &self,
+        task_list_id: &str,
         subject: &str,
         description: &str,
         options: TaskCreateOptions,
     ) -> Result<TaskEntry>;
-    fn try_update_status(&self, id: &str, status: TaskStatus) -> Result<Option<TaskEntry>>;
-    fn register_runtime_handle(&self, id: &str, cancellation_token: CancellationToken) -> bool;
-    fn append_output(&self, id: &str, output: &str) -> Option<TaskEntry>;
+    fn adopt_pending_agent_task(
+        &self,
+        task_ref: &AgentTaskRef,
+        agent_id: &str,
+        child_session_id: &str,
+        worktree_path: Option<String>,
+        worktree_branch: Option<String>,
+    ) -> Result<TaskEntry>;
+    fn get(&self, task_ref: &AgentTaskRef) -> Option<TaskEntry>;
+    fn try_update_status(
+        &self,
+        task_ref: &AgentTaskRef,
+        status: TaskStatus,
+    ) -> Result<Option<TaskEntry>>;
+    fn update_runtime_activity(
+        &self,
+        task_ref: &AgentTaskRef,
+        activity: AgentRuntimeActivity,
+    ) -> Result<Option<TaskEntry>>;
+    fn register_runtime_handle(
+        &self,
+        task_ref: &AgentTaskRef,
+        cancellation_token: CancellationToken,
+    ) -> bool;
+    fn append_output(&self, task_ref: &AgentTaskRef, output: &str) -> Option<TaskEntry>;
     fn read_output_events(
         &self,
-        id: &str,
+        task_ref: &AgentTaskRef,
         after_seq: Option<EventSeq>,
         limit_bytes: usize,
     ) -> Result<Option<OutputReadBatch>>;
-    fn try_stop(&self, id: &str) -> Result<Option<TaskEntry>>;
-    fn get_by_agent_id(&self, agent_id: &str) -> Option<TaskEntry>;
-    fn unregister_runtime_handle(&self, id: &str) -> Option<TaskRuntimeHandle>;
+    fn try_stop(&self, task_ref: &AgentTaskRef) -> Result<Option<TaskEntry>>;
+    fn get_by_agent_id(&self, task_list_id: &str, agent_id: &str) -> Option<TaskEntry>;
+    fn unregister_runtime_handle(&self, task_ref: &AgentTaskRef) -> Option<TaskRuntimeHandle>;
     fn unassign_teammate_tasks(
         &self,
         team_name: &str,
@@ -352,6 +383,7 @@ struct NoopAgentTaskStore;
 impl AgentTaskStore for NoopAgentTaskStore {
     fn try_create_with_options(
         &self,
+        _task_list_id: &str,
         _subject: &str,
         _description: &str,
         _options: TaskCreateOptions,
@@ -359,36 +391,67 @@ impl AgentTaskStore for NoopAgentTaskStore {
         Err(anyhow!("task store runtime is unavailable"))
     }
 
-    fn try_update_status(&self, _id: &str, _status: TaskStatus) -> Result<Option<TaskEntry>> {
+    fn adopt_pending_agent_task(
+        &self,
+        _task_ref: &AgentTaskRef,
+        _agent_id: &str,
+        _child_session_id: &str,
+        _worktree_path: Option<String>,
+        _worktree_branch: Option<String>,
+    ) -> Result<TaskEntry> {
+        Err(anyhow!("task store runtime is unavailable"))
+    }
+
+    fn get(&self, _task_ref: &AgentTaskRef) -> Option<TaskEntry> {
+        None
+    }
+
+    fn try_update_status(
+        &self,
+        _task_ref: &AgentTaskRef,
+        _status: TaskStatus,
+    ) -> Result<Option<TaskEntry>> {
         Ok(None)
     }
 
-    fn register_runtime_handle(&self, _id: &str, _cancellation_token: CancellationToken) -> bool {
+    fn update_runtime_activity(
+        &self,
+        _task_ref: &AgentTaskRef,
+        _activity: AgentRuntimeActivity,
+    ) -> Result<Option<TaskEntry>> {
+        Ok(None)
+    }
+
+    fn register_runtime_handle(
+        &self,
+        _task_ref: &AgentTaskRef,
+        _cancellation_token: CancellationToken,
+    ) -> bool {
         false
     }
 
-    fn append_output(&self, _id: &str, _output: &str) -> Option<TaskEntry> {
+    fn append_output(&self, _task_ref: &AgentTaskRef, _output: &str) -> Option<TaskEntry> {
         None
     }
 
     fn read_output_events(
         &self,
-        _id: &str,
+        _task_ref: &AgentTaskRef,
         _after_seq: Option<EventSeq>,
         _limit_bytes: usize,
     ) -> Result<Option<OutputReadBatch>> {
         Ok(None)
     }
 
-    fn try_stop(&self, _id: &str) -> Result<Option<TaskEntry>> {
+    fn try_stop(&self, _task_ref: &AgentTaskRef) -> Result<Option<TaskEntry>> {
         Ok(None)
     }
 
-    fn get_by_agent_id(&self, _agent_id: &str) -> Option<TaskEntry> {
+    fn get_by_agent_id(&self, _task_list_id: &str, _agent_id: &str) -> Option<TaskEntry> {
         None
     }
 
-    fn unregister_runtime_handle(&self, _id: &str) -> Option<TaskRuntimeHandle> {
+    fn unregister_runtime_handle(&self, _task_ref: &AgentTaskRef) -> Option<TaskRuntimeHandle> {
         None
     }
 

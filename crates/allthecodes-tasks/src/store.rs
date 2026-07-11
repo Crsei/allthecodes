@@ -111,6 +111,7 @@ impl TaskStore {
             cancel_requested_at: None,
             recovered_at: None,
             previous_status: None,
+            runtime_activity: options.runtime_activity,
             created_at: now,
             updated_at: now,
         };
@@ -201,6 +202,7 @@ impl TaskStore {
                 cancel_requested_at: (status == TaskStatus::Cancelled).then_some(now),
                 recovered_at: None,
                 previous_status: None,
+                runtime_activity: options.runtime_activity,
                 created_at: now,
                 updated_at: now,
             };
@@ -217,6 +219,68 @@ impl TaskStore {
     pub fn get(&self, id: &str) -> Option<TaskEntry> {
         self.refresh_from_repository();
         self.refresh_remote_review_timeout(id)
+    }
+
+    /// Atomically binds a pending delegation envelope to one child runtime.
+    pub fn adopt_pending_agent_task(
+        &self,
+        id: &str,
+        agent_id: &str,
+        child_session_id: &str,
+        worktree_path: Option<String>,
+        worktree_branch: Option<String>,
+    ) -> Result<TaskEntry> {
+        let _guard = self.acquire_task_list_lock("adopt delegated task")?;
+        let mut tasks = self.load_repository_tasks_strict()?;
+        let Some(entry) = tasks.get_mut(id) else {
+            anyhow::bail!("delegated task {id} was not found");
+        };
+        if entry.status != TaskStatus::Pending {
+            anyhow::bail!(
+                "delegated task {id} cannot be adopted from status {}",
+                entry.status.as_str()
+            );
+        }
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        entry.status = TaskStatus::InProgress;
+        entry.agent_id = Some(agent_id.to_string());
+        entry.supervisor_id = Some(agent_id.to_string());
+        entry.remote_session_id = Some(child_session_id.to_string());
+        entry.worktree_path = normalize_optional_string(worktree_path);
+        entry.worktree_branch = normalize_optional_string(worktree_branch);
+        entry.runtime_activity = Some(AgentRuntimeActivity {
+            phase: AgentRuntimePhase::Running,
+            last_heartbeat_at_ms: now_ms,
+            last_progress_at_ms: now_ms,
+            task_id: id.to_string(),
+            agent_id: agent_id.to_string(),
+            child_session_id: child_session_id.to_string(),
+            partial_output_bytes: entry.output_bytes,
+        });
+        entry.updated_at = now_ms / 1000;
+        let adopted = entry.clone();
+        self.persist_entry_strict(&adopted)?;
+        self.replace_tasks(tasks);
+        Ok(adopted)
+    }
+
+    pub fn update_runtime_activity(
+        &self,
+        id: &str,
+        activity: AgentRuntimeActivity,
+    ) -> Result<Option<TaskEntry>> {
+        let _guard = self.acquire_task_list_lock("update runtime activity")?;
+        let mut tasks = self.load_repository_tasks_strict()?;
+        let Some(entry) = tasks.get_mut(id) else {
+            self.replace_tasks(tasks);
+            return Ok(None);
+        };
+        entry.runtime_activity = Some(activity);
+        entry.updated_at = chrono::Utc::now().timestamp();
+        let updated = entry.clone();
+        self.persist_entry_strict(&updated)?;
+        self.replace_tasks(tasks);
+        Ok(Some(updated))
     }
 
     #[cfg(test)]
@@ -739,6 +803,45 @@ impl TaskStore {
 #[cfg(all(test, feature = "sqlite-storage", not(feature = "json-storage")))]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial]
+    fn delegated_adoption_is_atomic_and_pending_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let _storage = EnvVarGuard::set("ALLTHECODES_TASK_STORAGE", "json");
+        let store = TaskStore::with_dir(dir.path());
+        let task = store.try_create("delegate", "prompt").unwrap();
+
+        let adopted = store
+            .adopt_pending_agent_task(
+                &task.id,
+                "child-session",
+                "child-session",
+                Some("/tmp/worktree".to_string()),
+                Some("agent-worktree-child".to_string()),
+            )
+            .unwrap();
+        assert_eq!(adopted.status, TaskStatus::InProgress);
+        assert_eq!(adopted.agent_id.as_deref(), Some("child-session"));
+        assert_eq!(
+            adopted
+                .runtime_activity
+                .as_ref()
+                .map(|activity| activity.phase),
+            Some(AgentRuntimePhase::Running)
+        );
+        assert!(store
+            .adopt_pending_agent_task(&task.id, "other", "other", None, None)
+            .is_err());
+
+        let cancelled = store.try_create("cancelled", "prompt").unwrap();
+        store
+            .try_update_status(&cancelled.id, TaskStatus::Cancelled)
+            .unwrap();
+        assert!(store
+            .adopt_pending_agent_task(&cancelled.id, "other", "other", None, None)
+            .is_err());
+    }
     use std::sync::{Arc, Barrier};
     use std::thread;
 

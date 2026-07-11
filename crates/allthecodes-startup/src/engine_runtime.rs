@@ -3,9 +3,11 @@
 use std::sync::{Arc, Once};
 
 use allthecodes_engine::agent_runtime::{
-    AgentTaskStore, AgentToolRegistry, DashboardEmitter, TeammateSpawner,
+    AgentTaskRef, AgentTaskStore, AgentToolRegistry, DashboardEmitter, TeammateSpawner,
 };
-use allthecodes_tasks::{TaskCreateOptions, TaskEntry, TaskRuntimeHandle, TaskStatus};
+use allthecodes_tasks::{
+    AgentRuntimeActivity, TaskCreateOptions, TaskEntry, TaskRuntimeHandle, TaskStatus,
+};
 use allthecodes_types::output::{EventSeq, OutputReadBatch};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -51,44 +53,96 @@ struct RootAgentTaskStore;
 impl AgentTaskStore for RootAgentTaskStore {
     fn try_create_with_options(
         &self,
+        task_list_id: &str,
         subject: &str,
         description: &str,
         options: TaskCreateOptions,
     ) -> Result<TaskEntry> {
-        allthecodes_tasks::global_store().try_create_with_options(subject, description, options)
+        allthecodes_tasks::store_for_task_list_id(task_list_id).try_create_with_options(
+            subject,
+            description,
+            options,
+        )
     }
 
-    fn try_update_status(&self, id: &str, status: TaskStatus) -> Result<Option<TaskEntry>> {
-        allthecodes_tasks::global_store().try_update_status(id, status)
+    fn adopt_pending_agent_task(
+        &self,
+        task_ref: &AgentTaskRef,
+        agent_id: &str,
+        child_session_id: &str,
+        worktree_path: Option<String>,
+        worktree_branch: Option<String>,
+    ) -> Result<TaskEntry> {
+        allthecodes_tasks::store_for_task_list_id(&task_ref.task_list_id).adopt_pending_agent_task(
+            &task_ref.task_id,
+            agent_id,
+            child_session_id,
+            worktree_path,
+            worktree_branch,
+        )
     }
 
-    fn register_runtime_handle(&self, id: &str, cancellation_token: CancellationToken) -> bool {
-        allthecodes_tasks::global_store().register_runtime_handle(id, cancellation_token)
+    fn get(&self, task_ref: &AgentTaskRef) -> Option<TaskEntry> {
+        allthecodes_tasks::store_for_task_list_id(&task_ref.task_list_id).get(&task_ref.task_id)
     }
 
-    fn append_output(&self, id: &str, output: &str) -> Option<TaskEntry> {
-        allthecodes_tasks::global_store().append_output(id, output)
+    fn try_update_status(
+        &self,
+        task_ref: &AgentTaskRef,
+        status: TaskStatus,
+    ) -> Result<Option<TaskEntry>> {
+        allthecodes_tasks::store_for_task_list_id(&task_ref.task_list_id)
+            .try_update_status(&task_ref.task_id, status)
+    }
+
+    fn update_runtime_activity(
+        &self,
+        task_ref: &AgentTaskRef,
+        activity: AgentRuntimeActivity,
+    ) -> Result<Option<TaskEntry>> {
+        allthecodes_tasks::store_for_task_list_id(&task_ref.task_list_id)
+            .update_runtime_activity(&task_ref.task_id, activity)
+    }
+
+    fn register_runtime_handle(
+        &self,
+        task_ref: &AgentTaskRef,
+        cancellation_token: CancellationToken,
+    ) -> bool {
+        allthecodes_tasks::store_for_task_list_id(&task_ref.task_list_id)
+            .register_runtime_handle(&task_ref.task_id, cancellation_token)
+    }
+
+    fn append_output(&self, task_ref: &AgentTaskRef, output: &str) -> Option<TaskEntry> {
+        allthecodes_tasks::store_for_task_list_id(&task_ref.task_list_id)
+            .append_output(&task_ref.task_id, output)
     }
 
     fn read_output_events(
         &self,
-        id: &str,
+        task_ref: &AgentTaskRef,
         after_seq: Option<EventSeq>,
         limit_bytes: usize,
     ) -> Result<Option<OutputReadBatch>> {
-        allthecodes_tasks::global_store().read_output_events(id, after_seq, limit_bytes)
+        allthecodes_tasks::store_for_task_list_id(&task_ref.task_list_id).read_output_events(
+            &task_ref.task_id,
+            after_seq,
+            limit_bytes,
+        )
     }
 
-    fn try_stop(&self, id: &str) -> Result<Option<TaskEntry>> {
-        allthecodes_tasks::global_store().try_stop(id)
+    fn try_stop(&self, task_ref: &AgentTaskRef) -> Result<Option<TaskEntry>> {
+        allthecodes_tasks::store_for_task_list_id(&task_ref.task_list_id)
+            .try_stop(&task_ref.task_id)
     }
 
-    fn get_by_agent_id(&self, agent_id: &str) -> Option<TaskEntry> {
-        allthecodes_tasks::global_store().get_by_agent_id(agent_id)
+    fn get_by_agent_id(&self, task_list_id: &str, agent_id: &str) -> Option<TaskEntry> {
+        allthecodes_tasks::store_for_task_list_id(task_list_id).get_by_agent_id(agent_id)
     }
 
-    fn unregister_runtime_handle(&self, id: &str) -> Option<TaskRuntimeHandle> {
-        allthecodes_tasks::global_store().unregister_runtime_handle(id)
+    fn unregister_runtime_handle(&self, task_ref: &AgentTaskRef) -> Option<TaskRuntimeHandle> {
+        allthecodes_tasks::store_for_task_list_id(&task_ref.task_list_id)
+            .unregister_runtime_handle(&task_ref.task_id)
     }
 
     fn unassign_teammate_tasks(
@@ -165,6 +219,7 @@ mod tests {
         let store = RootAgentTaskStore;
         let created = store
             .try_create_with_options(
+                allthecodes_tasks::DEFAULT_TASK_LIST_ID,
                 "Runtime adapter SQLite task",
                 "verify root agent adapter storage",
                 TaskCreateOptions {
@@ -173,11 +228,15 @@ mod tests {
                 },
             )
             .expect("create task through root adapter");
+        let task_ref = AgentTaskRef {
+            task_list_id: allthecodes_tasks::DEFAULT_TASK_LIST_ID.to_string(),
+            task_id: created.id.clone(),
+        };
         let appended = store
-            .append_output(&created.id, "runtime adapter output")
+            .append_output(&task_ref, "runtime adapter output")
             .expect("append output through root adapter");
         let updated = store
-            .try_update_status(&created.id, TaskStatus::Completed)
+            .try_update_status(&task_ref, TaskStatus::Completed)
             .expect("update task through root adapter")
             .expect("updated task");
 
@@ -192,5 +251,29 @@ mod tests {
         assert!(tmp.path().join("state").join("state_5.sqlite").exists());
         assert!(!task_dir.join(format!("{file_stem}.json")).exists());
         assert!(task_dir.join(format!("{file_stem}.output.log")).exists());
+    }
+
+    #[test]
+    #[serial]
+    fn root_agent_task_store_routes_delegation_to_explicit_scope() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tmp.path());
+        let scope = "parent-session-scope";
+        let scoped_store = allthecodes_tasks::store_for_task_list_id(scope);
+        let pending = scoped_store.try_create("delegated", "prompt").unwrap();
+        let task_ref = AgentTaskRef {
+            task_list_id: scope.to_string(),
+            task_id: pending.id.clone(),
+        };
+
+        let adopted = RootAgentTaskStore
+            .adopt_pending_agent_task(&task_ref, "child-session", "child-session", None, None)
+            .unwrap();
+        assert_eq!(adopted.status, TaskStatus::InProgress);
+        assert_eq!(
+            scoped_store.get(&pending.id).unwrap().agent_id.as_deref(),
+            Some("child-session")
+        );
+        assert!(allthecodes_tasks::global_store().list().is_empty());
     }
 }

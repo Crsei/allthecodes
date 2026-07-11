@@ -68,6 +68,50 @@ fn agent_definition(source: AgentDefinitionSource) -> AgentDefinitionEntry {
 }
 
 #[test]
+fn delegated_agent_envelope_round_trips_without_schema_exposure() {
+    let parsed: AgentInput = serde_json::from_value(json!({
+        "prompt": "inspect parser",
+        "description": "inspect parser",
+        "run_in_background": true,
+        "verification_policy": "targeted_tests",
+        "_delegate_task_id": "task-1",
+        "_delegate_task_list_id": "parent-session",
+        "_delegate_session_id": "session-1",
+        "_delegate_cwd": "/tmp/project",
+        "_delegate_worktree_slug": "parser-check"
+    }))
+    .unwrap();
+    assert_eq!(parsed.delegate_task_id.as_deref(), Some("task-1"));
+    assert_eq!(
+        parsed.delegate_task_list_id.as_deref(),
+        Some("parent-session")
+    );
+    assert_eq!(parsed.delegate_session_id.as_deref(), Some("session-1"));
+    assert_eq!(parsed.delegate_cwd.as_deref(), Some("/tmp/project"));
+    assert_eq!(
+        parsed.delegate_worktree_slug.as_deref(),
+        Some("parser-check")
+    );
+    assert_eq!(
+        parsed.verification_policy.as_deref(),
+        Some("targeted_tests")
+    );
+
+    let schema = AgentTool.input_json_schema();
+    let properties = schema["properties"].as_object().unwrap();
+    assert!(properties.contains_key("verification_policy"));
+    for hidden in [
+        "_delegate_task_id",
+        "_delegate_task_list_id",
+        "_delegate_session_id",
+        "_delegate_cwd",
+        "_delegate_worktree_slug",
+    ] {
+        assert!(!properties.contains_key(hidden));
+    }
+}
+
+#[test]
 fn test_resolve_model_alias() {
     assert_eq!(
         resolve_model_alias("SOTA", "fallback").unwrap(),

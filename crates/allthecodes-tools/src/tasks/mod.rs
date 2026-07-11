@@ -9,7 +9,10 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, Tools, ValidationResult};
+use crate::tool::{
+    DeferredToolExecutionRequest, Tool, ToolProgress, ToolResult, ToolUseContext, Tools,
+    ValidationResult,
+};
 use allthecodes_tasks::{
     parse_task_create, parse_task_id, parse_task_output_limit_bytes, parse_task_output_timeout_ms,
     parse_task_update, replace_todos_for_key, task_list_id_from_parts, task_output_payload,
@@ -136,6 +139,8 @@ pub struct DelegateTaskOutput {
     pub child_session_id: String,
     pub status: String,
     pub worktree_path: Option<String>,
+    pub worktree_branch: Option<String>,
+    pub agent_id: String,
 }
 
 fn parse_delegate_task_input(input: Value) -> Result<DelegateTaskInput> {
@@ -221,13 +226,6 @@ fn validate_delegate_worktree_slug(slug: &str) -> Result<()> {
     Ok(())
 }
 
-fn delegate_worktree_path_for_slug(slug: &str) -> String {
-    allthecodes_config::paths::worktrees_dir()
-        .join(format!("agent-worktree-{slug}"))
-        .to_string_lossy()
-        .to_string()
-}
-
 fn delegate_task_subject(input: &DelegateTaskInput) -> String {
     let first_line = input
         .prompt
@@ -278,12 +276,6 @@ fn delegate_task_create_options(
         .as_deref()
         .map(|worktree| delegate_worktree_slug(child_session_id, Some(worktree)))
         .transpose()?;
-    let worktree_path = worktree_slug
-        .as_deref()
-        .map(delegate_worktree_path_for_slug);
-    let worktree_branch = worktree_slug
-        .as_deref()
-        .map(|slug| format!("agent-worktree-{slug}"));
 
     Ok(TaskCreateOptions {
         kind: Some(TASK_KIND_LOCAL_AGENT.to_string()),
@@ -315,12 +307,13 @@ fn delegate_task_create_options(
         agent_id: Some(child_session_id.to_string()),
         supervisor_id: None,
         isolation: worktree_slug.as_ref().map(|_| "worktree".to_string()),
-        worktree_path,
-        worktree_branch,
+        worktree_path: None,
+        worktree_branch: None,
         remote_task_type: None,
         remote_session_id: Some(child_session_id.to_string()),
         remote_task_metadata: None,
         poll_started_at: None,
+        runtime_activity: None,
     })
 }
 
@@ -438,11 +431,7 @@ impl Tool for DelegateTaskTool {
     ) -> Result<ToolResult> {
         let input = parse_delegate_task_input(input)?;
         let child_session_id = uuid::Uuid::new_v4().to_string();
-        let cwd = input.cwd.clone().unwrap_or_else(|| {
-            std::env::current_dir()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string())
-        });
+        let cwd = input.cwd.clone().unwrap_or_else(|| ctx.cwd.clone());
         save_delegate_child_session(&child_session_id, &ctx.session_id, &input, &cwd)?;
 
         let task_store = store_for_context(ctx);
@@ -450,11 +439,96 @@ impl Tool for DelegateTaskTool {
         let options = delegate_task_create_options(ctx, &input, &child_session_id, &cwd)?;
         let entry = task_store.try_create_with_options(&subject, &input.prompt, options)?;
 
+        let worktree_slug = input
+            .worktree
+            .as_deref()
+            .map(|worktree| delegate_worktree_slug(&child_session_id, Some(worktree)))
+            .transpose()?;
+        let request = DeferredToolExecutionRequest {
+            tool_use_id: format!("delegate-task-{}", entry.id),
+            tool_name: "Agent".to_string(),
+            input: json!({
+                "prompt": input.prompt,
+                "description": subject,
+                "subagent_type": input.role,
+                "run_in_background": true,
+                "isolation": worktree_slug.as_ref().map(|_| "worktree"),
+                "max_turns": input.max_turns,
+                "verification_policy": input.verification_policy,
+                "_delegate_task_id": entry.id,
+                "_delegate_task_list_id": task_list_id_for_context(ctx),
+                "_delegate_session_id": child_session_id,
+                "_delegate_cwd": cwd,
+                "_delegate_worktree_slug": worktree_slug,
+            }),
+        };
+        let launch = match &ctx.execute_deferred_tool {
+            Some(execute) => execute(request).await,
+            None => Err(anyhow::anyhow!(
+                "DelegateTask requires the canonical Agent runtime executor"
+            )),
+        };
+        let launched = match launch {
+            Ok(launched) if !launched.is_error => launched.result.data,
+            Ok(launched) => {
+                let message = launched
+                    .result
+                    .data
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Agent runtime rejected delegated launch")
+                    .to_string();
+                fail_delegate_launch(&task_store, &entry.id, &message)?;
+                anyhow::bail!(message);
+            }
+            Err(err) => {
+                let message = format!("failed to launch delegated Agent: {err}");
+                fail_delegate_launch(&task_store, &entry.id, &message)?;
+                anyhow::bail!(message);
+            }
+        };
+        let launch_object = launched
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("delegated Agent returned a malformed launch result"));
+        let launch_object = match launch_object {
+            Ok(value) => value,
+            Err(err) => {
+                fail_delegate_launch(&task_store, &entry.id, &err.to_string())?;
+                return Err(err);
+            }
+        };
+        let launched_task_id = launch_object.get("task_id").and_then(Value::as_str);
+        let launched_session_id = launch_object
+            .get("child_session_id")
+            .and_then(Value::as_str);
+        let launched_agent_id = launch_object.get("agent_id").and_then(Value::as_str);
+        let launched_status = launch_object.get("status").and_then(Value::as_str);
+        if launched_task_id != Some(entry.id.as_str())
+            || launched_session_id != Some(child_session_id.as_str())
+            || launched_agent_id != Some(child_session_id.as_str())
+            || launched_status != Some("running")
+        {
+            let message = format!(
+                "delegated Agent launch identity mismatch (expected task {}, session/agent {})",
+                entry.id, child_session_id
+            );
+            fail_delegate_launch(&task_store, &entry.id, &message)?;
+            anyhow::bail!(message);
+        }
+
         let output = DelegateTaskOutput {
             task_id: entry.id.clone(),
             child_session_id: child_session_id.clone(),
-            status: entry.status.as_str().to_string(),
-            worktree_path: entry.worktree_path.clone(),
+            status: "running".to_string(),
+            worktree_path: launch_object
+                .get("worktree_path")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            worktree_branch: launch_object
+                .get("worktree_branch")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            agent_id: child_session_id.clone(),
         };
 
         Ok(ToolResult {
@@ -463,6 +537,8 @@ impl Tool for DelegateTaskTool {
                 "child_session_id": output.child_session_id,
                 "status": output.status,
                 "worktree_path": output.worktree_path,
+                "worktree_branch": output.worktree_branch,
+                "agent_id": output.agent_id,
                 "message": format!(
                     "Delegated task {} to child session {}",
                     entry.id, child_session_id
@@ -476,6 +552,15 @@ impl Tool for DelegateTaskTool {
     async fn prompt(&self) -> String {
         "Delegate work to a child agent. The returned task_id can be tracked with TaskList, TaskGet, TaskOutput, or TaskStop, and child_session_id can be resumed.".to_string()
     }
+}
+
+fn fail_delegate_launch(task_store: &TaskStore, task_id: &str, message: &str) -> Result<()> {
+    if let Some(handle) = task_store.unregister_runtime_handle(task_id) {
+        handle.cancel();
+    }
+    task_store.append_output(task_id, &format!("[DelegateTask launch failed: {message}]"));
+    task_store.try_update_status(task_id, TaskStatus::Failed)?;
+    Ok(())
 }
 
 pub struct TaskCreateTool;
@@ -1037,6 +1122,7 @@ mod tests {
         let (_abort_tx, abort_rx) = tokio::sync::watch::channel(false);
         let state = crate::tool::ToolAppState::default();
         ToolUseContext {
+            cwd: ".".to_string(),
             options: crate::tool::ToolUseOptions {
                 debug: false,
                 main_loop_model: "test-model".to_string(),
@@ -1125,7 +1211,52 @@ mod tests {
         let home = TempDir::new().expect("temp home");
         let workspace = TempDir::new().expect("temp workspace");
         let _home_guard = EnvGuard::set("ALLTHECODES_HOME", home.path());
-        let ctx = test_context("parent-session");
+        let mut ctx = test_context("parent-session");
+        ctx.cwd = workspace.path().display().to_string();
+        let captured = Arc::new(parking_lot::Mutex::new(None));
+        let captured_request = captured.clone();
+        ctx.execute_deferred_tool = Some(Arc::new(move |request| {
+            let captured_request = captured_request.clone();
+            Box::pin(async move {
+                *captured_request.lock() = Some(request.clone());
+                let task_id = request.input["_delegate_task_id"]
+                    .as_str()
+                    .expect("delegate task id")
+                    .to_string();
+                let task_list_id = request.input["_delegate_task_list_id"]
+                    .as_str()
+                    .expect("delegate task list id")
+                    .to_string();
+                let session_id = request.input["_delegate_session_id"]
+                    .as_str()
+                    .expect("delegate session id")
+                    .to_string();
+                allthecodes_tasks::store_for_task_list_id(&task_list_id).adopt_pending_agent_task(
+                    &task_id,
+                    &session_id,
+                    &session_id,
+                    Some("/tmp/agent-worktree-delegate-lineage".to_string()),
+                    Some("agent-worktree-delegate-lineage".to_string()),
+                )?;
+                Ok(crate::tool::DeferredToolExecutionResult {
+                    tool_use_id: request.tool_use_id,
+                    tool_name: request.tool_name,
+                    result: ToolResult {
+                        data: json!({
+                            "status": "running",
+                            "agent_id": session_id,
+                            "task_id": task_id,
+                            "child_session_id": session_id,
+                            "worktree_path": "/tmp/agent-worktree-delegate-lineage",
+                            "worktree_branch": "agent-worktree-delegate-lineage",
+                            "message": "launched"
+                        }),
+                        ..ToolResult::default()
+                    },
+                    is_error: false,
+                })
+            })
+        }));
         let parent = parent_message();
 
         let result = DelegateTaskTool
@@ -1149,7 +1280,7 @@ mod tests {
         let child_session_id = result.data["child_session_id"]
             .as_str()
             .expect("child session id");
-        assert_eq!(result.data["status"], "pending");
+        assert_eq!(result.data["status"], "running");
         assert!(result.data["worktree_path"]
             .as_str()
             .expect("worktree path")
@@ -1172,6 +1303,18 @@ mod tests {
         assert_eq!(task["metadata"]["delegate_role"], "explorer");
         assert_eq!(task["metadata"]["max_turns"], 4);
         assert_eq!(task["metadata"]["verification_policy"], "targeted_tests");
+        assert_eq!(task["status"], "in_progress");
+        assert_eq!(task["runtime_activity"]["phase"], "running");
+
+        let request = captured.lock().clone().expect("captured Agent request");
+        assert_eq!(request.tool_name, "Agent");
+        assert_eq!(request.input["run_in_background"], true);
+        assert_eq!(request.input["_delegate_task_id"], task_id);
+        assert_eq!(request.input["_delegate_session_id"], child_session_id);
+        assert_eq!(
+            request.input["_delegate_cwd"],
+            workspace.path().display().to_string()
+        );
 
         let output = TaskOutputTool
             .call(

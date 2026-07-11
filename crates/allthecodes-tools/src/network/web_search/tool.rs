@@ -364,6 +364,7 @@ mod tests {
         use std::sync::Arc;
         let state = AppState::default();
         crate::tool::ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test".into(),

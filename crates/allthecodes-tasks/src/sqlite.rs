@@ -95,6 +95,12 @@ const MIGRATIONS: &[Migration] = &[
         ON task_dependencies(task_list_id, task_id, position)
     "#,
     ),
+    Migration::new(
+        8,
+        r#"
+    ALTER TABLE tasks ADD COLUMN runtime_activity_json TEXT
+    "#,
+    ),
 ];
 
 #[derive(Debug, Clone)]
@@ -150,6 +156,7 @@ impl SqliteTaskRepository {
                     cancel_requested_at,
                     recovered_at,
                     previous_status,
+                    runtime_activity_json,
                     created_at,
                     updated_at
                 FROM tasks
@@ -215,6 +222,9 @@ impl SqliteTaskRepository {
                     cancel_requested_at: row.try_get("cancel_requested_at")?,
                     recovered_at: row.try_get("recovered_at")?,
                     previous_status: row.try_get("previous_status")?,
+                    runtime_activity: parse_runtime_activity(
+                        row.try_get("runtime_activity_json")?,
+                    )?,
                     created_at: row.try_get("created_at")?,
                     updated_at: row.try_get("updated_at")?,
                     legacy_inline_output: None,
@@ -328,10 +338,11 @@ impl SqliteTaskRepository {
                     cancel_requested_at,
                     recovered_at,
                     previous_status,
+                    runtime_activity_json,
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_list_id, id) DO UPDATE SET
                     kind = excluded.kind,
                     subject = excluded.subject,
@@ -358,6 +369,7 @@ impl SqliteTaskRepository {
                     cancel_requested_at = excluded.cancel_requested_at,
                     recovered_at = excluded.recovered_at,
                     previous_status = excluded.previous_status,
+                    runtime_activity_json = excluded.runtime_activity_json,
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at
                 "#,
@@ -389,6 +401,13 @@ impl SqliteTaskRepository {
             .bind(record.cancel_requested_at)
             .bind(record.recovered_at)
             .bind(&record.previous_status)
+            .bind(
+                record
+                    .runtime_activity
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+            )
             .bind(record.created_at)
             .bind(record.updated_at)
             .execute(&mut *tx)
@@ -532,6 +551,11 @@ where
 
 fn parse_json_value(raw: Option<String>) -> Result<Option<Value>> {
     raw.map(|value| serde_json::from_str(&value).context("failed to parse sqlite JSON field"))
+        .transpose()
+}
+
+fn parse_runtime_activity(raw: Option<String>) -> Result<Option<AgentRuntimeActivity>> {
+    raw.map(|value| serde_json::from_str(&value).context("invalid runtime activity JSON"))
         .transpose()
 }
 

@@ -428,6 +428,7 @@ mod tests {
         let state_w = state.clone();
 
         let ctx = ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test".to_string(),
@@ -515,6 +516,7 @@ mod tests {
         let state_w = state.clone();
 
         let ctx = ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test".to_string(),

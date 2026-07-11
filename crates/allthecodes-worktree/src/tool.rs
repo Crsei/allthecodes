@@ -968,6 +968,7 @@ mod tests {
         *state.write() = app_state;
 
         ToolUseContext {
+            cwd: ".".to_string(),
             options: ToolUseOptions {
                 debug: false,
                 main_loop_model: "test".to_string(),

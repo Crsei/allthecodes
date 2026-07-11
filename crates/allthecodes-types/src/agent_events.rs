@@ -122,6 +122,15 @@ pub enum AgentEvent {
         decision: String,
         pending_count: usize,
     },
+    RuntimeActivity {
+        task_id: String,
+        agent_id: String,
+        child_session_id: String,
+        phase: String,
+        last_heartbeat_at_ms: i64,
+        last_progress_at_ms: i64,
+        partial_output_bytes: usize,
+    },
     TreeSnapshot {
         roots: Vec<AgentNode>,
     },

@@ -1300,6 +1300,28 @@ impl App {
                     Some(compact_inline(&format!("{tool_name}: {decision}"), 80)),
                 );
             }
+            AgentEvent::RuntimeActivity {
+                agent_id,
+                child_session_id,
+                phase,
+                partial_output_bytes,
+                ..
+            } => {
+                let status = match phase.as_str() {
+                    "waiting_for_permission" => AgentThreadStatus::WaitingPermission,
+                    "completed" => AgentThreadStatus::Succeeded,
+                    "failed" | "needs_manual_recovery" => AgentThreadStatus::Failed,
+                    "cancelled" => AgentThreadStatus::Canceled,
+                    _ => AgentThreadStatus::Running,
+                };
+                self.runtime_view.agent_nav_mut().mark_status(
+                    agent_id,
+                    status,
+                    Some(format!(
+                        "{phase}; session {child_session_id}; {partial_output_bytes} partial byte(s)"
+                    )),
+                );
+            }
             AgentEvent::TreeSnapshot { roots } => {
                 let current = self.current_agent_thread_id().to_string();
                 self.runtime_view.agent_nav_mut().clear();

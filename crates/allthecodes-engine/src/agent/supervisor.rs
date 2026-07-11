@@ -19,7 +19,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::lifecycle::QueryEngine;
-use allthecodes_tasks::{TaskCreateOptions, TaskEntry, TaskStatus};
+use allthecodes_tasks::{
+    AgentRuntimeActivity, AgentRuntimePhase, TaskCreateOptions, TaskEntry, TaskStatus,
+    DEFAULT_TASK_LIST_ID,
+};
 use allthecodes_types::agent_events::AgentCompletionStatus;
 
 use crate::types::config::{QueryEngineConfig, QuerySource};
@@ -42,6 +45,8 @@ const SHUTDOWN_WAIT_PER_AGENT: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 pub(super) struct BackgroundLaunch {
     pub(super) task_id: String,
+    pub(super) worktree_path: Option<String>,
+    pub(super) worktree_branch: Option<String>,
 }
 
 #[derive(Clone)]
@@ -63,7 +68,7 @@ struct PreparedRuntime {
 
 struct BackgroundJob {
     agent_id: String,
-    task_id: String,
+    task_ref: crate::agent_runtime::AgentTaskRef,
     cancellation_token: CancellationToken,
     handle: Option<tokio::task::JoinHandle<()>>,
     worktree: Option<WorktreeRuntime>,
@@ -72,6 +77,7 @@ struct BackgroundJob {
 #[derive(Default)]
 struct SupervisorState {
     active: HashMap<String, BackgroundJob>,
+    known_tasks: HashMap<String, crate::agent_runtime::AgentTaskRef>,
 }
 
 #[derive(Default)]
@@ -97,6 +103,10 @@ pub(super) async fn spawn_background_agent(
     start_configs: Vec<allthecodes_types::hooks::HookEventConfig>,
     stop_configs: Vec<allthecodes_types::hooks::HookEventConfig>,
 ) -> Result<BackgroundLaunch> {
+    let child_session_id = params
+        .delegate_session_id
+        .clone()
+        .unwrap_or_else(|| agent_id.clone());
     if !start_configs.is_empty() {
         let payload = json!({
             "agent_id": &agent_id,
@@ -120,9 +130,11 @@ pub(super) async fn spawn_background_agent(
         &agent_model,
         current_depth,
         ctx.agent_id.as_deref(),
-        &ctx.session_id,
+        &child_session_id,
         ctx.hook_runner.clone(),
         (ctx.get_app_state)().hooks,
+        params.delegate_cwd.as_deref().unwrap_or(&ctx.cwd),
+        params.delegate_worktree_slug.as_deref(),
     )
     .await?;
     validate_working_directory(&prepared.child_cwd)?;
@@ -137,35 +149,65 @@ pub(super) async fn spawn_background_agent(
         current_depth,
     );
     super::dispatch::apply_coordinator_worker_turn_limit(&mut child_config, ctx, &params);
+    let delegated = params.delegate_task_id.is_some();
+    if delegated {
+        child_config.persist_session = true;
+        child_config.auto_save_session = true;
+    }
 
     let task_store = crate::agent_runtime::global_task_store();
-    let task_entry = task_store.try_create_with_options(
-        &description,
-        &params.prompt,
-        TaskCreateOptions {
-            kind: Some("local_agent".to_string()),
-            parent_id: None,
-            depends_on: Vec::new(),
-            agent_id: Some(agent_id.clone()),
-            supervisor_id: Some(agent_id.clone()),
-            isolation: if use_worktree {
-                Some("worktree".to_string())
-            } else {
-                None
+    let task_list_id = params
+        .delegate_task_list_id
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TASK_LIST_ID.to_string());
+    let worktree_path = prepared
+        .worktree
+        .as_ref()
+        .map(|wt| wt.worktree_path.display().to_string());
+    let worktree_branch = prepared.worktree.as_ref().map(|wt| wt.branch_name.clone());
+    let task_ref = if let Some(task_id) = params.delegate_task_id.clone() {
+        let task_ref = crate::agent_runtime::AgentTaskRef {
+            task_list_id,
+            task_id,
+        };
+        if let Err(err) = task_store.adopt_pending_agent_task(
+            &task_ref,
+            &agent_id,
+            &child_session_id,
+            worktree_path.clone(),
+            worktree_branch.clone(),
+        ) {
+            if let Some(worktree) = prepared.worktree.clone() {
+                cleanup_failed_launch_worktree(&agent_id, worktree).await;
+            }
+            return Err(err);
+        }
+        task_ref
+    } else {
+        let task_entry = task_store.try_create_with_options(
+            &task_list_id,
+            &description,
+            &params.prompt,
+            TaskCreateOptions {
+                kind: Some("local_agent".to_string()),
+                agent_id: Some(agent_id.clone()),
+                supervisor_id: Some(agent_id.clone()),
+                isolation: use_worktree.then(|| "worktree".to_string()),
+                worktree_path: worktree_path.clone(),
+                worktree_branch: worktree_branch.clone(),
+                ..TaskCreateOptions::default()
             },
-            worktree_path: prepared
-                .worktree
-                .as_ref()
-                .map(|wt| wt.worktree_path.display().to_string()),
-            worktree_branch: prepared.worktree.as_ref().map(|wt| wt.branch_name.clone()),
-            ..TaskCreateOptions::default()
-        },
-    )?;
-    let task_id = task_entry.id.clone();
-    task_store.try_update_status(&task_id, TaskStatus::InProgress)?;
+        )?;
+        let task_ref = crate::agent_runtime::AgentTaskRef {
+            task_list_id,
+            task_id: task_entry.id,
+        };
+        task_store.try_update_status(&task_ref, TaskStatus::InProgress)?;
+        task_ref
+    };
 
     let cancellation_token = CancellationToken::new();
-    task_store.register_runtime_handle(&task_id, cancellation_token.clone());
+    task_store.register_runtime_handle(&task_ref, cancellation_token.clone());
 
     register_agent_tree(
         &agent_id,
@@ -183,7 +225,7 @@ pub(super) async fn spawn_background_agent(
 
     BACKGROUND_SUPERVISOR.register(BackgroundJob {
         agent_id: agent_id.clone(),
-        task_id: task_id.clone(),
+        task_ref: task_ref.clone(),
         cancellation_token: cancellation_token.clone(),
         handle: None,
         worktree: prepared.worktree.clone(),
@@ -193,7 +235,8 @@ pub(super) async fn spawn_background_agent(
         child_config,
         prompt: params.prompt,
         agent_id: agent_id.clone(),
-        task_id: task_id.clone(),
+        task_ref: task_ref.clone(),
+        child_session_id: params.delegate_session_id.clone(),
         description: description.clone(),
         subagent_type: Some(subagent_type.clone()),
         parent_agent_id: ctx.agent_id.clone(),
@@ -217,26 +260,48 @@ pub(super) async fn spawn_background_agent(
     });
     BACKGROUND_SUPERVISOR.attach_handle(&agent_id, handle);
 
-    Ok(BackgroundLaunch { task_id })
+    Ok(BackgroundLaunch {
+        task_id: task_ref.task_id,
+        worktree_path,
+        worktree_branch,
+    })
 }
 
 pub fn cancel_agent(agent_id: &str) -> Option<String> {
-    let task_id = BACKGROUND_SUPERVISOR.cancel_agent(agent_id);
-    if let Some(task_id) = &task_id {
-        if let Err(err) = crate::agent_runtime::global_task_store().try_stop(task_id) {
-            warn!(task_id, error = %err, "failed to stop background agent task");
-        }
-    } else if let Some(task) = crate::agent_runtime::global_task_store().get_by_agent_id(agent_id) {
-        if let Err(err) = crate::agent_runtime::global_task_store().try_stop(&task.id) {
-            warn!(task_id = %task.id, error = %err, "failed to stop background agent task");
-        }
-        return Some(task.id);
+    let task_ref = BACKGROUND_SUPERVISOR.cancel_agent(agent_id)?;
+    if let Err(err) = crate::agent_runtime::global_task_store().try_stop(&task_ref) {
+        warn!(task_id = %task_ref.task_id, error = %err, "failed to stop background agent task");
     }
-    task_id
+    Some(task_ref.task_id)
 }
 
 pub fn output_for_agent(agent_id: &str) -> Option<TaskEntry> {
-    crate::agent_runtime::global_task_store().get_by_agent_id(agent_id)
+    let task_ref = BACKGROUND_SUPERVISOR.task_ref(agent_id)?;
+    let entry = crate::agent_runtime::global_task_store().get(&task_ref);
+    if entry.as_ref().is_some_and(|task| task.status.is_terminal()) {
+        BACKGROUND_SUPERVISOR.forget(agent_id);
+    }
+    entry
+}
+
+pub fn output_events_for_agent(
+    agent_id: &str,
+    after_seq: Option<allthecodes_types::output::EventSeq>,
+    limit_bytes: usize,
+) -> Result<Option<(String, allthecodes_types::output::OutputReadBatch)>> {
+    let Some(task_ref) = BACKGROUND_SUPERVISOR.task_ref(agent_id) else {
+        return Ok(None);
+    };
+    let store = crate::agent_runtime::global_task_store();
+    let output = store.read_output_events(&task_ref, after_seq, limit_bytes)?;
+    if store
+        .get(&task_ref)
+        .as_ref()
+        .is_some_and(|task| task.status.is_terminal())
+    {
+        BACKGROUND_SUPERVISOR.forget(agent_id);
+    }
+    Ok(output.map(|output| (task_ref.task_id, output)))
 }
 
 pub async fn shutdown_all(reason: &str) -> usize {
@@ -246,12 +311,12 @@ pub async fn shutdown_all(reason: &str) -> usize {
     for mut job in jobs {
         job.cancellation_token.cancel();
         let _ = crate::agent_runtime::global_task_store().append_output(
-            &job.task_id,
+            &job.task_ref,
             &format!("[Supervisor: cancelled during shutdown: {}]", reason),
         );
-        if let Err(err) = crate::agent_runtime::global_task_store().try_stop(&job.task_id) {
+        if let Err(err) = crate::agent_runtime::global_task_store().try_stop(&job.task_ref) {
             warn!(
-                task_id = %job.task_id,
+                task_id = %job.task_ref.task_id,
                 error = %err,
                 "failed to stop background agent task during shutdown"
             );
@@ -272,14 +337,14 @@ pub async fn shutdown_all(reason: &str) -> usize {
                 Err(_) => {
                     warn!(
                         agent_id = %job.agent_id,
-                        task_id = %job.task_id,
+                        task_id = %job.task_ref.task_id,
                         "background agent did not stop before shutdown timeout"
                     );
                     abort_handle.abort();
                     if let Some(worktree) = job.worktree.take() {
                         finalize_or_keep_worktree_after_forced_shutdown(
                             &job.agent_id,
-                            &job.task_id,
+                            &job.task_ref,
                             worktree,
                         )
                         .await;
@@ -296,7 +361,8 @@ struct AgentRuntime {
     child_config: QueryEngineConfig,
     prompt: String,
     agent_id: String,
-    task_id: String,
+    task_ref: crate::agent_runtime::AgentTaskRef,
+    child_session_id: Option<String>,
     description: String,
     subagent_type: Option<String>,
     parent_agent_id: Option<String>,
@@ -320,25 +386,54 @@ impl AgentRuntime {
         let started = std::time::Instant::now();
         info!(
             agent_id = %self.agent_id,
-            task_id = %self.task_id,
+            task_id = %self.task_ref.task_id,
             description = %self.description,
             "background agent started"
         );
 
         let mut child_engine = QueryEngine::new(self.child_config);
+        if let Some(session_id) = self.child_session_id.as_deref() {
+            child_engine
+                .set_current_session_id(crate::bootstrap::SessionId::from_string(session_id));
+        }
         child_engine.set_hook_runner(self.hook_runner.clone());
         child_engine.set_command_dispatcher(self.command_dispatcher.clone());
         if let Some(callback) = self.permission_callback.clone() {
             let bg_tx = self.bg_tx.clone();
             let agent_id = self.agent_id.clone();
             let pending_count = self.permission_pending_count.clone();
+            let task_store = self.task_store.clone();
+            let task_ref = self.task_ref.clone();
+            let child_session_id = self
+                .child_session_id
+                .clone()
+                .unwrap_or_else(|| self.agent_id.clone());
             child_engine.set_permission_callback(Arc::new(move |request| {
                 let callback = callback.clone();
                 let bg_tx = bg_tx.clone();
                 let agent_id = agent_id.clone();
                 let pending_count = pending_count.clone();
+                let task_store = task_store.clone();
+                let task_ref = task_ref.clone();
+                let child_session_id = child_session_id.clone();
                 Box::pin(async move {
                     let queue_position = pending_count.fetch_add(1, Ordering::SeqCst) + 1;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let _ = task_store.update_runtime_activity(
+                        &task_ref,
+                        AgentRuntimeActivity {
+                            phase: AgentRuntimePhase::WaitingForPermission,
+                            last_heartbeat_at_ms: now_ms,
+                            last_progress_at_ms: now_ms,
+                            task_id: task_ref.task_id.clone(),
+                            agent_id: agent_id.clone(),
+                            child_session_id: child_session_id.clone(),
+                            partial_output_bytes: task_store
+                                .get(&task_ref)
+                                .map(|task| task.output_bytes)
+                                .unwrap_or_default(),
+                        },
+                    );
                     let _ = bg_tx.send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
                         allthecodes_types::agent_events::AgentEvent::PermissionQueued {
                             agent_id: agent_id.clone(),
@@ -351,6 +446,24 @@ impl AgentRuntime {
                     ));
                     let decision = callback(request.clone()).await;
                     let remaining = pending_count.fetch_sub(1, Ordering::SeqCst) - 1;
+                    if remaining == 0 {
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let _ = task_store.update_runtime_activity(
+                            &task_ref,
+                            AgentRuntimeActivity {
+                                phase: AgentRuntimePhase::Running,
+                                last_heartbeat_at_ms: now_ms,
+                                last_progress_at_ms: now_ms,
+                                task_id: task_ref.task_id.clone(),
+                                agent_id: agent_id.clone(),
+                                child_session_id: child_session_id.clone(),
+                                partial_output_bytes: task_store
+                                    .get(&task_ref)
+                                    .map(|task| task.output_bytes)
+                                    .unwrap_or_default(),
+                            },
+                        );
+                    }
                     let _ = bg_tx.send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
                         allthecodes_types::agent_events::AgentEvent::PermissionResolved {
                             agent_id,
@@ -377,6 +490,12 @@ impl AgentRuntime {
         let mut was_cancelled = false;
         let mut tool_uses = 0;
         let mut usage = AgentRunUsage::default();
+        let mut persisted_output_bytes = 0usize;
+        let mut turn_had_delta = false;
+        let mut last_progress_at_ms = chrono::Utc::now().timestamp_millis();
+        let mut last_progress = tokio::time::Instant::now();
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+        heartbeat.tick().await;
 
         loop {
             let msg = tokio::select! {
@@ -386,14 +505,66 @@ impl AgentRuntime {
                     had_error = true;
                     break;
                 }
+                _ = heartbeat.tick() => {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let waiting = self.permission_pending_count.load(Ordering::SeqCst) > 0;
+                    let phase = if waiting {
+                        AgentRuntimePhase::WaitingForPermission
+                    } else if last_progress.elapsed() >= Duration::from_secs(5 * 60) {
+                        AgentRuntimePhase::Stalled
+                    } else {
+                        AgentRuntimePhase::Running
+                    };
+                    let partial_output_bytes = self
+                        .task_store
+                        .get(&self.task_ref)
+                        .map(|task| task.output_bytes)
+                        .unwrap_or_default();
+                    let activity = AgentRuntimeActivity {
+                            phase,
+                            last_heartbeat_at_ms: now_ms,
+                            last_progress_at_ms,
+                            task_id: self.task_ref.task_id.clone(),
+                            agent_id: self.agent_id.clone(),
+                            child_session_id: self
+                                .child_session_id
+                                .clone()
+                                .unwrap_or_else(|| self.agent_id.clone()),
+                            partial_output_bytes,
+                        };
+                    let _ = self
+                        .task_store
+                        .update_runtime_activity(&self.task_ref, activity.clone());
+                    emit_runtime_activity(&self.bg_tx, &activity);
+                    continue;
+                }
                 msg = stream.next() => msg,
             };
 
             let Some(msg) = msg else {
                 break;
             };
+            last_progress_at_ms = chrono::Utc::now().timestamp_millis();
+            last_progress = tokio::time::Instant::now();
 
             match &msg {
+                allthecodes_types::sdk::SdkMessage::StreamEvent(event) => match &event.event {
+                    crate::types::message::StreamEvent::MessageStart { .. } => {
+                        turn_had_delta = false;
+                    }
+                    crate::types::message::StreamEvent::ContentBlockDelta { delta, .. } => {
+                        if let Some(text) = delta
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|text| !text.is_empty())
+                        {
+                            turn_had_delta = true;
+                            persisted_output_bytes += text.len();
+                            self.task_store.append_output(&self.task_ref, text);
+                        }
+                    }
+                    _ => {}
+                },
                 allthecodes_types::sdk::SdkMessage::Assistant(assistant_msg) => {
                     tool_uses += assistant_tool_use_count(assistant_msg);
                     for block in &assistant_msg.message.content {
@@ -402,6 +573,10 @@ impl AgentRuntime {
                                 result_text.push('\n');
                             }
                             result_text.push_str(text);
+                            if !turn_had_delta && !text.is_empty() {
+                                persisted_output_bytes += text.len();
+                                self.task_store.append_output(&self.task_ref, text);
+                            }
                         }
                     }
                 }
@@ -439,15 +614,18 @@ impl AgentRuntime {
             usage.tool_uses = Some(tool_uses);
         }
 
+        let mut terminal_diagnostics = String::new();
         if let Some(warning) = &self.startup_warning {
             result_text = format!("[WARNING: {}]\n\n{}", warning, result_text);
+            terminal_diagnostics.push_str(&format!("\n[WARNING: {warning}]"));
         }
 
         if let Some(worktree) = &self.worktree {
+            let before_worktree = result_text.len();
             append_worktree_outcome(
                 &mut result_text,
                 &self.agent_id,
-                &self.task_id,
+                &self.task_ref.task_id,
                 worktree,
                 self.parent_agent_id.as_deref(),
                 &self.description,
@@ -455,6 +633,7 @@ impl AgentRuntime {
                 self.depth,
             )
             .await;
+            terminal_diagnostics.push_str(&result_text[before_worktree..]);
         }
 
         let duration_ms = started.elapsed().as_millis() as u64;
@@ -470,19 +649,59 @@ impl AgentRuntime {
         } else {
             TaskStatus::Completed
         };
+        let final_phase = if was_cancelled {
+            AgentRuntimePhase::Cancelled
+        } else if had_error {
+            AgentRuntimePhase::Failed
+        } else {
+            AgentRuntimePhase::Completed
+        };
 
-        self.task_store.append_output(&self.task_id, &result_text);
-        if let Err(err) = self
-            .task_store
-            .try_update_status(&self.task_id, final_status)
-        {
-            warn!(
-                task_id = %self.task_id,
-                error = %err,
-                "failed to persist background agent final status"
-            );
+        if persisted_output_bytes == 0 {
+            self.task_store.append_output(&self.task_ref, &result_text);
+        } else if !terminal_diagnostics.is_empty() {
+            self.task_store
+                .append_output(&self.task_ref, &terminal_diagnostics);
         }
-        self.task_store.unregister_runtime_handle(&self.task_id);
+        let may_finalize = self
+            .task_store
+            .get(&self.task_ref)
+            .is_some_and(|task| task.status == TaskStatus::InProgress);
+        if may_finalize {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let partial_output_bytes = self
+                .task_store
+                .get(&self.task_ref)
+                .map(|task| task.output_bytes)
+                .unwrap_or_default();
+            let activity = AgentRuntimeActivity {
+                phase: final_phase,
+                last_heartbeat_at_ms: now_ms,
+                last_progress_at_ms: now_ms,
+                task_id: self.task_ref.task_id.clone(),
+                agent_id: self.agent_id.clone(),
+                child_session_id: self
+                    .child_session_id
+                    .clone()
+                    .unwrap_or_else(|| self.agent_id.clone()),
+                partial_output_bytes,
+            };
+            let _ = self
+                .task_store
+                .update_runtime_activity(&self.task_ref, activity.clone());
+            emit_runtime_activity(&self.bg_tx, &activity);
+            if let Err(err) = self
+                .task_store
+                .try_update_status(&self.task_ref, final_status)
+            {
+                warn!(
+                    task_id = %self.task_ref.task_id,
+                    error = %err,
+                    "failed to persist background agent final status"
+                );
+            }
+        }
+        self.task_store.unregister_runtime_handle(&self.task_ref);
         BACKGROUND_SUPERVISOR.complete(&self.agent_id);
 
         let _ = crate::agent_runtime::emit_subagent_event(
@@ -494,7 +713,7 @@ impl AgentRuntime {
             self.depth,
             true,
             Some(json!({
-                "task_id": self.task_id,
+                "task_id": self.task_ref.task_id,
                 "duration_ms": duration_ms,
                 "result_len": result_text.len(),
                 "had_error": had_error,
@@ -555,9 +774,30 @@ impl AgentRuntime {
     }
 }
 
+fn emit_runtime_activity(
+    bg_tx: &allthecodes_types::agent_channel::AgentSender,
+    activity: &AgentRuntimeActivity,
+) {
+    let _ = bg_tx.send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
+        allthecodes_types::agent_events::AgentEvent::RuntimeActivity {
+            task_id: activity.task_id.clone(),
+            agent_id: activity.agent_id.clone(),
+            child_session_id: activity.child_session_id.clone(),
+            phase: activity.phase.as_str().to_string(),
+            last_heartbeat_at_ms: activity.last_heartbeat_at_ms,
+            last_progress_at_ms: activity.last_progress_at_ms,
+            partial_output_bytes: activity.partial_output_bytes,
+        },
+    ));
+}
+
 impl BackgroundSupervisor {
     fn register(&self, job: BackgroundJob) {
-        self.state.lock().active.insert(job.agent_id.clone(), job);
+        let mut state = self.state.lock();
+        state
+            .known_tasks
+            .insert(job.agent_id.clone(), job.task_ref.clone());
+        state.active.insert(job.agent_id.clone(), job);
     }
 
     fn attach_handle(&self, agent_id: &str, handle: tokio::task::JoinHandle<()>) {
@@ -566,15 +806,23 @@ impl BackgroundSupervisor {
         }
     }
 
-    fn cancel_agent(&self, agent_id: &str) -> Option<String> {
+    fn cancel_agent(&self, agent_id: &str) -> Option<crate::agent_runtime::AgentTaskRef> {
         let state = self.state.lock();
         let job = state.active.get(agent_id)?;
         job.cancellation_token.cancel();
-        Some(job.task_id.clone())
+        Some(job.task_ref.clone())
     }
 
     fn complete(&self, agent_id: &str) {
         self.state.lock().active.remove(agent_id);
+    }
+
+    fn task_ref(&self, agent_id: &str) -> Option<crate::agent_runtime::AgentTaskRef> {
+        self.state.lock().known_tasks.get(agent_id).cloned()
+    }
+
+    fn forget(&self, agent_id: &str) {
+        self.state.lock().known_tasks.remove(agent_id);
     }
 
     fn take_active_jobs(&self) -> Vec<BackgroundJob> {
@@ -646,10 +894,15 @@ async fn prepare_runtime(
     session_id: &str,
     hook_runner: Arc<dyn allthecodes_types::hooks::HookRunner>,
     hooks: allthecodes_types::hooks::HooksMap,
+    delegated_cwd: &str,
+    delegated_worktree_slug: Option<&str>,
 ) -> Result<PreparedRuntime> {
+    let canonical_cwd = std::fs::canonicalize(delegated_cwd)
+        .map_err(|err| anyhow::anyhow!("invalid delegated cwd '{}': {err}", delegated_cwd))?;
+    let canonical_cwd = canonical_cwd.to_string_lossy().to_string();
     if !use_worktree {
         return Ok(PreparedRuntime {
-            child_cwd: current_dir_string(),
+            child_cwd: canonical_cwd,
             worktree: None,
             startup_warning: None,
         });
@@ -664,12 +917,14 @@ async fn prepare_runtime(
         session_id,
         hook_runner,
         hooks,
+        &canonical_cwd,
+        delegated_worktree_slug,
     )
     .await
     {
         Ok(runtime) => Ok(runtime),
         Err(err) => {
-            if !worktree_fallback_enabled() {
+            if delegated_worktree_slug.is_some() || !worktree_fallback_enabled() {
                 let message = format!(
                     "background worktree isolation required but setup failed: {err}. Set ALLTHECODES_ALLOW_WORKTREE_FALLBACK=true to run without isolation."
                 );
@@ -708,7 +963,7 @@ async fn prepare_runtime(
                 Some(json!({ "message": warning })),
             );
             Ok(PreparedRuntime {
-                child_cwd: current_dir_string(),
+                child_cwd: canonical_cwd,
                 worktree: None,
                 startup_warning: Some(warning),
             })
@@ -738,13 +993,38 @@ async fn prepare_worktree_runtime(
     session_id: &str,
     hook_runner: Arc<dyn allthecodes_types::hooks::HookRunner>,
     hooks: allthecodes_types::hooks::HooksMap,
+    delegated_cwd: &str,
+    delegated_worktree_slug: Option<&str>,
 ) -> Result<PreparedRuntime> {
-    let cwd = std::env::current_dir()?;
+    let cwd = PathBuf::from(delegated_cwd);
     let git_root = find_git_root(&cwd).await?;
     let original_head = get_head_sha(&git_root).await;
-    let short_id = &uuid::Uuid::new_v4().to_string()[..8];
-    let branch_name = format!("agent-worktree-{}", short_id);
-    let worktree_path = default_agent_worktree_path(short_id);
+    let generated_slug = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let slug = delegated_worktree_slug.unwrap_or(&generated_slug);
+    validate_worktree_slug(slug)?;
+    let branch_name = format!("agent-worktree-{slug}");
+    let worktree_path = default_agent_worktree_path(slug);
+    if worktree_path.exists() {
+        anyhow::bail!(
+            "worktree path collision for slug '{slug}': {}",
+            worktree_path.display()
+        );
+    }
+    let branch_exists = tokio::process::Command::new("git")
+        .args([
+            "-C",
+            &git_root.to_string_lossy(),
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch_name}"),
+        ])
+        .status()
+        .await?
+        .success();
+    if branch_exists {
+        anyhow::bail!("worktree branch collision for slug '{slug}': {branch_name}");
+    }
 
     info!(
         agent_id = %agent_id,
@@ -760,7 +1040,7 @@ async fn prepare_worktree_runtime(
         &git_root,
         &worktree_path,
         &branch_name,
-        short_id,
+        slug,
         Some(agent_id),
     )
     .await
@@ -786,6 +1066,15 @@ async fn prepare_worktree_runtime(
     };
 
     let (worktree_path, branch_name, created_by_hook) = if let Some(created) = hook_created {
+        if delegated_worktree_slug.is_some()
+            && (created.worktree_path != worktree_path || created.branch_name != branch_name)
+        {
+            anyhow::bail!(
+                "WorktreeCreate hook did not honor delegated slug '{slug}' (path {}, branch {})",
+                created.worktree_path.display(),
+                created.branch_name
+            );
+        }
         (created.worktree_path, created.branch_name, true)
     } else {
         ensure_worktree_parent(&worktree_path)?;
@@ -796,7 +1085,7 @@ async fn prepare_worktree_runtime(
                 &git_root.to_string_lossy(),
                 "worktree",
                 "add",
-                "-B",
+                "-b",
                 &branch_name,
                 &worktree_path.to_string_lossy(),
             ])
@@ -855,6 +1144,19 @@ async fn prepare_worktree_runtime(
         }),
         startup_warning: None,
     })
+}
+
+fn validate_worktree_slug(slug: &str) -> Result<()> {
+    if slug.is_empty()
+        || slug.len() > 64
+        || slug.contains("..")
+        || !slug
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        anyhow::bail!("invalid delegated worktree slug '{slug}'");
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -950,7 +1252,7 @@ async fn append_worktree_outcome(
 
 async fn finalize_or_keep_worktree_after_forced_shutdown(
     agent_id: &str,
-    task_id: &str,
+    task_ref: &crate::agent_runtime::AgentTaskRef,
     worktree: WorktreeRuntime,
 ) {
     let changes =
@@ -967,7 +1269,7 @@ async fn finalize_or_keep_worktree_after_forced_shutdown(
             worktree.worktree_path.display(),
             worktree.branch_name
         );
-        let _ = crate::agent_runtime::global_task_store().append_output(task_id, &suffix);
+        let _ = crate::agent_runtime::global_task_store().append_output(task_ref, &suffix);
     } else {
         let cleaned = AgentTool::cleanup_worktree_with_hooks(
             &worktree.git_root,
@@ -997,14 +1299,38 @@ async fn finalize_or_keep_worktree_after_forced_shutdown(
                 worktree.branch_name
             )
         };
-        let _ = crate::agent_runtime::global_task_store().append_output(task_id, &suffix);
+        let _ = crate::agent_runtime::global_task_store().append_output(task_ref, &suffix);
     }
 }
 
-fn current_dir_string() -> String {
-    std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| ".".to_string())
+async fn cleanup_failed_launch_worktree(agent_id: &str, worktree: WorktreeRuntime) {
+    let cleaned = AgentTool::cleanup_worktree_with_hooks(
+        &worktree.git_root,
+        &worktree.worktree_path,
+        &worktree.branch_name,
+        agent_id,
+        Some(&worktree.hook_runner),
+        Some(&worktree.hooks),
+    )
+    .await;
+    if cleaned {
+        mark_agent_worktree_session_removed(
+            &worktree.session_id,
+            agent_id,
+            &worktree.worktree_path,
+        );
+    } else {
+        mark_agent_worktree_session_cleanup_failed(
+            &worktree.session_id,
+            agent_id,
+            &worktree.worktree_path,
+        );
+        warn!(
+            agent_id,
+            worktree_path = %worktree.worktree_path.display(),
+            "failed delegated launch left worktree in place for manual recovery"
+        );
+    }
 }
 
 fn preview(result_text: &str) -> String {
@@ -1088,7 +1414,10 @@ mod tests {
         let task_id = format!("task-{}", uuid::Uuid::new_v4());
         BACKGROUND_SUPERVISOR.register(BackgroundJob {
             agent_id: agent_id.clone(),
-            task_id: task_id.clone(),
+            task_ref: crate::agent_runtime::AgentTaskRef {
+                task_list_id: DEFAULT_TASK_LIST_ID.to_string(),
+                task_id: task_id.clone(),
+            },
             cancellation_token: token.clone(),
             handle: None,
             worktree: None,
@@ -1097,7 +1426,10 @@ mod tests {
         let cancelled_task_id = BACKGROUND_SUPERVISOR.cancel_agent(&agent_id);
         BACKGROUND_SUPERVISOR.complete(&agent_id);
 
-        assert_eq!(cancelled_task_id.as_deref(), Some(task_id.as_str()));
+        assert_eq!(
+            cancelled_task_id.map(|task_ref| task_ref.task_id),
+            Some(task_id)
+        );
         assert!(token.is_cancelled());
     }
 
@@ -1132,6 +1464,8 @@ mod tests {
             "test-session",
             Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
             allthecodes_types::hooks::HooksMap::default(),
+            tmp.path().to_str().unwrap(),
+            None,
         )
         .await
         {
@@ -1161,6 +1495,8 @@ mod tests {
             "test-session",
             Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
             allthecodes_types::hooks::HooksMap::default(),
+            tmp.path().to_str().unwrap(),
+            None,
         )
         .await
         .unwrap();

@@ -184,6 +184,8 @@ pub type DeferredToolExecutor = Arc<
 
 /// Context passed to every tool call.
 pub struct ToolUseContext {
+    /// Canonical working directory of the engine executing this tool.
+    pub cwd: String,
     pub options: ToolUseOptions,
     pub abort_signal: tokio::sync::watch::Receiver<bool>,
     pub read_file_state: FileStateCache,

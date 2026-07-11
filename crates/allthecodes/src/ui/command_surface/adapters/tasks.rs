@@ -283,6 +283,7 @@ mod tests {
             cancel_requested_at: None,
             recovered_at: None,
             previous_status: None,
+            runtime_activity: None,
             created_at: 0,
             updated_at: 0,
         };

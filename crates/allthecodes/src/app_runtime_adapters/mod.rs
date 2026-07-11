@@ -102,13 +102,15 @@ impl AgentRuntimeHost for RootAgentHost {
         after_seq: Option<u64>,
         limit_bytes: usize,
     ) -> Option<AgentTaskOutputBatch> {
-        let task = allthecodes_engine::agent::supervisor::output_for_agent(agent_id)?;
-        let output = allthecodes_engine::agent_runtime::global_task_store()
-            .read_output_events(&task.id, after_seq, limit_bytes)
-            .ok()
-            .flatten()?;
+        let (task_id, output) = allthecodes_engine::agent::supervisor::output_events_for_agent(
+            agent_id,
+            after_seq,
+            limit_bytes,
+        )
+        .ok()
+        .flatten()?;
         Some(AgentTaskOutputBatch {
-            id: task.id,
+            id: task_id,
             output,
         })
     }

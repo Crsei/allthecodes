@@ -62,6 +62,7 @@ pub fn parse_task_create(input: &Value) -> TaskCreateRequest {
             .filter(|v| v.is_object())
             .cloned(),
         poll_started_at: input.get("poll_started_at").and_then(|v| v.as_i64()),
+        runtime_activity: None,
     };
     let has_options = options.kind.is_some()
         || options.parent_id.is_some()

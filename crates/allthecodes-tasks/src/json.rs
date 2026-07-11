@@ -37,6 +37,7 @@ pub fn task_to_json_from_store(task_store: &TaskStore, entry: &TaskEntry) -> Val
         "cancel_requested_at": entry.cancel_requested_at,
         "recovered_at": entry.recovered_at,
         "previous_status": entry.previous_status.map(|s| s.as_str()),
+        "runtime_activity": entry.runtime_activity,
         "has_runtime_handle": task_store.has_runtime_handle(&entry.id),
     })
 }
