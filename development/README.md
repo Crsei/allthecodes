@@ -607,6 +607,17 @@ Claude Code CLI 的配置说明文档。
 
 ---
 
+## 十五、跨任务实施计划 — `docs/`
+
+`development/docs/` 存放跨主题的实施计划与维护说明（不属于单个 archive 子目录的活跃文档）。
+
+| 文档 | 说明 |
+|------|------|
+| [project-knowledge-base-organization-plan.md](docs/project-knowledge-base-organization-plan.md) | 项目知识库（KB）落地实施计划：SQLite 事实索引、漂移检测、查询接口 |
+| [project-knowledge-base-maintenance.md](docs/project-knowledge-base-maintenance.md) | 项目知识库维护流程：Explore → Plan → Approve → Apply → Verify → Archive 六步生命周期与 `check --fail-on high` 审核门槛 |
+
+---
+
 ## 维护说明
 
 - **新活跃参考文档** → 放入 `reference/` 目录
