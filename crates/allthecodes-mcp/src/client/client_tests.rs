@@ -1374,6 +1374,63 @@ async fn test_disconnect_idempotent() {
     assert_eq!(client.state, McpConnectionState::Disconnected);
 }
 
+#[cfg(unix)]
+#[test]
+fn dropping_connected_stdio_client_terminates_tree_and_reaps_direct_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("grandchild-survived");
+    let config = McpServerConfig {
+        name: "drop-tree".to_string(),
+        transport: "stdio".to_string(),
+        command: Some("sh".to_string()),
+        args: Some(vec![
+            "-c".to_string(),
+            format!("(sleep 1; touch '{}') & wait", marker.display()),
+        ]),
+        url: None,
+        headers: None,
+        oauth: None,
+        env: None,
+        browser_mcp: None,
+        disabled: None,
+        bearer_token_env_var: None,
+        env_http_headers: None,
+        auth: None,
+    };
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut client = McpClient::new(config);
+    runtime.block_on(client.connect()).unwrap();
+    let direct_pid = client
+        .child
+        .as_ref()
+        .and_then(tokio::process::Child::id)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    drop(runtime);
+    drop(client);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let rc = unsafe { libc::kill(direct_pid as libc::pid_t, 0) };
+        if rc == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "dropped MCP client left direct pid {direct_pid} alive or zombie"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    assert!(
+        !marker.exists(),
+        "grandchild survived after its MCP client owner was dropped"
+    );
+}
+
 #[tokio::test]
 async fn test_list_tools_not_connected() {
     let config = McpServerConfig {

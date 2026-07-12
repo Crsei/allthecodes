@@ -37,10 +37,34 @@ pub(crate) async fn run_server_mode(
 ) -> anyhow::Result<ExitCode> {
     use std::sync::atomic::AtomicBool;
 
-    // --- Build web router if the mode requires it ---
-    let web_control_token = std::env::var("ALLTHECODES_WEB_CONTROL_TOKEN")
+    let web_addr = match &server_mode {
+        allthecodes_server::ServerMode::Web { addr } => Some(*addr),
+        allthecodes_server::ServerMode::All { web_addr, .. } => Some(*web_addr),
+        allthecodes_server::ServerMode::None | allthecodes_server::ServerMode::Daemon { .. } => {
+            None
+        }
+    };
+    let web_control_token = if web_addr.is_some() {
+        Some(
+            std::env::var("ALLTHECODES_WEB_CONTROL_TOKEN")
+                .ok()
+                .filter(|token| !token.is_empty())
+                .context("ALLTHECODES_WEB_CONTROL_TOKEN is required for Web and All modes")?,
+        )
+    } else {
+        None
+    };
+    let web_privileged_token = std::env::var("ALLTHECODES_WEB_PRIVILEGED_TOKEN")
         .ok()
         .filter(|token| !token.is_empty());
+
+    // Validate exposure before constructing any Web state or binding a listener.
+    let manager = allthecodes_server::ServerManager::new_with_web_control_secret(
+        server_mode.clone(),
+        web_control_token.is_some(),
+    )?;
+
+    // --- Build web router if the mode requires it ---
     let (web_router, _is_streaming) = if matches!(
         server_mode,
         allthecodes_server::ServerMode::Web { .. } | allthecodes_server::ServerMode::All { .. }
@@ -51,9 +75,19 @@ pub(crate) async fn run_server_mode(
             engine.clone(),
             is_streaming.clone(),
             env!("CARGO_PKG_VERSION"),
+        )
+        .with_control_token(
+            web_control_token
+                .as_deref()
+                .context("Web mode requires a control token")?,
+        )
+        .with_listener_authority(
+            web_addr
+                .context("Web mode requires a listener address")?
+                .to_string(),
         );
-        if let Some(token) = web_control_token.as_deref() {
-            web_state = web_state.with_control_token(token);
+        if let Some(token) = web_privileged_token.as_deref() {
+            web_state = web_state.with_privileged_token(token);
         }
         (Some(web::build_router(web_state)), Some(is_streaming))
     } else {
@@ -81,12 +115,6 @@ pub(crate) async fn run_server_mode(
     } else {
         (None, None)
     };
-
-    // --- Create ServerManager ---
-    let manager = allthecodes_server::ServerManager::new_with_web_control_secret(
-        server_mode.clone(),
-        web_control_token.is_some(),
-    )?;
 
     match server_mode {
         allthecodes_server::ServerMode::Web { addr } => {

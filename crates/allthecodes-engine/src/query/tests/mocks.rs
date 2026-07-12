@@ -1018,6 +1018,7 @@ impl QueryDeps for CuMockDeps {
                 display_preview: Some("[Screenshot: 1920x1080]".to_string()),
                 new_messages: vec![],
                 shell: None,
+                taint: Default::default(),
             }
         } else {
             // click, type_text, key, scroll 鈫?text confirmation

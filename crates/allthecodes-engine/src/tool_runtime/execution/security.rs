@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use allthecodes_types::security::TaintDecisionKind;
 use serde_json::Value;
 
 use crate::permissions::dangerous;
@@ -35,6 +36,39 @@ pub(crate) fn security_validate(
 ) -> Option<ToolExecutionResult> {
     let app_state = (ctx.get_app_state)();
     let mode = &app_state.tool_permission_context.mode;
+
+    // Taint enforcement is evaluated before bypass/auto permission modes. A
+    // bypass setting is user policy for ordinary permissions, not authority
+    // granted to remote content.
+    let sink = crate::permissions::taint_policy::classify_tool_sink(tool_name, input);
+    let command_risk = shell_command_risk(tool_name, input);
+    let taint_decision = crate::permissions::taint_policy::decide_tainted_sink(
+        &ctx.taint_context,
+        sink,
+        command_risk.as_ref(),
+    );
+    match taint_decision.decision {
+        TaintDecisionKind::Allow => {}
+        TaintDecisionKind::Ask | TaintDecisionKind::Deny => {
+            let disposition = if taint_decision.decision == TaintDecisionKind::Ask {
+                "Exact approval required"
+            } else {
+                "Blocked"
+            };
+            return Some(make_error_result(
+                tool_use_id,
+                tool_name,
+                &format!(
+                    "{disposition} by workflow injection defense: {} (rule: {}, sink: {:?}, untrusted sources: {})",
+                    taint_decision.reason,
+                    taint_decision.rule_id,
+                    taint_decision.sink,
+                    taint_decision.source_digests.len(),
+                ),
+                started,
+            ));
+        }
+    }
 
     // Bypass mode skips all security validation
     if *mode == PermissionMode::Bypass {
@@ -123,6 +157,27 @@ pub(crate) fn security_validate(
     }
 
     None // all checks passed
+}
+
+fn shell_command_risk(
+    tool_name: &str,
+    input: &Value,
+) -> Option<crate::permissions::command_risk::CommandRisk> {
+    let shell = match tool_name {
+        "Bash" | "bash" => crate::permissions::command_risk::ShellKind::Bash,
+        "PowerShell" | "powershell" | "pwsh" | "Pwsh" => {
+            crate::permissions::command_risk::ShellKind::PowerShell
+        }
+        _ => return None,
+    };
+    let command = input
+        .get("command")
+        .or_else(|| input.get("cmd"))
+        .or_else(|| input.get("script"))
+        .and_then(Value::as_str)?;
+    Some(crate::permissions::command_risk::classify_command_risk(
+        command, shell,
+    ))
 }
 
 /// True when a write/edit tool targets the dedicated plan file that plan mode

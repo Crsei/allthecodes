@@ -206,6 +206,13 @@ impl Tool for WebSearchTool {
         let results = filter_results_unified(raw_results, &allowed_domains, &blocked_domains);
         let duration_secs = start.elapsed().as_secs_f64();
         let results_text = format_results_text(&results);
+        let taint = allthecodes_types::security::TaintContext::from_marks([
+            allthecodes_types::security::TaintMark::from_content(
+                allthecodes_types::security::UntrustedSourceKind::WebContent,
+                format!("web-search:{provider_name}"),
+                results_text.as_bytes(),
+            ),
+        ]);
 
         Ok(ToolResult {
             data: json!({
@@ -217,6 +224,7 @@ impl Tool for WebSearchTool {
                 "durationSeconds": (duration_secs * 100.0).round() / 100.0,
             }),
             new_messages: vec![],
+            taint,
             ..Default::default()
         })
     }
@@ -392,6 +400,7 @@ mod tests {
             command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
             available_tools: vec![],
             execute_deferred_tool: None,
+            taint_context: Default::default(),
         }
     }
 

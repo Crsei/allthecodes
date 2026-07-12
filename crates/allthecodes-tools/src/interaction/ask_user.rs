@@ -276,6 +276,7 @@ mod tests {
             ),
             available_tools: vec![],
             execute_deferred_tool: None,
+            taint_context: Default::default(),
         };
 
         let parent = AssistantMessage {

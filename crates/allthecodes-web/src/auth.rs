@@ -1,18 +1,17 @@
-use axum::http::{header, HeaderMap, HeaderName, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderName, StatusCode};
 use sha2::{Digest, Sha256};
 
 pub const CONTROL_TOKEN_HEADER: HeaderName = HeaderName::from_static("x-allthecodes-control-token");
+pub const PRIVILEGED_TOKEN_HEADER: HeaderName =
+    HeaderName::from_static("x-allthecodes-web-privileged-token");
 
 pub fn authorize(
     headers: &HeaderMap,
-    expected_token: Option<&str>,
-    token_required: bool,
+    expected_control_token: Option<&str>,
+    expected_privileged_token: Option<&str>,
+    listener_authority: Option<&str>,
+    privileged: bool,
 ) -> Result<Option<String>, StatusCode> {
-    let origin = validate_same_origin(headers)?;
-    if !token_required {
-        return Ok(origin);
-    }
-
     let supplied = headers
         .get(&CONTROL_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -22,27 +21,56 @@ pub fn authorize(
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.strip_prefix("Bearer "))
         });
-    match (supplied, expected_token) {
-        (Some(supplied), Some(expected)) if constant_time_eq(supplied, expected) => Ok(origin),
-        _ => Err(StatusCode::UNAUTHORIZED),
+    match (supplied, expected_control_token) {
+        (Some(supplied), Some(expected)) if constant_time_eq(supplied, expected) => {}
+        _ => return Err(StatusCode::UNAUTHORIZED),
     }
+
+    let origin = validate_listener(headers, listener_authority, false)?;
+    if privileged {
+        let supplied = headers
+            .get(&PRIVILEGED_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok());
+        match (supplied, expected_privileged_token) {
+            (Some(supplied), Some(expected)) if constant_time_eq(supplied, expected) => {}
+            _ => return Err(StatusCode::FORBIDDEN),
+        }
+    }
+
+    Ok(origin)
 }
 
-fn validate_same_origin(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
-    let Some(origin) = headers.get(header::ORIGIN) else {
-        return Ok(None);
-    };
-    let origin = origin.to_str().map_err(|_| StatusCode::FORBIDDEN)?;
-    let uri: Uri = origin.parse().map_err(|_| StatusCode::FORBIDDEN)?;
-    if !matches!(uri.scheme_str(), Some("http" | "https")) {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let origin_authority = uri.authority().ok_or(StatusCode::FORBIDDEN)?.as_str();
+pub fn authorize_preflight(
+    headers: &HeaderMap,
+    listener_authority: Option<&str>,
+) -> Result<String, StatusCode> {
+    validate_listener(headers, listener_authority, true)?.ok_or(StatusCode::FORBIDDEN)
+}
+
+fn validate_listener(
+    headers: &HeaderMap,
+    listener_authority: Option<&str>,
+    origin_required: bool,
+) -> Result<Option<String>, StatusCode> {
+    let listener_authority = listener_authority.ok_or(StatusCode::FORBIDDEN)?;
     let host = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .ok_or(StatusCode::FORBIDDEN)?;
-    if !constant_time_eq(origin_authority, host) {
+    if !constant_time_eq(host, listener_authority) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return if origin_required {
+            Err(StatusCode::FORBIDDEN)
+        } else {
+            Ok(None)
+        };
+    };
+    let origin = origin.to_str().map_err(|_| StatusCode::FORBIDDEN)?;
+    let expected_origin = format!("http://{listener_authority}");
+    if !constant_time_eq(origin, &expected_origin) {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(Some(origin.to_owned()))
@@ -75,6 +103,15 @@ mod tests {
         headers.insert(header::HOST, "127.0.0.1:17322".parse().unwrap());
         headers.insert(CONTROL_TOKEN_HEADER, "secret".parse().unwrap());
 
-        assert_eq!(authorize(&headers, Some("secret"), true), Ok(None));
+        assert_eq!(
+            authorize(
+                &headers,
+                Some("secret"),
+                None,
+                Some("127.0.0.1:17322"),
+                false,
+            ),
+            Ok(None)
+        );
     }
 }

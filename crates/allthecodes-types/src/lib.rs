@@ -37,6 +37,7 @@ pub mod plan_workflow;
 pub mod proactive_context;
 pub mod query_host;
 pub mod sdk;
+pub mod security;
 pub mod state;
 pub mod status_line;
 pub mod teams;

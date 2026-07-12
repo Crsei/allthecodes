@@ -467,6 +467,7 @@ mod tests {
                     })
                 })
             })),
+            taint_context: Default::default(),
         }
     }
 

@@ -243,6 +243,7 @@ impl QueryEngineDeps {
             command_dispatcher: self.command_dispatcher.clone(),
             available_tools,
             execute_deferred_tool: Some(execute_deferred_tool),
+            taint_context: self.state.read().runtime.taint_ledger.active_context(),
         };
 
         // Load hook configs from AppState.

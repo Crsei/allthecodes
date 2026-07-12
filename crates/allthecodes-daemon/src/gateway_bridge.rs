@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use allthecodes_gateway::{
@@ -20,7 +21,8 @@ use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
-use tokio_stream::StreamExt;
+use tokio_stream::{Stream, StreamExt};
+use tokio_util::sync::CancellationToken;
 
 use crate::protocol::{self, DaemonCommandKind, DaemonEventKind};
 use allthecodes_engine::bootstrap::SessionId;
@@ -34,6 +36,10 @@ use super::gateway_run_events::{
 };
 use super::routes::sdk_message_to_sse;
 use super::supervisor::ASSISTANT_WORKER_ID;
+
+type SubmitMessageStream = Pin<Box<dyn Stream<Item = SdkMessage> + Send>>;
+type SubmitStreamFactory =
+    Arc<dyn Fn(&QueryEngine, &str, QuerySource) -> SubmitMessageStream + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayDaemonBridge {
@@ -482,6 +488,38 @@ pub async fn handle_worker_command(
 pub struct AssistantWorkerRuntime {
     engine: Arc<QueryEngine>,
     interactions: Arc<AssistantInteractionState>,
+    active_submit: Arc<Mutex<Option<ActiveSubmitRun>>>,
+    submit_stream_factory: SubmitStreamFactory,
+}
+
+#[derive(Clone)]
+struct ActiveSubmitRun {
+    command_id: String,
+    cancellation: CancellationToken,
+}
+
+struct ActiveSubmitLease {
+    command_id: String,
+    cancellation: CancellationToken,
+    active_submit: Arc<Mutex<Option<ActiveSubmitRun>>>,
+}
+
+impl ActiveSubmitLease {
+    fn cancellation(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+}
+
+impl Drop for ActiveSubmitLease {
+    fn drop(&mut self) {
+        let mut active = self.active_submit.lock();
+        if active
+            .as_ref()
+            .is_some_and(|run| run.command_id == self.command_id)
+        {
+            *active = None;
+        }
+    }
 }
 
 impl AssistantWorkerRuntime {
@@ -520,6 +558,31 @@ impl AssistantWorkerRuntime {
         Ok(Self {
             engine: Arc::new(engine),
             interactions,
+            active_submit: Arc::new(Mutex::new(None)),
+            submit_stream_factory: Arc::new(|engine, prompt, source| {
+                engine.submit_message(prompt, source)
+            }),
+        })
+    }
+
+    fn begin_submit(&self, command: &protocol::DaemonCommand) -> Result<ActiveSubmitLease> {
+        let cancellation = CancellationToken::new();
+        let mut active = self.active_submit.lock();
+        if let Some(active) = active.as_ref() {
+            anyhow::bail!(
+                "submit command {} is still active while claiming {}",
+                active.command_id,
+                command.command_id
+            );
+        }
+        *active = Some(ActiveSubmitRun {
+            command_id: command.command_id.clone(),
+            cancellation: cancellation.clone(),
+        });
+        Ok(ActiveSubmitLease {
+            command_id: command.command_id.clone(),
+            cancellation,
+            active_submit: self.active_submit.clone(),
         })
     }
 
@@ -627,6 +690,8 @@ impl AssistantWorkerRuntime {
             .unwrap_or(&command.command_id);
         let query_source = query_source_from_submit_payload(&command.payload);
         let query_source_label = query_source.as_label();
+        let active_submit = self.begin_submit(command)?;
+        let cancellation = active_submit.cancellation();
 
         self.apply_assistant_session_context(worker_id, command)?;
 
@@ -652,18 +717,44 @@ impl AssistantWorkerRuntime {
         mirror_automation_state(command, worker_id)?;
 
         self.engine.wake_up();
-        let stream = self.engine.submit_message(text, query_source);
+        let stream = (self.submit_stream_factory)(self.engine.as_ref(), text, query_source);
         tokio::pin!(stream);
-        while let Some(sdk_msg) = stream.next().await {
-            append_brief_memory_log_if_needed(&sdk_msg);
-            if let Some(event) = sdk_message_to_sse(&sdk_msg, message_id) {
-                append_gateway_sdk_event(command, &event.event_type, event.data.clone())?;
-                super::protocol_store().append_event(
-                    worker_id,
-                    Some(&command.command_id),
-                    &event.event_type,
-                    event.data,
-                )?;
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    super::protocol_store().append_event(
+                        worker_id,
+                        Some(&command.command_id),
+                        "submit_cancelled",
+                        json!({
+                            "message_id": message_id,
+                            "reason": "abort",
+                        }),
+                    )?;
+                    append_gateway_event(
+                        command,
+                        RunEventKind::Custom {
+                            name: "submit_cancelled".to_string(),
+                            payload: json!({ "messageId": message_id, "reason": "abort" }),
+                        },
+                    )?;
+                    update_gateway_status(command, RunStatus::Cancelled)?;
+                    return Ok(());
+                }
+                sdk_msg = stream.next() => {
+                    let Some(sdk_msg) = sdk_msg else { break };
+                    append_brief_memory_log_if_needed(&sdk_msg);
+                    if let Some(event) = sdk_message_to_sse(&sdk_msg, message_id) {
+                        append_gateway_sdk_event(command, &event.event_type, event.data.clone())?;
+                        super::protocol_store().append_event(
+                            worker_id,
+                            Some(&command.command_id),
+                            &event.event_type,
+                            event.data,
+                        )?;
+                    }
+                }
             }
         }
 
@@ -685,6 +776,14 @@ impl AssistantWorkerRuntime {
     }
 
     pub(crate) fn abort(&self) {
+        let cancellation = self
+            .active_submit
+            .lock()
+            .as_ref()
+            .map(|run| run.cancellation.clone());
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+        }
         self.engine.abort();
     }
 }
@@ -853,6 +952,7 @@ mod tests {
     use serial_test::serial;
     use std::path::Path;
     use std::sync::Arc;
+    use std::time::Duration;
     use uuid::Uuid;
 
     struct EnvGuard {
@@ -954,6 +1054,10 @@ mod tests {
         AssistantWorkerRuntime {
             engine: Arc::new(engine),
             interactions: Arc::new(AssistantInteractionState::default()),
+            active_submit: Arc::new(Mutex::new(None)),
+            submit_stream_factory: Arc::new(|engine, prompt, source| {
+                engine.submit_message(prompt, source)
+            }),
         }
     }
 
@@ -1219,6 +1323,201 @@ mod tests {
 
         assert!(submit_started.data["source"].is_null());
         assert_eq!(submit_started.data["query_source"], "repl_main_thread");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn blocked_submit_abort_is_bounded_and_persisted_as_cancelled() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let mut runtime = test_runtime(temp.path());
+        runtime.submit_stream_factory = Arc::new(|_, _, _| Box::pin(tokio_stream::pending()));
+
+        let gateway_store = GatewayStore::default_with_policy(SessionKeyPolicy::default());
+        let source = allthecodes_gateway::RemoteSource::new(
+            allthecodes_gateway::RemoteTransport::Http,
+            "local",
+            temp.path().to_string_lossy(),
+            "client",
+            "user",
+            "thread",
+        );
+        let created = gateway_store
+            .create_run(allthecodes_gateway::RunRequest {
+                prompt: "block until abort".to_string(),
+                source,
+                policy: allthecodes_gateway::RunPolicy::default(),
+                idempotency_key: None,
+            })
+            .unwrap();
+        let run_id = created.meta().run_id.clone();
+        let submit = crate::protocol_store()
+            .enqueue_command(
+                "assistant-session-1",
+                DaemonCommandKind::Submit,
+                json!({
+                    "text": "block until abort",
+                    "gateway": {
+                        "runId": run_id.to_string(),
+                        "sessionKey": created.meta().session_key.to_string(),
+                    }
+                }),
+                None,
+            )
+            .unwrap();
+        let submit = crate::protocol_store()
+            .claim_next_pending_command("assistant-session-1", "assistant-session")
+            .unwrap()
+            .filter(|claimed| claimed.command_id == submit.command_id)
+            .expect("submit command should be claimed");
+
+        let submit_task = {
+            let runtime = runtime.clone();
+            tokio::spawn(async move {
+                handle_worker_command("assistant-session-1", &runtime, submit).await
+            })
+        };
+        wait_until(|| {
+            crate::protocol_store()
+                .read_worker_events("assistant-session-1")
+                .is_ok_and(|events| {
+                    events
+                        .iter()
+                        .any(|event| event.event_type == "submit_started")
+                })
+        })
+        .await;
+
+        let abort = crate::protocol_store()
+            .enqueue_command(
+                "assistant-session-1",
+                DaemonCommandKind::Abort,
+                json!({}),
+                None,
+            )
+            .unwrap();
+        let abort = crate::protocol_store()
+            .claim_next_control_command("assistant-session-1", "assistant-session")
+            .unwrap()
+            .filter(|claimed| claimed.command_id == abort.command_id)
+            .expect("abort command should be claimed");
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            handle_worker_command("assistant-session-1", &runtime, abort),
+        )
+        .await
+        .expect("abort handling exceeded its deadline")
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), submit_task)
+            .await
+            .expect("blocked submit was not preempted")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            gateway_store.load_run(&run_id).unwrap().status,
+            RunStatus::Cancelled
+        );
+        let events = crate::protocol_store()
+            .read_worker_events("assistant-session-1")
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "submit_cancelled"));
+        assert!(!events
+            .iter()
+            .any(|event| event.event_type == "submit_completed"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn submit_after_abort_starts_with_fresh_cancellation_state() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
+        let mut runtime = test_runtime(temp.path());
+        let submit_calls = Arc::new(AtomicUsize::new(0));
+        let second_submit_saw_abort = Arc::new(AtomicBool::new(false));
+        runtime.submit_stream_factory = {
+            let submit_calls = submit_calls.clone();
+            let second_submit_saw_abort = second_submit_saw_abort.clone();
+            Arc::new(move |engine, _, _| {
+                if submit_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Box::pin(tokio_stream::pending()) as SubmitMessageStream
+                } else {
+                    second_submit_saw_abort.store(engine.is_aborted(), Ordering::SeqCst);
+                    Box::pin(tokio_stream::empty()) as SubmitMessageStream
+                }
+            })
+        };
+
+        let first_submit = submit_command(json!({
+            "text": "first submit blocks",
+            "message_id": "first-submit",
+        }));
+        let first_command_id = first_submit.command_id.clone();
+        let first_task = {
+            let runtime = runtime.clone();
+            tokio::spawn(async move {
+                handle_worker_command("assistant-session-1", &runtime, first_submit).await
+            })
+        };
+        wait_until(|| {
+            crate::protocol_store()
+                .read_worker_events("assistant-session-1")
+                .is_ok_and(|events| {
+                    events.iter().any(|event| {
+                        event.command_id.as_deref() == Some(first_command_id.as_str())
+                            && event.event_type == "submit_started"
+                    })
+                })
+        })
+        .await;
+
+        let abort = crate::protocol_store()
+            .enqueue_command(
+                "assistant-session-1",
+                DaemonCommandKind::Abort,
+                json!({}),
+                None,
+            )
+            .unwrap();
+        let abort = crate::protocol_store()
+            .claim_next_control_command("assistant-session-1", "assistant-session")
+            .unwrap()
+            .filter(|claimed| claimed.command_id == abort.command_id)
+            .expect("abort command should be claimed");
+        handle_worker_command("assistant-session-1", &runtime, abort)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), first_task)
+            .await
+            .expect("first submit was not cancelled")
+            .unwrap()
+            .unwrap();
+
+        let mut second_submit = submit_command(json!({
+            "text": "second submit completes",
+            "message_id": "second-submit",
+        }));
+        second_submit.command_id = "cmd-2".to_string();
+        handle_worker_command("assistant-session-1", &runtime, second_submit)
+            .await
+            .unwrap();
+
+        assert_eq!(submit_calls.load(Ordering::SeqCst), 2);
+        assert!(
+            !second_submit_saw_abort.load(Ordering::SeqCst),
+            "second submit inherited the previous Abort state"
+        );
+        let events = crate::protocol_store()
+            .read_worker_events("assistant-session-1")
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.command_id.as_deref() == Some("cmd-2") && event.event_type == "submit_completed"
+        }));
     }
 
     #[test]

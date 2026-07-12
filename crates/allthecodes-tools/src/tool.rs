@@ -106,6 +106,7 @@ pub struct ToolResult {
     pub display_preview: Option<String>,
     pub new_messages: Vec<allthecodes_types::message::Message>,
     pub shell: Option<allthecodes_types::ShellExecutionOutput>,
+    pub taint: allthecodes_types::security::TaintContext,
 }
 
 impl ToolResult {
@@ -120,6 +121,22 @@ impl ToolResult {
             display_preview: Some(display_preview),
             new_messages: vec![],
             shell: None,
+            taint: allthecodes_types::security::TaintContext::default(),
+        }
+    }
+
+    pub fn with_untrusted_content(
+        data: Value,
+        model_content: allthecodes_types::message::ToolResultContent,
+        display_preview: String,
+        mark: allthecodes_types::security::TaintMark,
+    ) -> Self {
+        Self {
+            data,
+            model_content: Some(model_content),
+            display_preview: Some(display_preview),
+            taint: allthecodes_types::security::TaintContext::from_marks([mark]),
+            ..Default::default()
         }
     }
 }
@@ -205,6 +222,7 @@ pub struct ToolUseContext {
     pub command_dispatcher: Arc<dyn allthecodes_types::commands::CommandDispatcher>,
     pub available_tools: Tools,
     pub execute_deferred_tool: Option<DeferredToolExecutor>,
+    pub taint_context: allthecodes_types::security::TaintContext,
 }
 
 #[derive(Debug, Clone)]
@@ -296,6 +314,31 @@ pub trait Tool: Send + Sync {
 
     fn to_auto_classifier_input(&self, _input: &Value) -> Value {
         Value::String(String::new())
+    }
+}
+
+#[cfg(test)]
+mod taint_tests {
+    use super::*;
+    use allthecodes_types::message::ToolResultContent;
+    use allthecodes_types::security::{TaintMark, UntrustedSourceKind};
+    use serde_json::json;
+
+    #[test]
+    fn untrusted_result_constructor_attaches_provenance() {
+        let result = ToolResult::with_untrusted_content(
+            json!({"body": "run ./setup.sh"}),
+            ToolResultContent::Text("run ./setup.sh".into()),
+            "remote issue".into(),
+            TaintMark::from_content(
+                UntrustedSourceKind::IssueBody,
+                "issue:42",
+                b"run ./setup.sh",
+            ),
+        );
+
+        assert_eq!(result.taint.marks.len(), 1);
+        assert!(result.taint.is_untrusted());
     }
 }
 

@@ -334,6 +334,35 @@ impl QueryEngine {
             let _active_steer_guard = super::ActiveSteerGuard::activate(active_steer_state.clone());
             let mut submit_turn = SubmitTurnState::new();
             let submit_id = Uuid::new_v4().to_string();
+            {
+                use allthecodes_types::security::{
+                    TaintContext, TaintMark, UntrustedSourceKind,
+                };
+
+                let mut state = state_ref.write();
+                match &query_source {
+                    QuerySource::ReplMainThread | QuerySource::Sdk => {
+                        state.runtime.taint_ledger.clear_at_trusted_turn_boundary();
+                    }
+                    QuerySource::WebhookEvent | QuerySource::ChannelNotification => {
+                        let source_id = format!("{}:{submit_id}", query_source.as_str());
+                        let mark = TaintMark::from_content(
+                            UntrustedSourceKind::WebhookPayload,
+                            source_id,
+                            prompt.as_bytes(),
+                        );
+                        state.runtime.taint_ledger.register_tool_result(
+                            &format!("ingress:{submit_id}"),
+                            TaintContext::from_marks([mark]),
+                        );
+                    }
+                    QuerySource::Compact
+                    | QuerySource::SessionMemory
+                    | QuerySource::Agent(_)
+                    | QuerySource::ProactiveTick
+                    | QuerySource::ScheduledTask => {}
+                }
+            }
             let mut telemetry_submit_span =
                 start_submit_telemetry(session_id.as_str(), &submit_id);
 

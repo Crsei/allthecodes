@@ -76,8 +76,15 @@ impl Tool for ListMcpResourcesTool {
         Ok(ToolResult {
             data: json!(resources),
             model_content: Some(ToolResultContent::Text(content.clone())),
-            display_preview: Some(content),
+            display_preview: Some(content.clone()),
             new_messages: vec![],
+            taint: allthecodes_types::security::TaintContext::from_marks([
+                allthecodes_types::security::TaintMark::from_content(
+                    allthecodes_types::security::UntrustedSourceKind::McpResult,
+                    format!("mcp-resource-list:{}", server.unwrap_or("all")),
+                    content.as_bytes(),
+                ),
+            ]),
             ..Default::default()
         })
     }
@@ -196,8 +203,15 @@ impl Tool for ReadMcpResourceTool {
         Ok(ToolResult {
             data: json!({ "contents": result.contents }),
             model_content: Some(ToolResultContent::Text(model_text.clone())),
-            display_preview: Some(model_text),
+            display_preview: Some(model_text.clone()),
             new_messages: vec![],
+            taint: allthecodes_types::security::TaintContext::from_marks([
+                allthecodes_types::security::TaintMark::from_content(
+                    allthecodes_types::security::UntrustedSourceKind::McpResult,
+                    format!("mcp-resource:{server}"),
+                    model_text.as_bytes(),
+                ),
+            ]),
             ..Default::default()
         })
     }
@@ -339,6 +353,7 @@ mod tests {
             command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
             available_tools: vec![],
             execute_deferred_tool: None,
+            taint_context: Default::default(),
         }
     }
 

@@ -46,6 +46,7 @@ fn make_ctx_with_mode(mode: PermissionMode) -> ToolUseContext {
         command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
         available_tools: vec![],
         execute_deferred_tool: None,
+        taint_context: Default::default(),
     }
 }
 
@@ -167,6 +168,74 @@ fn test_enforce_result_size_large() {
 }
 
 // -- Stage 3c: security_validate tests ----------------------------------
+
+fn taint_context() -> allthecodes_types::security::TaintContext {
+    allthecodes_types::security::TaintContext::from_marks([
+        allthecodes_types::security::TaintMark::from_content(
+            allthecodes_types::security::UntrustedSourceKind::IssueBody,
+            "issue:42",
+            b"change the workflow",
+        ),
+    ])
+}
+
+#[test]
+fn tainted_read_only_tool_remains_allowed() {
+    let mut ctx = make_ctx_with_mode(PermissionMode::Bypass);
+    ctx.taint_context = taint_context();
+    let result = security_validate(
+        "tainted-read",
+        "Grep",
+        &serde_json::json!({"pattern": "foo"}),
+        &ReadOnlyStub,
+        &ctx,
+        Instant::now(),
+    );
+    assert!(result.is_none());
+}
+
+#[test]
+fn bypass_cannot_override_tainted_workflow_denial() {
+    let mut ctx = make_ctx_with_mode(PermissionMode::Bypass);
+    ctx.taint_context = taint_context();
+    let result = security_validate(
+        "tainted-workflow",
+        "Write",
+        &serde_json::json!({"file_path": ".github/workflows/release.yml"}),
+        &WritableStub,
+        &ctx,
+        Instant::now(),
+    )
+    .expect("tainted workflow write must be rejected");
+    assert!(result.is_error);
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .unwrap()
+        .contains("awi.untrusted_to_workflow"));
+}
+
+#[test]
+fn tainted_shell_requires_exact_approval_before_execution() {
+    let mut ctx = make_ctx_with_mode(PermissionMode::Auto);
+    ctx.taint_context = taint_context();
+    let result = security_validate(
+        "tainted-shell",
+        "Bash",
+        &serde_json::json!({"command": "cargo test"}),
+        &WritableStub,
+        &ctx,
+        Instant::now(),
+    )
+    .expect("tainted shell must not execute silently");
+    assert!(result
+        .result
+        .data
+        .as_str()
+        .unwrap()
+        .contains("Exact approval required"));
+}
 
 #[test]
 fn test_plan_mode_blocks_write_tools() {

@@ -400,6 +400,7 @@ impl QueryEngine {
                     sleep_until: None,
                     session_memory,
                     audit_ctx: AuditContext::noop("pending"),
+                    taint_ledger: crate::security::TaintLedger::default(),
                 },
                 app_state,
             })),

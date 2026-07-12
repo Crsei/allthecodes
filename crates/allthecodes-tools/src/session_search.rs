@@ -328,6 +328,7 @@ mod tests {
             command_dispatcher: Arc::new(NoopCommandDispatcher),
             available_tools: Tools::new(),
             execute_deferred_tool: None,
+            taint_context: Default::default(),
         };
         (ctx, abort_tx)
     }

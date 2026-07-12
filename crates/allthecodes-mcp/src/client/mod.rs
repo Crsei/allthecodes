@@ -1079,12 +1079,20 @@ impl McpClient {
 impl Drop for McpClient {
     fn drop(&mut self) {
         self.abort_reader_handle();
-        if let Some(ref mut child) = self.child {
-            if let Some(pid) = child.id() {
-                if let Err(error) = crate::process_control::force_terminate_tree(pid) {
-                    warn!(server = %self.config.name, %error, "MCP: failed to force-terminate stdio process tree during drop");
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let server_name = self.config.name.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(error) = crate::process_control::terminate_child_tree(&mut child).await {
+                    warn!(server = %server_name, %error, "MCP: failed to terminate stdio process tree during drop");
                 }
-            }
+            });
+        } else if let Err(error) =
+            crate::process_control::terminate_child_tree_without_runtime(child)
+        {
+            warn!(server = %server_name, %error, "MCP: failed to arrange stdio process-tree reap during drop");
         }
     }
 }

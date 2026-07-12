@@ -715,6 +715,7 @@ impl Tool for ExecuteExtraToolTool {
                 .or_else(|| Some(format!("Executed deferred tool {tool_name}"))),
             new_messages: result.result.new_messages,
             shell: result.result.shell,
+            taint: result.result.taint,
         })
     }
 
@@ -864,6 +865,7 @@ mod tests {
             command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
             available_tools,
             execute_deferred_tool: None,
+            taint_context: Default::default(),
         }
     }
 

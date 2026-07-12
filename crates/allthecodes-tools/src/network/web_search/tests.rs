@@ -196,6 +196,7 @@ fn make_test_ctx() -> ToolUseContext {
         command_dispatcher: Arc::new(allthecodes_types::commands::NoopCommandDispatcher::new()),
         available_tools: vec![],
         execute_deferred_tool: None,
+        taint_context: Default::default(),
     }
 }
 

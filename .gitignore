@@ -102,3 +102,4 @@ logs/
 **/snapshots/
 !crates/allthecodes/src/ui/**/snapshots/
 !crates/allthecodes/src/ui/**/snapshots/*.snap
+/.omm/

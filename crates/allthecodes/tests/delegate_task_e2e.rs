@@ -63,6 +63,7 @@ fn context(session_id: &str, cwd: &std::path::Path) -> ToolUseContext {
         command_dispatcher: Arc::new(NoopCommandDispatcher::new()),
         available_tools: Tools::new(),
         execute_deferred_tool: None,
+        taint_context: Default::default(),
     }
 }
 

@@ -599,6 +599,13 @@ impl Tool for WebFetchTool {
 
         // Check cache first
         if let Some((cached, status)) = cache_get(&url) {
+            let taint = allthecodes_types::security::TaintContext::from_marks([
+                allthecodes_types::security::TaintMark::from_content(
+                    allthecodes_types::security::UntrustedSourceKind::WebContent,
+                    web_fetch_source_id(&url),
+                    cached.as_bytes(),
+                ),
+            ]);
             return Ok(ToolResult {
                 data: json!({
                     "url": url,
@@ -607,6 +614,7 @@ impl Tool for WebFetchTool {
                     "cached": true,
                 }),
                 new_messages: vec![],
+                taint,
                 ..Default::default()
             });
         }
@@ -697,6 +705,13 @@ To complete your request, use WebFetch again with the redirected URL."
             });
         }
 
+        let taint = allthecodes_types::security::TaintContext::from_marks([
+            allthecodes_types::security::TaintMark::from_content(
+                allthecodes_types::security::UntrustedSourceKind::WebContent,
+                web_fetch_source_id(&final_url),
+                &body_bytes,
+            ),
+        ]);
         let text = extract_text_for_content_type(&content_type, &body_bytes);
         let text = truncate_text(&text, MAX_TEXT_LENGTH);
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -717,6 +732,7 @@ To complete your request, use WebFetch again with the redirected URL."
                 "durationMs": duration_ms,
             }),
             new_messages: vec![],
+            taint,
             ..Default::default()
         })
     }
@@ -746,6 +762,14 @@ the raw response is returned as-is."#
         }
         "WebFetch".to_string()
     }
+}
+
+fn web_fetch_source_id(url: &str) -> String {
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown-host".to_string());
+    format!("web-fetch:{host}")
 }
 
 // ---------------------------------------------------------------------------

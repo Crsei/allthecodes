@@ -464,6 +464,7 @@ mod tests {
             ),
             available_tools: vec![],
             execute_deferred_tool: None,
+            taint_context: Default::default(),
         };
 
         // Missing skill field entirely
@@ -552,6 +553,7 @@ mod tests {
             ),
             available_tools: vec![],
             execute_deferred_tool: None,
+            taint_context: Default::default(),
         };
 
         let result = tool

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{Local, Utc};
@@ -144,10 +144,41 @@ struct ManagedWorker {
     restart_count: u32,
 }
 
+#[derive(Debug, Clone)]
+struct WorkerHeartbeatObservation {
+    persisted_heartbeat_at: Option<chrono::DateTime<Utc>>,
+    observed_at: Instant,
+}
+
+impl WorkerHeartbeatObservation {
+    fn new(observed_at: Instant, persisted_heartbeat_at: Option<chrono::DateTime<Utc>>) -> Self {
+        Self {
+            persisted_heartbeat_at,
+            observed_at,
+        }
+    }
+
+    fn observe_heartbeat(
+        &mut self,
+        persisted_heartbeat_at: Option<chrono::DateTime<Utc>>,
+        observed_at: Instant,
+    ) {
+        if self.persisted_heartbeat_at != persisted_heartbeat_at {
+            self.persisted_heartbeat_at = persisted_heartbeat_at;
+            self.observed_at = observed_at;
+        }
+    }
+
+    fn is_stale(&self, now: Instant, stale_after: Duration) -> bool {
+        now.saturating_duration_since(self.observed_at) > stale_after
+    }
+}
+
 #[derive(Debug)]
 pub struct WorkerRegistry {
     specs: HashMap<String, WorkerSpec>,
     workers: HashMap<String, ManagedWorker>,
+    heartbeat_observations: HashMap<String, WorkerHeartbeatObservation>,
 }
 
 impl WorkerRegistry {
@@ -159,6 +190,7 @@ impl WorkerRegistry {
         Self {
             specs,
             workers: HashMap::new(),
+            heartbeat_observations: HashMap::new(),
         }
     }
 
@@ -178,6 +210,7 @@ impl WorkerRegistry {
     async fn poll(&mut self) -> Result<()> {
         let mut remove_ids = Vec::new();
         let mut restart_ids = Vec::new();
+        let observed_at = Instant::now();
 
         for (worker_id, managed) in &mut self.workers {
             if let Some(status) = managed
@@ -199,7 +232,11 @@ impl WorkerRegistry {
                 continue;
             }
 
-            if worker_heartbeat_stale(worker_id)? {
+            let heartbeat = self
+                .heartbeat_observations
+                .entry(worker_id.clone())
+                .or_insert_with(|| WorkerHeartbeatObservation::new(observed_at, None));
+            if worker_heartbeat_stale(worker_id, heartbeat, observed_at)? {
                 process_state::write_worker_stale(worker_id, "heartbeat stale")?;
                 if let Some(state) = process_state::read_worker_state(worker_id)? {
                     if let Some(pid) = state.pid {
@@ -232,6 +269,7 @@ impl WorkerRegistry {
 
         for worker_id in remove_ids {
             self.workers.remove(&worker_id);
+            self.heartbeat_observations.remove(&worker_id);
         }
 
         for (worker_id, restart_count) in restart_ids {
@@ -301,6 +339,7 @@ impl WorkerRegistry {
             }
         }
         self.workers.clear();
+        self.heartbeat_observations.clear();
         first_error.map_or(Ok(()), Err)
     }
 
@@ -312,6 +351,10 @@ impl WorkerRegistry {
             .clone();
         let managed = spawn_worker(spec, restart_count)?;
         self.workers.insert(worker_id.to_string(), managed);
+        self.heartbeat_observations.insert(
+            worker_id.to_string(),
+            WorkerHeartbeatObservation::new(Instant::now(), None),
+        );
         Ok(())
     }
 }
@@ -695,21 +738,19 @@ fn spawn_worker(spec: WorkerSpec, restart_count: u32) -> Result<ManagedWorker> {
     })
 }
 
-fn worker_heartbeat_stale(worker_id: &str) -> Result<bool> {
+fn worker_heartbeat_stale(
+    worker_id: &str,
+    observation: &mut WorkerHeartbeatObservation,
+    observed_at: Instant,
+) -> Result<bool> {
     let Some(state) = process_state::read_worker_state(worker_id)? else {
         return Ok(false);
     };
     if state.status != DaemonWorkerStatus::Running {
         return Ok(false);
     }
-    let Some(last_heartbeat_at) = state.last_heartbeat_at else {
-        return Ok(true);
-    };
-    let age = Utc::now()
-        .signed_duration_since(last_heartbeat_at)
-        .to_std()
-        .unwrap_or_default();
-    Ok(age > WORKER_STALE_AFTER)
+    observation.observe_heartbeat(state.last_heartbeat_at, observed_at);
+    Ok(observation.is_stale(observed_at, WORKER_STALE_AFTER))
 }
 
 fn exit_status_text(status: ExitStatus) -> String {
@@ -724,6 +765,7 @@ mod tests {
     use super::*;
     use allthecodes_config::features::{self, FeatureFlags};
     use serial_test::serial;
+    use std::time::Instant;
 
     struct EnvGuard {
         key: &'static str,
@@ -767,6 +809,42 @@ mod tests {
                 None => features::clear_runtime_override(),
             }
         }
+    }
+
+    #[test]
+    fn heartbeat_staleness_uses_local_monotonic_elapsed_time() {
+        let observed_at = Instant::now();
+        let persisted_heartbeat = Utc::now() - chrono::Duration::hours(1);
+        let observation = WorkerHeartbeatObservation::new(observed_at, Some(persisted_heartbeat));
+
+        assert!(!observation.is_stale(
+            observed_at + WORKER_STALE_AFTER - Duration::from_millis(1),
+            WORKER_STALE_AFTER,
+        ));
+        assert!(observation.is_stale(
+            observed_at + WORKER_STALE_AFTER + Duration::from_millis(1),
+            WORKER_STALE_AFTER,
+        ));
+    }
+
+    #[test]
+    fn continued_heartbeats_keep_long_submit_live_beyond_thirty_seconds() {
+        let started_at = Instant::now();
+        let wall_clock_start = Utc::now();
+        let mut observation = WorkerHeartbeatObservation::new(started_at, Some(wall_clock_start));
+
+        for elapsed_seconds in [9_u64, 18, 27, 36] {
+            let now = started_at + Duration::from_secs(elapsed_seconds);
+            let persisted = wall_clock_start
+                + chrono::Duration::seconds(i64::try_from(elapsed_seconds).unwrap());
+            observation.observe_heartbeat(Some(persisted), now);
+            assert!(
+                !observation.is_stale(now, WORKER_STALE_AFTER),
+                "active submit was marked stale after {elapsed_seconds} seconds"
+            );
+        }
+
+        assert!(observation.is_stale(started_at + Duration::from_secs(47), WORKER_STALE_AFTER,));
     }
 
     #[test]

@@ -15,3 +15,4 @@ pub mod read_only_shell;
 pub mod rules;
 pub mod shadowed_rules;
 pub mod shell_policy;
+pub mod taint_policy;

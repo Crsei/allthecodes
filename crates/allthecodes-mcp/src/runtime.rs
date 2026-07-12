@@ -89,3 +89,41 @@ pub fn clear_for_tests() {
     SERVER_STATES.write().clear();
     *MCP_SKILL_CLEANUP_HOOK.write() = None;
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serial_test::serial;
+    use tokio::sync::Mutex;
+
+    use super::*;
+
+    struct RuntimeGuard;
+
+    impl RuntimeGuard {
+        fn reset() -> Self {
+            clear_for_tests();
+            Self
+        }
+    }
+
+    impl Drop for RuntimeGuard {
+        fn drop(&mut self) {
+            clear_for_tests();
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn taking_installed_manager_clears_global_owner() {
+        let _guard = RuntimeGuard::reset();
+        let manager = Arc::new(Mutex::new(McpManager::new()));
+        install_manager(manager.clone());
+
+        let taken = take_installed_manager().expect("installed manager must be returned");
+
+        assert!(current_manager().is_none(), "static owner was not cleared");
+        assert!(Arc::ptr_eq(&taken, &manager));
+    }
+}

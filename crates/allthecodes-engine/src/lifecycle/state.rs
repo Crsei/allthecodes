@@ -46,6 +46,7 @@ pub(crate) struct SessionRuntimeState {
     pub(crate) sleep_until: Option<std::time::Instant>,
     pub(crate) session_memory: SessionMemoryService,
     pub(crate) audit_ctx: AuditContext,
+    pub(crate) taint_ledger: crate::security::TaintLedger,
 }
 
 /// All mutable session state behind a single `Arc<RwLock<_>>`.

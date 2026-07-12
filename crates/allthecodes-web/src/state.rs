@@ -38,6 +38,8 @@ pub struct QueueEntry {
 #[derive(Clone)]
 pub struct WebState {
     control_token: Option<Arc<str>>,
+    privileged_token: Option<Arc<str>>,
+    listener_authority: Option<Arc<str>>,
     /// Application version reported to Web API clients.
     app_version: Arc<str>,
     /// Current engine, swappable between turns.
@@ -115,6 +117,8 @@ impl WebState {
         session_engines.insert(current_session_id, engine.clone());
         let state = Self {
             control_token: None,
+            privileged_token: None,
+            listener_authority: None,
             app_version: Arc::from(app_version.into()),
             engine_slot: Arc::new(RwLock::new(engine)),
             is_streaming,
@@ -138,9 +142,29 @@ impl WebState {
         self.control_token.as_deref()
     }
 
+    pub fn privileged_token(&self) -> Option<&str> {
+        self.privileged_token.as_deref()
+    }
+
+    pub fn listener_authority(&self) -> Option<&str> {
+        self.listener_authority.as_deref()
+    }
+
     /// Require this explicit secret for protected HTTP and WebSocket routes.
     pub fn with_control_token(mut self, token: impl Into<String>) -> Self {
         self.control_token = Some(Arc::from(token.into()));
+        self
+    }
+
+    /// Require an independent capability for privileged Web operations.
+    pub fn with_privileged_token(mut self, token: impl Into<String>) -> Self {
+        self.privileged_token = Some(Arc::from(token.into()));
+        self
+    }
+
+    /// Pin protected requests to the exact authority configured for the listener.
+    pub fn with_listener_authority(mut self, authority: impl Into<String>) -> Self {
+        self.listener_authority = Some(Arc::from(authority.into()));
         self
     }
 

@@ -13,6 +13,7 @@ use crate::tool::{
     PermissionResult, Tool, ToolProgress, ToolResult, ToolUseContext, Tools, ValidationResult,
 };
 use allthecodes_types::message::{AssistantMessage, ToolResultContent};
+use allthecodes_types::security::{TaintContext, TaintMark, UntrustedSourceKind};
 
 pub fn tools() -> Tools {
     vec![Arc::new(LocalMemoryRecallTool)]
@@ -367,6 +368,11 @@ impl Tool for LocalMemoryRecallTool {
                 let path = resolve_memory_entry_path(&store_dir, key)?;
                 let raw = fs::read_to_string(&path)
                     .with_context(|| format!("failed to read local memory {}", path.display()))?;
+                let taint = TaintContext::from_marks([TaintMark::from_content(
+                    UntrustedSourceKind::LocalMemory,
+                    format!("local-memory:{store}/{key}"),
+                    raw.as_bytes(),
+                )]);
                 let sanitized = sanitize_untrusted_text(&raw);
                 let cap = if preview_only {
                     LOCAL_MEMORY_PREVIEW_BYTES
@@ -397,6 +403,7 @@ impl Tool for LocalMemoryRecallTool {
                         if truncated { ", truncated" } else { "" }
                     )),
                     new_messages: vec![],
+                    taint,
                     ..Default::default()
                 })
             }

@@ -42,21 +42,16 @@ async fn control_auth_middleware(
         && (path.starts_with("/api/")
             || path.starts_with("/proxy/")
             || path.starts_with("/anthropic-proxy/"));
-    let static_asset = !protected && !public_probe;
-    let token_required =
-        protected && request.method() != Method::OPTIONS && state.control_token().is_some();
-    let origin = match auth::authorize(request.headers(), state.control_token(), token_required) {
-        Ok(origin) => origin,
-        Err(status) => return status.into_response(),
-    };
+    if !protected {
+        return next.run(request).await;
+    }
 
     if request.method() == Method::OPTIONS {
-        let Some(origin) = origin.as_deref() else {
-            return StatusCode::FORBIDDEN.into_response();
+        let origin = match auth::authorize_preflight(request.headers(), state.listener_authority())
+        {
+            Ok(origin) => origin,
+            Err(status) => return status.into_response(),
         };
-        if !protected {
-            return StatusCode::FORBIDDEN.into_response();
-        }
         let requested_method = request
             .headers()
             .get(header::ACCESS_CONTROL_REQUEST_METHOD)
@@ -72,26 +67,152 @@ async fn control_auth_middleware(
             .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
-        if requested_headers.split(',').any(|name| {
-            !matches!(
-                name.trim().to_ascii_lowercase().as_str(),
-                "authorization" | "content-type" | "x-allthecodes-control-token"
-            )
-        }) {
+        if !requested_headers.is_empty()
+            && requested_headers.split(',').any(|name| {
+                !matches!(
+                    name.trim().to_ascii_lowercase().as_str(),
+                    "authorization"
+                        | "content-type"
+                        | "x-allthecodes-control-token"
+                        | "x-allthecodes-web-privileged-token"
+                )
+            })
+        {
             return StatusCode::FORBIDDEN.into_response();
         }
         let mut response = StatusCode::OK.into_response();
-        add_cors_headers(&mut response, origin);
+        add_cors_headers(&mut response, &origin);
         return response;
     }
 
+    let privileged = requires_privileged_capability(request.method(), path);
+    let origin = match auth::authorize(
+        request.headers(),
+        state.control_token(),
+        state.privileged_token(),
+        state.listener_authority(),
+        privileged,
+    ) {
+        Ok(origin) => origin,
+        Err(status) => return status.into_response(),
+    };
     let mut response = next.run(request).await;
-    if !static_asset {
-        if let Some(origin) = origin.as_deref() {
-            add_cors_headers(&mut response, origin);
-        }
+    if let Some(origin) = origin.as_deref() {
+        add_cors_headers(&mut response, origin);
     }
     response
+}
+
+fn requires_privileged_capability(method: &Method, path: &str) -> bool {
+    let Some(path) = api_path_suffix(path) else {
+        return false;
+    };
+
+    if matches!(path, "rpc/ws" | "ipc/ws" | "tui/ws")
+        || path == "terminal/sessions"
+        || path.starts_with("terminal/sessions/")
+    {
+        return true;
+    }
+
+    if matches!(
+        (method, path),
+        (&Method::PUT, "files/write")
+            | (&Method::POST, "files/upload")
+            | (&Method::POST, "files/mkdir")
+            | (&Method::POST, "files/rename")
+            | (&Method::POST, "files/copy")
+            | (&Method::POST, "files/move")
+            | (&Method::DELETE, "files")
+    ) {
+        return true;
+    }
+
+    if method == Method::POST
+        && (matches!(
+            path,
+            "plugins/install"
+                | "plugins/update"
+                | "plugins/uninstall"
+                | "plugins/enable"
+                | "plugins/disable"
+                | "plugins/restart"
+        ) || has_single_parameter(path, "plugins/", "/uninstall"))
+    {
+        return true;
+    }
+
+    if matches!(
+        (method, path),
+        (&Method::POST, "auth/login")
+            | (&Method::POST, "auth/logout")
+            | (&Method::POST, "auth/refresh")
+            | (&Method::POST, "account-auth/login/start")
+            | (&Method::POST, "account-auth/login/complete")
+            | (&Method::POST, "account-auth/refresh")
+            | (&Method::POST, "account-auth/logout")
+            | (&Method::POST, "providers")
+            | (&Method::POST, "providers/openai-codex/apply-local")
+    ) {
+        return true;
+    }
+
+    if matches!(method, &Method::PATCH | &Method::DELETE)
+        && has_single_parameter(path, "providers/", "")
+    {
+        return true;
+    }
+
+    is_provider_oauth_mutation(method, path) || is_mcp_oauth_mutation(method, path)
+}
+
+fn api_path_suffix(path: &str) -> Option<&str> {
+    path.strip_prefix("/api/v2/")
+        .or_else(|| path.strip_prefix("/api/"))
+}
+
+fn has_single_parameter(path: &str, prefix: &str, suffix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .and_then(|path| path.strip_suffix(suffix))
+        .is_some_and(|parameter| !parameter.is_empty() && !parameter.contains('/'))
+}
+
+fn is_provider_oauth_mutation(method: &Method, path: &str) -> bool {
+    if method != Method::POST {
+        return false;
+    }
+    let mut segments = path.split('/');
+    matches!(
+        (
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next()
+        ),
+        (Some("oauth"), Some(provider), Some("start" | "poll"), None) if !provider.is_empty()
+    )
+}
+
+fn is_mcp_oauth_mutation(method: &Method, path: &str) -> bool {
+    let mut segments = path.split('/');
+    let route = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    );
+    match route {
+        (Some("mcp-servers"), Some(server), Some("oauth"), Some("start" | "complete"), None)
+            if !server.is_empty() =>
+        {
+            method == Method::POST
+        }
+        (Some("mcp-servers"), Some(server), Some("oauth"), None, None) if !server.is_empty() => {
+            method == Method::DELETE
+        }
+        _ => false,
+    }
 }
 
 fn add_cors_headers(response: &mut Response, origin: &str) {
@@ -107,7 +228,9 @@ fn add_cors_headers(response: &mut Response, origin: &str) {
     );
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("authorization, content-type, x-allthecodes-control-token"),
+        HeaderValue::from_static(
+            "authorization, content-type, x-allthecodes-control-token, x-allthecodes-web-privileged-token",
+        ),
     );
     response
         .headers_mut()
@@ -177,8 +300,11 @@ pub fn build_router(state: WebState) -> Router {
 
 /// Start the web server on the given port.
 pub async fn start_server(state: WebState, port: u16, no_open: bool) -> anyhow::Result<()> {
-    let app = build_router(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    if state.control_token().is_none_or(str::is_empty) {
+        anyhow::bail!("ALLTHECODES_WEB_CONTROL_TOKEN is required for Web mode");
+    }
+    let app = build_router(state.with_listener_authority(addr.to_string()));
 
     info!("Web UI starting on http://{}", addr);
 
@@ -217,14 +343,26 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
+    const TEST_AUTHORITY: &str = "127.0.0.1:17322";
+    const TEST_CONTROL_TOKEN: &str = "test-secret";
+    const TEST_PRIVILEGED_TOKEN: &str = "privileged-secret";
+
     fn request_builder(method: Method, uri: &str) -> axum::http::request::Builder {
         Request::builder()
             .method(method)
             .uri(uri)
-            .header(header::HOST, "127.0.0.1:17322")
+            .header(header::HOST, TEST_AUTHORITY)
     }
 
-    fn make_web_state() -> WebState {
+    fn websocket_request_builder(uri: &str) -> axum::http::request::Builder {
+        request_builder(Method::GET, uri)
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+    }
+
+    fn make_unsecured_web_state() -> WebState {
         let engine = Arc::new(QueryEngine::new(QueryEngineConfig {
             cwd: ".".to_string(),
             tools: vec![],
@@ -247,9 +385,37 @@ mod tests {
             agent_context: None,
         }));
         WebState::new(engine, Arc::new(AtomicBool::new(false)))
+            .with_listener_authority(TEST_AUTHORITY)
+    }
+
+    fn make_web_state() -> WebState {
+        make_unsecured_web_state()
+            .with_control_token(TEST_CONTROL_TOKEN)
+            .with_privileged_token(TEST_PRIVILEGED_TOKEN)
     }
 
     async fn get_json(app: Router, uri: &str) -> (StatusCode, Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(uri)
+                    .header(header::HOST, TEST_AUTHORITY)
+                    .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN)
+                    .header("x-allthecodes-web-privileged-token", TEST_PRIVILEGED_TOKEN)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&body).expect("json"))
+    }
+
+    async fn get_public_json(app: Router, uri: &str) -> (StatusCode, Value) {
         let response = app
             .oneshot(
                 Request::builder()
@@ -278,6 +444,9 @@ mod tests {
                 Request::builder()
                     .method(method)
                     .uri(uri)
+                    .header(header::HOST, TEST_AUTHORITY)
+                    .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN)
+                    .header("x-allthecodes-web-privileged-token", TEST_PRIVILEGED_TOKEN)
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(serde_json::to_vec(&body).expect("body")))
                     .expect("request"),
@@ -300,7 +469,7 @@ mod tests {
             ("/readyz", "readyz"),
             ("/startupz", "startupz"),
         ] {
-            let (status, body) = get_json(app.clone(), uri).await;
+            let (status, body) = get_public_json(app.clone(), uri).await;
             assert_eq!(status, StatusCode::OK, "{uri}");
             assert_eq!(body["status"], json!("ok"));
             assert_eq!(body["probe"], json!(probe));
@@ -308,6 +477,25 @@ mod tests {
             assert!(body["pid"].as_u64().is_some());
             assert!(body["timestamp_ms"].as_u64().is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn security_static_assets_remain_public() {
+        let response = build_router(make_web_state())
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/assets/nonexistent.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ));
     }
 
     #[tokio::test]
@@ -384,18 +572,203 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loopback_api_without_control_token_remains_available() {
-        let response = build_router(make_web_state())
+    async fn security_loopback_api_without_configured_or_supplied_token_is_rejected() {
+        let response = build_router(make_unsecured_web_state())
             .oneshot(
                 request_builder(Method::GET, "/api/healthz")
-                    .header(header::ORIGIN, "http://127.0.0.1:17322")
+                    .header(header::ORIGIN, format!("http://{TEST_AUTHORITY}"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn security_attacker_controlled_host_and_origin_are_not_an_allowlist() {
+        let app = build_router(make_web_state());
+        let missing_host = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/healthz")
+                    .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let attacker_agreement = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/healthz")
+                    .header(header::HOST, "attacker.example:17322")
+                    .header(header::ORIGIN, "http://attacker.example:17322")
+                    .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(missing_host.status(), StatusCode::FORBIDDEN);
+        assert_eq!(attacker_agreement.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn security_each_websocket_family_rejects_missing_token_and_bad_origin() {
+        let app = build_router(make_web_state());
+        let websocket_paths = [
+            "/api/rpc/ws",
+            "/api/ipc/ws?session_id=test-session",
+            "/api/terminal/sessions/missing/ws",
+            "/api/tui/ws",
+        ];
+        let mut missing_token_statuses = Vec::new();
+        let mut bad_origin_statuses = Vec::new();
+
+        for path in websocket_paths {
+            let missing = app
+                .clone()
+                .oneshot(
+                    websocket_request_builder(path)
+                        .header(header::ORIGIN, format!("http://{TEST_AUTHORITY}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            missing_token_statuses.push(missing.status());
+
+            let bad_origin = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri(path)
+                        .header(header::HOST, "attacker.example:17322")
+                        .header(header::ORIGIN, "http://attacker.example:17322")
+                        .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN)
+                        .header(header::CONNECTION, "upgrade")
+                        .header(header::UPGRADE, "websocket")
+                        .header("sec-websocket-version", "13")
+                        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            bad_origin_statuses.push(bad_origin.status());
+        }
+
+        assert_eq!(missing_token_statuses, vec![StatusCode::UNAUTHORIZED; 4]);
+        assert_eq!(bad_origin_statuses, vec![StatusCode::FORBIDDEN; 4]);
+    }
+
+    #[tokio::test]
+    async fn security_each_websocket_family_requires_privileged_capability() {
+        let app = build_router(make_web_state());
+        let websocket_paths = [
+            "/api/rpc/ws",
+            "/api/ipc/ws?session_id=test-session",
+            "/api/terminal/sessions/missing/ws",
+            "/api/tui/ws",
+        ];
+        let mut control_only_statuses = Vec::new();
+        let mut both_tokens_statuses = Vec::new();
+
+        for path in websocket_paths {
+            let control_only = app
+                .clone()
+                .oneshot(
+                    websocket_request_builder(path)
+                        .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            control_only_statuses.push(control_only.status());
+
+            let both_tokens = app
+                .clone()
+                .oneshot(
+                    websocket_request_builder(path)
+                        .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN)
+                        .header(&auth::PRIVILEGED_TOKEN_HEADER, TEST_PRIVILEGED_TOKEN)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            both_tokens_statuses.push(both_tokens.status());
+        }
+
+        assert_eq!(control_only_statuses, vec![StatusCode::FORBIDDEN; 4]);
+        assert!(both_tokens_statuses
+            .iter()
+            .all(|status| !matches!(*status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)));
+    }
+
+    async fn privileged_route_statuses(
+        app: Router,
+        privileged_token: Option<&str>,
+    ) -> Vec<StatusCode> {
+        let cases = [
+            (Method::GET, "/api/terminal/sessions", None),
+            (Method::PUT, "/api/files/write", Some(json!({}))),
+            (Method::POST, "/api/plugins/enable", Some(json!({}))),
+            (Method::POST, "/api/providers", Some(json!({}))),
+            (Method::POST, "/api/auth/login", Some(json!({}))),
+        ];
+        let mut statuses = Vec::new();
+
+        for (method, uri, body) in cases {
+            let mut builder = request_builder(method, uri)
+                .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN);
+            if let Some(privileged_token) = privileged_token {
+                builder = builder.header("x-allthecodes-web-privileged-token", privileged_token);
+            }
+            let body = body
+                .map(|value| Body::from(serde_json::to_vec(&value).unwrap()))
+                .unwrap_or_else(Body::empty);
+            let response = app
+                .clone()
+                .oneshot(builder.body(body).unwrap())
+                .await
+                .unwrap();
+            statuses.push(response.status());
+        }
+        statuses
+    }
+
+    #[tokio::test]
+    async fn security_privileged_routes_reject_control_token_only() {
+        let app = build_router(make_web_state());
+        let missing_statuses = privileged_route_statuses(app.clone(), None).await;
+        let wrong_statuses = privileged_route_statuses(app, Some("wrong-privileged-secret")).await;
+        let disabled_app =
+            build_router(make_unsecured_web_state().with_control_token(TEST_CONTROL_TOKEN));
+        let disabled_statuses =
+            privileged_route_statuses(disabled_app, Some(TEST_PRIVILEGED_TOKEN)).await;
+
+        assert_eq!(missing_statuses, vec![StatusCode::FORBIDDEN; 5]);
+        assert_eq!(wrong_statuses, vec![StatusCode::FORBIDDEN; 5]);
+        assert_eq!(disabled_statuses, vec![StatusCode::FORBIDDEN; 5]);
+    }
+
+    #[tokio::test]
+    async fn security_privileged_routes_accept_both_tokens() {
+        let app = build_router(make_web_state());
+        let statuses = privileged_route_statuses(app, Some(TEST_PRIVILEGED_TOKEN)).await;
+
+        assert!(statuses
+            .iter()
+            .all(|status| !matches!(*status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)));
     }
 
     #[tokio::test]
@@ -434,7 +807,7 @@ mod tests {
 
     #[tokio::test]
     async fn configured_control_token_is_required_and_bearer_is_accepted() {
-        let state = make_web_state().with_control_token("test-secret");
+        let state = make_unsecured_web_state().with_control_token("test-secret");
         let app = build_router(state);
         let missing = app
             .clone()

@@ -1110,6 +1110,13 @@ impl<'a> ToolExecutionPipeline<'a> {
         hook_stopped_continuation: bool,
         tool_start: std::time::Instant,
     ) -> PipelineStageResult<()> {
+        self.deps
+            .state
+            .write()
+            .runtime
+            .taint_ledger
+            .register_tool_result(&self.request.tool_use_id, result.taint.clone());
+
         if let Some(feedback) = plan.accepted_permission_feedback.as_deref() {
             result
                 .new_messages

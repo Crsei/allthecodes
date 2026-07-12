@@ -21,6 +21,7 @@ use crate::types::tool::*;
 use allthecodes_mcp::bindings::canonical_workspace_root;
 use allthecodes_mcp::manager::McpManager;
 use allthecodes_mcp::{McpBindingContext, McpPermission, McpToolDef, ToolCallContent};
+use allthecodes_types::security::{TaintContext, TaintMark, UntrustedSourceKind};
 
 const MCP_SKILL_URI_PREFIX: &str = "skill://";
 
@@ -110,11 +111,17 @@ impl Tool for McpToolWrapper {
 
         // Build display-only text (for UI/logs — images become "[Image: mime]")
         let display_text = format_tool_call_result(&result.content, result.is_error);
+        let taint = TaintContext::from_marks([TaintMark::from_content(
+            UntrustedSourceKind::McpResult,
+            format!("mcp:{}/{}", self.server_name, self.def.name),
+            display_text.as_bytes(),
+        )]);
 
         if result.is_error {
             Ok(ToolResult {
                 data: json!(format!("MCP tool error: {}", display_text)),
                 new_messages: vec![],
+                taint,
                 ..Default::default()
             })
         } else {
@@ -138,16 +145,19 @@ impl Tool for McpToolWrapper {
                 let preview = browser_preview
                     .clone()
                     .unwrap_or_else(|| display_text.clone());
-                Ok(ToolResult::with_content(
-                    json!(display_text),
-                    ToolResultContent::Blocks(model_blocks),
-                    preview,
-                ))
+                Ok(ToolResult {
+                    data: json!(display_text),
+                    model_content: Some(ToolResultContent::Blocks(model_blocks)),
+                    display_preview: Some(preview),
+                    taint,
+                    ..Default::default()
+                })
             } else {
                 Ok(ToolResult {
                     data: json!(display_text.clone()),
                     display_preview: browser_preview,
                     new_messages: vec![],
+                    taint,
                     ..Default::default()
                 })
             }
