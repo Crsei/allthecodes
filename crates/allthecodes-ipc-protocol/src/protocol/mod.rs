@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use allthecodes_types::agent_events::{AgentCommand, AgentEvent, TeamCommand, TeamEvent};
+use allthecodes_types::callbacks::SecurityDecisionDisplay;
 use allthecodes_types::permission_events::{
     HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
@@ -273,6 +274,8 @@ pub enum BackendMessage {
         #[serde(default)]
         input: Value,
         options: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        security: Option<SecurityDecisionDisplay>,
         #[serde(skip_serializing_if = "Option::is_none")]
         operation: Option<ToolOperation>,
     },

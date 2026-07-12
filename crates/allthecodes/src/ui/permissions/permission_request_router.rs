@@ -1,6 +1,6 @@
 //! Routes structured tool permission requests to tool-specific renderers.
 
-use allthecodes_types::callbacks::PermissionRequestPayload;
+use allthecodes_types::callbacks::{PermissionRequestPayload, SecurityDecisionDisplay};
 use allthecodes_types::tool_operation::ToolOperation;
 use serde_json::Value;
 
@@ -46,6 +46,7 @@ pub struct PermissionDialogRequest {
     pub message: String,
     pub options: Vec<String>,
     pub operation: Option<ToolOperation>,
+    pub security: Option<SecurityDecisionDisplay>,
 }
 
 impl PermissionDialogRequest {
@@ -57,6 +58,7 @@ impl PermissionDialogRequest {
             message: payload.message,
             options: payload.options,
             operation: payload.operation,
+            security: payload.security,
         }
     }
 
@@ -70,6 +72,7 @@ impl PermissionDialogRequest {
             message: message.to_string(),
             options: Vec::new(),
             operation: None,
+            security: None,
         }
     }
 
@@ -124,14 +127,44 @@ impl PermissionRequestRouter {
         request: &PermissionDialogRequest,
         selected_index: usize,
     ) -> RoutedPermissionRequest {
-        if let Some(kind) = exact_tool_kind(&request.tool_name) {
-            return render_exact_kind(request, kind, selected_index)
-                .unwrap_or_else(|| fallback(request, selected_index));
-        }
-
-        render_heuristic(request, selected_index)
-            .unwrap_or_else(|| fallback(request, selected_index))
+        let mut routed = if let Some(kind) = exact_tool_kind(&request.tool_name) {
+            render_exact_kind(request, kind, selected_index)
+                .unwrap_or_else(|| fallback(request, selected_index))
+        } else {
+            render_heuristic(request, selected_index)
+                .unwrap_or_else(|| fallback(request, selected_index))
+        };
+        decorate_security(&mut routed, request.security.as_ref());
+        routed
     }
+}
+
+fn decorate_security(
+    routed: &mut RoutedPermissionRequest,
+    security: Option<&SecurityDecisionDisplay>,
+) {
+    let Some(security) = security else {
+        return;
+    };
+    let sources = if security.source_labels.is_empty() {
+        "untrusted source (digest-only)".to_string()
+    } else {
+        security.source_labels.join(", ")
+    };
+    let rules = if security.rule_ids.is_empty() {
+        "none".to_string()
+    } else {
+        security.rule_ids.join(", ")
+    };
+    let decision = if security.exact_approval {
+        "Approval required (this exact request only)"
+    } else {
+        security.decision.as_str()
+    };
+    routed.rendered.push_str(&format!(
+        "\n\nSecurity\nUntrusted sources: {sources}\nTarget: {}\nDecision: {decision}\nRules: {rules}",
+        security.sink
+    ));
 }
 
 fn render_exact_kind(
@@ -1075,6 +1108,7 @@ fn non_empty(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{PermissionDialogRequest, PermissionRequestRouter, PermissionRouteKind};
+    use allthecodes_types::callbacks::SecurityDecisionDisplay;
     use serde_json::json;
 
     fn request(tool_name: &str, input: serde_json::Value) -> PermissionDialogRequest {
@@ -1085,6 +1119,7 @@ mod tests {
             message: "needs approval".to_string(),
             options: Vec::new(),
             operation: None,
+            security: None,
         }
     }
 
@@ -1101,6 +1136,30 @@ mod tests {
         assert!(routed
             .options
             .contains(&"Always allow exact command".to_string()));
+    }
+
+    #[test]
+    fn renders_redacted_exact_security_approval_context() {
+        let mut request = request("Bash", json!({"command":"cargo test"}));
+        request.security = Some(SecurityDecisionDisplay {
+            sink: "Shell".into(),
+            decision: "ask".into(),
+            rule_ids: vec!["awi.untrusted_to_shell".into()],
+            source_labels: vec!["PR description".into(), "MCP result".into()],
+            source_digests: vec!["a".repeat(64)],
+            exact_approval: true,
+        });
+
+        let routed = PermissionRequestRouter::route(&request, 0);
+        assert!(routed
+            .rendered
+            .contains("Untrusted sources: PR description, MCP result"));
+        assert!(routed.rendered.contains("Target: Shell"));
+        assert!(routed
+            .rendered
+            .contains("Decision: Approval required (this exact request only)"));
+        assert!(routed.rendered.contains("Rules: awi.untrusted_to_shell"));
+        assert!(!routed.rendered.contains(&"a".repeat(64)));
     }
 
     #[test]

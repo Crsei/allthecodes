@@ -1,9 +1,10 @@
 use super::*;
 use crate::session::record_replay::types::{
     PermissionRequestRecord, PermissionResponseRecord, QuestionRequestRecord,
-    QuestionResponseRecord, RecordItem,
+    QuestionResponseRecord, RecordItem, SecurityDecisionRecord,
 };
 use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
+use allthecodes_types::security::{TaintDecisionKind, TaintMark, TaintSink};
 
 impl QueryEngineDeps {
     async fn record_replay_items(&self, items: Vec<RecordItem>, context: &'static str) {
@@ -46,6 +47,118 @@ impl QueryEngineDeps {
                 reason,
             })],
             "permission_response",
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn record_security_decision(
+        &self,
+        request: &ToolExecRequest,
+        input: &serde_json::Value,
+        sink: TaintSink,
+        decision: TaintDecisionKind,
+        mut rule_ids: Vec<String>,
+        mut source_digests: Vec<String>,
+        user_override: bool,
+    ) {
+        rule_ids.sort();
+        rule_ids.dedup();
+        source_digests.sort();
+        source_digests.dedup();
+        let input_bytes = serde_json::to_vec(input).unwrap_or_default();
+        let input_digest = TaintMark::from_content(
+            allthecodes_types::security::UntrustedSourceKind::ToolOutput,
+            "security-input",
+            &input_bytes,
+        )
+        .digest;
+        self.record_replay_items(
+            vec![RecordItem::SecurityDecision(SecurityDecisionRecord {
+                tool_use_id: request.tool_use_id.clone(),
+                tool_name: request.tool_name.clone(),
+                input_digest: input_digest.clone(),
+                sink,
+                decision,
+                rule_ids: rule_ids.clone(),
+                source_digests: source_digests.clone(),
+                user_override,
+            })],
+            "security_decision",
+        )
+        .await;
+        let audit = self.audit_ctx.with_tool_use(&request.tool_use_id);
+        use crate::observability::{AuditLevel, EventKind, Outcome, Stage};
+        audit.emit(
+            EventKind::SecurityDecision,
+            Stage::Permission,
+            if decision == TaintDecisionKind::Deny {
+                AuditLevel::Warn
+            } else {
+                AuditLevel::Info
+            },
+            if decision == TaintDecisionKind::Deny {
+                Outcome::Denied
+            } else {
+                Outcome::Info
+            },
+            None,
+            Some(serde_json::json!({
+                "tool_name": request.tool_name,
+                "input_digest": input_digest,
+                "sink": sink,
+                "decision": decision,
+                "rule_ids": rule_ids,
+                "source_digests": source_digests,
+                "user_override": user_override,
+            })),
+        );
+        if decision == TaintDecisionKind::Deny {
+            allthecodes_types::security::record_security_denial(
+                allthecodes_types::security::SecurityDenialSummary {
+                    tool_name: request.tool_name.clone(),
+                    sink,
+                    rule_ids,
+                    source_digests,
+                },
+            );
+        }
+    }
+
+    pub(super) async fn record_security_rejection(
+        &self,
+        request: &ToolExecRequest,
+        input: &serde_json::Value,
+        ctx: &crate::types::tool::ToolUseContext,
+    ) {
+        let findings =
+            crate::tool_runtime::execution::scanner_findings(ctx, &request.tool_name, input);
+        let sink = crate::permissions::taint_policy::classify_tool_sink(&request.tool_name, input);
+        let risk = crate::tool_runtime::execution::shell_command_risk(&request.tool_name, input);
+        let taint = crate::permissions::taint_policy::decide_tainted_sink(
+            &ctx.taint_context,
+            sink,
+            risk.as_ref(),
+        );
+        let mut rules = findings
+            .iter()
+            .filter(|finding| finding.decision == TaintDecisionKind::Deny)
+            .map(|finding| finding.rule_id.clone())
+            .collect::<Vec<_>>();
+        if taint.decision == TaintDecisionKind::Deny {
+            rules.push(taint.rule_id);
+        }
+        if rules.is_empty() {
+            return;
+        }
+        self.record_security_decision(
+            request,
+            input,
+            sink,
+            TaintDecisionKind::Deny,
+            rules,
+            taint.source_digests,
+            false,
         )
         .await;
     }
@@ -280,6 +393,8 @@ impl QueryEngineDeps {
         } = pipeline.sanitize_input();
 
         if let PipelineStageResult::Finish(result) = pipeline.security_validate(&sanitized_input) {
+            self.record_security_rejection(&request, &sanitized_input, &ctx)
+                .await;
             return Ok(result);
         }
 
@@ -288,6 +403,12 @@ impl QueryEngineDeps {
             PipelineStageResult::Finish(result) => return Ok(result),
         };
         let mut effective_input = pre_hook.effective_input;
+
+        if let PipelineStageResult::Finish(result) =
+            pipeline.require_security_approval(&effective_input).await
+        {
+            return Ok(result);
+        }
 
         // Permission check (tool-local checks first, then central rules/mode).
         let hook_decision = match pipeline

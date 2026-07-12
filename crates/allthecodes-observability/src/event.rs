@@ -55,6 +55,7 @@ pub enum EventKind {
     // Permission
     PermissionRequested,
     PermissionResolved,
+    SecurityDecision,
 
     // Compaction
     CompactPre,

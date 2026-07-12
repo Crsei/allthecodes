@@ -60,7 +60,18 @@ impl PermissionsSurface {
             state: TabbedFormState::new("Permissions", vec![modes_tab(perm)]),
             rules,
             workspace_directories,
-            recent_denials: Vec::new(),
+            recent_denials: allthecodes_types::security::recent_security_denials()
+                .into_iter()
+                .map(|denial| RecentDenial {
+                    tool_name: denial.tool_name,
+                    pattern: denial.rule_ids.join(", "),
+                    reason: format!(
+                        "workflow injection defense denied {:?} (source digests: {})",
+                        denial.sink,
+                        denial.source_digests.len()
+                    ),
+                })
+                .collect(),
         }
     }
 

@@ -227,14 +227,11 @@ fn tainted_shell_requires_exact_approval_before_execution() {
         &WritableStub,
         &ctx,
         Instant::now(),
-    )
-    .expect("tainted shell must not execute silently");
-    assert!(result
-        .result
-        .data
-        .as_str()
-        .unwrap()
-        .contains("Exact approval required"));
+    );
+    // Ask is intentionally deferred to ToolExecutionPipeline so the user
+    // approves the exact post-hook sanitized input. The low-level gate must
+    // not execute the tool or silently bypass that later approval.
+    assert!(result.is_none());
 }
 
 #[test]

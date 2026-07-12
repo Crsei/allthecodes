@@ -10,6 +10,24 @@ use crate::permission_events::{
 };
 use crate::tool_operation::ToolOperation;
 
+/// Redacted security context shown alongside an exact permission request.
+///
+/// It deliberately contains rule IDs, sink labels, source categories, and
+/// digests only; the original remote payload is never part of this DTO.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityDecisionDisplay {
+    pub sink: String,
+    pub decision: String,
+    #[serde(default)]
+    pub rule_ids: Vec<String>,
+    #[serde(default)]
+    pub source_labels: Vec<String>,
+    #[serde(default)]
+    pub source_digests: Vec<String>,
+    #[serde(default)]
+    pub exact_approval: bool,
+}
+
 /// Structured payload for an interactive permission request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PermissionRequestPayload {
@@ -20,6 +38,8 @@ pub struct PermissionRequestPayload {
     pub options: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<ToolOperation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<SecurityDecisionDisplay>,
 }
 
 impl PermissionRequestPayload {

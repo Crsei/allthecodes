@@ -10,6 +10,7 @@ use crate::protocol::{
 use crate::subsystem_types::SubsystemStatusSnapshot;
 use allthecodes_types::agent_events::AgentEvent;
 use allthecodes_types::agent_runtime_record::AgentRuntimeExecutionRecord;
+use allthecodes_types::callbacks::SecurityDecisionDisplay;
 use allthecodes_types::permission_events::{
     HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
@@ -112,6 +113,8 @@ pub enum PermissionEvent {
         #[serde(default)]
         input: Value,
         options: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        security: Option<SecurityDecisionDisplay>,
         #[serde(skip_serializing_if = "Option::is_none")]
         operation: Option<ToolOperation>,
     },
@@ -386,6 +389,7 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
             command,
             input,
             options,
+            security,
             operation,
         } => LegacyBackendPayload::Permission(PermissionEvent::PermissionRequest {
             tool_use_id: tool_use_id.clone(),
@@ -393,6 +397,7 @@ pub fn legacy_backend_to_payload(message: &BackendMessage) -> LegacyBackendPaylo
             command: command.clone(),
             input: input.clone(),
             options: options.clone(),
+            security: security.clone(),
             operation: operation.clone(),
         }),
         BackendMessage::QuestionRequest {
@@ -575,6 +580,14 @@ mod tests {
             input: serde_json::json!({"command":"rm -rf target"}),
             options: vec!["allow".to_string(), "deny".to_string()],
             operation: None,
+            security: Some(SecurityDecisionDisplay {
+                sink: "Shell".into(),
+                decision: "ask".into(),
+                rule_ids: vec!["awi.untrusted_to_shell".into()],
+                source_labels: vec!["PR description".into()],
+                source_digests: vec!["digest".into()],
+                exact_approval: true,
+            }),
         };
 
         let payload = legacy_backend_to_payload(&msg);
@@ -584,8 +597,12 @@ mod tests {
             LegacyBackendPayload::Permission(PermissionEvent::PermissionRequest {
                 tool_use_id,
                 tool,
+                security: Some(security),
                 ..
-            }) if tool_use_id == "tool-1" && tool == "Bash"
+            }) if tool_use_id == "tool-1"
+                && tool == "Bash"
+                && security.exact_approval
+                && security.rule_ids == vec!["awi.untrusted_to_shell"]
         ));
     }
 

@@ -5,10 +5,12 @@ use super::execute::{
 };
 use super::*;
 use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
+use allthecodes_types::callbacks::SecurityDecisionDisplay;
 use allthecodes_types::hooks::{
     HookEventConfig, HookRunner, HooksMap, PermissionOverride, PostToolHookResult,
     PreToolHookResult,
 };
+use allthecodes_types::security::{TaintDecisionKind, UntrustedSourceKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputValidationKind {
@@ -102,6 +104,20 @@ pub(crate) struct ToolExecutionPipeline<'a> {
     pub(crate) post_configs: &'a [HookEventConfig],
     pub(crate) failure_configs: &'a [HookEventConfig],
     pub(crate) started: std::time::Instant,
+}
+
+fn source_label(source: &UntrustedSourceKind) -> &'static str {
+    match source {
+        UntrustedSourceKind::IssueBody => "issue body",
+        UntrustedSourceKind::PullRequestBody => "PR description",
+        UntrustedSourceKind::ReviewComment => "review/comment",
+        UntrustedSourceKind::WebhookPayload => "webhook payload",
+        UntrustedSourceKind::WebContent => "Web content",
+        UntrustedSourceKind::McpResult => "MCP result",
+        UntrustedSourceKind::LocalMemory => "local memory",
+        UntrustedSourceKind::RepositoryDocument => "repository document",
+        UntrustedSourceKind::ToolOutput => "tool output",
+    }
 }
 
 impl<'a> ToolExecutionPipeline<'a> {
@@ -199,6 +215,143 @@ impl<'a> ToolExecutionPipeline<'a> {
         PipelineStageResult::Continue(())
     }
 
+    /// Require an explicit, one-call approval for a tainted or scanner-flagged
+    /// request. This runs after pre-tool hooks so the approval covers the exact
+    /// sanitized input that will be executed.
+    pub(crate) async fn require_security_approval(
+        &self,
+        input: &serde_json::Value,
+    ) -> PipelineStageResult<()> {
+        let findings = crate::tool_runtime::execution::scanner_findings(
+            self.ctx,
+            &self.request.tool_name,
+            input,
+        );
+        let sink =
+            crate::permissions::taint_policy::classify_tool_sink(&self.request.tool_name, input);
+        let command_risk =
+            crate::tool_runtime::execution::shell_command_risk(&self.request.tool_name, input);
+        let taint_decision = crate::permissions::taint_policy::decide_tainted_sink(
+            &self.ctx.taint_context,
+            sink,
+            command_risk.as_ref(),
+        );
+        let scanner_asks = findings
+            .iter()
+            .filter(|finding| finding.decision == TaintDecisionKind::Ask)
+            .collect::<Vec<_>>();
+        if taint_decision.decision != TaintDecisionKind::Ask && scanner_asks.is_empty() {
+            return PipelineStageResult::Continue(());
+        }
+
+        let mut rule_ids = scanner_asks
+            .iter()
+            .map(|finding| finding.rule_id.clone())
+            .collect::<Vec<_>>();
+        if taint_decision.decision == TaintDecisionKind::Ask {
+            rule_ids.push(taint_decision.rule_id.clone());
+        }
+        rule_ids.sort();
+        rule_ids.dedup();
+        let source_digests = taint_decision.source_digests.clone();
+        let source_labels = self
+            .ctx
+            .taint_context
+            .marks
+            .iter()
+            .map(|mark| source_label(&mark.source).to_string())
+            .collect::<Vec<_>>();
+        let security = SecurityDecisionDisplay {
+            sink: format!("{sink:?}"),
+            decision: "ask".to_string(),
+            rule_ids: rule_ids.clone(),
+            source_labels,
+            source_digests: source_digests.clone(),
+            exact_approval: true,
+        };
+        let message = format!(
+            "Workflow injection defense requires approval for this exact request. \
+             Target: {:?}; rules: {}. Approval is single-use and does not apply \
+             to modified input.",
+            sink,
+            rule_ids.join(", ")
+        );
+        self.deps
+            .record_security_decision(
+                self.request,
+                input,
+                sink,
+                TaintDecisionKind::Ask,
+                rule_ids.clone(),
+                source_digests.clone(),
+                false,
+            )
+            .await;
+
+        let Some(callback) = self.ctx.permission_callback.as_ref() else {
+            self.deps
+                .record_security_decision(
+                    self.request,
+                    input,
+                    sink,
+                    TaintDecisionKind::Deny,
+                    rule_ids,
+                    source_digests,
+                    false,
+                )
+                .await;
+            return PipelineStageResult::Finish(permission_denied_exec_result(
+                self.request,
+                format!("Permission required: {message}"),
+                input.clone(),
+                self.started,
+                AgentRuntimePermissionDecision::DeniedByPolicy,
+            ));
+        };
+
+        let response = callback(PermissionRequestPayload {
+            tool_use_id: self.request.tool_use_id.clone(),
+            tool_name: self.request.tool_name.clone(),
+            tool_input: input.clone(),
+            message: message.clone(),
+            options: vec!["Allow once".to_string(), "Deny".to_string()],
+            operation: None,
+            security: Some(security),
+        })
+        .await;
+        let normalized = response.normalized_decision();
+        // Security approvals are deliberately one-shot. A normal permission
+        // callback may return `always_allow`, but that response must not turn
+        // tainted input into a reusable allow rule.
+        let allowed = normalized == "allow";
+        self.deps
+            .record_security_decision(
+                self.request,
+                input,
+                sink,
+                if allowed {
+                    TaintDecisionKind::Allow
+                } else {
+                    TaintDecisionKind::Deny
+                },
+                rule_ids,
+                source_digests,
+                allowed,
+            )
+            .await;
+        if allowed {
+            PipelineStageResult::Continue(())
+        } else {
+            PipelineStageResult::Finish(permission_denied_exec_result(
+                self.request,
+                "Permission denied: exact taint approval was not granted.".to_string(),
+                input.clone(),
+                self.started,
+                AgentRuntimePermissionDecision::DeniedByUser,
+            ))
+        }
+    }
+
     pub(crate) async fn run_pre_hooks(
         &self,
         sanitized_input: &serde_json::Value,
@@ -263,6 +416,9 @@ impl<'a> ToolExecutionPipeline<'a> {
                 return PipelineStageResult::Finish(result);
             }
             if let PipelineStageResult::Finish(result) = self.security_validate(&effective_input) {
+                self.deps
+                    .record_security_rejection(self.request, &effective_input, self.ctx)
+                    .await;
                 return PipelineStageResult::Finish(result);
             }
         }
@@ -487,6 +643,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             message: message.clone(),
             options: options.clone(),
             operation: None,
+            security: None,
         })
         .await;
 

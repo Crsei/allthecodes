@@ -7,13 +7,37 @@ pub fn classify_tool_sink(tool_name: &str, input: &Value) -> TaintSink {
     match tool_name.to_ascii_lowercase().as_str() {
         "read" | "fileread" | "read_file" | "grep" | "glob" | "tasklist" => TaintSink::ReadOnly,
         "write" | "filewrite" | "write_file" | "edit" | "fileedit" | "edit_file" | "multiedit"
-        | "notebookedit" => classify_file_sink(input),
+        | "filemultiedit" | "notebookedit" | "hashedit" => classify_file_sink(input),
+        "applypatch" | "apply_patch" => classify_patch_sink(input),
         "bash" | "powershell" | "pwsh" => classify_shell_sink(input),
         "webfetch" | "websearch" => TaintSink::ReadOnly,
         "deploy" | "publish" => TaintSink::Deploy,
         "credential" | "credentials" | "secret" | "keychain" => TaintSink::CredentialAccess,
         "sendmessage" | "sendusermessage" | "githubcomment" => TaintSink::ExternalMessage,
         _ => TaintSink::Unknown,
+    }
+}
+
+fn classify_patch_sink(input: &Value) -> TaintSink {
+    let patch = input
+        .get("patch")
+        .or_else(|| input.get("input"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    if patch.contains(".github/workflows/") || patch.contains(".git/hooks/") {
+        TaintSink::WorkflowWrite
+    } else if patch.contains("package.json") || patch.contains("package-lock.json") {
+        TaintSink::PackageInstall
+    } else if patch.contains("setup.py")
+        || patch.contains("dockerfile")
+        || patch.contains(".sh")
+        || patch.contains(".ps1")
+    {
+        TaintSink::WorkflowWrite
+    } else {
+        TaintSink::FileWrite
     }
 }
 
@@ -219,6 +243,25 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn file_mutation_aliases_preserve_workflow_deny() {
+        let workflow = serde_json::json!({
+            "file_path": ".github/workflows/release.yml",
+            "operations": []
+        });
+        assert_eq!(
+            classify_tool_sink("HashEdit", &workflow),
+            TaintSink::WorkflowWrite
+        );
+        let patch = serde_json::json!({
+            "patch": "*** Add File: .github/workflows/release.yml\n+name: release"
+        });
+        assert_eq!(
+            classify_tool_sink("ApplyPatch", &patch),
+            TaintSink::WorkflowWrite
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 pub mod taint;
 
 pub use taint::{
-    TaintContext, TaintDecision, TaintDecisionKind, TaintMark, TaintSink, TrustLevel,
-    UntrustedSourceKind,
+    clear_recent_security_denials, recent_security_denials, record_security_denial,
+    SecurityDenialSummary, TaintContext, TaintDecision, TaintDecisionKind, TaintMark, TaintSink,
+    TrustLevel, UntrustedSourceKind,
 };

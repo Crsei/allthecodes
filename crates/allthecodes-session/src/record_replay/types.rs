@@ -7,6 +7,7 @@ use allthecodes_types::message::{
     InfoLevel, Message, MessageContent, MicrocompactMetadata, ProgressMessage, SystemMessage,
     SystemSubtype, Usage, UserMessage,
 };
+use allthecodes_types::security::{TaintDecisionKind, TaintSink};
 
 pub const RECORD_SCHEMA_VERSION: u32 = 1;
 
@@ -51,6 +52,7 @@ pub enum RecordItem {
     ToolProgress(ToolProgressRecord),
     PermissionRequest(PermissionRequestRecord),
     PermissionResponse(PermissionResponseRecord),
+    SecurityDecision(SecurityDecisionRecord),
     QuestionRequest(QuestionRequestRecord),
     QuestionResponse(QuestionResponseRecord),
     CompactionBoundary(CompactionBoundaryRecord),
@@ -169,6 +171,20 @@ pub struct PermissionResponseRecord {
     pub decision: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Metadata-only security decision record. It contains digests and rule IDs,
+/// never raw remote content, credentials, or the original command body.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecurityDecisionRecord {
+    pub tool_use_id: String,
+    pub tool_name: String,
+    pub input_digest: String,
+    pub sink: TaintSink,
+    pub decision: TaintDecisionKind,
+    pub rule_ids: Vec<String>,
+    pub source_digests: Vec<String>,
+    pub user_override: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

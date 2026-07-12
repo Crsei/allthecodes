@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::{Mutex, OnceLock};
 
 /// Origin categories whose content must never be treated as user authority.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -110,6 +111,46 @@ pub struct TaintDecision {
     pub rule_id: String,
     pub reason: String,
     pub source_digests: Vec<String>,
+}
+
+/// Metadata retained for the `/permissions` recent-denials surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecurityDenialSummary {
+    pub tool_name: String,
+    pub sink: TaintSink,
+    pub rule_ids: Vec<String>,
+    pub source_digests: Vec<String>,
+}
+
+static RECENT_SECURITY_DENIALS: OnceLock<Mutex<Vec<SecurityDenialSummary>>> = OnceLock::new();
+
+pub fn record_security_denial(summary: SecurityDenialSummary) {
+    let mut denials = RECENT_SECURITY_DENIALS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    denials.push(summary);
+    const MAX_RECENT_SECURITY_DENIALS: usize = 32;
+    if denials.len() > MAX_RECENT_SECURITY_DENIALS {
+        let overflow = denials.len() - MAX_RECENT_SECURITY_DENIALS;
+        denials.drain(..overflow);
+    }
+}
+
+pub fn recent_security_denials() -> Vec<SecurityDenialSummary> {
+    RECENT_SECURITY_DENIALS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+pub fn clear_recent_security_denials() {
+    RECENT_SECURITY_DENIALS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
 }
 
 #[cfg(test)]

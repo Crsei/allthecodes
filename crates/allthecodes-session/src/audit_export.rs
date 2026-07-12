@@ -152,7 +152,8 @@ const ZERO_HASH: &str = "0000000000000000000000000000000000000000000000000000000
 /// Returns the path of the written file.
 pub fn export_audit_record(session_id: &str, output_path: Option<&Path>) -> Result<PathBuf> {
     let session_file = load_session_file_raw(session_id)?;
-    let record = build_audit_from_session_file(&session_file);
+    let mut record = build_audit_from_session_file(&session_file);
+    append_persisted_security_decisions(&mut record, session_id)?;
     write_audit_record(&record, session_id, output_path)
 }
 
@@ -163,7 +164,8 @@ pub fn export_audit_messages(
     cwd: &str,
     output_path: Option<&Path>,
 ) -> Result<PathBuf> {
-    let record = build_audit_from_messages(session_id, messages, cwd);
+    let mut record = build_audit_from_messages(session_id, messages, cwd);
+    append_persisted_security_decisions(&mut record, session_id)?;
     write_audit_record(&record, session_id, output_path)
 }
 
@@ -177,6 +179,7 @@ pub fn export_audit_messages_with_cost_quality_events(
     cost_events: &[serde_json::Value],
 ) -> Result<(PathBuf, AuditExportMetadata)> {
     let mut record = build_audit_from_messages(session_id, messages, cwd);
+    append_persisted_security_decisions(&mut record, session_id)?;
     let meta = apply_cost_events_to_record(&mut record, cost_events);
     let path = write_audit_record(&record, session_id, output_path)?;
     Ok((path, meta))
@@ -469,6 +472,45 @@ fn build_audit_from_messages(session_id: &str, messages: &[Message], cwd: &str) 
     }
 }
 
+fn append_persisted_security_decisions(record: &mut AuditRecord, session_id: &str) -> Result<()> {
+    let Some(path) = crate::record_replay::lookup_rollout(session_id)? else {
+        return Ok(());
+    };
+    let read = crate::record_replay::read_rollout_file(&path)
+        .with_context(|| format!("Failed to read security decisions from {}", path.display()))?;
+    append_security_decision_entries(record, &read.lines)
+}
+
+fn append_security_decision_entries(
+    record: &mut AuditRecord,
+    lines: &[crate::record_replay::types::RecordLine],
+) -> Result<()> {
+    let mut previous_chain = record.integrity.final_chain_hash.clone();
+    for line in lines {
+        let crate::record_replay::types::RecordItem::SecurityDecision(decision) = &line.item else {
+            continue;
+        };
+        let data = serde_json::to_value(&line.item)
+            .context("Failed to serialize security decision for audit export")?;
+        let hash = sha256_json(&data);
+        let chain_hash = sha256_str(&format!("{previous_chain}{hash}"));
+        record.entries.push(AuditEntry {
+            sequence: record.entries.len(),
+            uuid: format!("security:{}:{}", decision.tool_use_id, line.seq),
+            timestamp: line.timestamp.to_rfc3339(),
+            msg_type: "security_decision".to_string(),
+            hash,
+            chain_hash: chain_hash.clone(),
+            data,
+        });
+        previous_chain = chain_hash;
+    }
+    record.integrity.final_chain_hash = previous_chain;
+    record.integrity.entry_count = record.entries.len();
+    record.metadata.total_messages = record.entries.len();
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Message → full JSON data (preserves everything)
 // ---------------------------------------------------------------------------
@@ -725,6 +767,7 @@ pub fn export_audit_with_cost_quality_events(
 ) -> Result<(PathBuf, AuditExportMetadata)> {
     let session_file = load_session_file_raw(session_id)?;
     let mut record = build_audit_from_session_file(&session_file);
+    append_persisted_security_decisions(&mut record, session_id)?;
     let meta = apply_cost_events_to_record(&mut record, cost_events);
     let path = write_audit_record(&record, session_id, output_path)?;
 
@@ -738,6 +781,8 @@ pub fn export_audit_with_cost_quality_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record_replay::types::{RecordItem, RecordLine, SecurityDecisionRecord};
+    use allthecodes_types::security::{TaintDecisionKind, TaintSink};
 
     #[test]
     fn test_sha256_deterministic() {
@@ -746,6 +791,35 @@ mod tests {
         let h2 = sha256_json(&v);
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 64); // hex-encoded SHA-256
+    }
+
+    #[test]
+    fn security_decisions_are_metadata_only_and_hash_chained() {
+        let mut audit = build_audit_from_messages("security-audit", &[], "/tmp");
+        let lines = vec![RecordLine::new(
+            "security-audit",
+            1,
+            RecordItem::SecurityDecision(SecurityDecisionRecord {
+                tool_use_id: "tool-1".into(),
+                tool_name: "Bash".into(),
+                input_digest: "a".repeat(64),
+                sink: TaintSink::Shell,
+                decision: TaintDecisionKind::Deny,
+                rule_ids: vec!["setup.curl_pipe_shell".into()],
+                source_digests: vec!["b".repeat(64)],
+                user_override: false,
+            }),
+        )];
+
+        append_security_decision_entries(&mut audit, &lines).unwrap();
+        assert_eq!(audit.entries.len(), 1);
+        assert_eq!(audit.entries[0].msg_type, "security_decision");
+        let serialized = serde_json::to_string(&audit).unwrap();
+        assert!(!serialized.contains("curl https://"));
+        assert!(verify_audit_record(&audit).valid);
+
+        audit.entries[0].data["decision"] = serde_json::json!("allow");
+        assert!(!verify_audit_record(&audit).valid);
     }
 
     #[test]

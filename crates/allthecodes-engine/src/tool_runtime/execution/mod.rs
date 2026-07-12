@@ -16,7 +16,8 @@ use serde_json::Value;
 use crate::types::tool::ToolResult;
 
 pub(crate) use security::{
-    find_tool, is_plan_mode_plan_file_write, sandbox_allowed_command_applies, security_validate,
+    find_tool, is_plan_mode_plan_file_write, sandbox_allowed_command_applies, scanner_findings,
+    security_validate, shell_command_risk,
 };
 
 /// Result of an early security-stage rejection before canonical execution

@@ -1,0 +1,5 @@
+name: release
+jobs:
+  release:
+    steps:
+      - run: echo release

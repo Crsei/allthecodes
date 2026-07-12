@@ -13,6 +13,8 @@ pub mod path_validation;
 pub mod permission_update;
 pub mod read_only_shell;
 pub mod rules;
+pub mod setup_chain;
 pub mod shadowed_rules;
 pub mod shell_policy;
+pub mod supply_chain;
 pub mod taint_policy;

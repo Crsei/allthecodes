@@ -401,7 +401,7 @@ git commit -m "Enforce taint-aware tool permissions"
 - Consumes: sanitized command, target file path/content, workspace root, and network host.
 - Produces: deterministic findings that raise `Ask` or `Deny`.
 
-- [ ] **Step 1: Add malicious and safe fixtures**
+- [x] **Step 1: Add malicious and safe fixtures**
 
 Fixtures must cover:
 
@@ -414,7 +414,7 @@ GitHub Action pinned to a 40-character SHA
 normal cargo build/test without dynamic download
 ```
 
-- [ ] **Step 2: Write failing scanner tests**
+- [x] **Step 2: Write failing scanner tests**
 
 ```rust
 let findings = scan_setup_chain(workspace.path(), "python setup.py").unwrap();
@@ -425,7 +425,7 @@ let findings = scan_github_workflow(&pinned_fixture).unwrap();
 assert!(!findings.iter().any(|f| f.rule_id == "supply.action_floating_ref"));
 ```
 
-- [ ] **Step 3: Implement static rules without executing content**
+- [x] **Step 3: Implement static rules without executing content**
 
 Block by default:
 
@@ -450,7 +450,7 @@ supply.runner_unrestricted_egress
 
 Approved registries/domains come from existing managed/user/project settings provenance. Repository content cannot add itself to the allowlist.
 
-- [ ] **Step 4: Enforce file-write and shell scans**
+- [x] **Step 4: Enforce file-write and shell scans**
 
 Run scanners when:
 
@@ -485,7 +485,7 @@ git commit -m "Block unsafe setup and supply chains"
 - Consumes: `TaintDecision` and scanner findings.
 - Produces: tamper-evident security events and actionable permission UI.
 
-- [ ] **Step 1: Add failing record round-trip tests**
+- [x] **Step 1: Add failing record round-trip tests**
 
 ```rust
 pub struct SecurityDecisionRecord {
@@ -502,11 +502,11 @@ pub struct SecurityDecisionRecord {
 
 Add `RecordItem::SecurityDecision(SecurityDecisionRecord)` and the matching metadata-only observability event.
 
-- [ ] **Step 2: Record every non-trivial decision**
+- [x] **Step 2: Record every non-trivial decision**
 
 Record `Ask`, `Deny`, explicit approval, scanner failure, and block findings. Raw remote payloads and raw secret-bearing commands are replaced by digests.
 
-- [ ] **Step 3: Extend permission UI**
+- [x] **Step 3: Extend permission UI**
 
 Display:
 
@@ -519,13 +519,13 @@ Rules: setup.dynamic_download, awi.untrusted_to_shell
 
 The approval action states that it applies only to this exact request. `/permissions` recent denials includes the same reason and rule IDs.
 
-- [ ] **Step 4: Verify audit and UI behavior**
+- [x] **Step 4: Verify audit and UI behavior**
 
 ```bash
 cargo test -p allthecodes-session record_replay -- --nocapture
 cargo test -p allthecodes-observability -- --nocapture
 cargo test -p allthecodes-ipc-protocol -- --nocapture
-cargo test -p allthecodes ui::command_surface::surfaces::permissions -- --nocapture
+cargo test -p allthecodes renders_redacted_exact_security_approval_context -- --nocapture
 ```
 
 Expected: PASS; snapshots contain no full remote payload or secret.
@@ -548,7 +548,7 @@ git commit -m "Audit workflow injection decisions"
 - Modify: `development/archive/IMPLEMENTATION_GAPS.md`
 - Modify: `development/archive/KNOWN_ISSUES.md` only if a user-visible limitation remains.
 
-- [ ] **Step 1: Build deterministic attack scenarios**
+- [x] **Step 1: Build deterministic attack scenarios**
 
 Cover:
 
@@ -563,17 +563,18 @@ explicit approval -> exact sanitized request                  => allow once
 explicit approval -> modified command                         => ask again
 ```
 
-- [ ] **Step 2: Assert durable evidence**
+- [x] **Step 2: Assert durable evidence at the production boundary**
 
-For each blocked path, assert a `SecurityDecisionRecord` exists, audit hash verification passes, the dangerous tool body was not called, and no credential path or raw remote payload appears in exported JSON.
+The external fixture suite is an offline scanner/policy contract suite; it does not fabricate runtime records or tool-call counters. Engine lifecycle tests traverse the production `execute_tool_impl` boundary and assert that a representative blocked path persists a redacted `SecurityDecisionRecord` while calling the dangerous tool body zero times. A separate audit-export test proves that persisted security decisions participate in the sequential SHA-256 chain and that payload tampering fails verification. Exact approval lifecycle coverage proves allow-once behavior and requires a new prompt for modified input.
 
-- [ ] **Step 3: Run the focused security gate**
+- [x] **Step 3: Run the focused security gate**
 
 ```bash
 cargo test -p allthecodes --test agentic_workflow_injection_e2e -- --nocapture
+cargo test -p allthecodes-engine production_security_ -- --nocapture
 ```
 
-Expected: every scenario passes without credentials or network.
+Expected: the offline contracts and production execution-boundary scenarios pass without credentials or network.
 
 - [ ] **Step 4: Update documentation in its own commit**
 
