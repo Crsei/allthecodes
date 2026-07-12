@@ -16,14 +16,14 @@ allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默
 
 ### Agentic workflow injection defense（2026-07-13）
 
-`development/ai_check/2026-07-11-agentic-workflow-injection-defense-plan.zh.md` 的 task4–6 已实现第一版闭环：
+`development/ai_check/2026-07-11-agentic-workflow-injection-defense-plan.zh.md` 的 task4–6 已实现第一版代码闭环，最终 workspace gate 尚未关闭：
 
 - setup-chain / supply-chain 扫描器只做有界静态读取，覆盖 DNS TXT 解码、curl/wget 管道执行、postinstall 下载、Docker 未知二进制下载、凭据路径、动态下载、未知域名、Action 浮动引用和宽泛 workflow 权限。
 - scanner Deny 在 canonical tool security gate 中 fail-closed；scanner Ask 与 tainted FileWrite/Shell/Download/PackageInstall 等请求进入一次性、精确到工具名与 sanitized input 的用户审批，`Bypass`/`Auto` 不会绕过 Deny。
 - `SecurityDecisionRecord`、`EventKind::SecurityDecision`、IPC permission metadata 和 TUI permission rendering 只传播规则 ID、source category 和 digest，不保存远程正文、secret 或原始命令。
-- deterministic fixtures 已覆盖恶意 setup、postinstall、Docker 下载、floating/pinned Action、普通 cargo build/test、只读 Grep 与精确审批输入变化。
+- 离线 deterministic fixtures 覆盖恶意 setup、postinstall、Docker 下载、floating/pinned Action、普通 cargo build/test 与只读 Grep；engine lifecycle 测试另行穿过真实 `execute_tool_impl` 边界，验证代表性 Deny 不调用工具体并落盘 redacted decision，同时验证精确审批只允许一次且输入变化后重新询问。audit-export 测试独立验证 security decision 进入顺序 SHA-256 链且篡改会失败。
 
-本轮 focused tests 与 `cargo test -p allthecodes --test agentic_workflow_injection_e2e -- --nocapture` 已通过；`cargo check --workspace` 也通过。workspace 级 clippy/release gate 当前被共享工作区中 `allthecodes-mcp/src/runtime.rs` 测试引用缺失的 `take_installed_manager` 阻塞；定向 engine clippy 已通过。
+2026-07-13 验证：scanner unit tests（setup 6 项、supply 2 项）、scanner fixture integration 2 项、audit-export 11 项、离线 attack contract 3 项、engine production security 2 项、`cargo fmt --all --check`、`git diff --check` 和 `cargo build --workspace --release` 均退出 0；attack contract 的定向 clippy 也已通过。workspace `cargo clippy --workspace --all-targets -- -D warnings` 仍被共享工作区中 `crates/allthecodes-mcp/src/runtime.rs:124` 的测试调用缺失 `take_installed_manager` 阻塞，不属于本安全修复范围。
 
 ### Runtime verification evidence / Session Report（2026-07-13）
 
