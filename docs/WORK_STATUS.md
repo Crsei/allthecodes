@@ -1,6 +1,6 @@
 # allthecodes 工作状态总览
 
-> 更新日期: 2026-07-06 | 分支历史名: `rust-lite` | 当前阶段: 全量构建 / Full Build
+> 更新日期: 2026-07-13 | 分支历史名: `rust-lite` | 当前阶段: 全量构建 / Full Build
 
 本文件只保留当前阶段仍需要判断和执行的状态。已经确认实现、已关闭或只具历史价值的阶段记录统一看：
 
@@ -13,6 +13,28 @@
 ## 当前结论
 
 allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默认按 `/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/claude-code-bun/` 的完整行为对齐；确需保留裁剪时，必须写入 [IMPLEMENTATION_GAPS.md](../development/archive/IMPLEMENTATION_GAPS.md) 的 "Intentional 裁剪"。
+
+### Agentic workflow injection defense（2026-07-13）
+
+`development/ai_check/2026-07-11-agentic-workflow-injection-defense-plan.zh.md` 的 task4–6 已实现第一版闭环：
+
+- setup-chain / supply-chain 扫描器只做有界静态读取，覆盖 DNS TXT 解码、curl/wget 管道执行、postinstall 下载、Docker 未知二进制下载、凭据路径、动态下载、未知域名、Action 浮动引用和宽泛 workflow 权限。
+- scanner Deny 在 canonical tool security gate 中 fail-closed；scanner Ask 与 tainted FileWrite/Shell/Download/PackageInstall 等请求进入一次性、精确到工具名与 sanitized input 的用户审批，`Bypass`/`Auto` 不会绕过 Deny。
+- `SecurityDecisionRecord`、`EventKind::SecurityDecision`、IPC permission metadata 和 TUI permission rendering 只传播规则 ID、source category 和 digest，不保存远程正文、secret 或原始命令。
+- deterministic fixtures 已覆盖恶意 setup、postinstall、Docker 下载、floating/pinned Action、普通 cargo build/test、只读 Grep 与精确审批输入变化。
+
+本轮 focused tests 与 `cargo test -p allthecodes --test agentic_workflow_injection_e2e -- --nocapture` 已通过；`cargo check --workspace` 也通过。workspace 级 clippy/release gate 当前被共享工作区中 `allthecodes-mcp/src/runtime.rs` 测试引用缺失的 `take_installed_manager` 阻塞；定向 engine clippy 已通过。
+
+### Runtime verification evidence / Session Report（2026-07-13）
+
+`development/runtime/2026-07-11-runtime-verification-evidence-plan.md` 的 Task 1–6 已完成第一版实现闭环：
+
+- record/replay 现在保存版本化的 verification、artifact 和 `SessionReportGenerated` 事实；工具结果只在已知成功 build/test/lint/security 命令且 exit code 为 0 时计为正向证据，并保存命令 digest 而不是原文。
+- `targeted_tests`、`build_and_test`、`release_gate` 通过正常工具/权限路径执行 bounded verify-continue，最多三轮；缺少证据最终为 `Incomplete`，不会伪造通过。
+- transaction flush 后生成原子写入、redacted、带 canonical record head digest 的 `SessionReportV1`，并通过 Web `GET /api/sessions/{id}/report`、IPC/TUI summary 和 metadata-only telemetry 暴露。
+- 已验证：session report 2 项、engine verification 7 项、verification e2e 5 项、Web not-generated handler 1 项、telemetry feature test 1 项；`cargo check -p allthecodes`、`cargo fmt --all --check` 和定向 engine clippy 均通过。
+
+这不是完整 traceable logging 体系的关闭声明。统一的 durable runtime audit event log、全链路 `submit_id/turn_id/request_id/event_id` 传播、完整 daemon/IPC/permission/stream/progress 事件覆盖，以及让 audit export 以该事实源为主仍是残余工作；详见 [traceable-logging-plan.md](../development/archive/plan/traceable-logging-plan.md)。workspace clippy 仍受共享工作区缺失的 `allthecodes-mcp::take_installed_manager` 测试辅助函数阻塞。
 
 当前已确认完成并归档的主线包括：
 
@@ -44,6 +66,7 @@ allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默
 | WebFetch | HTTP-only release scope | redirect/MIME/proxy/credential 边界已完成；browser-grade JS rendering 已写入 [IMPLEMENTATION_GAPS.md](../development/archive/IMPLEMENTATION_GAPS.md) §6 intentional crop。 |
 | Daemon / KAIROS | resident assistant parity 主线已落地；bridge session 可按 workspace 默认复用并持久化 assistant session id | 默认验证覆盖 CLI stopped/start/status/submit/sleep/stop、worker IDs、automation state、history DTO、graceful shutdown、bridge session storage/selector/worker/API/slash command。可选 live smoke 需要真实 provider 凭据和网络；GrowthBook 公网行为、Telegram/Lark 入站会话仍按 intentional/deferred scope 处理。 |
 | Session export | schema v2 与 API request snapshots 已接入，projection residual 开放 | 补 context collapse 原生事件、mode/tag 来源和完整 apiView 投影。 |
+| Runtime verification evidence / Session Report | 第一版闭环已落地，完整 traceable logging 仍开放 | canonical verification/artifact/report records、三轮 bounded verify-continue、redacted/tamper-linked `SessionReportV1`、Web/IPC/TUI/telemetry surfaces 和 deterministic e2e 已通过；下一步补统一 durable audit event source 与全链路 correlation/event coverage。 |
 | Crate migration | Engine + IPC owner migration landed; verification in progress | IPC envelope version/min-compat 已补；下一步收束剩余 root-style imports、allow attributes、Codex compatibility path hits，并补齐 thin-binary closeout 文档。 |
 | ACP live-provider smoke | Binary/stdout smoke target landed; deterministic ACP runtime tests pass; live real-model smoke is on-demand | `acp_stdio_real_model_prompt_smoke` is ignored by default because it requires configured credentials, provider access, and network. On 2026-07-03, explicit local runs against current `backend=codex` timed out after 300s after `available_commands_update` + `state_update: running`, with no model content or idle. |
 | UI/runtime issues | P0/P1 基础完成；Phase 4 TUI state decoupling 已落地；仍有 residuals 和未跟踪 parity 缺口 | 运行时 residual 见 [KNOWN_ISSUES.md](../development/archive/KNOWN_ISSUES.md)；`⚠️ 部分` / `❌ 缺失` 的未跟踪功能按 [ratatui-ui-parity-untracked-gap-plan-2026-05-08.md](../development/archive/plan/ratatui-ui-parity-untracked-gap-plan-2026-05-08.md) 分阶段处理。 |
@@ -58,7 +81,7 @@ allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默
 - [DAEMON_OPERATIONS.md](../development/reference/DAEMON_OPERATIONS.md), [daemon-usability-plan.md](../development/archive/plan/daemon-usability-plan.md): daemon 当前操作面与后续计划。
 - [RATATUI_UI_PARITY.md](../development/archive/RATATUI_UI_PARITY.md), [ratatui-ui-parity-untracked-gap-plan-2026-05-08.md](../development/archive/plan/ratatui-ui-parity-untracked-gap-plan-2026-05-08.md): Rust TUI 对标与后续 UI parity。
 - [STORAGE.md](STORAGE.md): allthecodes 路径隔离与数据目录规则。
-- [traceable-logging-plan.md](../development/archive/plan/traceable-logging-plan.md): 可追溯日志体系 draft。
+- [traceable-logging-plan.md](../development/archive/plan/traceable-logging-plan.md): 可追溯日志体系 draft；runtime verification/session report 已完成第一版证据闭环，但不等于整套 durable audit 体系完成。
 
 ## 历史 Deferred
 

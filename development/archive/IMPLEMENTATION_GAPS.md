@@ -1,6 +1,6 @@
 # allthecodes 未完备项与全量构建 TODO
 
-> 更新日期: 2026-07-06 | 当前阶段: 全量构建 / Full Build
+> 更新日期: 2026-07-13 | 当前阶段: 全量构建 / Full Build
 
 本文只登记仍未补齐、仍需重评或明确 intentional crop 的内容。已确认实现或已关闭的历史记录已迁移到：
 
@@ -33,6 +33,8 @@
 | Remote/teleport command surfaces | teleport deferred | `/channels` is intentionally limited to gateway-backed outbound adapter status for now. Inbound channel sessions and any `/teleport` command remain deferred until a product/runtime contract exists; do not present placeholders as real remote-control capability. |
 | Computer Use parity | 核心安全/执行路径已补，Windows deep integration 待验证 | `mcp__computer-use__*` 工具名、Executor 串行化、真实 lock、截图安全临时文件、Linux Wayland capability 误报已修。剩余缺口：Win32 COM/UI Automation/virtual cursor/window border/input indicator 仍主要是模块级能力，尚未完整接入工具/executor 可达路径；Wayland `ydotool` 输入 backend 未实现；真实 Windows/macOS/Linux 桌面 smoke 证据待补。 |
 | Hook runtime parity | command/http 基线已接，prompt/agent/file watcher 仍缺 | `PreToolUse updated_input` 重校验、critical 非零退出 fail-closed、HTTP hook + SSRF guard、hook events/async registry/session hooks 基线已接。剩余缺口：prompt/agent hook 仍未接真实 LLM/runtime 执行，当前显式报错；FileChanged watcher、hooksConfigSnapshot/变更检测、skill improvement LLM 写回和 malformed hook config 结构化诊断仍待补。 |
+| Agentic workflow injection defense | task4–6 第一版已落地，workspace release gate 待完成 | setup-chain / supply-chain 静态扫描、scanner Deny/Ask 接入 canonical tool gate、精确一次性审批、redacted security record/audit/IPC/UI metadata 和 deterministic attack fixtures 已实现。扫描器是有界 lexical analysis，不执行仓库代码；复杂 YAML/脚本语义仍可能产生保守 Ask。focused/allthecodes E2E 与 workspace check 已通过；workspace clippy/release gate 当前受共享工作区 `allthecodes-mcp/src/runtime.rs` 缺失 `take_installed_manager` 影响。 |
+| Runtime verification evidence / Session Report | 第一版闭环已落地，完整 traceable logging 仍未完成 | canonical verification/artifact/report records、成功工具证据分类、最多三轮 verify-continue、redacted/tamper-linked `SessionReportV1`、Web/IPC/TUI/telemetry surfaces 和 deterministic e2e 已实现。仍缺统一 durable runtime audit event log、完整 submit/turn/request/event correlation、daemon/IPC/permission/stream/progress 覆盖，以及 audit export 以该事实源为主。workspace clippy 仍受共享工作区缺失的 `allthecodes-mcp::take_installed_manager` 测试辅助函数阻塞。 |
 | Phase 5 Vault encrypted storage parity | transitional credentials store | `VaultHttpFetch` 已补 `vault_auth_key` schema、key@host permission prompt、HTTPS/private-network/redirect/timeout/body-cap/secret-scrub 边界；但凭据读取仍来自 `{data_root}/credentials.json` 的 `vault` 对象和 deprecated `credential_ref` alias，不宣称 encrypted vault parity。后续需实现/接入受支持 encrypted vault storage 后再关闭。 |
 
 ## 2. 活跃方案文档
@@ -41,7 +43,7 @@
 
 - [computer-use-implementation-checklist.md](computer-use-implementation-checklist.md): Computer Use 落地清单，仍是待实施能力。
 - [session-export-implementation-guide.md](session-export-implementation-guide.md): Rust 侧仍缺完整导出基础设施。
-- [traceable-logging-plan.md](traceable-logging-plan.md): 可追溯日志体系仍是 Draft。
+- [traceable-logging-plan.md](traceable-logging-plan.md): 可追溯日志体系仍是 Draft；runtime verification/session report 已完成第一版证据闭环，但不等于整套 durable audit 体系完成。
 - [daemon-usability-plan.md](daemon-usability-plan.md): daemon 可用化主干已分阶段落地，但仍有 worker/route ownership 余量。
 - [plan/crate-migration-phase-plan-2026-05-14.md](plan/crate-migration-phase-plan-2026-05-14.md): Phase 0-12 implementation slices 已落地且 workspace build/test gates green；thin-binary closeout 仍未关闭，当前 blockers 见 [reference/CRATE_MIGRATION_PHASE0_OWNER_GUARD_MATRIX.md](../reference/CRATE_MIGRATION_PHASE0_OWNER_GUARD_MATRIX.md) 的 Phase 12 verification snapshot。
 - [reference/remote-control-current-state.md](../reference/remote-control-current-state.md): remote-control gateway / daemon / ipc / `/remote` / Telegram/Lark adapter 边界已冻结，后续实现需保持该职责划分。

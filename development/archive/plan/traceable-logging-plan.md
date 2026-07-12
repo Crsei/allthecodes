@@ -1,7 +1,7 @@
 # 可追溯日志体系补齐方案
 
-> 状态：Draft
-> 日期：2026-04-16
+> 状态：Draft（runtime verification/session report 第一版已落地，完整体系仍开放）
+> 日期：2026-07-13
 > 适用范围：`src/main.rs`、`src/engine/`、`src/query/`、`src/tools/`、`src/ipc/`、`src/daemon/`、`src/session/`
 > 约束：不新增第三方依赖；保持 `~/.cc-rust/` 路径隔离；优先小步可回退改造
 
@@ -66,6 +66,21 @@
 8. 权限拒绝和 progress 结构存在，但未形成闭环。
    `src/engine/lifecycle/types.rs:41-45` 定义了 `PermissionDenial`，`src/engine/lifecycle/mod.rs:258-259` 允许记录，但当前主流程未形成稳定、可查询、可导出的权限审计链。
    `src/types/tool.rs:82-85` 定义了 `ToolProgress`，但仓库内没有实际生产者。
+
+### 2.3 2026-07-13 runtime verification 第一版证据闭环
+
+`development/runtime/2026-07-11-runtime-verification-evidence-plan.md` 已落地第一版 runtime verification/session report slice：
+
+- `allthecodes-session` 的 record/replay 保存版本化 verification、artifact 和 report-generated 事实；成功且已知类别的 build/test/lint/security 工具结果以 digest 和元数据形式成为证据。
+- `allthecodes-engine` 按命名 policy 评估证据，沿正常工具与 permission pipeline bounded verify-continue，最多三轮；无法满足要求时保留 `Incomplete` 和未验证假设。
+- `SessionReportV1` 在 session transaction flush 后以原子、redacted、tamper-linked 文件落盘；报告读取、完整性检查、Web `not_generated` 状态、IPC/TUI summary 和 metadata-only telemetry 已接入。
+- focused evidence：session report 2 项、engine verification 7 项、verification e2e 5 项、Web handler 1 项、telemetry feature test 1 项；`cargo check -p allthecodes`、format check 和定向 engine clippy 通过。
+
+这只关闭了可追溯日志需求中的“验证证据与报告投影”子集，不关闭本计划。以下缺口仍有效：
+
+- 尚无统一的 durable runtime audit event log 作为所有 transcript/session/audit export 的唯一事实源。
+- `submit_id`、`turn_id`、`request_id`、`event_id` 尚未在入口、模型请求、工具、权限、daemon、IPC 和异常路径形成完整传播与 parent-child 链。
+- stream/progress、permission resolution、daemon/SSE 和强制退出前缀等完整事件覆盖及基于 runtime event log 的 audit export 重构仍待完成。
 
 ## 3. 决策
 
