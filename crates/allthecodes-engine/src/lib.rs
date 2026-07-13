@@ -35,6 +35,7 @@ pub mod system_prompt;
 pub mod tool_runtime;
 pub mod tools;
 pub mod types;
+pub mod verification;
 pub mod worktree_hooks;
 
 #[cfg(feature = "telemetry")]

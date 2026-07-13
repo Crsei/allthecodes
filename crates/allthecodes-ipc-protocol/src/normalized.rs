@@ -261,6 +261,7 @@ pub fn legacy_backend_type(message: &BackendMessage) -> &'static str {
         BackendMessage::GoalUpdated { .. } => "goal_updated",
         BackendMessage::UsageUpdate { .. } => "usage_update",
         BackendMessage::StatusLineUpdate { .. } => "status_line_update",
+        BackendMessage::SessionReportSummary { .. } => "session_report_summary",
         BackendMessage::Suggestions { .. } => "suggestions",
         BackendMessage::BriefMessage { .. } => "brief_message",
         BackendMessage::AutonomousStart { .. } => "autonomous_start",

@@ -43,6 +43,7 @@ async fn test_simple_text_response_terminates() {
         skip_cache_write: None,
         task_budget: None,
         gates: QueryGates::default(),
+        verification_policy: None,
     };
 
     let stream = query(params, deps);
@@ -116,6 +117,7 @@ async fn test_tool_use_then_text_response() {
         skip_cache_write: None,
         task_budget: None,
         gates: QueryGates::default(),
+        verification_policy: None,
     };
 
     let stream = query(params, deps.clone());
@@ -481,6 +483,7 @@ async fn test_abort_during_tool_execution() {
         skip_cache_write: None,
         task_budget: None,
         gates: QueryGates::default(),
+        verification_policy: None,
     };
 
     // Spawn the query in the background so we can set abort mid-execution.
@@ -548,6 +551,7 @@ async fn test_abort_after_streaming() {
         skip_cache_write: None,
         task_budget: None,
         gates: QueryGates::default(),
+        verification_policy: None,
     };
 
     let stream = query(params, deps.clone());
@@ -599,6 +603,7 @@ async fn test_abort_before_api_call() {
         skip_cache_write: None,
         task_budget: None,
         gates: QueryGates::default(),
+        verification_policy: None,
     };
 
     let stream = query(params, deps);

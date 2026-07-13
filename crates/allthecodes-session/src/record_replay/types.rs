@@ -50,6 +50,11 @@ pub enum RecordItem {
     Message(MessageRecord),
     QueryEvent(QueryEventRecord),
     ToolProgress(ToolProgressRecord),
+    VerificationStarted(VerificationStartedRecord),
+    VerificationEvidence(VerificationEvidenceRecord),
+    VerificationFinished(VerificationFinishedRecord),
+    ArtifactCreated(ArtifactCreatedRecord),
+    SessionReportGenerated(SessionReportGeneratedRecord),
     PermissionRequest(PermissionRequestRecord),
     PermissionResponse(PermissionResponseRecord),
     SecurityDecision(SecurityDecisionRecord),
@@ -60,6 +65,73 @@ pub enum RecordItem {
     Rollback(RollbackRecord),
     Branch(BranchRecord),
     LegacyMessage(LegacyMessageRecord),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationStatus {
+    Passed,
+    Failed,
+    Incomplete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceKind {
+    Build,
+    Test,
+    Lint,
+    SecurityGate,
+    ApiSmoke,
+    BrowserSmoke,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationStartedRecord {
+    pub verification_id: String,
+    pub policy: String,
+    pub round: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationEvidenceRecord {
+    pub evidence_id: String,
+    pub kind: EvidenceKind,
+    pub tool_use_id: String,
+    pub command_digest: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+    pub artifact_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationFinishedRecord {
+    pub verification_id: String,
+    pub policy: String,
+    pub round: u8,
+    pub status: VerificationStatus,
+    pub evidence_ids: Vec<String>,
+    pub missing_requirements: Vec<EvidenceKind>,
+    pub unverified_assumptions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactCreatedRecord {
+    pub artifact_id: String,
+    pub kind: String,
+    pub media_type: String,
+    pub digest: String,
+    pub byte_len: u64,
+    pub redaction: String,
+    pub relative_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionReportGeneratedRecord {
+    pub report_version: u32,
+    pub relative_path: String,
+    pub digest: String,
+    pub record_head_digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -608,6 +680,59 @@ mod tests {
                 }),
             ),
             (
+                "verification_started",
+                RecordItem::VerificationStarted(VerificationStartedRecord {
+                    verification_id: "verify-1".into(),
+                    policy: "targeted_tests".into(),
+                    round: 1,
+                }),
+            ),
+            (
+                "verification_evidence",
+                RecordItem::VerificationEvidence(VerificationEvidenceRecord {
+                    evidence_id: "evidence-1".into(),
+                    kind: EvidenceKind::Test,
+                    tool_use_id: "toolu_abc".into(),
+                    command_digest: "sha256:command".into(),
+                    exit_code: 0,
+                    duration_ms: 42,
+                    artifact_ids: vec![],
+                }),
+            ),
+            (
+                "verification_finished",
+                RecordItem::VerificationFinished(VerificationFinishedRecord {
+                    verification_id: "verify-1".into(),
+                    policy: "targeted_tests".into(),
+                    round: 1,
+                    status: VerificationStatus::Passed,
+                    evidence_ids: vec!["evidence-1".into()],
+                    missing_requirements: vec![],
+                    unverified_assumptions: vec![],
+                }),
+            ),
+            (
+                "artifact_created",
+                RecordItem::ArtifactCreated(ArtifactCreatedRecord {
+                    artifact_id: "artifact-1".into(),
+                    kind: "test-log".into(),
+                    media_type: "text/plain".into(),
+                    digest: "sha256:artifact".into(),
+                    byte_len: 10,
+                    redaction: "metadata_only".into(),
+                    relative_path: "artifacts/test.log".into(),
+                }),
+            ),
+            (
+                "session_report_generated",
+                RecordItem::SessionReportGenerated(SessionReportGeneratedRecord {
+                    report_version: 1,
+                    relative_path: "session-report.v1.json".into(),
+                    digest: "sha256:report".into(),
+                    record_head_digest: "sha256:head".into(),
+                }),
+            ),
+            (
                 "permission_request",
                 RecordItem::PermissionRequest(PermissionRequestRecord {
                     request_id: "perm-1".into(),
@@ -714,5 +839,41 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{name}: deserialization failed: {e} (json: {json})"));
             assert_eq!(parsed.seq, 1, "{name}: seq mismatch");
         }
+    }
+
+    #[test]
+    fn verification_record_round_trip_ignores_unknown_fields() {
+        let item = RecordItem::VerificationFinished(VerificationFinishedRecord {
+            verification_id: "verify-1".into(),
+            policy: "targeted_tests".into(),
+            round: 1,
+            status: VerificationStatus::Passed,
+            evidence_ids: vec!["evidence-1".into()],
+            missing_requirements: vec![],
+            unverified_assumptions: vec![],
+        });
+        let mut value = serde_json::to_value(item).unwrap();
+        assert_eq!(value["type"], "verification_finished");
+        value["future_field"] = serde_json::json!("ignored");
+        assert!(serde_json::from_value::<RecordItem>(value).is_ok());
+    }
+
+    #[test]
+    fn security_decision_record_contains_only_redacted_metadata() {
+        let item = RecordItem::SecurityDecision(SecurityDecisionRecord {
+            tool_use_id: "tool-1".into(),
+            tool_name: "Bash".into(),
+            input_digest: "a".repeat(64),
+            sink: TaintSink::Shell,
+            decision: TaintDecisionKind::Deny,
+            rule_ids: vec!["awi.untrusted_to_shell".into()],
+            source_digests: vec!["b".repeat(64)],
+            user_override: false,
+        });
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(json.contains("input_digest"));
+        assert!(!json.contains("curl"));
+        assert!(!json.contains("payload"));
+        assert!(serde_json::from_str::<RecordItem>(&json).is_ok());
     }
 }

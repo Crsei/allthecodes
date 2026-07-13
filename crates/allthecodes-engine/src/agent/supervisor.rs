@@ -148,6 +148,7 @@ pub(super) async fn spawn_background_agent(
         &parent_model,
         current_depth,
     );
+    child_config.verification_policy = params.verification_policy.clone();
     super::dispatch::apply_coordinator_worker_turn_limit(&mut child_config, ctx, &params);
     let delegated = params.delegate_task_id.is_some();
     if delegated {

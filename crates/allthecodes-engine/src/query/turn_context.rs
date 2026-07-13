@@ -5,6 +5,8 @@ use tracing::{debug, warn};
 use crate::types::config::{QueryGates, QueryParams, QuerySource};
 use crate::types::state::QueryLoopState;
 use crate::types::tool::Tools;
+use crate::verification::policy::{policy_by_name, VerificationPolicy};
+use allthecodes_session::record_replay::types::{EvidenceKind, VerificationEvidenceRecord};
 
 use super::deps::{ModelCallParams, QueryDeps};
 
@@ -16,6 +18,61 @@ pub(crate) struct QueryRunContext {
     pub skip_cache_write: Option<bool>,
     pub fallback_model: Option<String>,
     pub gates: QueryGates,
+    pub verification: VerificationTracker,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct VerificationTracker {
+    pub policy: Option<VerificationPolicy>,
+    pub round: u8,
+    pub evidence: Vec<VerificationEvidenceRecord>,
+    pub failed_attempts: Vec<String>,
+    pub configuration_error: Option<String>,
+}
+
+impl VerificationTracker {
+    fn from_name(name: Option<String>) -> Self {
+        let Some(name) = name else {
+            return Self::default();
+        };
+        match policy_by_name(&name) {
+            Ok(policy) if policy.max_rounds > 0 => Self {
+                policy: Some(policy),
+                round: 1,
+                ..Self::default()
+            },
+            Ok(_) => Self::default(),
+            Err(error) => {
+                tracing::warn!(policy = %name, %error, "rejecting unknown verification policy");
+                Self {
+                    policy: Some(VerificationPolicy {
+                        name: name.clone(),
+                        required: Vec::new(),
+                        max_rounds: 1,
+                    }),
+                    round: 1,
+                    failed_attempts: vec![format!("invalid verification policy: {name}")],
+                    configuration_error: Some(error.to_string()),
+                    ..Self::default()
+                }
+            }
+        }
+    }
+
+    pub(crate) fn missing_names(kinds: &[EvidenceKind]) -> String {
+        kinds
+            .iter()
+            .map(|kind| match kind {
+                EvidenceKind::Build => "build",
+                EvidenceKind::Test => "test",
+                EvidenceKind::Lint => "lint",
+                EvidenceKind::SecurityGate => "security_gate",
+                EvidenceKind::ApiSmoke => "api_smoke",
+                EvidenceKind::BrowserSmoke => "browser_smoke",
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 impl QueryRunContext {
@@ -35,6 +92,7 @@ impl QueryRunContext {
                     .unwrap_or_else(allthecodes_types::models::default_fallback_model_id),
             ),
             gates: params.gates,
+            verification: VerificationTracker::from_name(params.verification_policy),
         };
 
         (context, state)

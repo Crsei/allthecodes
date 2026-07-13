@@ -83,6 +83,24 @@ pub struct SessionDetailResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct SessionReportParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct SessionReportResponse {
+    pub session_id: String,
+    /// `generated` or `not_generated`; absence is a normal report state.
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrity_valid: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct SessionResumeParams {
     pub id: String,
 }

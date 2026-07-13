@@ -538,6 +538,7 @@ impl AssistantWorkerRuntime {
             max_turns: None,
             max_budget_usd: None,
             task_budget: None,
+            verification_policy: None,
             verbose: false,
             initial_messages: None,
             commands: command_names,
@@ -1040,6 +1041,7 @@ mod tests {
             max_turns: None,
             max_budget_usd: None,
             task_budget: None,
+            verification_policy: None,
             verbose: false,
             initial_messages: None,
             commands: Vec::new(),
@@ -1928,6 +1930,7 @@ mod tests {
                             message: "Allow Bash?".to_string(),
                             options: vec!["allow".to_string(), "deny".to_string()],
                             operation: None,
+                            security: None,
                         },
                     )
                     .await
@@ -1981,6 +1984,7 @@ mod tests {
                     message: "Allow Bash?".to_string(),
                     options: vec!["allow".to_string(), "deny".to_string()],
                     operation: None,
+                    security: None,
                 },
             )
             .await;

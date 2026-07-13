@@ -3,11 +3,12 @@ use crate::session::record_replay::types::{
     PermissionRequestRecord, PermissionResponseRecord, QuestionRequestRecord,
     QuestionResponseRecord, RecordItem, SecurityDecisionRecord,
 };
+use crate::verification::evidence::evidence_from_tool_result_with_duration;
 use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
 use allthecodes_types::security::{TaintDecisionKind, TaintMark, TaintSink};
 
 impl QueryEngineDeps {
-    async fn record_replay_items(&self, items: Vec<RecordItem>, context: &'static str) {
+    pub(super) async fn record_replay_items(&self, items: Vec<RecordItem>, context: &'static str) {
         record_replay_items_for_handle(&self.session_recorder, &self.session_id, items, context)
             .await;
     }
@@ -604,16 +605,33 @@ impl QueryEngineDeps {
             PipelineStageResult::Finish(result) => return Ok(result),
         };
 
-        if let PipelineStageResult::Finish(result) = pipeline.record_and_audit(
+        let result = match pipeline.record_and_audit(
             post_hook.result,
             &plan,
             post_hook.hook_stopped_continuation,
             post_hook.tool_start,
         ) {
-            return Ok(result);
+            PipelineStageResult::Finish(result) => result,
+            PipelineStageResult::Continue(_) => {
+                unreachable!("record_and_audit always finalizes successful tool execution")
+            }
+        };
+
+        if let Some(evidence) = evidence_from_tool_result_with_duration(
+            &result.tool_use_id,
+            &result.tool_name,
+            &result.effective_input,
+            &result.result,
+            result.duration_ms.unwrap_or_default(),
+        ) {
+            self.record_replay_items(
+                vec![RecordItem::VerificationEvidence(evidence)],
+                "verification_evidence",
+            )
+            .await;
         }
 
-        unreachable!("record_and_audit always finalizes successful tool execution");
+        Ok(result)
     }
 }
 

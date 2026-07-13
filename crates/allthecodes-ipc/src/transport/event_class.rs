@@ -43,6 +43,7 @@ pub fn classify_event(msg: &BackendMessage) -> EventClass {
         BackendMessage::ToolProgress { .. }
         | BackendMessage::UsageUpdate { .. }
         | BackendMessage::StatusLineUpdate { .. }
+        | BackendMessage::SessionReportSummary { .. }
         | BackendMessage::Suggestions { .. }
         | BackendMessage::NotificationSent { .. }
         | BackendMessage::SubsystemStatus { .. }
@@ -171,6 +172,7 @@ mod tests {
             input: serde_json::json!({ "command": "ls" }),
             options: vec!["allow".to_string(), "deny".to_string()],
             operation: None,
+            security: None,
         };
         let question = BackendMessage::QuestionRequest {
             id: "question-1".to_string(),

@@ -68,6 +68,7 @@ async fn test_image_tool_result_flows_as_blocks() {
         skip_cache_write: None,
         task_budget: None,
         gates: QueryGates::default(),
+        verification_policy: None,
     };
 
     let stream = query(params, deps);
@@ -223,6 +224,7 @@ async fn test_computer_use_screenshot_click_round_trip() {
         skip_cache_write: None,
         task_budget: None,
         gates: QueryGates::default(),
+        verification_policy: None,
     };
 
     let stream = query(params, deps);

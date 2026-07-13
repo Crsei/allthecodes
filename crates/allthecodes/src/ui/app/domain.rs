@@ -181,7 +181,46 @@ pub(super) struct SessionUiStore {
     pub(super) cwd: String,
     pub(super) output_style: Option<String>,
     pub(super) proactive_status: Option<ProactiveUiStatus>,
+    pub(super) verification: Option<VerificationUiSummary>,
     pub(super) history: Vec<HistorySearchEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct VerificationUiSummary {
+    pub(super) state: String,
+    pub(super) policy: Option<String>,
+    pub(super) status: Option<String>,
+    pub(super) rounds: Option<u8>,
+    pub(super) evidence_count: u64,
+    pub(super) missing_requirements: Vec<String>,
+    pub(super) risk_event_count: u64,
+    pub(super) cost_usd: Option<f64>,
+    pub(super) integrity_valid: Option<bool>,
+}
+
+impl VerificationUiSummary {
+    pub(super) fn render_inline(&self) -> String {
+        let status = self.status.as_deref().unwrap_or(self.state.as_str());
+        let policy = self.policy.as_deref().unwrap_or("none");
+        let integrity = match self.integrity_valid {
+            Some(true) => "integrity=ok",
+            Some(false) => "integrity=invalid",
+            None => "integrity=unknown",
+        };
+        let missing = (!self.missing_requirements.is_empty())
+            .then(|| format!(" missing={}", self.missing_requirements.join(",")))
+            .unwrap_or_default();
+        let cost = self
+            .cost_usd
+            .map(|value| format!(" cost=${value:.4}"))
+            .unwrap_or_default();
+        format!(
+            "verify={policy}:{status} evidence={} rounds={} risks={} {integrity}{missing}{cost}",
+            self.evidence_count,
+            self.rounds.unwrap_or_default(),
+            self.risk_event_count,
+        )
+    }
 }
 
 #[derive(Debug, Default)]
@@ -232,5 +271,27 @@ mod tests {
         assert_eq!(store.pop_next().as_deref(), Some("first"));
         assert_eq!(store.pop_next().as_deref(), Some("second"));
         assert_eq!(store.pop_next(), None);
+    }
+
+    #[test]
+    fn verification_summary_is_compact_and_marks_missing_evidence() {
+        let summary = VerificationUiSummary {
+            state: "generated".into(),
+            policy: Some("targeted_tests".into()),
+            status: Some("incomplete".into()),
+            rounds: Some(3),
+            evidence_count: 1,
+            missing_requirements: vec!["test".into()],
+            risk_event_count: 2,
+            cost_usd: Some(0.25),
+            integrity_valid: Some(false),
+        };
+
+        let rendered = summary.render_inline();
+        assert!(rendered.contains("verify=targeted_tests:incomplete"));
+        assert!(rendered.contains("evidence=1"));
+        assert!(rendered.contains("missing=test"));
+        assert!(rendered.contains("integrity=invalid"));
+        assert!(!rendered.contains("command"));
     }
 }

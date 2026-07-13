@@ -182,6 +182,34 @@ impl PluginRuntimeBuilder {
                         }
                     }
                 }
+
+                fn record_verification_report(
+                    &self,
+                    session_id: &str,
+                    policy: &str,
+                    status: &str,
+                    rounds: u8,
+                    evidence_count: u64,
+                    report_integrity_valid: Option<bool>,
+                    cost_usd: Option<f64>,
+                ) {
+                    let tracer =
+                        allthecodes_services::telemetry::session_tracing::SessionTracer::new(
+                            session_id,
+                            allthecodes_services::telemetry::TelemetryConfig::default(),
+                            Some(self.handle.clone()),
+                        );
+                    tracer.trace_verification_report(
+                        &allthecodes_services::telemetry::session_tracing::VerificationReportMetadata {
+                            policy: policy.to_string(),
+                            status: status.to_string(),
+                            rounds,
+                            evidence_count,
+                            report_integrity_valid,
+                            cost_usd,
+                        },
+                    );
+                }
             }
 
             let bridge = EngineTelemetryBridge {

@@ -6,8 +6,10 @@ use allthecodes_types::message::{
 };
 
 use super::types::{
-    LegacyMessageRecord, MessageRecord, RecordItem, RecordLine, RecordedMessage,
-    RecordedMessageContent, RecordedSystemSubtype, SessionMetaRecord,
+    ArtifactCreatedRecord, LegacyMessageRecord, MessageRecord, RecordItem, RecordLine,
+    RecordedMessage, RecordedMessageContent, RecordedSystemSubtype, SessionMetaRecord,
+    SessionReportGeneratedRecord, VerificationEvidenceRecord, VerificationFinishedRecord,
+    VerificationStartedRecord,
 };
 use crate::storage::SerializableMessage;
 
@@ -19,6 +21,17 @@ pub struct ReconstructedRecordSession {
     pub messages: Vec<RecordedMessage>,
     pub last_seq: u64,
     pub pending_interactions: Vec<PendingInteraction>,
+    pub verification_started: Vec<IndexedRecord<VerificationStartedRecord>>,
+    pub verification_evidence: Vec<IndexedRecord<VerificationEvidenceRecord>>,
+    pub verification_finished: Vec<IndexedRecord<VerificationFinishedRecord>>,
+    pub artifacts: Vec<IndexedRecord<ArtifactCreatedRecord>>,
+    pub reports: Vec<IndexedRecord<SessionReportGeneratedRecord>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexedRecord<T> {
+    pub seq: u64,
+    pub record: T,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +98,51 @@ pub fn reconstruct_recorded_messages(lines: &[RecordLine]) -> ReconstructedRecor
                 visible_messages.retain(|entry| entry.seq <= rollback.target_seq);
                 pending_permissions.retain(|_, pending| pending.seq() <= rollback.target_seq);
                 pending_questions.retain(|_, pending| pending.seq() <= rollback.target_seq);
+                session
+                    .verification_started
+                    .retain(|record| record.seq <= rollback.target_seq);
+                session
+                    .verification_evidence
+                    .retain(|record| record.seq <= rollback.target_seq);
+                session
+                    .verification_finished
+                    .retain(|record| record.seq <= rollback.target_seq);
+                session
+                    .artifacts
+                    .retain(|record| record.seq <= rollback.target_seq);
+                session
+                    .reports
+                    .retain(|record| record.seq <= rollback.target_seq);
+            }
+            RecordItem::VerificationStarted(record) => {
+                session.verification_started.push(IndexedRecord {
+                    seq: line.seq,
+                    record: record.clone(),
+                });
+            }
+            RecordItem::VerificationEvidence(record) => {
+                session.verification_evidence.push(IndexedRecord {
+                    seq: line.seq,
+                    record: record.clone(),
+                });
+            }
+            RecordItem::VerificationFinished(record) => {
+                session.verification_finished.push(IndexedRecord {
+                    seq: line.seq,
+                    record: record.clone(),
+                });
+            }
+            RecordItem::ArtifactCreated(record) => {
+                session.artifacts.push(IndexedRecord {
+                    seq: line.seq,
+                    record: record.clone(),
+                });
+            }
+            RecordItem::SessionReportGenerated(record) => {
+                session.reports.push(IndexedRecord {
+                    seq: line.seq,
+                    record: record.clone(),
+                });
             }
             RecordItem::PermissionRequest(request) => {
                 pending_permissions.insert(

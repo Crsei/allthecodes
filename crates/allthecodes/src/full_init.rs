@@ -593,6 +593,7 @@ pub(crate) mod acp_runtime_bridge {
                 max_turns: self.cli_overrides.max_turns,
                 max_budget_usd: None,
                 task_budget: None,
+                verification_policy: None,
                 verbose: self.cli_overrides.verbose,
                 initial_messages: params.initial_messages,
                 commands: allthecodes_commands::get_all_commands()

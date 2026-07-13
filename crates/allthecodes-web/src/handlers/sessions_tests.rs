@@ -69,6 +69,25 @@ async fn session_archive_handler_returns_404_for_missing_session() {
 
 #[tokio::test]
 #[serial]
+async fn session_report_handler_returns_typed_not_generated_state() {
+    let (_home, _guard) = temp_home();
+    let state = make_web_state();
+
+    let response =
+        session_report_handler(AxumPath("report-not-generated".to_string()), State(state))
+            .await
+            .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["session_id"], json!("report-not-generated"));
+    assert_eq!(body["state"], json!("not_generated"));
+    assert!(body.get("report").is_none());
+    assert!(body.get("integrity_valid").is_none());
+}
+
+#[tokio::test]
+#[serial]
 async fn session_archive_handler_rejects_active_session_with_409() {
     let (_home, _guard) = temp_home();
     let state = make_web_state();

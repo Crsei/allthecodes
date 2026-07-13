@@ -718,6 +718,7 @@ mod tests {
             message: "Allow command?".to_string(),
             options: vec!["Proceed".to_string()],
             operation: None,
+            security: None,
         });
 
         assert_eq!(

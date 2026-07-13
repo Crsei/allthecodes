@@ -805,6 +805,7 @@ fn make_config() -> QueryEngineConfig {
         max_turns: None,
         max_budget_usd: None,
         task_budget: None,
+        verification_policy: None,
         verbose: false,
         initial_messages: None,
         commands: vec![],
@@ -859,6 +860,7 @@ async fn execute_tool_execution_baseline(
         auto_classifier_fn: None,
         submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
         submit_tools: None,
+        verification_incomplete: Arc::new(parking_lot::Mutex::new(None)),
     };
     let Message::Assistant(parent) = assistant_message("tool execution parent") else {
         unreachable!("assistant_message returns an assistant message");
@@ -907,6 +909,7 @@ fn make_lifecycle_deps(
         auto_classifier_fn: None,
         submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
         submit_tools: None,
+        verification_incomplete: Arc::new(parking_lot::Mutex::new(None)),
     }
 }
 
@@ -1698,6 +1701,7 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
         auto_classifier_fn: None,
         submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
         submit_tools: None,
+        verification_incomplete: Arc::new(parking_lot::Mutex::new(None)),
     };
     let Message::Assistant(parent) = assistant_message("tool parent") else {
         unreachable!("assistant_message returns an assistant message");

@@ -60,6 +60,7 @@ pub(crate) const DISPATCHED_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::SessionSearch,
     ApiMethod::SessionCreate,
     ApiMethod::SessionDetail,
+    ApiMethod::SessionReport,
     ApiMethod::SessionResume,
     ApiMethod::SessionArchive,
     ApiMethod::SessionModePatch,

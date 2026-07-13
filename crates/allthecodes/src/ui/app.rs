@@ -50,7 +50,9 @@ use super::theme::{Theme, ThemeProvider};
 use super::transcript::{TranscriptState, ViewMode};
 use super::vim::VimState;
 use app_event::AppEvent;
-use domain::{ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiStore};
+use domain::{
+    ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiStore, VerificationUiSummary,
+};
 use overlays::OverlayState;
 use runtime_state::RuntimeViewState;
 
@@ -635,6 +637,7 @@ impl App {
                 .agent_nav_mut()
                 .remove(&previous_session_id);
             self.active_goal = None;
+            self.session_ui.verification = None;
         }
         self.sync_primary_agent_thread();
         self.dirty = true;
@@ -880,6 +883,31 @@ impl App {
                         ..
                     } => {
                         self.apply_primary_tool_progress(tool_use_id, tool, output);
+                    }
+                    BackendMessage::SessionReportSummary {
+                        state,
+                        policy,
+                        status,
+                        rounds,
+                        evidence_count,
+                        missing_requirements,
+                        risk_event_count,
+                        cost_usd,
+                        integrity_valid,
+                        ..
+                    } => {
+                        self.session_ui.verification = Some(VerificationUiSummary {
+                            state: state.clone(),
+                            policy: policy.clone(),
+                            status: status.clone(),
+                            rounds: *rounds,
+                            evidence_count: *evidence_count,
+                            missing_requirements: missing_requirements.clone(),
+                            risk_event_count: *risk_event_count,
+                            cost_usd: *cost_usd,
+                            integrity_valid: *integrity_valid,
+                        });
+                        self.dirty = true;
                     }
                     _ => {}
                 }

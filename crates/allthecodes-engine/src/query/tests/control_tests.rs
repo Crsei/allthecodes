@@ -16,6 +16,7 @@ use crate::types::message::{
 };
 use crate::types::tool::PermissionMode;
 use allthecodes_tools::goals::{self, GoalStatus};
+use allthecodes_types::ShellExecutionOutput;
 use serial_test::serial;
 use std::path::Path;
 
@@ -113,6 +114,113 @@ async fn test_token_budget_continuation_injects_nudge_message() {
         matches!(nudge, Some((true, text)) if text.contains("Token budget at 50%")),
         "token budget continuation should inject a meta nudge message"
     );
+}
+
+#[tokio::test]
+async fn verification_missing_evidence_is_bounded_to_three_rounds() {
+    let deps = Arc::new(MockDeps::new(vec![
+        make_text_response("I changed the files."),
+        make_text_response("Still done."),
+        make_text_response("No command needed."),
+        make_text_response("must not be requested"),
+    ]));
+    let mut params = make_query_params(vec![make_user_message_for_test("finish")]);
+    params.verification_policy = Some("targeted_tests".into());
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+
+    assert_eq!(request_start_count(&items), 3);
+    let calls = deps.recorded_params();
+    assert_eq!(calls.len(), 3, "verification must not start a fourth round");
+    assert!(deps
+        .verification_incomplete
+        .lock()
+        .as_deref()
+        .is_some_and(|summary| summary.contains("targeted_tests")));
+    assert!(calls[1].messages.iter().any(|message| {
+        matches!(
+            message,
+            Message::User(user)
+                if matches!(&user.content, MessageContent::Text(text) if text.contains("missing"))
+        )
+    }));
+}
+
+#[tokio::test]
+async fn unknown_verification_policy_fails_closed() {
+    let deps = Arc::new(MockDeps::new(vec![make_text_response("done")]));
+    let mut params = make_query_params(vec![make_user_message_for_test("finish")]);
+    params.verification_policy = Some("typo_policy".into());
+
+    let _items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+
+    assert!(deps
+        .verification_incomplete
+        .lock()
+        .as_deref()
+        .is_some_and(|summary| summary.contains("invalid")));
+}
+
+#[tokio::test]
+async fn verification_accepts_successful_test_evidence() {
+    let tool_response = ModelResponse {
+        assistant_message: AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            role: "assistant".into(),
+            content: vec![ContentBlock::ToolUse {
+                id: "verify-tool-1".into(),
+                name: "Bash".into(),
+                input: serde_json::json!({"command": "cargo test -p allthecodes-tools"}),
+            }],
+            usage: Some(Usage::default()),
+            stop_reason: Some("tool_use".into()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        },
+        stream_events: vec![],
+        usage: Usage::default(),
+    };
+    let deps = Arc::new(
+        MockDeps::new(vec![tool_response, make_text_response("verified")])
+            .with_tool_result_override(crate::query::deps::ToolExecResult {
+                tool_use_id: String::new(),
+                tool_name: String::new(),
+                effective_input: serde_json::Value::Null,
+                result: crate::types::tool::ToolResult {
+                    shell: Some(ShellExecutionOutput {
+                        command: Some("cargo test -p allthecodes-tools".into()),
+                        cwd: None,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        exit_code: Some(0),
+                        interrupted: false,
+                        termination: None,
+                        error: None,
+                    }),
+                    ..Default::default()
+                },
+                is_error: false,
+                hook_stopped_continuation: false,
+                duration_ms: Some(12),
+                permission_decision: None,
+                brief_message: None,
+            }),
+    );
+    let mut params = make_query_params(vec![make_user_message_for_test("run tests")]);
+    params.verification_policy = Some("targeted_tests".into());
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+
+    assert_eq!(request_start_count(&items), 2);
+    assert!(!deps.recorded_params()[1].messages.iter().any(|message| {
+        matches!(
+            message,
+            Message::User(user)
+                if matches!(&user.content, MessageContent::Text(text) if text.contains("Verification round"))
+        )
+    }));
 }
 
 #[tokio::test]
@@ -349,6 +457,7 @@ async fn test_max_turns_limit() {
         skip_cache_write: None,
         task_budget: None,
         gates: QueryGates::default(),
+        verification_policy: None,
     };
 
     let stream = query(params, deps);

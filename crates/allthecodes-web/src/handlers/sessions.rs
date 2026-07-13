@@ -1,13 +1,14 @@
 //! Session management handlers — list, detail, new, resume.
 
+use std::fs;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use allthecodes_protocol::v1::{
     SessionArchiveParams, SessionCreateParams, SessionDetailParams, SessionMessageActionParams,
-    SessionModePatchParams, SessionResumeParams, SessionSearchHit, SessionSearchParams,
-    SessionSearchResponse,
+    SessionModePatchParams, SessionReportParams, SessionResumeParams, SessionSearchHit,
+    SessionSearchParams, SessionSearchResponse,
 };
 use allthecodes_protocol::ApiMethod;
 use allthecodes_protocol::{ApiError as ProtocolApiError, NoParams, SerializationScope};
@@ -41,6 +42,7 @@ pub(crate) fn handlers() -> HandlerRegistry {
         .handle(ApiMethod::SessionSearch, get(session_search_handler))
         .handle(ApiMethod::SessionCreate, post(session_new_handler))
         .handle(ApiMethod::SessionDetail, get(session_detail_handler))
+        .handle(ApiMethod::SessionReport, get(session_report_handler))
         .handle(ApiMethod::SessionResume, post(session_resume_handler))
         .handle(ApiMethod::SessionArchive, post(session_archive_handler))
         .handle(
@@ -174,6 +176,16 @@ pub struct SessionDetailResponse {
 }
 
 #[derive(Serialize)]
+pub struct SessionReportResponse {
+    pub session_id: String,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrity_valid: Option<bool>,
+}
+
+#[derive(Serialize)]
 pub struct NewSessionResponse {
     pub session_id: String,
 }
@@ -287,6 +299,85 @@ impl Processor for SessionListProcessor {
 #[derive(Clone)]
 pub struct SessionSearchProcessor {
     state: WebState,
+}
+
+#[derive(Clone)]
+pub struct SessionReportProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SessionReportProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SessionReportProcessor {
+    type Request = SessionReportParams;
+    type Response = SessionReportResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "session.report"
+    }
+
+    fn serialization_layer(&self) -> Option<crate::serialization::SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let Some(rollout_path) = record_replay::lookup_rollout(&params.id).map_err(|error| {
+            ProtocolApiError::Internal {
+                message: format!("failed to locate session rollout: {error}"),
+            }
+        })?
+        else {
+            return Ok(SessionReportResponse {
+                session_id: params.id,
+                state: "not_generated".into(),
+                report: None,
+                integrity_valid: None,
+            });
+        };
+        let report_path = allthecodes_config::paths::runs_dir(&params.id)
+            .join(allthecodes_session::session_report::SESSION_REPORT_FILE_NAME);
+        if !report_path.is_file() {
+            return Ok(SessionReportResponse {
+                session_id: params.id,
+                state: "not_generated".into(),
+                report: None,
+                integrity_valid: None,
+            });
+        }
+        let read = record_replay::read_rollout_file(&rollout_path).map_err(|error| {
+            ProtocolApiError::Internal {
+                message: format!("failed to read session rollout: {error}"),
+            }
+        })?;
+        let report = fs::read(&report_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let Some(report) = report else {
+            return Ok(SessionReportResponse {
+                session_id: params.id,
+                state: "not_generated".into(),
+                report: None,
+                integrity_valid: Some(false),
+            });
+        };
+        let integrity_valid = allthecodes_session::session_report::verify_session_report_file(
+            &report_path,
+            &read.lines,
+        )
+        .unwrap_or(false);
+        Ok(SessionReportResponse {
+            session_id: params.id,
+            state: "generated".into(),
+            report: Some(report),
+            integrity_valid: Some(integrity_valid),
+        })
+    }
 }
 
 impl From<WebState> for SessionSearchProcessor {
@@ -1027,6 +1118,19 @@ pub async fn session_detail_handler(
         state,
         ApiMethod::SessionDetail,
         SessionDetailParams { id },
+    )
+    .await
+}
+
+/// GET /api/sessions/:id/report -- Load a redacted verification report.
+pub async fn session_report_handler(
+    AxumPath(id): AxumPath<String>,
+    State(state): State<WebState>,
+) -> Response {
+    rest_processor_response::<SessionReportProcessor>(
+        state,
+        ApiMethod::SessionReport,
+        SessionReportParams { id },
     )
     .await
 }

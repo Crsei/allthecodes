@@ -220,6 +220,113 @@ async fn flush_record_best_effort(recorder_ref: &SessionRecorderSlot, session_id
     }
 }
 
+/// Materialize the redacted report only after the terminal transaction has
+/// been flushed. The report is derived from the canonical rollout and its
+/// generated-record fact is appended only after the atomic report rename.
+async fn generate_session_report_best_effort(
+    recorder_ref: &SessionRecorderSlot,
+    session_id: &SessionId,
+    config: &crate::types::config::QueryEngineConfig,
+    terminal_result: &SdkResult,
+) {
+    let Some(handle) = recorder_ref.lock().clone() else {
+        return;
+    };
+    let session_id_string = session_id.as_str().to_string();
+    let rollout_path = match crate::session::record_replay::lookup_rollout(&session_id_string) {
+        Ok(Some(path)) => path,
+        Ok(None) => return,
+        Err(error) => {
+            warn!(%session_id, %error, "failed to locate rollout for session report");
+            return;
+        }
+    };
+    let read = match crate::session::record_replay::read_rollout_file(&rollout_path) {
+        Ok(read) => read,
+        Err(error) => {
+            warn!(%session_id, %error, "failed to read rollout for session report");
+            return;
+        }
+    };
+    let usage = &terminal_result.usage;
+    let options = crate::session::session_report::SessionReportOptions {
+        agent_role: config.agent_context.as_ref().and_then(|context| {
+            context
+                .agent_type
+                .clone()
+                .or_else(|| Some("agent".to_string()))
+        }),
+        cost: Some(crate::session::session_report::SessionCostReportSummary {
+            total_tokens: usage.total_input_tokens
+                + usage.total_output_tokens
+                + usage.total_cache_read_tokens
+                + usage.total_cache_creation_tokens,
+            cache_tokens: usage.total_cache_read_tokens + usage.total_cache_creation_tokens,
+            reasoning_tokens: usage.total_reasoning_output_tokens,
+            cost_usd: usage.total_cost_usd,
+            api_calls: usage.api_call_count,
+            unknown_pricing_count: 0,
+            backfilled_count: 0,
+        }),
+        ..Default::default()
+    };
+    let (report_path, report) =
+        match crate::session::session_report::generate_and_record_session_report(
+            &session_id_string,
+            &read.lines,
+            "allthecodes-engine",
+            options,
+            &handle,
+        )
+        .await
+        {
+            Ok(generated) => generated,
+            Err(error) => {
+                warn!(%session_id, %error, "failed to generate session report");
+                return;
+            }
+        };
+    let record_flushed = match handle.flush().await {
+        Ok(_) => true,
+        Err(error) => {
+            warn!(%session_id, %error, "failed to flush session report record");
+            false
+        }
+    };
+    #[cfg(feature = "telemetry")]
+    {
+        let integrity_valid = if record_flushed {
+            crate::session::record_replay::read_rollout_file(&rollout_path)
+                .ok()
+                .and_then(|read| {
+                    crate::session::session_report::verify_session_report_file(
+                        &report_path,
+                        &read.lines,
+                    )
+                    .ok()
+                })
+        } else {
+            Some(false)
+        };
+        let status = serde_json::to_string(&report.verification.status)
+            .unwrap_or_else(|_| "unknown".to_string());
+        let status = status.trim_matches('"');
+        let _ = crate::telemetry_bridge::with_bridge(|bridge| {
+            bridge.record_verification_report(
+                &report.session_id,
+                &report.verification.policy,
+                status,
+                report.verification.rounds,
+                report.verification.evidence_ids.len() as u64,
+                integrity_valid,
+                report.cost.as_ref().map(|cost| cost.cost_usd),
+            )
+        });
+    }
+    #[cfg(not(feature = "telemetry"))]
+    let _ = (report_path, report, record_flushed);
+}
+
 fn turn_finished_item(status: TurnFinishStatus, error: Option<String>) -> RecordItem {
     turn_finished_item_with_review_ids(status, error, Vec::new())
 }
@@ -276,6 +383,9 @@ async fn commit_submit_transaction_outcome_best_effort(
     }
     if flush_recorder {
         flush_record_best_effort(session_recorder, session_id).await;
+    }
+    if let Some(result) = terminal_result.as_ref() {
+        generate_session_report_best_effort(session_recorder, session_id, config, result).await;
     }
 
     let mut messages = emitted_events;
@@ -849,6 +959,7 @@ impl QueryEngine {
                 skip_cache_write: None,
                 task_budget: config.task_budget.clone(),
                 gates: query_gates.clone(),
+                verification_policy: config.verification_policy.clone(),
             };
 
             // Create API client for the selected backend.
@@ -943,6 +1054,7 @@ impl QueryEngine {
             let bg_agent_tx = state_ref.read().runtime.bg_agent_tx.clone();
             let tool_progress_callback = state_ref.read().runtime.tool_progress_callback.clone();
             let submit_audit_ctx = state_ref.read().runtime.audit_ctx.with_submit();
+            let verification_incomplete = Arc::new(parking_lot::Mutex::new(None));
             let deps = Arc::new(QueryEngineDeps {
                 aborted: aborted_ref.clone(),
                 state: state_ref.clone(),
@@ -966,6 +1078,7 @@ impl QueryEngine {
                 auto_classifier_fn: auto_classifier_fn.clone(),
                 submit_overrides: overrides.clone(),
                 submit_tools: None,
+                verification_incomplete: verification_incomplete.clone(),
             });
 
             prime_goal_runtime_for_session(session_id.as_str(), &state_ref);
@@ -1093,12 +1206,17 @@ impl QueryEngine {
 
             let terminal_msg =
                 result::find_terminal_message(&final_messages);
-            let is_success = result::is_result_successful(
+            let base_success = result::is_result_successful(
                 terminal_msg,
                 submit_turn.last_stop_reason.as_deref(),
             );
             let (text_result, is_api_error) =
                 result::extract_text_result(&final_messages);
+            let (is_success, text_result) = apply_verification_terminal_outcome(
+                base_success,
+                text_result,
+                verification_incomplete.lock().clone(),
+            );
 
             let (usage_snap, denials_snap) = {
                 let s = state_ref.read();
@@ -1212,9 +1330,31 @@ impl QueryEngine {
     }
 }
 
+fn apply_verification_terminal_outcome(
+    base_success: bool,
+    text_result: String,
+    verification_failure: Option<String>,
+) -> (bool, String) {
+    match verification_failure {
+        Some(summary) => (false, summary),
+        None => (base_success, text_result),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incomplete_verification_overrides_successful_model_result() {
+        let (success, result) = apply_verification_terminal_outcome(
+            true,
+            "implemented".into(),
+            Some("Verification incomplete: missing test".into()),
+        );
+        assert!(!success);
+        assert_eq!(result, "Verification incomplete: missing test");
+    }
 
     #[test]
     fn normalize_submit_overrides_keeps_system_prompt_append_parts_separate() {

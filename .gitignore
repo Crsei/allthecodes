@@ -87,6 +87,20 @@ sdk/
 .tmp/
 crates/allthecodes/logs/
 
+# Workflow-injection defense fixtures are intentionally versioned despite the
+# repository-wide test-fixture ignore rules.
+!crates/allthecodes-permissions/tests/
+!crates/allthecodes-permissions/tests/setup_chain.rs
+!crates/allthecodes-permissions/tests/fixtures/
+!crates/allthecodes-permissions/tests/fixtures/setup_chain/
+!crates/allthecodes-permissions/tests/fixtures/setup_chain/**
+!crates/allthecodes/tests/
+!crates/allthecodes/tests/verification_report_e2e.rs
+!crates/allthecodes/tests/agentic_workflow_injection_e2e.rs
+!crates/allthecodes/tests/fixtures/
+!crates/allthecodes/tests/fixtures/awi/
+!crates/allthecodes/tests/fixtures/awi/**
+
 # npm packaging artifacts
 /package-lock.json
 dist/

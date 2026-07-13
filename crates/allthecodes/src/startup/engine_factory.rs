@@ -164,6 +164,7 @@ impl EngineFactory {
             max_turns: cli.max_turns,
             max_budget_usd: cli.max_budget,
             task_budget: None,
+            verification_policy: None,
             verbose: cli.verbose,
             initial_messages: resume_messages,
             commands: allthecodes_commands::get_all_commands()

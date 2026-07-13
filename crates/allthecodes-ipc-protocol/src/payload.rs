@@ -312,6 +312,7 @@ pub fn legacy_backend_to_payload(
             command,
             input,
             options,
+            security,
             operation,
         } => {
             let mut params = json!({
@@ -321,6 +322,13 @@ pub fn legacy_backend_to_payload(
                 "input": input,
                 "options": options,
             });
+            if let Some(security) = security {
+                params["security"] = serde_json::to_value(security).map_err(|error| {
+                    IpcPayloadAdapterError::InvalidPayload {
+                        message: error.to_string(),
+                    }
+                })?;
+            }
             if let Some(operation) = operation {
                 params["operation"] = serde_json::to_value(operation).map_err(|error| {
                     IpcPayloadAdapterError::InvalidPayload {
@@ -431,6 +439,15 @@ fn server_request_to_legacy_backend(
                 .cloned()
                 .unwrap_or(Value::Object(serde_json::Map::new())),
             options: required_string_vec(&request.params, "options")?,
+            security: request
+                .params
+                .get("security")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| IpcPayloadAdapterError::InvalidPayload {
+                    message: error.to_string(),
+                })?,
             operation: optional_operation(&request.params)?,
         }),
         ServerRequestMethod::AskUserQuestion => Ok(BackendMessage::QuestionRequest {
@@ -636,6 +653,7 @@ mod tests {
             input: json!({ "command": "ls" }),
             options: vec!["allow".to_string(), "deny".to_string()],
             operation: Some(operation.clone()),
+            security: None,
         };
         let payload = legacy_backend_to_payload(&legacy).unwrap();
 

@@ -368,6 +368,27 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Compact, metadata-only verification report summary for the TUI.
+    ///
+    /// The full redacted report remains available through the session API;
+    /// this event deliberately excludes commands, prompts, and tool output.
+    SessionReportSummary {
+        session_id: String,
+        state: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        policy: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rounds: Option<u8>,
+        evidence_count: u64,
+        missing_requirements: Vec<String>,
+        risk_event_count: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cost_usd: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        integrity_valid: Option<bool>,
+    },
     /// Prompt suggestions for the UI to display.
     Suggestions {
         items: Vec<String>,
@@ -673,5 +694,27 @@ mod tests {
                 data: Some(data),
             } if media_type == "image/png" && data == "aGVsbG8="
         ));
+    }
+
+    #[test]
+    fn session_report_summary_is_metadata_only_and_stable() {
+        let message = BackendMessage::SessionReportSummary {
+            session_id: "session-1".into(),
+            state: "generated".into(),
+            policy: Some("release_gate".into()),
+            status: Some("incomplete".into()),
+            rounds: Some(3),
+            evidence_count: 2,
+            missing_requirements: vec!["security_gate".into()],
+            risk_event_count: 1,
+            cost_usd: Some(0.0123),
+            integrity_valid: Some(true),
+        };
+        let value = serde_json::to_value(message).unwrap();
+        assert_eq!(value["type"], "session_report_summary");
+        assert_eq!(value["policy"], "release_gate");
+        assert_eq!(value["evidence_count"], 2);
+        assert!(value.get("command").is_none());
+        assert!(value.get("output").is_none());
     }
 }

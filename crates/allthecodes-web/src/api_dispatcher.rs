@@ -84,6 +84,7 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::SessionSearch - dispatched.
 // ClientRequest::SessionCreate - dispatched.
 // ClientRequest::SessionDetail - dispatched.
+// ClientRequest::SessionReport - dispatched.
 // ClientRequest::SessionResume - dispatched.
 // ClientRequest::SessionArchive - dispatched.
 // ClientRequest::SessionModePatch - dispatched.
@@ -382,6 +383,16 @@ pub async fn dispatch(
             )
             .await?;
             Ok(ClientResponse::SessionDetail(map_session_detail(response)))
+        }
+        ClientRequest::SessionReport(params) => {
+            let response = dispatch_tracked_processor::<handlers::SessionReportProcessor>(
+                state,
+                context,
+                ApiMethod::SessionReport,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::SessionReport(map_session_report(response)))
         }
         ClientRequest::SessionResume(params) => {
             let response = dispatch_tracked_processor::<handlers::SessionResumeProcessor>(
@@ -972,6 +983,15 @@ fn map_session_detail(response: handlers::SessionDetailResponse) -> v1::SessionD
     }
 }
 
+fn map_session_report(response: handlers::SessionReportResponse) -> v1::SessionReportResponse {
+    v1::SessionReportResponse {
+        session_id: response.session_id,
+        state: response.state,
+        report: response.report,
+        integrity_valid: response.integrity_valid,
+    }
+}
+
 fn map_session_mode(response: handlers::SessionModeResponse) -> v1::SessionModePatchResponse {
     v1::SessionModePatchResponse {
         session_id: response.session_id,
@@ -1047,6 +1067,7 @@ mod tests {
             max_turns: None,
             max_budget_usd: None,
             task_budget: None,
+            verification_policy: None,
             verbose: false,
             initial_messages: None,
             commands: vec![],
@@ -1164,7 +1185,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 52);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 53);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

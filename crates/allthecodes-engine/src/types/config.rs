@@ -130,6 +130,8 @@ pub struct QueryParams {
     pub skip_cache_write: Option<bool>,
     pub task_budget: Option<TaskBudget>,
     pub gates: QueryGates,
+    /// Named runtime verification policy for this query, if requested.
+    pub verification_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -378,6 +380,9 @@ pub struct QueryEngineConfig {
     pub max_turns: Option<usize>,
     pub max_budget_usd: Option<f64>,
     pub task_budget: Option<TaskBudget>,
+    /// Named runtime verification policy inherited by this engine and its
+    /// delegated children.
+    pub verification_policy: Option<String>,
     pub verbose: bool,
     pub initial_messages: Option<Vec<Message>>,
 

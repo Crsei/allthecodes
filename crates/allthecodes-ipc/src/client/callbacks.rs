@@ -127,6 +127,7 @@ fn install_permission_callback_with_timeout<H>(
                         input: tool_input,
                         options: request.options,
                         operation: Some(operation),
+                        security: request.security,
                     })
                 });
             let Ok((rx, _cleanup)) = registered else {
@@ -298,6 +299,7 @@ mod tests {
             message: "echo hi".to_string(),
             options: vec!["allow".to_string(), "deny".to_string()],
             operation: None,
+            security: None,
         }));
 
         wait_until(|| pending.lock().contains_key("tool-1")).await;
@@ -310,6 +312,7 @@ mod tests {
             input,
             options,
             operation: Some(operation),
+            ..
         } = &captured[0]
         else {
             panic!("expected permission request with operation metadata");
@@ -357,6 +360,7 @@ mod tests {
             message: "approve plan".to_string(),
             options: vec!["allow".to_string(), "deny".to_string()],
             operation: None,
+            security: None,
         }));
 
         wait_until(|| pending.lock().contains_key("exit-plan")).await;
@@ -430,6 +434,7 @@ mod tests {
             message: "wait".into(),
             options: vec![],
             operation: None,
+            security: None,
         }));
         tokio::task::yield_now().await;
         assert!(pending.lock().contains_key("tool-timeout"));

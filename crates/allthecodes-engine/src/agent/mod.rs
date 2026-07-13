@@ -471,6 +471,7 @@ fn build_child_config(
             .or(None),
         max_budget_usd: ctx.options.max_budget_usd,
         task_budget: None,
+        verification_policy: None,
         verbose: ctx.options.verbose,
         initial_messages: None,
         commands: vec![],

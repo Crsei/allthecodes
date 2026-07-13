@@ -59,6 +59,90 @@ fn clear_session_tool_uses(session_id: &str) {
         .retain(|(cached_session_id, _), _| cached_session_id != session_id);
 }
 
+fn session_report_summary(session_id: &str) -> BackendMessage {
+    let not_generated = || BackendMessage::SessionReportSummary {
+        session_id: session_id.to_string(),
+        state: "not_generated".to_string(),
+        policy: None,
+        status: None,
+        rounds: None,
+        evidence_count: 0,
+        missing_requirements: Vec::new(),
+        risk_event_count: 0,
+        cost_usd: None,
+        integrity_valid: None,
+    };
+    let Ok(Some(rollout_path)) = allthecodes_session::record_replay::lookup_rollout(session_id)
+    else {
+        return not_generated();
+    };
+    let report_path = allthecodes_config::paths::runs_dir(session_id)
+        .join(allthecodes_session::session_report::SESSION_REPORT_FILE_NAME);
+    if !report_path.is_file() {
+        return not_generated();
+    }
+    let Ok(read) = allthecodes_session::record_replay::read_rollout_file(&rollout_path) else {
+        return BackendMessage::SessionReportSummary {
+            session_id: session_id.to_string(),
+            state: "generated".to_string(),
+            policy: None,
+            status: None,
+            rounds: None,
+            evidence_count: 0,
+            missing_requirements: Vec::new(),
+            risk_event_count: 0,
+            cost_usd: None,
+            integrity_valid: Some(false),
+        };
+    };
+    let Ok(bytes) = std::fs::read(&report_path) else {
+        return not_generated();
+    };
+    let Ok(report) =
+        serde_json::from_slice::<allthecodes_session::session_report::SessionReportV1>(&bytes)
+    else {
+        return BackendMessage::SessionReportSummary {
+            session_id: session_id.to_string(),
+            state: "generated".to_string(),
+            policy: None,
+            status: None,
+            rounds: None,
+            evidence_count: 0,
+            missing_requirements: Vec::new(),
+            risk_event_count: 0,
+            cost_usd: None,
+            integrity_valid: Some(false),
+        };
+    };
+    let missing_requirements = report
+        .verification
+        .missing_requirements
+        .iter()
+        .filter_map(|kind| serde_json::to_string(kind).ok())
+        .map(|kind| kind.trim_matches('"').to_string())
+        .collect();
+    let integrity_valid =
+        allthecodes_session::session_report::verify_session_report_file(&report_path, &read.lines)
+            .unwrap_or(false);
+    BackendMessage::SessionReportSummary {
+        session_id: session_id.to_string(),
+        state: "generated".to_string(),
+        policy: Some(report.verification.policy),
+        status: Some(
+            serde_json::to_string(&report.verification.status)
+                .unwrap_or_else(|_| "unknown".to_string())
+                .trim_matches('"')
+                .to_string(),
+        ),
+        rounds: Some(report.verification.rounds),
+        evidence_count: report.verification.evidence_ids.len() as u64,
+        missing_requirements,
+        risk_event_count: report.risk_events.len() as u64,
+        cost_usd: report.cost.map(|cost| cost.cost_usd),
+        integrity_valid: Some(integrity_valid),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SdkMessage ->BackendMessage mapping
 // ---------------------------------------------------------------------------
@@ -253,6 +337,8 @@ pub fn handle_sdk_message(
                 api_call_count: r.usage.api_call_count,
                 kind: Some("cumulative".to_string()),
             });
+
+            let _ = sink.send(&session_report_summary(&r.session_id));
 
             // Scriptable status-line snapshot (issue #11). We always emit
             // the payload so a frontend can run its own script even when
@@ -518,6 +604,7 @@ mod tests {
             max_turns: None,
             max_budget_usd: None,
             task_budget: None,
+            verification_policy: None,
             verbose: false,
             initial_messages: None,
             commands: vec![],

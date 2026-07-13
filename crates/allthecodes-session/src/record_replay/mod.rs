@@ -28,7 +28,7 @@ pub use policy::{classify_record_item, may_drop_under_pressure, should_persist, 
 pub use reader::{read_rollout_file, ReplayReadResult, ReplayReadWarning, ReplayReader};
 pub use reconstruct::{
     message_seq_for_uuid, reconstruct_messages, reconstruct_recorded_messages,
-    recorded_message_uuid, recorded_messages_to_typed, PendingInteraction,
+    recorded_message_uuid, recorded_messages_to_typed, IndexedRecord, PendingInteraction,
     ReconstructedRecordMessage, ReconstructedRecordSession,
 };
 pub use recorder::{

@@ -118,6 +118,7 @@ pub async fn run_fork(params: ForkParams) -> Result<ForkOutcome> {
         max_turns: Some(params.max_turns.unwrap_or(1)),
         max_budget_usd: None,
         task_budget: None,
+        verification_policy: None,
         verbose: false,
         initial_messages: params.parent_messages,
         commands: vec![],

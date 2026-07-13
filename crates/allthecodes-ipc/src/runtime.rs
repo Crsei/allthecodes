@@ -1117,6 +1117,7 @@ mod tests {
             message: "ls".to_string(),
             options: vec!["allow".to_string(), "deny".to_string()],
             operation: None,
+            security: None,
         };
         let runtime_for_response = runtime.clone();
 
@@ -1177,6 +1178,7 @@ mod tests {
             message: "ls".to_string(),
             options: vec!["allow".to_string(), "deny".to_string()],
             operation: None,
+            security: None,
         };
         let runtime_for_task = runtime.clone();
 

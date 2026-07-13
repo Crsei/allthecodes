@@ -30,6 +30,9 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use allthecodes_config::features::{self, Feature};
+use allthecodes_session::record_replay::types::{
+    RecordItem, VerificationFinishedRecord, VerificationStartedRecord, VerificationStatus,
+};
 use allthecodes_types::agent_events::AgentEvent;
 use allthecodes_types::agent_runtime_record::{compute_digest, AgentRuntimeExecutionRecord};
 
@@ -61,8 +64,12 @@ use super::recovery::{
 };
 use super::stop_hooks::{self, StopHookResult};
 use super::token_budget::check_token_budget;
+use super::turn_context::VerificationTracker;
 use super::turn_context::{prepare_model_request, QueryRunContext};
 use super::turn_state::QueryTurnState;
+use crate::verification::{
+    evaluate, evidence_from_tool_result_with_duration, VerificationDecision,
+};
 
 #[derive(Clone, Debug, Default)]
 struct RuntimeRecordTurnContext {
@@ -79,10 +86,29 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
     stream! {
         // Initialization
 
-        let (turn_context, mut state) = QueryRunContext::from_params(params);
+        let (mut turn_context, mut state) = QueryRunContext::from_params(params);
         let mut budget_tracker = BudgetTracker::new();
         let mut goal_continuation_scheduler = GoalContinuationScheduler::default();
         let mut cumulative_usage = Usage::default();
+        let verification_id = turn_context
+            .verification
+            .policy
+            .as_ref()
+            .map(|_| format!("verification-{}", deps.uuid()));
+
+        if let (Some(policy), Some(verification_id)) = (
+            turn_context.verification.policy.as_ref(),
+            verification_id.as_ref(),
+        ) {
+            deps.record_verification_items(vec![RecordItem::VerificationStarted(
+                VerificationStartedRecord {
+                    verification_id: verification_id.clone(),
+                    policy: policy.name.clone(),
+                    round: turn_context.verification.round,
+                },
+            )])
+            .await;
+        }
 
         // Main loop
         'query_loop: loop {
@@ -671,6 +697,110 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     }
                 }
 
+                if let Some(policy) = turn_context.verification.policy.clone() {
+                    if let Some(configuration_error) =
+                        turn_context.verification.configuration_error.clone()
+                    {
+                        let summary = format!(
+                            "Verification policy `{}` is invalid: {}",
+                            policy.name, configuration_error
+                        );
+                        if let Some(verification_id) = verification_id.as_deref() {
+                            record_verification_finished(
+                                &deps,
+                                VerificationFinishedRecord {
+                                    verification_id: verification_id.to_string(),
+                                    policy: policy.name.clone(),
+                                    round: turn_context.verification.round,
+                                    status: VerificationStatus::Incomplete,
+                                    evidence_ids: vec![],
+                                    missing_requirements: vec![],
+                                    unverified_assumptions: vec![summary.clone()],
+                                },
+                            )
+                            .await;
+                        }
+                        deps.mark_verification_incomplete(summary);
+                        break;
+                    }
+                    match evaluate(
+                        &policy,
+                        &turn_context.verification.evidence,
+                        turn_context.verification.round,
+                        &turn_context.verification.failed_attempts,
+                    ) {
+                        VerificationDecision::Passed { evidence_ids } => {
+                            if let Some(verification_id) = verification_id.as_deref() {
+                                record_verification_finished(
+                                    &deps,
+                                    VerificationFinishedRecord {
+                                        verification_id: verification_id.to_string(),
+                                        policy: policy.name.clone(),
+                                        round: turn_context.verification.round,
+                                        status: VerificationStatus::Passed,
+                                        evidence_ids,
+                                        missing_requirements: vec![],
+                                        unverified_assumptions: vec![],
+                                    },
+                                )
+                                .await;
+                            }
+                        }
+                        VerificationDecision::Continue {
+                            round,
+                            missing,
+                            failures,
+                        } => {
+                            turn_context.verification.round = round;
+                            let nudge = verification_nudge(&policy, round, &missing, &failures);
+                            let user_msg = make_user_message(&deps, &nudge, true);
+                            state.messages.push(Message::User(user_msg));
+                            state.transition = Some(Continue::NextTurn);
+                            state.turn_count += 1;
+                            continue;
+                        }
+                        VerificationDecision::Incomplete {
+                            round,
+                            missing,
+                            failures,
+                        } => {
+                            if let Some(verification_id) = verification_id.as_deref() {
+                                record_verification_finished(
+                                    &deps,
+                                    VerificationFinishedRecord {
+                                        verification_id: verification_id.to_string(),
+                                        policy: policy.name.clone(),
+                                        round,
+                                        status: VerificationStatus::Incomplete,
+                                        evidence_ids: turn_context
+                                            .verification
+                                            .evidence
+                                            .iter()
+                                            .map(|record| record.evidence_id.clone())
+                                            .collect(),
+                                        missing_requirements: missing.clone(),
+                                        unverified_assumptions: failures.clone(),
+                                    },
+                                )
+                                .await;
+                            }
+                            warn!(
+                                policy = %policy.name,
+                                round,
+                                missing = %VerificationTracker::missing_names(&missing),
+                                "verification ended without complete evidence"
+                            );
+                            deps.mark_verification_incomplete(format!(
+                                "Verification incomplete for policy `{}` after round {}: missing {}",
+                                policy.name,
+                                round,
+                                VerificationTracker::missing_names(&missing),
+                            ));
+                            break;
+                        }
+                    }
+                }
+
                 // 5c. token budget check
                 let global_turn_tokens = cumulative_usage.output_tokens;
                 let budget_decision = check_token_budget(
@@ -821,6 +951,37 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         agent_id: deps.agent_id().unwrap_or("main").to_string(),
                         record: Box::new(record),
                     });
+
+                    if turn_context.verification.policy.is_some() {
+                        if let Some(evidence) = evidence_from_tool_result_with_duration(
+                            &exec_result.tool_use_id,
+                            &exec_result.tool_name,
+                            &exec_result.effective_input,
+                            &exec_result.result,
+                            exec_result.duration_ms.unwrap_or_default(),
+                        ) {
+                            turn_context.verification.evidence.push(evidence);
+                        } else if let Some(shell) = exec_result.result.shell.as_ref() {
+                            if shell.exit_code.is_some_and(|code| code != 0)
+                                || shell.interrupted
+                                || shell.error.is_some()
+                            {
+                                turn_context.verification.failed_attempts.push(format!(
+                                    "tool={} exit_code={} interrupted={}",
+                                    exec_result.tool_name,
+                                    shell
+                                        .exit_code
+                                        .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+                                    shell.interrupted,
+                                ));
+                            }
+                        } else if exec_result.is_error {
+                            turn_context
+                                .verification
+                                .failed_attempts
+                                .push(format!("tool={} failed", exec_result.tool_name));
+                        }
+                    }
                 }
 
                 let steer_messages = drain_steer_messages(&deps);
@@ -957,6 +1118,35 @@ fn should_accept_partial_response_after_chunk_read_error(
     });
 
     has_text && !has_tool_use
+}
+
+async fn record_verification_finished(
+    deps: &Arc<dyn QueryDeps>,
+    record: VerificationFinishedRecord,
+) {
+    deps.record_verification_items(vec![RecordItem::VerificationFinished(record)])
+        .await;
+}
+
+fn verification_nudge(
+    policy: &crate::verification::VerificationPolicy,
+    round: u8,
+    missing: &[allthecodes_session::record_replay::types::EvidenceKind],
+    failures: &[String],
+) -> String {
+    let missing = VerificationTracker::missing_names(missing);
+    let failures = if failures.is_empty() {
+        "no successful evidence has been observed yet".to_string()
+    } else {
+        format!("prior attempts: {}", failures.join(", "))
+    };
+    format!(
+        "Verification round {round} of {} for policy `{}` is incomplete. \
+         Required evidence categories still missing: {missing}. {failures}. \
+         Use the normal tools and permission flow to obtain the evidence; \
+         do not claim verification passed without it.",
+        policy.max_rounds, policy.name
+    )
 }
 
 fn drain_steer_messages(deps: &Arc<dyn QueryDeps>) -> Vec<Message> {

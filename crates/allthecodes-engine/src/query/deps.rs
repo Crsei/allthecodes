@@ -130,6 +130,18 @@ pub trait QueryDeps: Send + Sync {
         on_progress: Option<Arc<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolExecResult>;
 
+    /// Persist canonical verification lifecycle facts. Test dependencies may
+    /// keep the default no-op implementation.
+    async fn record_verification_items(
+        &self,
+        _items: Vec<allthecodes_session::record_replay::RecordItem>,
+    ) {
+    }
+
+    /// Mark this query as terminally unverified so the lifecycle cannot
+    /// translate the last assistant text into a successful SDK result.
+    fn mark_verification_incomplete(&self, _summary: String) {}
+
     fn tool_progress_callback(&self) -> Option<Arc<dyn Fn(ToolProgress) + Send + Sync>> {
         None
     }

@@ -31,6 +31,20 @@ pub struct TracingContext {
     parent_span_id: Option<String>,
 }
 
+/// Metadata emitted when a redacted verification report is available.
+///
+/// This intentionally contains only bounded categorical/counting fields. It
+/// must not grow fields for prompts, commands, tool output, or local paths.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerificationReportMetadata {
+    pub policy: String,
+    pub status: String,
+    pub rounds: u8,
+    pub evidence_count: u64,
+    pub report_integrity_valid: Option<bool>,
+    pub cost_usd: Option<f64>,
+}
+
 impl TracingContext {
     /// Create a new tracing context from a session ID.
     pub fn new(session_id: impl Into<String>) -> Self {
@@ -166,6 +180,29 @@ impl SessionTracer {
         tracing::debug!("tool call traced");
     }
 
+    /// Emit metadata-only verification/report fields for OTel-compatible
+    /// subscribers. Values are deliberately kept separate from report JSON.
+    pub fn trace_verification_report(&self, metadata: &VerificationReportMetadata) {
+        let span = tracing::info_span!(
+            "verification.report",
+            session_id = %self.session_id,
+            verification_policy = %metadata.policy,
+            verification_status = %metadata.status,
+            verification_rounds = metadata.rounds,
+            verification_evidence_count = metadata.evidence_count,
+            report_integrity_valid = ?metadata.report_integrity_valid,
+            cost_usd = ?metadata.cost_usd,
+        );
+        let _guard = span.enter();
+        if let Some(ref handle) = self.handle {
+            handle.record(TelemetryEvent::InputEvent {
+                input_summary: "verification_report".to_string(),
+                input_type: "VerificationReportMetadata".to_string(),
+            });
+        }
+        tracing::debug!("verification report traced");
+    }
+
     /// Access the session ID.
     pub fn session_id(&self) -> &str {
         &self.session_id
@@ -206,5 +243,22 @@ mod tests {
         tracer.trace_session_start();
         tracer.trace_session_end();
         // Should not panic
+    }
+
+    #[test]
+    fn verification_report_tracing_is_metadata_only() {
+        let config = TelemetryConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let tracer = SessionTracer::new("sess_01", config, None);
+        tracer.trace_verification_report(&VerificationReportMetadata {
+            policy: "targeted_tests".into(),
+            status: "passed".into(),
+            rounds: 1,
+            evidence_count: 2,
+            report_integrity_valid: Some(true),
+            cost_usd: Some(0.01),
+        });
     }
 }

@@ -582,6 +582,9 @@ impl App {
         if let Some(status) = &self.session_ui.proactive_status {
             parts.push(status.render_inline());
         }
+        if let Some(verification) = &self.session_ui.verification {
+            parts.push(verification.render_inline());
+        }
         if !self.session_ui.model_name.is_empty() {
             parts.push(self.session_ui.model_name.clone());
         }

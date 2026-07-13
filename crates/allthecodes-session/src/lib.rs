@@ -16,6 +16,7 @@ pub mod record_replay;
 pub mod request_snapshot;
 pub mod resume;
 pub mod session_export;
+pub mod session_report;
 pub mod storage;
 pub mod transcript;
 pub mod worktree_sessions;

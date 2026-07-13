@@ -45,6 +45,7 @@ impl AgentTool {
             parent_model,
             current_depth,
         );
+        child_config.verification_policy = params.verification_policy.clone();
         apply_coordinator_worker_turn_limit(&mut child_config, ctx, params);
 
         let agent_tx = ctx.bg_agent_tx.as_ref();

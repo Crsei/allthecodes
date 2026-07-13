@@ -118,6 +118,8 @@ pub(crate) struct QueryEngineDeps {
     pub(crate) submit_overrides: SubmitMessageOverrides,
     /// Tools visible for this submit after any per-turn filtering.
     pub(crate) submit_tools: Option<Tools>,
+    /// Terminal verification failure shared with the outer submit lifecycle.
+    pub(crate) verification_incomplete: Arc<Mutex<Option<String>>>,
 }
 
 fn auto_mode_allows_without_classifier(tool_name: &str) -> bool {
@@ -239,6 +241,18 @@ impl QueryDeps for QueryEngineDeps {
     ) -> Result<ToolExecResult> {
         self.execute_tool_impl(request, tools, parent_message, on_progress)
             .await
+    }
+
+    async fn record_verification_items(
+        &self,
+        items: Vec<allthecodes_session::record_replay::RecordItem>,
+    ) {
+        self.record_replay_items(items, "verification_lifecycle")
+            .await;
+    }
+
+    fn mark_verification_incomplete(&self, summary: String) {
+        *self.verification_incomplete.lock() = Some(summary);
     }
 
     fn get_app_state(&self) -> AppState {

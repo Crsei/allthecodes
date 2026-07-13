@@ -103,6 +103,12 @@ crate::api_definitions! {
         errors: [NotFound],
         serialization: PerKey("id"),
     },
+    /// Fetch the redacted runtime verification report for one session.
+    SessionReport => "GET /api/sessions/{id}/report" {
+        params: v1::SessionReportParams,
+        response: v1::SessionReportResponse,
+        serialization: PerKey("id"),
+    },
     /// Resume an existing session.
     SessionResume => "POST /api/sessions/{id}/resume" {
         params: v1::SessionResumeParams,
@@ -1067,6 +1073,7 @@ mod tests {
             (ApiMethod::SessionSearch, "GET", "/api/sessions/search"),
             (ApiMethod::SessionCreate, "POST", "/api/sessions/new"),
             (ApiMethod::SessionDetail, "GET", "/api/sessions/{id}"),
+            (ApiMethod::SessionReport, "GET", "/api/sessions/{id}/report"),
             (
                 ApiMethod::SessionResume,
                 "POST",

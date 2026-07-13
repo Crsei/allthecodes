@@ -43,6 +43,18 @@ pub trait EngineTelemetry: Send + Sync {
 
     /// Called after a hook completes.
     fn end_hook(&self, span_id: SpanId, result: &str);
+
+    /// Called after a redacted session report is generated.
+    fn record_verification_report(
+        &self,
+        session_id: &str,
+        policy: &str,
+        status: &str,
+        rounds: u8,
+        evidence_count: u64,
+        report_integrity_valid: Option<bool>,
+        cost_usd: Option<f64>,
+    );
 }
 
 static INSTANCE: OnceLock<Box<dyn EngineTelemetry>> = OnceLock::new();

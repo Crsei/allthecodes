@@ -373,6 +373,7 @@ mod tests {
             max_turns: None,
             max_budget_usd: None,
             task_budget: None,
+            verification_policy: None,
             verbose: false,
             initial_messages: None,
             commands: vec![],

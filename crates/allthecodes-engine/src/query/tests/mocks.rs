@@ -65,6 +65,7 @@ pub struct MockDeps {
     pub agent_type: Option<String>,
     pub tool_result_override: parking_lot::Mutex<Option<ToolExecResult>>,
     pub agent_events: parking_lot::Mutex<Vec<AgentEvent>>,
+    pub verification_incomplete: parking_lot::Mutex<Option<String>>,
 }
 
 impl MockDeps {
@@ -110,6 +111,7 @@ impl MockDeps {
             agent_type: None,
             tool_result_override: parking_lot::Mutex::new(None),
             agent_events: parking_lot::Mutex::new(Vec::new()),
+            verification_incomplete: parking_lot::Mutex::new(None),
         }
     }
 
@@ -201,6 +203,10 @@ impl MockDeps {
 
 #[async_trait::async_trait]
 impl QueryDeps for MockDeps {
+    fn mark_verification_incomplete(&self, summary: String) {
+        *self.verification_incomplete.lock() = Some(summary);
+    }
+
     async fn call_model(&self, params: ModelCallParams) -> Result<ModelResponse> {
         self.call_params.lock().push(params);
         match self.pop_stream_step()? {
@@ -431,6 +437,7 @@ pub fn make_query_params(messages: Vec<Message>) -> QueryParams {
         skip_cache_write: None,
         task_budget: None,
         gates: QueryGates::default(),
+        verification_policy: None,
     }
 }
 
