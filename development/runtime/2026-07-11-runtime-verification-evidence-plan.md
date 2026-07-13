@@ -1,5 +1,9 @@
 # Runtime Verification Evidence and Session Report Implementation Plan
 
+> **Implementation status (2026-07-13):** Tasks 1–6 and review remediation are implemented. Targeted, surface, UI, workspace fmt, and workspace release gates pass. The repository-wide clippy gate remains blocked by the pre-existing missing `allthecodes_mcp::take_installed_manager` test helper. See Task 6 for exact evidence.
+>
+> Commit-only checkboxes for this slice are completed in the implementation and documentation commits; future documentation updates remain separately scoped under `AGENTS.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn existing runtime records, tool results, audit events, OpenTelemetry spans, and cost events into an enforced verification loop and a durable, redacted Session Report that proves what an agent changed, ran, verified, spent, and left uncertain.
@@ -44,7 +48,7 @@
 - Consumes: existing `RecordLine` correlation and forward-compatible replay.
 - Produces: canonical verification and artifact facts.
 
-- [ ] **Step 1: Write failing round-trip and unknown-field tests**
+- [x] **Step 1: Write failing round-trip and unknown-field tests**
 
 Add JSON round-trip tests for:
 
@@ -63,7 +67,7 @@ assert_eq!(value["type"], "verification_finished");
 assert!(serde_json::from_value::<RecordItem>(value).is_ok());
 ```
 
-- [ ] **Step 2: Run record/replay tests and confirm failure**
+- [x] **Step 2: Run record/replay tests and confirm failure**
 
 ```bash
 cargo test -p allthecodes-session record_replay::tests::verification_record_round_trip -- --nocapture
@@ -71,7 +75,7 @@ cargo test -p allthecodes-session record_replay::tests::verification_record_roun
 
 Expected: compilation fails because the record variants do not exist.
 
-- [ ] **Step 3: Add the record contracts**
+- [x] **Step 3: Add the record contracts**
 
 Add these variants to `RecordItem`:
 
@@ -147,11 +151,11 @@ pub struct SessionReportGeneratedRecord {
 }
 ```
 
-- [ ] **Step 4: Teach replay to preserve the new facts without changing message reconstruction**
+- [x] **Step 4: Teach replay to preserve the new facts without changing message reconstruction**
 
 The reconstructor records them in its event index and otherwise leaves message reconstruction unchanged. Older rollouts remain readable.
 
-- [ ] **Step 5: Run all session record/replay tests**
+- [x] **Step 5: Run all session record/replay tests**
 
 ```bash
 cargo test -p allthecodes-session record_replay -- --nocapture
@@ -159,7 +163,7 @@ cargo test -p allthecodes-session record_replay -- --nocapture
 
 Expected: PASS for old fixtures and new record types.
 
-- [ ] **Step 6: Commit the record contract**
+- [x] **Step 6: Commit the record contract**
 
 ```bash
 git add -A -- crates/allthecodes-session/src/record_replay
@@ -181,7 +185,7 @@ git commit -m "Add canonical verification evidence records"
 - Consumes: tool name, tool input, `ToolResult::shell`, command risk, and tool-use correlation ID.
 - Produces: `Option<VerificationEvidenceRecord>` and a policy evaluator.
 
-- [ ] **Step 1: Write table-driven failing evidence tests**
+- [x] **Step 1: Write table-driven failing evidence tests**
 
 Cover at least:
 
@@ -197,7 +201,7 @@ for (command, exit, expected) in [
 }
 ```
 
-- [ ] **Step 2: Run the focused test**
+- [x] **Step 2: Run the focused test**
 
 ```bash
 cargo test -p allthecodes-engine verification::evidence::tests -- --nocapture
@@ -205,7 +209,7 @@ cargo test -p allthecodes-engine verification::evidence::tests -- --nocapture
 
 Expected: FAIL because the verification module is absent.
 
-- [ ] **Step 3: Implement evidence classification**
+- [x] **Step 3: Implement evidence classification**
 
 Use `classify_command_risk` first. Only successful commands classified as `Build`, or explicit known test/lint/security commands, become positive evidence. Mutate, destructive, deploy, secret, unknown low-confidence, aborted, timed-out, and non-zero executions never count as passing evidence.
 
@@ -220,7 +224,7 @@ pub fn evidence_from_tool_result(
 
 Hash the normalized command with SHA-256. Store the digest, not secret-bearing command text, in canonical records.
 
-- [ ] **Step 4: Implement named policies**
+- [x] **Step 4: Implement named policies**
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -241,7 +245,7 @@ pub fn policy_by_name(name: &str) -> anyhow::Result<VerificationPolicy> {
 }
 ```
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests**
 
 ```bash
 cargo test -p allthecodes-engine verification -- --nocapture
@@ -265,7 +269,7 @@ git commit -m "Classify tool results as verification evidence"
 - Consumes: `QueryEngineConfig::verification_policy` and evidence emitted during the turn.
 - Produces: bounded continuation messages and an honest `Passed`, `Failed`, or `Incomplete` result.
 
-- [ ] **Step 1: Write failing loop-control tests**
+- [x] **Step 1: Write failing loop-control tests**
 
 Test these transitions:
 
@@ -277,7 +281,7 @@ test exit non-zero                -> continuation with failure summary
 three missing rounds              -> incomplete completion, no fourth round
 ```
 
-- [ ] **Step 2: Add verification state to the turn context**
+- [x] **Step 2: Add verification state to the turn context**
 
 ```rust
 #[derive(Debug, Clone, Default)]
@@ -293,11 +297,11 @@ Add `verification_policy: Option<String>` to `QueryEngineConfig` using the repos
 
 Forward `AgentInput::verification_policy` through `build_child_config` so delegated/background agents use the same named policy stored in their task envelope.
 
-- [ ] **Step 3: Record evidence at the canonical tool-result boundary**
+- [x] **Step 3: Record evidence at the canonical tool-result boundary**
 
 After the tool pipeline returns a structured result, call `evidence_from_tool_result`, append `RecordItem::VerificationEvidence`, and update the current tracker. Use the same tool-use ID already present in the audit context.
 
-- [ ] **Step 4: Gate successful completion**
+- [x] **Step 4: Gate successful completion**
 
 Before the query loop accepts a successful terminal model result:
 
@@ -314,7 +318,7 @@ match evaluate(&tracker) {
 
 The nudge names evidence categories and prior failing exit codes, not guessed commands. The model chooses tools through the normal permission path.
 
-- [ ] **Step 5: Run control and lifecycle tests**
+- [x] **Step 5: Run control and lifecycle tests**
 
 ```bash
 cargo test -p allthecodes-engine query::tests::control_tests -- --nocapture
@@ -323,7 +327,7 @@ cargo test -p allthecodes-engine lifecycle::tests -- --nocapture
 
 Expected: PASS; the loop always terminates at or before the configured round cap.
 
-- [ ] **Step 6: Commit the enforcement slice**
+- [x] **Step 6: Commit the enforcement slice**
 
 ```bash
 git add -A -- crates/allthecodes-engine/src/types/config.rs crates/allthecodes-engine/src/agent/mod.rs crates/allthecodes-engine/src/query crates/allthecodes-engine/src/lifecycle/deps/execute.rs
@@ -344,7 +348,7 @@ git commit -m "Enforce bounded runtime verification"
 - Consumes: canonical rollout, audit metadata, verification evidence, worktree/session metadata, and optional session cost events.
 - Produces: `SessionReportV1` and a report JSON file under the session run directory.
 
-- [ ] **Step 1: Write a failing golden projection test**
+- [x] **Step 1: Write a failing golden projection test**
 
 The expected DTO is:
 
@@ -413,11 +417,11 @@ pub struct SessionCostReportSummary {
 }
 ```
 
-- [ ] **Step 2: Implement deterministic projection and redaction**
+- [x] **Step 2: Implement deterministic projection and redaction**
 
 Sort changed files and evidence by stable keys. Command summaries contain risk class, digest, exit code, and duration, but not raw command text when it may contain credentials. Tool output is represented by digest and artifact ID.
 
-- [ ] **Step 3: Write the report atomically**
+- [x] **Step 3: Write the report atomically**
 
 Write to:
 
@@ -427,11 +431,11 @@ Write to:
 
 Use a same-directory temporary file, `sync_all`, and atomic rename. Append `SessionReportGenerated` only after the rename succeeds.
 
-- [ ] **Step 4: Verify tamper linkage**
+- [x] **Step 4: Verify tamper linkage**
 
 The report's `record_head_digest` must match the current canonical rollout/audit head. Changing a canonical record after report generation must make verification fail.
 
-- [ ] **Step 5: Run report and audit tests, then commit**
+- [x] **Step 5: Run report and audit tests**
 
 ```bash
 cargo test -p allthecodes-session session_report -- --nocapture
@@ -455,15 +459,15 @@ git commit -m "Generate redacted session evidence reports"
 - Consumes: `SessionReportV1` and existing OTel exporters.
 - Produces: read-only report APIs, UI summary, and metadata-only spans.
 
-- [ ] **Step 1: Add protocol and Web contract tests**
+- [x] **Step 1: Add protocol and Web contract tests**
 
 Add `GET /api/sessions/{session_id}/report` and the equivalent IPC response. Missing reports return a typed `not_generated` state, not HTTP 500.
 
-- [ ] **Step 2: Render a compact verification summary**
+- [x] **Step 2: Render a compact verification summary**
 
 Show policy, status, evidence count, failed/missing requirements, risk-event count, total cost when available, and report integrity status. Do not render full tool output in the summary.
 
-- [ ] **Step 3: Emit metadata-only telemetry**
+- [x] **Step 3: Emit metadata-only telemetry**
 
 Emit span/event fields:
 
@@ -475,7 +479,7 @@ report.integrity_valid, cost.usd
 
 Never emit prompt, tool output, proxy URL, environment, auth header, or local user path.
 
-- [ ] **Step 4: Run surface tests and commit**
+- [x] **Step 4: Run surface tests**
 
 ```bash
 cargo test -p allthecodes-ipc-protocol -- --nocapture
@@ -496,11 +500,11 @@ git commit -m "Expose runtime verification reports"
 - Modify: `development/archive/IMPLEMENTATION_GAPS.md`
 - Modify: `development/archive/plan/traceable-logging-plan.md`
 
-- [ ] **Step 1: Add deterministic acceptance tests**
+- [x] **Step 1: Add deterministic acceptance tests**
 
 Cover a passing test command, a failed test followed by a passing retry, missing evidence after three rounds, report redaction, report hash mismatch, cancellation, and an optional cost-event projection.
 
-- [ ] **Step 2: Run targeted gates**
+- [x] **Step 2: Run targeted gates**
 
 ```bash
 cargo test -p allthecodes --test verification_report_e2e -- --nocapture
@@ -510,7 +514,7 @@ cargo test -p allthecodes-engine verification -- --nocapture
 
 Expected: every test exits 0.
 
-- [ ] **Step 3: Update documentation in a separate commit**
+- [x] **Step 3: Update documentation**
 
 Record which traceable-logging requirements are now implemented and retain any genuine residuals. Do not mark the entire logging plan complete unless every listed correlation and durable-event requirement is verified.
 
@@ -519,7 +523,7 @@ git add -A -- docs/WORK_STATUS.md development/archive/IMPLEMENTATION_GAPS.md dev
 git commit -m "Document runtime evidence reporting status"
 ```
 
-- [ ] **Step 4: Run final repository gates**
+- [x] **Step 4: Run final repository gates and record residual blockers**
 
 ```bash
 export CARGO_HOME=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.rust/cargo
@@ -532,6 +536,14 @@ cargo build --workspace --release
 ```
 
 Expected: every command exits 0 with no new warnings.
+
+Actual 2026-07-13:
+
+- `cargo build --workspace --release`: PASS.
+- Task/surface gates: PASS — verification e2e 6, session report 3, engine verification 9, engine lifecycle 44, Web 1, IPC 116, telemetry 15, UI 811.
+- `cargo fmt --all --check`: PASS; `git diff --check`: PASS.
+- `cargo clippy -p allthecodes-session -p allthecodes-engine --all-targets -- -D warnings`: PASS.
+- `cargo clippy --workspace --all-targets -- -D warnings`: BLOCKED outside this task by missing `allthecodes_mcp::take_installed_manager` in `crates/allthecodes-mcp/src/runtime.rs:124`.
 
 ## Completion Criteria
 

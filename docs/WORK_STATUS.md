@@ -29,10 +29,10 @@ allthecodes 已不再按历史 "Lite" 边界维护。触及上游能力时，默
 
 `development/runtime/2026-07-11-runtime-verification-evidence-plan.md` 的 Task 1–6 已完成第一版实现闭环：
 
-- record/replay 现在保存版本化的 verification、artifact 和 `SessionReportGenerated` 事实；工具结果只在已知成功 build/test/lint/security 命令且 exit code 为 0 时计为正向证据，并保存命令 digest 而不是原文。
-- `targeted_tests`、`build_and_test`、`release_gate` 通过正常工具/权限路径执行 bounded verify-continue，最多三轮；缺少证据最终为 `Incomplete`，不会伪造通过。
-- transaction flush 后生成原子写入、redacted、带 canonical record head digest 的 `SessionReportV1`，并通过 Web `GET /api/sessions/{id}/report`、IPC/TUI summary 和 metadata-only telemetry 暴露。
-- 已验证：session report 2 项、engine verification 7 项、verification e2e 5 项、Web not-generated handler 1 项、telemetry feature test 1 项；`cargo check -p allthecodes`、`cargo fmt --all --check` 和定向 engine clippy 均通过。
+- record/replay 现在保存版本化的 verification、artifact 和 `SessionReportGenerated` 事实；证据分类先经过统一 command-risk 判断，只接受单段、成功、已知类别的 build/test/lint/security 命令，`cargo test || true` 和带 destructive 后缀的复合命令不会伪装成正向证据。
+- `targeted_tests`、`build_and_test`、`release_gate` 通过正常工具/权限路径执行 bounded verify-continue，最多三轮；缺少证据最终为 `Incomplete`，该终态会覆盖模型文本并令外层 `SdkResult`/delegated Agent 失败。未知 policy 同样 fail-closed，不会降级成 `none/passed`。
+- transaction flush 后生成原子写入、redacted、带 canonical record head digest 的 `SessionReportV1`；报告从 canonical 编辑附件投影相对 changed-files，从 terminal usage facts 投影 token/cost/API-call 汇总，并通过 Web `GET /api/sessions/{id}/report`、IPC/TUI summary 和 metadata-only telemetry 暴露。
+- 2026-07-13 验证：verification e2e 6 项、session report 3 项、engine verification 9 项、engine lifecycle 44 项、Web handler 1 项、IPC 116 项、telemetry 15 项、UI 811 项均通过；`cargo fmt --all --check`、`cargo clippy -p allthecodes-session -p allthecodes-engine --all-targets -- -D warnings`、`cargo build --workspace --release` 和 `git diff --check` 退出 0。workspace clippy 仍被 `allthecodes-mcp::take_installed_manager` 缺失阻塞。
 
 这不是完整 traceable logging 体系的关闭声明。统一的 durable runtime audit event log、全链路 `submit_id/turn_id/request_id/event_id` 传播、完整 daemon/IPC/permission/stream/progress 事件覆盖，以及让 audit export 以该事实源为主仍是残余工作；详见 [traceable-logging-plan.md](../development/archive/plan/traceable-logging-plan.md)。workspace clippy 仍受共享工作区缺失的 `allthecodes-mcp::take_installed_manager` 测试辅助函数阻塞。
 

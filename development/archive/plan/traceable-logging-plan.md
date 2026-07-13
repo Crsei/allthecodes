@@ -72,9 +72,9 @@
 `development/runtime/2026-07-11-runtime-verification-evidence-plan.md` 已落地第一版 runtime verification/session report slice：
 
 - `allthecodes-session` 的 record/replay 保存版本化 verification、artifact 和 report-generated 事实；成功且已知类别的 build/test/lint/security 工具结果以 digest 和元数据形式成为证据。
-- `allthecodes-engine` 按命名 policy 评估证据，沿正常工具与 permission pipeline bounded verify-continue，最多三轮；无法满足要求时保留 `Incomplete` 和未验证假设。
-- `SessionReportV1` 在 session transaction flush 后以原子、redacted、tamper-linked 文件落盘；报告读取、完整性检查、Web `not_generated` 状态、IPC/TUI summary 和 metadata-only telemetry 已接入。
-- focused evidence：session report 2 项、engine verification 7 项、verification e2e 5 项、Web handler 1 项、telemetry feature test 1 项；`cargo check -p allthecodes`、format check 和定向 engine clippy 通过。
+- `allthecodes-engine` 按命名 policy 评估证据，沿正常工具与 permission pipeline bounded verify-continue，最多三轮；统一 command-risk 会拒绝 masked/compound verification command，未知 policy fail-closed，无法满足要求时 `Incomplete` 会传播为外层 SDK/Agent error，而不是继续声明成功。
+- `SessionReportV1` 在 session transaction flush 后以原子、redacted、tamper-linked 文件落盘；changed-files 来自 canonical 编辑附件，token/cost/API-call 汇总来自 terminal usage facts；报告读取、完整性检查、Web `not_generated` 状态、IPC/TUI summary 和 metadata-only telemetry 已接入。
+- 2026-07-13 focused/surface evidence：session report 3 项、engine verification 9 项、verification e2e 6 项、engine lifecycle 44 项、Web handler 1 项、IPC 116 项、telemetry 15 项、UI 811 项通过；workspace fmt、session + engine 定向 clippy、workspace release build 和 `git diff --check` 退出 0。workspace clippy 仍被 `allthecodes-mcp::take_installed_manager` 缺失阻塞。
 
 这只关闭了可追溯日志需求中的“验证证据与报告投影”子集，不关闭本计划。以下缺口仍有效：
 
