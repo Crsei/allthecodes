@@ -206,6 +206,7 @@ impl TasksSurface {
                 result_preview,
                 had_error,
                 duration_ms,
+                fork_metadata,
             } => {
                 let mut task = UiTaskStatus::new(
                     agent_id.clone(),
@@ -218,8 +219,12 @@ impl TasksSurface {
                     UiTaskState::Succeeded
                 };
                 task.elapsed_ms = *duration_ms;
-                task.summary = result_preview.clone();
+                task.summary = fork_metadata
+                    .as_ref()
+                    .map(|metadata| format!("{} · {}", metadata.display_label(), result_preview))
+                    .unwrap_or_else(|| result_preview.clone());
                 task.output_lines = vec![result_preview.clone()];
+                append_live_channel_details(&mut task.output_lines, fork_metadata.as_ref());
                 self.upsert_item(TaskSurfaceItem {
                     task,
                     source: TaskSurfaceSource::Tool,
@@ -286,6 +291,7 @@ impl TasksSurface {
             AgentEvent::Spawned {
                 agent_id,
                 description,
+                fork_metadata,
                 ..
             } => {
                 let mut task = UiTaskStatus::new(
@@ -294,7 +300,11 @@ impl TasksSurface {
                     crate::ui::tasks::TaskKind::AsyncAgent,
                 );
                 task.state = UiTaskState::Running;
-                task.summary = "agent running".to_string();
+                task.summary = fork_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.display_label())
+                    .unwrap_or_else(|| "agent running".to_string());
+                append_live_channel_details(&mut task.output_lines, fork_metadata.as_ref());
                 self.upsert_item(TaskSurfaceItem {
                     task,
                     source: TaskSurfaceSource::Tool,
@@ -471,6 +481,16 @@ impl TasksSurface {
         if let Some(item) = self.items.iter_mut().find(|item| item.task.id == id) {
             update(&mut item.task);
         }
+    }
+}
+
+fn append_live_channel_details(
+    output_lines: &mut Vec<String>,
+    metadata: Option<&allthecodes_types::agent_types::ForkLaunchMetadata>,
+) {
+    if let Some(channel) = metadata.and_then(|metadata| metadata.live_channel.as_ref()) {
+        output_lines.push(format!("live context: {}", channel.snapshot));
+        output_lines.push(format!("live updates: {}", channel.updates));
     }
 }
 

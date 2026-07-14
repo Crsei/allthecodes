@@ -79,7 +79,10 @@ pub fn route_user_text(text: &str) -> UserTextRendered {
     }
 
     // 10. Task notification
-    if trimmed.contains("<task-notification>") {
+    if trimmed.contains(&format!(
+        "<{}>",
+        allthecodes_types::agent_types::TASK_NOTIFICATION_TAG
+    )) {
         return UserTextRendered::Delegated("agent_notification", trimmed.to_string());
     }
 
@@ -89,7 +92,10 @@ pub fn route_user_text(text: &str) -> UserTextRendered {
     }
 
     // 12. Fork boilerplate
-    if trimmed.contains("<fork-boilerplate>") {
+    if trimmed.contains(&format!(
+        "<{}>",
+        allthecodes_types::agent_types::FORK_BOILERPLATE_TAG
+    )) {
         return UserTextRendered::Delegated("fork_boilerplate", trimmed.to_string());
     }
 

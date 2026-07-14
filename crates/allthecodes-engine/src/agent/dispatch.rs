@@ -47,11 +47,13 @@ impl AgentTool {
         );
         child_config.verification_policy = params.verification_policy.clone();
         apply_coordinator_worker_turn_limit(&mut child_config, ctx, params);
+        params.apply_fork_to_child_config(&mut child_config);
 
         let agent_tx = ctx.bg_agent_tx.as_ref();
 
         // Register sync agent in tree and emit Spawned event
         {
+            let fork_metadata = params.fork_metadata();
             let chain_id = ctx
                 .query_tracking
                 .as_ref()
@@ -72,6 +74,7 @@ impl AgentTool {
                 duration_ms: None,
                 result_preview: None,
                 had_error: false,
+                fork_metadata: fork_metadata.clone(),
                 children: vec![],
             };
             crate::agent_runtime::register_agent_node(node);
@@ -87,6 +90,7 @@ impl AgentTool {
                         is_background: false,
                         depth: current_depth + 1,
                         chain_id,
+                        fork_metadata,
                     },
                 ));
 
@@ -105,6 +109,7 @@ impl AgentTool {
 
         let ipc = agent_tx.map(|tx| (tx, agent_id));
         let (result_text, had_error, usage) = collect_stream_result(stream, ipc).await;
+        params.close_live_channel(agent_id, if had_error { "failed" } else { "completed" });
         let duration_ms = started.elapsed().as_millis() as u64;
 
         // Update tree state and emit Completed + TreeSnapshot
@@ -218,6 +223,7 @@ impl AgentTool {
                 "subagent_type": params.subagent_type.as_deref().unwrap_or("general-purpose"),
                 "model": agent_model,
                 "depth": current_depth + 1,
+                "fork_metadata": params.fork_metadata(),
             });
             let _ = ctx
                 .hook_runner
@@ -251,6 +257,10 @@ impl AgentTool {
             .await
         };
 
+        if result.is_err() {
+            params.close_live_channel(agent_id, "launch_failed");
+        }
+
         // Fire SubagentStop hook
         if !stop_configs.is_empty() {
             let is_error = result.as_ref().is_err();
@@ -258,6 +268,7 @@ impl AgentTool {
                 "agent_id": agent_id,
                 "description": description,
                 "is_error": is_error,
+                "fork_metadata": params.fork_metadata(),
             });
             let _ = ctx
                 .hook_runner

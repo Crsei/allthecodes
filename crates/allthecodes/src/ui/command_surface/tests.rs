@@ -20,6 +20,7 @@ use crate::ui::tasks::{
 use crate::ui::teams::teams_dialog::{TeamSummary, TeammateStatus};
 use allthecodes_engine::types::app_state::AppState;
 use allthecodes_ipc_protocol::subsystem_types::LspRecommendationPayload;
+use allthecodes_ipc_protocol::BackendMessage;
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent {
@@ -473,6 +474,39 @@ fn tasks_surface_routes_selected_task_actions() {
         surface.handle_key(key(KeyCode::Char('d'))),
         CommandSurfaceOutcome::Submit("/tasks delete task-1".to_string())
     );
+}
+
+#[test]
+fn tasks_surface_shows_fork_context_and_live_path() {
+    let mut surface = TasksSurface::from_items(Vec::new());
+    surface.handle_event(&BackendMessage::AgentEvent {
+        event: allthecodes_types::agent_events::AgentEvent::Spawned {
+            agent_id: "fork-1".to_string(),
+            parent_agent_id: None,
+            description: "follow parent".to_string(),
+            agent_type: Some("fork".to_string()),
+            model: None,
+            is_background: true,
+            depth: 1,
+            chain_id: "chain".to_string(),
+            fork_metadata: Some(allthecodes_types::agent_types::ForkLaunchMetadata {
+                is_fork: true,
+                context: allthecodes_types::agent_types::ForkContextMode::LiveReadonly,
+                live_channel: Some(allthecodes_types::agent_types::LiveParentContextPaths {
+                    directory: "/tmp/fork-1".to_string(),
+                    snapshot: "/tmp/fork-1/parent-context.md".to_string(),
+                    updates: "/tmp/fork-1/parent-updates.ndjson".to_string(),
+                    latest_diff: None,
+                    latest_seq: 1,
+                }),
+            }),
+        },
+    });
+
+    surface.handle_key(key(KeyCode::Right));
+    let rendered = surface.render();
+    assert!(rendered.contains("fork · context: live readonly"));
+    assert!(rendered.contains("parent-context.md"));
 }
 
 #[test]

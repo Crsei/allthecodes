@@ -339,7 +339,9 @@ impl QueryEngineDeps {
                 .as_ref()
                 .map(|trace| trace.session_id.clone())
                 .unwrap_or_else(|| self.audit_ctx.session_id.clone()),
-            messages: vec![],
+            // AgentTool context inheritance must see the same conversation
+            // snapshot that the parent tool call was evaluated against.
+            messages: self.state.read().transcript.messages.clone(),
             agent_id: self.agent_context.as_ref().map(|ac| ac.agent_id.clone()),
             agent_type: self
                 .agent_context

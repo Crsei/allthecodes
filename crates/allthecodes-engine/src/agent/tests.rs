@@ -1,5 +1,6 @@
 use super::*;
 use crate::types::tool::Tool;
+use allthecodes_types::agent_types::ForkContextMode;
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -148,6 +149,8 @@ fn test_agent_tool_schema() {
     assert!(props.contains_key("model"));
     assert!(props.contains_key("run_in_background"));
     assert!(props.contains_key("isolation"));
+    assert!(props.contains_key("fork"));
+    assert!(props.contains_key("fork_context"));
 }
 
 #[test]
@@ -208,6 +211,67 @@ fn test_agent_isolation_field() {
     }))
     .unwrap();
     assert!(input.isolation.is_none());
+}
+
+#[test]
+fn test_fork_context_defaults_to_full_snapshot_when_fork_true() {
+    let input: AgentInput = serde_json::from_value(json!({
+        "prompt": "verify latest result",
+        "description": "verify result",
+        "fork": true
+    }))
+    .unwrap();
+
+    assert!(input.fork);
+    assert_eq!(
+        input.resolved_fork_context().unwrap(),
+        Some(ForkContextMode::FullSnapshot)
+    );
+}
+
+#[test]
+fn test_fork_context_accepts_explicit_modes() {
+    for (raw, expected) in [
+        ("full_snapshot", ForkContextMode::FullSnapshot),
+        ("last_output", ForkContextMode::LastOutput),
+        ("live_readonly", ForkContextMode::LiveReadonly),
+    ] {
+        let input: AgentInput = serde_json::from_value(json!({
+            "prompt": "fork task",
+            "description": "fork task",
+            "fork": true,
+            "fork_context": raw
+        }))
+        .unwrap();
+
+        assert_eq!(input.resolved_fork_context().unwrap(), Some(expected));
+    }
+}
+
+#[test]
+fn test_fork_context_absent_for_normal_agent() {
+    let input: AgentInput = serde_json::from_value(json!({
+        "prompt": "normal task",
+        "description": "normal task"
+    }))
+    .unwrap();
+
+    assert!(!input.fork);
+    assert_eq!(input.resolved_fork_context().unwrap(), None);
+}
+
+#[test]
+fn test_fork_context_requires_fork_true() {
+    let input: AgentInput = serde_json::from_value(json!({
+        "prompt": "normal task",
+        "description": "normal task",
+        "fork_context": "last_output"
+    }))
+    .unwrap();
+
+    let err = input.resolved_fork_context().unwrap_err();
+    assert!(err.to_string().contains("fork_context"));
+    assert!(err.to_string().contains("fork: true"));
 }
 
 #[test]

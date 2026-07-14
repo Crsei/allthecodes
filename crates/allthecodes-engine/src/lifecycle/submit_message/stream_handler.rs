@@ -152,6 +152,12 @@ fn handle_assistant_message(
         transaction.record_usage_cost(msg_usage.clone(), assistant_msg.cost_usd);
     }
 
+    crate::agent::live_parent_context::publish_parent_update(
+        ctx.session_id.as_str(),
+        "assistant",
+        &crate::agent::fork_context::assistant_visible_text(&assistant_msg),
+    );
+
     // Emit a durable cost event for completed model API calls.
     if let Some(ref usage) = assistant_msg.usage {
         use crate::observability::{AuditLevel, EventKind, Outcome, Stage};

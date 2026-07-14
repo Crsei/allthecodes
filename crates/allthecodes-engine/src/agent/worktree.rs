@@ -41,6 +41,8 @@ impl AgentTool {
         current_depth: usize,
         background: bool,
     ) -> Result<ToolResult> {
+        // TODO(upstream fork parity): when inherited parent paths point outside
+        // this child worktree, inject an explicit path-translation notice.
         let started = std::time::Instant::now();
         let cwd = std::env::current_dir()?;
 
@@ -323,11 +325,13 @@ impl AgentTool {
         );
         child_config.verification_policy = params.verification_policy.clone();
         super::dispatch::apply_coordinator_worker_turn_limit(&mut child_config, ctx, params);
+        params.apply_fork_to_child_config(&mut child_config);
 
         let agent_tx = ctx.bg_agent_tx.as_ref();
 
         // Register worktree agent in tree and emit Spawned event
         {
+            let fork_metadata = params.fork_metadata();
             let chain_id = ctx
                 .query_tracking
                 .as_ref()
@@ -348,6 +352,7 @@ impl AgentTool {
                 duration_ms: None,
                 result_preview: None,
                 had_error: false,
+                fork_metadata: fork_metadata.clone(),
                 children: vec![],
             };
             crate::agent_runtime::register_agent_node(node);
@@ -363,6 +368,7 @@ impl AgentTool {
                         is_background: false,
                         depth: current_depth + 1,
                         chain_id,
+                        fork_metadata,
                     },
                 ));
 
@@ -381,6 +387,7 @@ impl AgentTool {
 
         let ipc = agent_tx.map(|tx| (tx, agent_id));
         let (mut result_text, had_error, usage) = collect_stream_result(stream, ipc).await;
+        params.close_live_channel(agent_id, if had_error { "failed" } else { "completed" });
 
         // -- 4. Check for changes
         let changes = count_worktree_changes(&worktree_path, original_head.as_deref()).await;

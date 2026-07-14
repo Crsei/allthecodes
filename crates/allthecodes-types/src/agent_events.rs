@@ -63,6 +63,8 @@ pub enum AgentEvent {
         is_background: bool,
         depth: usize,
         chain_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fork_metadata: Option<ForkLaunchMetadata>,
     },
     Completed {
         agent_id: String,
@@ -138,6 +140,8 @@ pub enum AgentEvent {
         agent_id: String,
         task_id: String,
         output: OutputReadBatch,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fork_metadata: Option<ForkLaunchMetadata>,
     },
     ExecutionRecord {
         agent_id: String,
@@ -215,4 +219,53 @@ pub enum TeamCommand {
     QueryTeamStatus {
         team_name: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn spawned_event_serializes_fork_context_when_present() {
+        let event = AgentEvent::Spawned {
+            agent_id: "child".to_string(),
+            parent_agent_id: Some("parent".to_string()),
+            description: "fork task".to_string(),
+            agent_type: Some("fork".to_string()),
+            model: Some("model".to_string()),
+            is_background: false,
+            depth: 2,
+            chain_id: "chain".to_string(),
+            fork_metadata: Some(ForkLaunchMetadata {
+                is_fork: true,
+                context: ForkContextMode::LiveReadonly,
+                live_channel: None,
+            }),
+        };
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(
+            value["fork_metadata"]["fork_context"],
+            json!("live_readonly")
+        );
+    }
+
+    #[test]
+    fn spawned_event_omits_fork_context_for_normal_agent() {
+        let event = AgentEvent::Spawned {
+            agent_id: "child".to_string(),
+            parent_agent_id: None,
+            description: "normal task".to_string(),
+            agent_type: None,
+            model: None,
+            is_background: false,
+            depth: 1,
+            chain_id: "chain".to_string(),
+            fork_metadata: None,
+        };
+
+        let value = serde_json::to_value(event).unwrap();
+        assert!(value.get("fork_metadata").is_none());
+    }
 }

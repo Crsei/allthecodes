@@ -38,12 +38,14 @@ pub trait AgentRuntimeHost: Send + Sync + 'static {
 pub struct AgentTaskOutput {
     pub id: String,
     pub output: String,
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AgentTaskOutputBatch {
     pub id: String,
     pub output: OutputReadBatch,
+    pub metadata: Option<serde_json::Value>,
 }
 
 static HOST: OnceLock<Arc<dyn AgentRuntimeHost>> = OnceLock::new();
@@ -100,6 +102,10 @@ pub fn handle_agent_command(cmd: AgentCommand) -> Vec<BackendMessage> {
             after_seq,
             limit_bytes,
         } => match HOST.get().and_then(|host| {
+            // Persisted task metadata reconstructs fork context mode and live
+            // paths after a UI refresh/reconnect. TODO(upstream fork parity):
+            // resume an interrupted child runtime and re-register its live
+            // publisher, matching resumeAgent.ts semantics.
             host.agent_output_batch(
                 &agent_id,
                 after_seq,
@@ -111,6 +117,12 @@ pub fn handle_agent_command(cmd: AgentCommand) -> Vec<BackendMessage> {
                     agent_id,
                     task_id: task.id,
                     output: task.output,
+                    fork_metadata: task
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("fork"))
+                        .cloned()
+                        .and_then(|metadata| serde_json::from_value(metadata).ok()),
                 },
             }],
             None => match HOST.get().and_then(|host| host.agent_output(&agent_id)) {

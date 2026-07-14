@@ -9,6 +9,8 @@
 pub(crate) mod builtin_agents;
 mod dispatch;
 pub mod fork;
+pub mod fork_context;
+pub(crate) mod live_parent_context;
 pub mod supervisor;
 mod tool_impl;
 mod worktree;
@@ -20,6 +22,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use allthecodes_types::agent_types::{ForkContextMode, ForkLaunchMetadata};
 use anyhow::{bail, Result};
 use serde::Deserialize;
 use serde_json::Value;
@@ -45,7 +48,7 @@ pub struct AgentTool;
 /// emit the upstream name still execute the same subagent runtime.
 pub struct TaskAgentTool;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct AgentInput {
     /// The task/prompt for the subagent to execute.
     prompt: String,
@@ -91,6 +94,89 @@ struct AgentInput {
     delegate_cwd: Option<String>,
     #[serde(default, rename = "_delegate_worktree_slug")]
     delegate_worktree_slug: Option<String>,
+    /// Whether to spawn a fork agent.
+    #[serde(default)]
+    fork: bool,
+    /// Context inheritance mode for fork agents.
+    #[serde(default)]
+    fork_context: Option<ForkContextMode>,
+    #[serde(skip)]
+    prepared_fork: Option<fork_context::PreparedForkLaunch>,
+}
+
+impl AgentInput {
+    fn resolved_fork_context(&self) -> Result<Option<ForkContextMode>> {
+        if !self.fork {
+            if self.fork_context.is_some() {
+                bail!("`fork_context` requires `fork: true`");
+            }
+            return Ok(None);
+        }
+
+        Ok(Some(self.fork_context.unwrap_or_default()))
+    }
+
+    fn prepare_fork(
+        &mut self,
+        ctx: &ToolUseContext,
+        current_assistant: &crate::types::message::AssistantMessage,
+        agent_id: &str,
+    ) -> Result<()> {
+        let Some(mode) = self.resolved_fork_context()? else {
+            return Ok(());
+        };
+        let prepared = fork_context::prepare_fork_launch(
+            mode,
+            ctx,
+            current_assistant,
+            agent_id,
+            &self.prompt,
+        )?;
+        self.prompt = prepared.child_prompt.clone();
+        self.prepared_fork = Some(prepared);
+        if self.subagent_type.is_none() {
+            self.subagent_type = Some("fork".to_string());
+        }
+        Ok(())
+    }
+
+    fn fork_metadata(&self) -> Option<ForkLaunchMetadata> {
+        self.prepared_fork
+            .as_ref()
+            .map(|prepared| prepared.metadata.clone())
+    }
+
+    fn apply_fork_to_child_config(&self, config: &mut QueryEngineConfig) {
+        let Some(prepared) = self.prepared_fork.as_ref() else {
+            return;
+        };
+        config.initial_messages = Some(prepared.initial_messages.clone());
+        config.tools = prepared.parent_tools.clone();
+        config.thinking_config = prepared.thinking_config.clone();
+        if let Some(reminder) = prepared.persistent_reminder.as_deref() {
+            config.append_system_prompt = Some(match config.append_system_prompt.take() {
+                Some(existing) if !existing.trim().is_empty() => {
+                    format!("{existing}\n\n{reminder}")
+                }
+                _ => reminder.to_string(),
+            });
+        }
+        // TODO(upstream fork parity): preserve a byte-identical default system
+        // prompt cache prefix. Custom/append prompt state, the exact visible
+        // parent tool pool, and thinking enablement are already inherited.
+    }
+
+    fn close_live_channel(&self, agent_id: &str, status: &str) {
+        if self
+            .prepared_fork
+            .as_ref()
+            .is_some_and(|prepared| prepared.metadata.live_channel.is_some())
+        {
+            // The durable files remain for resume/recovery; only publishing is
+            // stopped when this run is terminal.
+            live_parent_context::close_channel(agent_id, status);
+        }
+    }
 }
 
 /// Maximum depth for nested agent spawning to prevent infinite recursion.

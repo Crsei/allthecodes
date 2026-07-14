@@ -92,6 +92,7 @@ impl AgentRuntimeHost for RootAgentHost {
             AgentTaskOutput {
                 id: task.id,
                 output: task.output,
+                metadata: task.metadata,
             }
         })
     }
@@ -102,16 +103,18 @@ impl AgentRuntimeHost for RootAgentHost {
         after_seq: Option<u64>,
         limit_bytes: usize,
     ) -> Option<AgentTaskOutputBatch> {
-        let (task_id, output) = allthecodes_engine::agent::supervisor::output_events_for_agent(
-            agent_id,
-            after_seq,
-            limit_bytes,
-        )
-        .ok()
-        .flatten()?;
+        let (task_id, output, metadata) =
+            allthecodes_engine::agent::supervisor::output_events_for_agent(
+                agent_id,
+                after_seq,
+                limit_bytes,
+            )
+            .ok()
+            .flatten()?;
         Some(AgentTaskOutputBatch {
             id: task_id,
             output,
+            metadata,
         })
     }
 
@@ -403,9 +406,16 @@ impl HeadlessRuntimeHost for RootHeadlessHost {
         tool_uses: Option<u64>,
         agent_type: Option<&str>,
     ) -> Option<BackgroundAgentCompletion> {
-        let (is_bg, desc, node_agent_type) = find_agent_node(agent_id)
-            .map(|node| (node.is_background, node.description, node.agent_type))
-            .unwrap_or((true, "unknown".to_string(), None));
+        let (is_bg, desc, node_agent_type, fork_metadata) = find_agent_node(agent_id)
+            .map(|node| {
+                (
+                    node.is_background,
+                    node.description,
+                    node.agent_type,
+                    node.fork_metadata,
+                )
+            })
+            .unwrap_or((true, "unknown".to_string(), None, None));
         if !is_bg {
             return None;
         }
@@ -436,6 +446,7 @@ impl HeadlessRuntimeHost for RootHeadlessHost {
             result_preview: result_preview.to_string(),
             had_error,
             duration_ms,
+            fork_metadata,
         })
     }
 

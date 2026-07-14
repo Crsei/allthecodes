@@ -225,6 +225,64 @@ pub struct ToolUseContext {
     pub taint_context: allthecodes_types::security::TaintContext,
 }
 
+/// Parent runtime state observable at the exact tool-call boundary. The
+/// engine's AgentTool uses this snapshot for fork construction without making
+/// the generic tools crate depend on engine-only QuerySource/ThinkingConfig
+/// enums.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParentRuntimeSnapshot {
+    pub rendered_system_prompt: Option<String>,
+    pub query_source: Option<String>,
+    pub thinking_config: Option<serde_json::Value>,
+    pub available_tool_names: Vec<String>,
+}
+
+impl ToolUseContext {
+    pub fn parent_runtime_snapshot(&self) -> ParentRuntimeSnapshot {
+        let app_state = (self.get_app_state)();
+        let rendered_system_prompt = [
+            self.options.custom_system_prompt.as_deref(),
+            self.options.append_system_prompt.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>();
+        let rendered_system_prompt =
+            (!rendered_system_prompt.is_empty()).then(|| rendered_system_prompt.join("\n\n"));
+        let query_source = self.agent_id.as_ref().map_or_else(
+            || {
+                Some(if self.options.is_non_interactive_session {
+                    "non_interactive".to_string()
+                } else {
+                    "interactive".to_string()
+                })
+            },
+            |agent_id| Some(format!("agent:{agent_id}")),
+        );
+        let thinking_config = app_state.thinking_enabled.map(|enabled| {
+            serde_json::json!({
+                "enabled": enabled,
+                "effort": app_state.effort_value,
+            })
+        });
+        let available_tool_names = self
+            .available_tools
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+
+        // TODO(upstream fork parity): clone ContentReplacementState when an
+        // equivalent becomes part of allthecodes' tool-call context.
+        ParentRuntimeSnapshot {
+            rendered_system_prompt,
+            query_source,
+            thinking_config,
+            available_tool_names,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolUseOptions {
     pub debug: bool,

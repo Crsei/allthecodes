@@ -24,6 +24,7 @@ mod tests {
                 is_background: false,
                 depth: 1,
                 chain_id: "c1".into(),
+                fork_metadata: None,
             },
         };
         let json = serde_json::to_value(&msg).unwrap();

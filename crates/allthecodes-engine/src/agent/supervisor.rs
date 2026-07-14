@@ -116,6 +116,7 @@ pub(super) async fn spawn_background_agent(
             "model": &agent_model,
             "depth": current_depth + 1,
             "background": true,
+            "fork_metadata": params.fork_metadata(),
         });
         let _ = ctx
             .hook_runner
@@ -155,6 +156,8 @@ pub(super) async fn spawn_background_agent(
         child_config.persist_session = true;
         child_config.auto_save_session = true;
     }
+    params.apply_fork_to_child_config(&mut child_config);
+    let fork_metadata = params.fork_metadata();
 
     let task_store = crate::agent_runtime::global_task_store();
     let task_list_id = params
@@ -196,6 +199,10 @@ pub(super) async fn spawn_background_agent(
                 isolation: use_worktree.then(|| "worktree".to_string()),
                 worktree_path: worktree_path.clone(),
                 worktree_branch: worktree_branch.clone(),
+                metadata: fork_metadata
+                    .clone()
+                    .and_then(|metadata| serde_json::to_value(metadata).ok())
+                    .map(|metadata| json!({ "fork": metadata })),
                 ..TaskCreateOptions::default()
             },
         )?;
@@ -221,6 +228,7 @@ pub(super) async fn spawn_background_agent(
             .as_ref()
             .map(|t| t.chain_id.clone())
             .unwrap_or_default(),
+        fork_metadata.clone(),
         &bg_tx,
     );
 
@@ -254,6 +262,7 @@ pub(super) async fn spawn_background_agent(
         permission_callback: ctx.permission_callback.clone(),
         ask_user_callback: ctx.ask_user_callback.clone(),
         permission_pending_count: Arc::new(AtomicUsize::new(0)),
+        fork_metadata,
     };
 
     let handle = tokio::spawn(async move {
@@ -289,20 +298,24 @@ pub fn output_events_for_agent(
     agent_id: &str,
     after_seq: Option<allthecodes_types::output::EventSeq>,
     limit_bytes: usize,
-) -> Result<Option<(String, allthecodes_types::output::OutputReadBatch)>> {
+) -> Result<
+    Option<(
+        String,
+        allthecodes_types::output::OutputReadBatch,
+        Option<serde_json::Value>,
+    )>,
+> {
     let Some(task_ref) = BACKGROUND_SUPERVISOR.task_ref(agent_id) else {
         return Ok(None);
     };
     let store = crate::agent_runtime::global_task_store();
     let output = store.read_output_events(&task_ref, after_seq, limit_bytes)?;
-    if store
-        .get(&task_ref)
-        .as_ref()
-        .is_some_and(|task| task.status.is_terminal())
-    {
+    let task = store.get(&task_ref);
+    let metadata = task.as_ref().and_then(|task| task.metadata.clone());
+    if task.as_ref().is_some_and(|task| task.status.is_terminal()) {
         BACKGROUND_SUPERVISOR.forget(agent_id);
     }
-    Ok(output.map(|output| (task_ref.task_id, output)))
+    Ok(output.map(|output| (task_ref.task_id, output, metadata)))
 }
 
 pub async fn shutdown_all(reason: &str) -> usize {
@@ -380,6 +393,7 @@ struct AgentRuntime {
     permission_callback: Option<PermissionCallback>,
     ask_user_callback: Option<AskUserCallback>,
     permission_pending_count: Arc<AtomicUsize>,
+    fork_metadata: Option<allthecodes_types::agent_types::ForkLaunchMetadata>,
 }
 
 impl AgentRuntime {
@@ -704,6 +718,22 @@ impl AgentRuntime {
         }
         self.task_store.unregister_runtime_handle(&self.task_ref);
         BACKGROUND_SUPERVISOR.complete(&self.agent_id);
+        if self
+            .fork_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.live_channel.is_some())
+        {
+            super::live_parent_context::close_channel(
+                &self.agent_id,
+                if was_cancelled {
+                    "cancelled"
+                } else if had_error {
+                    "failed"
+                } else {
+                    "completed"
+                },
+            );
+        }
 
         let _ = crate::agent_runtime::emit_subagent_event(
             "background_complete",
@@ -719,6 +749,7 @@ impl AgentRuntime {
                 "result_len": result_text.len(),
                 "had_error": had_error,
                 "cancelled": was_cancelled,
+                "fork_metadata": &self.fork_metadata,
             })),
         );
 
@@ -728,6 +759,7 @@ impl AgentRuntime {
                 "description": &self.description,
                 "is_error": had_error,
                 "background": true,
+                "fork_metadata": &self.fork_metadata,
             });
             let _ = self
                 .hook_runner
@@ -841,6 +873,7 @@ fn register_agent_tree(
     agent_model: &str,
     current_depth: usize,
     chain_id: String,
+    fork_metadata: Option<allthecodes_types::agent_types::ForkLaunchMetadata>,
     bg_tx: &allthecodes_types::agent_channel::AgentSender,
 ) {
     let node = allthecodes_types::agent_types::AgentNode {
@@ -858,6 +891,7 @@ fn register_agent_tree(
         duration_ms: None,
         result_preview: None,
         had_error: false,
+        fork_metadata: fork_metadata.clone(),
         children: vec![],
     };
     crate::agent_runtime::register_agent_node(node);
@@ -872,6 +906,7 @@ fn register_agent_tree(
             is_background: true,
             depth: current_depth + 1,
             chain_id,
+            fork_metadata,
         },
     ));
 

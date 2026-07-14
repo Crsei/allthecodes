@@ -880,6 +880,7 @@ impl App {
                         result_preview,
                         had_error,
                         duration_ms,
+                        ..
                     } => {
                         self.apply_background_agent_complete(
                             agent_id,
@@ -1211,19 +1212,29 @@ impl App {
                 agent_id,
                 description,
                 agent_type,
+                fork_metadata,
                 ..
             } => {
                 self.runtime_view.upsert_agent(AgentThreadEntry {
                     thread_id: agent_id.clone(),
                     agent_nickname: short_agent_label(description, agent_id),
-                    agent_role: agent_type.clone(),
+                    agent_role: fork_metadata
+                        .as_ref()
+                        .map(|metadata| metadata.display_label())
+                        .or_else(|| agent_type.clone()),
                     is_primary: false,
                     is_closed: false,
                 });
                 self.runtime_view.agent_nav_mut().mark_status(
                     agent_id,
                     AgentThreadStatus::Running,
-                    Some(compact_inline(description, 80)),
+                    Some(compact_inline(
+                        &fork_metadata
+                            .as_ref()
+                            .map(|metadata| format!("{} · {description}", metadata.display_label()))
+                            .unwrap_or_else(|| description.clone()),
+                        80,
+                    )),
                 );
                 self.runtime_view
                     .set_current_agent_thread(Some(agent_id.clone()));
@@ -1561,7 +1572,11 @@ impl App {
         self.runtime_view.upsert_agent(AgentThreadEntry {
             thread_id: node.agent_id.clone(),
             agent_nickname: short_agent_label(&node.description, &node.agent_id),
-            agent_role: node.agent_type.clone(),
+            agent_role: node
+                .fork_metadata
+                .as_ref()
+                .map(|metadata| metadata.display_label())
+                .or_else(|| node.agent_type.clone()),
             is_primary: false,
             is_closed: !agent_state_is_active(&node.state),
         });
