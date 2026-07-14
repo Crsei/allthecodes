@@ -30,6 +30,7 @@ pub struct BackgroundAgentCompletion {
     pub result_preview: String,
     pub had_error: bool,
     pub duration_ms: u64,
+    pub fork_metadata: Option<allthecodes_types::agent_types::ForkLaunchMetadata>,
 }
 
 pub trait HeadlessRuntimeHost: Send + Sync + 'static {
@@ -176,6 +177,7 @@ pub async fn run_headless(config: HeadlessRuntimeConfig) -> anyhow::Result<()> {
                                     result_preview: done.result_preview,
                                     had_error: done.had_error,
                                     duration_ms: done.duration_ms,
+                                    fork_metadata: done.fork_metadata,
                                 });
                             }
                         }

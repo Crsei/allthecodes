@@ -14,6 +14,10 @@
 //! user directly in the fork.
 //!
 //! To use the git-branch wrapper, run `/gbranch` or `/gitbranch`.
+//!
+//! TODO(upstream fork parity): preserve explicit conflict handling if a future
+//! `/fork` slash command or alias is introduced. AgentTool `fork: true` is the
+//! only enabled fork-agent launch route in this phase.
 
 use anyhow::Result;
 use async_trait::async_trait;

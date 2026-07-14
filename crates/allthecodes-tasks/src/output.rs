@@ -85,6 +85,7 @@ pub fn task_output_payload_with_events(
         "remote_session_id": entry.remote_session_id,
         "remote_task_metadata": entry.remote_task_metadata,
         "poll_started_at": entry.poll_started_at,
+        "metadata": entry.metadata,
         "output_summary": entry.output_summary,
         "output_bytes": entry.output_bytes,
         "output_truncated": entry.output_truncated,
@@ -114,6 +115,7 @@ pub fn task_output_payload_with_events(
         "remote_session_id": entry.remote_session_id,
         "remote_task_metadata": entry.remote_task_metadata,
         "poll_started_at": entry.poll_started_at,
+        "metadata": entry.metadata,
         "output": output,
         "output_summary": entry.output_summary,
         "output_bytes": entry.output_bytes,
@@ -165,5 +167,32 @@ pub async fn wait_for_task_output(
             }
             _ = sleep(delay) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod fork_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn task_output_payload_preserves_fork_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TaskStore::with_dir(temp.path());
+        let entry = store.create_with_options(
+            "fork task",
+            "verify parent",
+            TaskCreateOptions {
+                metadata: Some(json!({
+                    "fork": {
+                        "is_fork": true,
+                        "fork_context": "last_output"
+                    }
+                })),
+                ..TaskCreateOptions::default()
+            },
+        );
+        let payload = task_output_payload(&entry, TaskOutputRetrievalStatus::Success);
+        assert_eq!(payload["metadata"]["fork"]["fork_context"], "last_output");
+        assert_eq!(payload["task"]["metadata"]["fork"]["is_fork"], true);
     }
 }

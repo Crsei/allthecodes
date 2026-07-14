@@ -534,6 +534,7 @@ mod tests {
             duration_ms: None,
             result_preview: None,
             had_error: false,
+            fork_metadata: None,
             children: vec![],
         }
     }

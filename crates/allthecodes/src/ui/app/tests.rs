@@ -704,6 +704,45 @@ fn agent_event_updates_navigation_and_footer_rendering() {
 }
 
 #[test]
+fn fork_agent_event_exposes_context_mode_in_navigation() {
+    let mut app = App::new();
+    app.set_session_id("session-main".to_string());
+    let mut event = spawned_agent_event("fork-1", "Review latest", None);
+    if let AgentEvent::Spawned { fork_metadata, .. } = &mut event {
+        *fork_metadata = Some(allthecodes_types::agent_types::ForkLaunchMetadata {
+            is_fork: true,
+            context: allthecodes_types::agent_types::ForkContextMode::LiveReadonly,
+            live_channel: Some(allthecodes_types::agent_types::LiveParentContextPaths {
+                directory: "/tmp/fork-1".to_string(),
+                snapshot: "/tmp/fork-1/parent-context.md".to_string(),
+                updates: "/tmp/fork-1/parent-updates.ndjson".to_string(),
+                latest_diff: None,
+                latest_seq: 1,
+            }),
+        });
+    }
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::AgentEvent { event }),
+    });
+
+    let entry = app
+        .runtime_state()
+        .agent_nav()
+        .entry("fork-1")
+        .expect("fork navigation entry");
+    assert_eq!(
+        entry.agent_role.as_deref(),
+        Some("fork · context: live readonly")
+    );
+    assert!(app
+        .runtime_state()
+        .agent_nav()
+        .runtime_info("fork-1")
+        .and_then(|runtime| runtime.status_summary.as_deref())
+        .is_some_and(|summary| summary.contains("context: live readonly")));
+}
+
+#[test]
 fn agent_tree_dialog_navigation_select_and_close() {
     let mut app = App::new();
     app.set_session_id("session-main".to_string());
@@ -1508,6 +1547,7 @@ fn spawned_agent_event(agent_id: &str, description: &str, agent_type: Option<&st
         is_background: true,
         depth: 1,
         chain_id: "chain-main".to_string(),
+        fork_metadata: None,
     }
 }
 

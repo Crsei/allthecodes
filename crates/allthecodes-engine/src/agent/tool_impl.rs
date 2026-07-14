@@ -63,6 +63,16 @@ impl Tool for AgentTool {
                     "type": "string",
                     "enum": ["worktree"],
                     "description": "Isolation mode for the agent"
+                },
+                "fork": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Set to true to spawn this as a fork agent that inherits parent context"
+                },
+                "fork_context": {
+                    "type": "string",
+                    "enum": ["full_snapshot", "last_output", "live_readonly"],
+                    "description": "Context inheritance mode for fork agents. Requires fork: true. Defaults to full_snapshot when fork is true."
                 }
             },
             "required": ["prompt", "description"]
@@ -73,14 +83,45 @@ impl Tool for AgentTool {
         true
     }
 
+    async fn validate_input(&self, input: &Value, _ctx: &ToolUseContext) -> ValidationResult {
+        let params = match serde_json::from_value::<AgentInput>(input.clone()) {
+            Ok(params) => params,
+            Err(err) => {
+                return ValidationResult::Error {
+                    message: format!("Invalid Agent input: {err}"),
+                    error_code: 1,
+                };
+            }
+        };
+
+        if let Err(err) = params.resolved_fork_context() {
+            return ValidationResult::Error {
+                message: err.to_string(),
+                error_code: 1,
+            };
+        }
+        if params.fork && params.name.is_some() {
+            return ValidationResult::Error {
+                message: "`fork: true` cannot be combined with named teammate spawning".to_string(),
+                error_code: 1,
+            };
+        }
+
+        ValidationResult::Ok
+    }
+
     async fn call(
         &self,
         input: Value,
         ctx: &ToolUseContext,
-        _parent: &AssistantMessage,
+        parent: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolResult> {
         let mut params: AgentInput = serde_json::from_value(input)?;
+        params.resolved_fork_context()?;
+        if params.fork && params.name.is_some() {
+            bail!("`fork: true` cannot be combined with named teammate spawning");
+        }
 
         // Check recursion depth
         let current_depth = ctx.query_tracking.as_ref().map(|t| t.depth).unwrap_or(0);
@@ -94,6 +135,9 @@ impl Tool for AgentTool {
             );
         }
 
+        let agent_id = Uuid::new_v4().to_string();
+        params.prepare_fork(ctx, parent, &agent_id)?;
+
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
@@ -105,8 +149,14 @@ impl Tool for AgentTool {
             super::active_agent_definition(std::path::Path::new(&cwd), &subagent_type_owned);
         apply_agent_definition_defaults(&mut params, agent_definition.as_ref(), ctx);
 
-        let description = params.description.as_deref().unwrap_or("unnamed task");
-        let subagent_type = params.subagent_type.as_deref().unwrap_or("general-purpose");
+        let description = params
+            .description
+            .clone()
+            .unwrap_or_else(|| "unnamed task".to_string());
+        let subagent_type = params
+            .subagent_type
+            .clone()
+            .unwrap_or_else(|| "general-purpose".to_string());
 
         // Resolve model for the subagent.
         // Priority: explicit model param, agent definition, CLAUDE_MODEL env,
@@ -135,7 +185,7 @@ impl Tool for AgentTool {
             let spawn_input = json!({
                 "name": spawn_request.name,
                 "prompt": params.prompt.clone(),
-                "description": description,
+                "description": &description,
                 "team": spawn_request.team_name,
                 "agent_type": params.subagent_type.clone(),
                 "model": teammate_model,
@@ -144,13 +194,11 @@ impl Tool for AgentTool {
                 "backend": "in-process",
             });
             let mut result =
-                crate::agent_runtime::spawn_teammate(spawn_input, ctx, _parent, _on_progress)
+                crate::agent_runtime::spawn_teammate(spawn_input, ctx, parent, _on_progress)
                     .await?;
             annotate_agent_teammate_result(&mut result, &params.prompt);
             return Ok(result);
         }
-
-        let agent_id = Uuid::new_v4().to_string();
 
         // Determine isolation mode before logging (borrow params.isolation)
         let use_worktree = params
@@ -172,13 +220,14 @@ impl Tool for AgentTool {
             "spawn",
             &agent_id,
             ctx.agent_id.as_deref(),
-            Some(description),
+            Some(&description),
             Some(&agent_model),
             current_depth + 1,
             params.run_in_background,
             Some(json!({
-                "subagent_type": subagent_type,
+                "subagent_type": &subagent_type,
                 "isolation": params.isolation,
+                "fork_metadata": params.fork_metadata(),
             })),
         );
 
@@ -205,7 +254,7 @@ impl Tool for AgentTool {
                     "warning",
                     &agent_id,
                     ctx.agent_id.as_deref(),
-                    Some(description),
+                    Some(&description),
                     Some(&agent_model),
                     current_depth + 1,
                     true,
@@ -214,7 +263,7 @@ impl Tool for AgentTool {
                     })),
                 );
                 // Fall through to synchronous dispatch below
-                return self
+                let result = self
                     .run_agent_dispatch(
                         use_worktree,
                         &params,
@@ -223,19 +272,23 @@ impl Tool for AgentTool {
                         &agent_model,
                         &parent_model,
                         current_depth,
-                        description,
+                        &description,
                         &start_configs,
                         &stop_configs,
                         false,
                     )
                     .await;
+                if result.is_err() {
+                    params.close_live_channel(&agent_id, "launch_failed");
+                }
+                return result;
             };
 
-            let bg_description = description.to_string();
-            let bg_subagent_type = subagent_type.to_string();
+            let bg_description = description.clone();
+            let bg_subagent_type = subagent_type.clone();
 
             let launch = super::supervisor::spawn_background_agent(
-                params,
+                params.clone(),
                 ctx,
                 agent_id.clone(),
                 bg_description.clone(),
@@ -248,7 +301,14 @@ impl Tool for AgentTool {
                 start_configs,
                 stop_configs,
             )
-            .await?;
+            .await;
+            let launch = match launch {
+                Ok(launch) => launch,
+                Err(error) => {
+                    params.close_live_channel(&agent_id, "launch_failed");
+                    return Err(error);
+                }
+            };
 
             return Ok(ToolResult {
                 data: json!(format!(
@@ -261,20 +321,25 @@ impl Tool for AgentTool {
         }
 
         // -- Synchronous path
-        self.run_agent_dispatch(
-            use_worktree,
-            &params,
-            ctx,
-            &agent_id,
-            &agent_model,
-            &parent_model,
-            current_depth,
-            description,
-            &start_configs,
-            &stop_configs,
-            false,
-        )
-        .await
+        let result = self
+            .run_agent_dispatch(
+                use_worktree,
+                &params,
+                ctx,
+                &agent_id,
+                &agent_model,
+                &parent_model,
+                current_depth,
+                &description,
+                &start_configs,
+                &stop_configs,
+                false,
+            )
+            .await;
+        if result.is_err() {
+            params.close_live_channel(&agent_id, "launch_failed");
+        }
+        result
     }
 
     async fn prompt(&self) -> String {
@@ -291,6 +356,10 @@ To show the user the result, you should send a text message back to the user \
 with a concise summary of the result.\n\
 - Provide clear, detailed prompts so the agent can work autonomously \
 and return exactly the information you need.\n\
+- Set `fork: true` only when the child must inherit parent context. Use \
+`full_snapshot` for work depending on the full discussion, `last_output` for \
+quick verification of the latest result, and `live_readonly` when parent output \
+may continue changing and the child can read the supplied file channel.\n\
 - The agent's outputs should generally be trusted\n\
 - Clearly tell the agent whether you expect it to write code or just to do research \
 (search, file reads, web fetches, etc.), since it is not aware of the user's intent"
@@ -383,6 +452,11 @@ fn teammate_spawn_request(
     params: &AgentInput,
     app_state: &allthecodes_tools::tool::ToolAppState,
 ) -> Result<Option<TeammateSpawnRequest>> {
+    // TODO(upstream fork parity): FEATURE_FORK_SUBAGENT automatic routing,
+    // coordinator/non-interactive mutual exclusion, recursive fork guards,
+    // permission bubbling, forced async policy, and `/fork`/`/branch` command
+    // routing remain explicit extension points. This phase only enables
+    // explicit `fork: true` AgentTool calls.
     let Some(raw_name) = params.name.as_deref() else {
         return Ok(None);
     };
@@ -710,6 +784,24 @@ mod tests {
         let schema = tool.input_json_schema();
         let default_val = &schema["properties"]["run_in_background"]["default"];
         assert_eq!(default_val, &serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn test_schema_exposes_fork_context_fields() {
+        let tool = AgentTool;
+        let schema = tool.input_json_schema();
+        assert_eq!(
+            schema["properties"]["fork"]["default"],
+            serde_json::Value::Bool(false)
+        );
+
+        let mode_enum = schema["properties"]["fork_context"]["enum"]
+            .as_array()
+            .unwrap();
+        let variants: Vec<&str> = mode_enum.iter().filter_map(|v| v.as_str()).collect();
+        assert!(variants.contains(&"full_snapshot"));
+        assert!(variants.contains(&"last_output"));
+        assert!(variants.contains(&"live_readonly"));
     }
 
     #[test]

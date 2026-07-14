@@ -382,6 +382,8 @@ pub enum BackendMessage {
         result_preview: String,
         had_error: bool,
         duration_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fork_metadata: Option<allthecodes_types::agent_types::ForkLaunchMetadata>,
     },
     /// Brief mode message from the model (via BriefTool).
     BriefMessage {

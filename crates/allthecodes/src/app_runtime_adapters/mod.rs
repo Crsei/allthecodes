@@ -93,6 +93,7 @@ impl AgentRuntimeHost for RootAgentHost {
             AgentTaskOutput {
                 id: task.id,
                 output: task.output,
+                metadata: task.metadata,
             }
         })
     }
@@ -111,6 +112,7 @@ impl AgentRuntimeHost for RootAgentHost {
         Some(AgentTaskOutputBatch {
             id: task.id,
             output,
+            metadata: task.metadata,
         })
     }
 
@@ -398,9 +400,9 @@ impl HeadlessRuntimeHost for RootHeadlessHost {
         had_error: bool,
         duration_ms: u64,
     ) -> Option<BackgroundAgentCompletion> {
-        let (is_bg, desc) = find_agent_node(agent_id)
-            .map(|node| (node.is_background, node.description))
-            .unwrap_or((true, "unknown".to_string()));
+        let (is_bg, desc, fork_metadata) = find_agent_node(agent_id)
+            .map(|node| (node.is_background, node.description, node.fork_metadata))
+            .unwrap_or((true, "unknown".to_string(), None));
         if !is_bg {
             return None;
         }
@@ -426,6 +428,7 @@ impl HeadlessRuntimeHost for RootHeadlessHost {
             result_preview: result_preview.to_string(),
             had_error,
             duration_ms,
+            fork_metadata,
         })
     }
 
