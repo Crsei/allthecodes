@@ -127,26 +127,26 @@ pub fn key_value_row(key: impl AsRef<str>, value: impl AsRef<str>) -> String {
 fn top_border(title: &str) -> String {
     let title = format!(" {title} ");
     let dashes = PANEL_WIDTH.saturating_sub(title.len() + 2);
-    format!("+{title}{}+", "-".repeat(dashes))
+    format!("┌{title}{}┐", "─".repeat(dashes))
 }
 
 fn separator() -> String {
-    format!("|{}|", "-".repeat(PANEL_WIDTH - 2))
+    format!("│{}│", "─".repeat(PANEL_WIDTH - 2))
 }
 
 fn bottom_border() -> String {
-    format!("+{}+", "-".repeat(PANEL_WIDTH - 2))
+    format!("└{}┘", "─".repeat(PANEL_WIDTH - 2))
 }
 
 fn panel_line(text: &str) -> String {
-    format!("| {:<width$} |", text, width = PANEL_WIDTH - 4)
+    format!("│ {:<width$} │", text, width = PANEL_WIDTH - 4)
 }
 
 fn two_col_line(left: &str, right: &str) -> String {
     let left = fit(left, NAV_WIDTH);
     let right = fit(right, DETAIL_WIDTH);
     format!(
-        "| {:<nav$} {:<detail$} |",
+        "│ {:<nav$} {:<detail$} │",
         left,
         right,
         nav = NAV_WIDTH,
@@ -183,7 +183,7 @@ mod tests {
             .footer("Left/Right section | Up/Down navigate | Enter select | Esc close")
             .render();
 
-        assert!(rendered.contains("+ Config"));
+        assert!(rendered.contains("┌ Config"));
         assert!(rendered.contains("> Status"));
         assert!(rendered.matches("Esc close").count() == 1);
     }

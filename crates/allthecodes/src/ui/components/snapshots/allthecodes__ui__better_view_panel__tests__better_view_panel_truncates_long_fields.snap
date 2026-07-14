@@ -1,14 +1,13 @@
 ---
 source: crates/allthecodes/src/ui/components/better_view_panel.rs
-assertion_line: 226
 expression: rendered
 ---
-+ Configuration With A Very Long Title That Should Fit ------------------------------------------------------------------------------------+
-| This summary is intentionally long so the panel has to abbreviate it before it reaches the fixed panel edge.                             |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| Very Long Section Heading                Very Long Detail Heading                                                                        |
-| > status section with a very long label  active model                   claude-sonnet-with-a-very-long-provider-and-routing-name         |
-|   model settings with a very long label  > Open effective configuration with a long action label /config show --include-sources --inc... |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| Left/Right section | Up/Down navigate | Enter select | Esc close | This tail should be truncated                                         |
-+------------------------------------------------------------------------------------------------------------------------------------------+
+┌ Configuration With A Very Long Title That Should Fit ────────────────────────────────────────────────────────────────────────────────────┐
+│ This summary is intentionally long so the panel has to abbreviate it before it reaches the fixed panel edge.                             │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ Very Long Section Heading                Very Long Detail Heading                                                                        │
+│ > status section with a very long label  active model                   claude-sonnet-with-a-very-long-provider-and-routing-name         │
+│   model settings with a very long label  > Open effective configuration with a long action label /config show --include-sources --inc... │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ Left/Right section | Up/Down navigate | Enter select | Esc close | This tail should be truncated                                         │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

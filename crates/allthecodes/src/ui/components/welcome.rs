@@ -3,94 +3,140 @@
 //! Rendered once when the TUI starts, before any messages are displayed.
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::prelude::Widget;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-const ACCENT: Color = Color::Rgb(190, 140, 255);
-const ACCENT_DIM: Color = Color::Rgb(120, 90, 180);
-const MUTED: Color = Color::Rgb(100, 100, 100);
-const LIGHT: Color = Color::Rgb(200, 200, 200);
+use crate::ui::brand_logo::{
+    render_brand_logo, LogoFrame, BRAND_COLUMN_HEIGHT, BRAND_COLUMN_WIDTH,
+};
+use crate::ui::theme::ThemeColors;
+
 const PANEL_WIDTH: u16 = 64;
 const PANEL_HEIGHT: u16 = 8;
+const LOGO_LAYOUT_MIN_WIDTH: u16 = 48;
+const BRAND_GAP: u16 = 2;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WelcomeInfo<'a> {
+    pub(crate) version: &'a str,
+    pub(crate) model_name: &'a str,
+    pub(crate) session_id: &'a str,
+    pub(crate) cwd: &'a str,
+}
 
 /// Render a small rectangular welcome summary.
 ///
 /// The panel intentionally avoids the old ASCII logo so the prompt can sit
 /// directly below a compact startup summary.
-pub fn render_welcome(
+pub(crate) fn render_welcome(
     area: Rect,
     buf: &mut Buffer,
-    version: &str,
-    model_name: &str,
-    session_id: &str,
-    cwd: &str,
-) {
+    info: WelcomeInfo<'_>,
+    logo_frame: LogoFrame,
+    colors: &ThemeColors,
+) -> bool {
     if area.width < 20 || area.height < PANEL_HEIGHT {
         let line = Line::from(vec![
             Span::styled(
                 "allthecodes ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(colors.accent)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("v{}", version), Style::default().fg(MUTED)),
+            Span::styled(
+                format!("v{}", info.version),
+                Style::default().fg(colors.mutedText),
+            ),
         ]);
         buf.set_line(area.x, area.y, &line, area.width);
-        return;
+        return false;
     }
 
     let panel = left_aligned_panel(area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT_DIM))
+        .border_style(Style::default().fg(colors.accentDim))
         .title(Line::from(vec![Span::styled(
             " allthecodes ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(colors.accent)
+                .add_modifier(Modifier::BOLD),
         )]))
         .title_alignment(Alignment::Left);
     let inner = block.inner(panel);
     block.render(panel, buf);
 
-    let short_session = if session_id.len() > 8 {
-        &session_id[..8]
+    let show_logo = area.width >= LOGO_LAYOUT_MIN_WIDTH
+        && area.height >= PANEL_HEIGHT
+        && inner.height >= BRAND_COLUMN_HEIGHT;
+    if show_logo {
+        let columns = Layout::horizontal([
+            Constraint::Length(BRAND_COLUMN_WIDTH),
+            Constraint::Length(BRAND_GAP),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+        render_brand_logo(columns[0], buf, logo_frame, colors);
+        render_info_lines(columns[2], buf, info, colors);
     } else {
-        session_id
-    };
-    let display_model = model_name.strip_prefix("claude-").unwrap_or(model_name);
-    let max_value_width = inner.width.saturating_sub(9) as usize;
-    let display_cwd = truncate_start(cwd, max_value_width);
+        render_info_lines(inner, buf, info, colors);
+    }
+
+    show_logo
+}
+
+fn render_info_lines(area: Rect, buf: &mut Buffer, info: WelcomeInfo<'_>, colors: &ThemeColors) {
+    let raw_model = info
+        .model_name
+        .strip_prefix("claude-")
+        .unwrap_or(info.model_name);
+    let max_value_width = area.width.saturating_sub(9) as usize;
+    let display_version = truncate_str(&format!("v{}", info.version), max_value_width);
+    let display_model = truncate_str(raw_model, max_value_width);
+    let short_session = info
+        .session_id
+        .chars()
+        .take(max_value_width.min(8))
+        .collect::<String>();
+    let display_cwd = truncate_start(info.cwd, max_value_width);
     let tip = truncate_str("Enter to send, /help for commands", max_value_width);
+    let label = Style::default().fg(colors.mutedText);
+    let value = Style::default().fg(colors.surfaceText);
 
     let lines = vec![
         Line::from(vec![
-            Span::styled("Version: ", Style::default().fg(MUTED)),
+            Span::styled("Version: ", label),
             Span::styled(
-                format!("v{}", version),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                display_version,
+                Style::default()
+                    .fg(colors.accent)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Model:   ", Style::default().fg(MUTED)),
-            Span::styled(display_model, Style::default().fg(LIGHT)),
+            Span::styled("Model:   ", label),
+            Span::styled(display_model, value),
         ]),
         Line::from(vec![
-            Span::styled("Session: ", Style::default().fg(MUTED)),
-            Span::styled(short_session, Style::default().fg(LIGHT)),
+            Span::styled("Session: ", label),
+            Span::styled(short_session, value),
         ]),
         Line::from(vec![
-            Span::styled("CWD:     ", Style::default().fg(MUTED)),
-            Span::styled(display_cwd, Style::default().fg(MUTED)),
+            Span::styled("CWD:     ", label),
+            Span::styled(display_cwd, label),
         ]),
         Line::from(vec![
-            Span::styled("Tips:    ", Style::default().fg(MUTED)),
-            Span::styled(tip, Style::default().fg(LIGHT)),
+            Span::styled("Tips:    ", label),
+            Span::styled(tip, value),
         ]),
     ];
 
     Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .render(inner, buf);
+        .render(area, buf);
 }
 
 fn left_aligned_panel(area: Rect) -> Rect {
@@ -148,10 +194,9 @@ mod tests {
         render_welcome(
             area,
             &mut buf,
-            "0.1.0",
-            "claude-sonnet-4",
-            "abcd1234",
-            "/tmp",
+            test_info(),
+            crate::ui::brand_logo::frame_at(0),
+            dark_colors(),
         );
         let content = buf_to_string(&buf, area);
         assert!(content.contains("allthecodes"));
@@ -164,10 +209,9 @@ mod tests {
         render_welcome(
             area,
             &mut buf,
-            "0.1.0",
-            "claude-sonnet-4",
-            "abcdef1234567890",
-            "/home/user/project",
+            test_info(),
+            crate::ui::brand_logo::frame_at(0),
+            dark_colors(),
         );
         let content = buf_to_string(&buf, area);
         assert!(content.contains("Version:"));
@@ -175,7 +219,6 @@ mod tests {
         assert!(content.contains("Session:"));
         assert!(content.contains("CWD:"));
         assert!(content.contains("Tips:"));
-        assert!(!content.contains('█'), "welcome should not render a logo");
     }
 
     #[test]
@@ -185,10 +228,9 @@ mod tests {
         render_welcome(
             area,
             &mut buf,
-            "0.1.0",
-            "claude-sonnet-4",
-            "abcdef1234567890",
-            "/home/user/project",
+            test_info(),
+            crate::ui::brand_logo::frame_at(0),
+            dark_colors(),
         );
 
         assert_eq!(buf[(area.x, area.y)].symbol(), "┌");
@@ -199,7 +241,13 @@ mod tests {
     fn test_render_welcome_medium() {
         let area = Rect::new(0, 0, 40, 12);
         let mut buf = Buffer::empty(area);
-        render_welcome(area, &mut buf, "0.1.0", "test-model", "sess1234", "/path");
+        render_welcome(
+            area,
+            &mut buf,
+            test_info(),
+            crate::ui::brand_logo::frame_at(0),
+            dark_colors(),
+        );
         let content = buf_to_string(&buf, area);
         assert!(content.contains("Version:"));
     }
@@ -212,25 +260,50 @@ mod tests {
     }
 
     #[test]
-    fn test_render_welcome_has_no_logo_at_any_width() {
-        for width in [60, 80, 120] {
-            let area = Rect::new(0, 0, width, 20);
-            let mut buf = Buffer::empty(area);
-            render_welcome(
-                area,
-                &mut buf,
-                "0.1.0",
-                "claude-sonnet-4",
-                "abcdef1234567890",
-                "/home/user/project",
-            );
-            let content = buf_to_string(&buf, area);
-            assert!(
-                !content.contains('█'),
-                "welcome should not render ASCII logo at {width} cols"
-            );
-            assert!(content.contains("Tips"));
-        }
+    fn wide_welcome_renders_source_a_and_preserves_details() {
+        let area = Rect::new(0, 0, 64, 8);
+        let mut buf = Buffer::empty(area);
+        let rendered = render_welcome(
+            area,
+            &mut buf,
+            test_info(),
+            crate::ui::brand_logo::frame_at(0),
+            dark_colors(),
+        );
+        let content = buf_to_string(&buf, area);
+        assert!(rendered);
+        assert!(content.contains("░░ ██ ░░"));
+        assert!(content.contains("██ ██ ██"));
+        assert!(content.contains("██ ░░ ██"));
+        assert!(content.contains("ALLTHECODES"));
+        assert!(content.contains("Version:"));
+        assert!(content.contains("Tips:"));
+    }
+
+    #[test]
+    fn medium_welcome_keeps_details_without_logo() {
+        let area = Rect::new(0, 0, 47, 8);
+        let mut buf = Buffer::empty(area);
+        let rendered = render_welcome(
+            area,
+            &mut buf,
+            test_info(),
+            crate::ui::brand_logo::frame_at(0),
+            dark_colors(),
+        );
+        let content = buf_to_string(&buf, area);
+        assert!(!rendered);
+        assert!(!content.contains("ALLTHECODES"));
+        assert!(content.contains("Version:"));
+        assert!(content.contains("Session:"));
+    }
+
+    #[test]
+    fn welcome_responsive_layouts() {
+        insta::assert_snapshot!(
+            "welcome_responsive_layouts",
+            render_responsive_test_cases([(64, 8), (48, 8), (47, 8), (19, 5), (64, 7)]),
+        );
     }
 
     #[test]
@@ -252,5 +325,40 @@ mod tests {
             s.push('\n');
         }
         s
+    }
+
+    fn test_info() -> WelcomeInfo<'static> {
+        WelcomeInfo {
+            version: "0.1.0",
+            model_name: "claude-sonnet-4",
+            session_id: "abcdef1234567890",
+            cwd: "/home/user/project",
+        }
+    }
+
+    fn dark_colors() -> &'static ThemeColors {
+        crate::ui::theme::ThemeProvider::with_name(crate::ui::theme::ThemeName::Dark).colors()
+    }
+
+    fn render_responsive_test_cases<const N: usize>(cases: [(u16, u16); N]) -> String {
+        cases
+            .into_iter()
+            .map(|(width, height)| {
+                let area = Rect::new(0, 0, width, height);
+                let mut buf = Buffer::empty(area);
+                let logo = render_welcome(
+                    area,
+                    &mut buf,
+                    test_info(),
+                    crate::ui::brand_logo::frame_at(0),
+                    dark_colors(),
+                );
+                format!(
+                    "{width}x{height} logo={logo}\n{}",
+                    buf_to_string(&buf, area).trim_end(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 }

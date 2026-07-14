@@ -30,6 +30,7 @@ use ratatui::layout::Rect;
 use status::SessionUsageSnapshot;
 use workspace_trust::is_workspace_trusted;
 
+use super::brand_logo::WelcomeLogoState;
 use super::command_palette::CommandPalette;
 use super::command_surface::{CommandSurface, CommandSurfaceTarget};
 use super::history_search_dialog::HistorySearchEntry;
@@ -232,6 +233,8 @@ pub struct App {
     session_cost_usd: f64,
     /// Whether the welcome screen is currently shown.
     show_welcome: bool,
+    welcome_logo: WelcomeLogoState,
+    welcome_logo_visible: bool,
     /// Startup trust gate shown before the normal welcome panel.
     workspace_trust_pending: bool,
     workspace_trust_selection: usize,
@@ -333,6 +336,8 @@ impl App {
             active_goal: None,
             session_cost_usd: 0.0,
             show_welcome: true,
+            welcome_logo: WelcomeLogoState::default(),
+            welcome_logo_visible: false,
             workspace_trust_pending: false,
             workspace_trust_selection: 0,
             suggestions: None,
@@ -444,6 +449,7 @@ impl App {
         // Dismiss welcome screen on first user or assistant message.
         if self.show_welcome && matches!(msg, Message::User(_) | Message::Assistant(_)) {
             self.show_welcome = false;
+            self.welcome_logo_visible = false;
         }
         if clears_latest_error {
             self.clear_latest_error();
@@ -604,6 +610,13 @@ impl App {
     /// every 5th tick (~80ms) to keep a pleasant animation speed.
     pub fn tick(&mut self) {
         self.tick_counter = self.tick_counter.wrapping_add(1);
+        if self.show_welcome
+            && self.welcome_logo_visible
+            && !self.workspace_trust_pending
+            && self.welcome_logo.tick(16)
+        {
+            self.dirty = true;
+        }
         if self.spinner_state.active {
             self.spinner_state.tick_tip(16);
         }

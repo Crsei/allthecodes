@@ -78,7 +78,7 @@ fn mcp_surface_case(name: &str) -> SurfaceFixture {
         .parent()
         .expect("settings path has parent");
     write_mcp_fixture(project_config_dir, "db", true);
-    fixture.case = open_surface_steps(fixture.case, "mcp", "+ MCP ");
+    fixture.case = open_surface_steps(fixture.case, "mcp", "┌ MCP ");
     fixture
 }
 
@@ -94,7 +94,7 @@ fn write_mcp_fixture(project_config_dir: &Path, server_name: &str, disabled: boo
       "command": "node",
       "args": ["db-server.js"],
       "disabled": {disabled}
-}}
+}}}}}}
 "#
         ),
     )
@@ -157,7 +157,7 @@ fn surface_agents_open_content() {
     assert_surface_open(
         "surface_agents",
         "agents",
-        "+ Agents ",
+        "┌ Agents ",
         &["source=Agents", "Create new agent", "Left/Right source"],
     );
 }
@@ -167,7 +167,7 @@ fn surface_config_open_content() {
     assert_surface_open(
         "surface_config",
         "config",
-        "+ Config ",
+        "┌ Config ",
         &["Show effective config", "model=", "backend="],
     );
 }
@@ -197,7 +197,7 @@ fn surface_hooks_open_content() {
     assert_surface_open(
         "surface_hooks",
         "hooks",
-        "+ Hooks ",
+        "┌ Hooks ",
         &["mode=events", "PreToolUse", "0 hooks configured"],
     );
 }
@@ -207,7 +207,7 @@ fn surface_login_open_content() {
     assert_surface_open(
         "surface_login",
         "login",
-        "+ Login / allthecodes ",
+        "┌ Login / allthecodes ",
         &[
             "profiles=claude-code,codex,custom",
             "/login status",
@@ -236,7 +236,7 @@ fn surface_memory_open_content() {
     assert_surface_open(
         "surface_memory",
         "memory",
-        "+ Memory ",
+        "┌ Memory ",
         &["action=Edit", "User memory", "/memory edit"],
     );
 }
@@ -246,7 +246,7 @@ fn surface_model_open_content() {
     assert_surface_open(
         "surface_model",
         "model",
-        "+ Model ",
+        "┌ Model ",
         &["Select the active model", "Model / Filter", "current"],
     );
 }
@@ -256,7 +256,7 @@ fn surface_permissions_open_content() {
     assert_surface_open(
         "surface_permissions",
         "permissions",
-        "+ Permissions ",
+        "┌ Permissions ",
         &["mode=", "Default", "Full Access"],
     );
 }
@@ -266,7 +266,7 @@ fn surface_plugin_open_content() {
     assert_surface_open(
         "surface_plugin",
         "plugin",
-        "+ Plugins ",
+        "┌ Plugins ",
         &["No installed plugins", "installed_plugins.json", "r reload"],
     );
 }
@@ -296,7 +296,7 @@ fn surface_sandbox_open_content() {
     assert_surface_open(
         "surface_sandbox",
         "sandbox",
-        "+ Sandbox ",
+        "┌ Sandbox ",
         &["Show full status", "Network policy", "Left/Right section"],
     );
 }
@@ -306,7 +306,7 @@ fn surface_skills_open_content() {
     assert_surface_open(
         "surface_skills",
         "skills",
-        "+ Skills ",
+        "┌ Skills ",
         &["filter=", "enabled=true source=bundled", "Type filter"],
     );
 }
@@ -326,7 +326,7 @@ fn surface_team_open_content() {
     assert_surface_open(
         "surface_team",
         "team",
-        "+ Team ",
+        "┌ Team ",
         &["No active team", "/team create", "/team list"],
     );
 }
@@ -337,19 +337,19 @@ fn surface_alias_open_cases() {
         SurfaceCase {
             name: "surface_alias_perms",
             input: "perms",
-            title: "+ Permissions ",
+            title: "┌ Permissions ",
             expected: &["mode=", "Default", "Full Access"],
         },
         SurfaceCase {
             name: "surface_alias_plugins",
             input: "plugins",
-            title: "+ Plugins ",
+            title: "┌ Plugins ",
             expected: &["No installed plugins", "installed_plugins.json", "r reload"],
         },
         SurfaceCase {
             name: "surface_alias_teams",
             input: "teams",
-            title: "+ Team ",
+            title: "┌ Team ",
             expected: &["No active team", "/team create", "/team list"],
         },
     ] {
@@ -360,13 +360,13 @@ fn surface_alias_open_cases() {
 #[test]
 fn commands_with_args_do_not_open_surfaces() {
     for (input, forbidden_title) in [
-        ("permissions mode default", "+ Permissions "),
-        ("plugin list", "+ Plugins "),
-        ("team list", "+ Team "),
-        ("mcp status", "+ MCP "),
-        ("memory list", "+ Memory "),
-        ("hooks list", "+ Hooks "),
-        ("sandbox status", "+ Sandbox "),
+        ("permissions mode default", "┌ Permissions "),
+        ("plugin list", "┌ Plugins "),
+        ("team list", "┌ Team "),
+        ("mcp status", "┌ MCP "),
+        ("memory list", "┌ Memory "),
+        ("hooks list", "┌ Hooks "),
+        ("sandbox status", "┌ Sandbox "),
     ] {
         assert_command_with_args_does_not_open_surface(input, forbidden_title);
     }
@@ -378,10 +378,10 @@ fn commands_with_args_do_not_open_surfaces() {
 
 #[test]
 fn surface_escape_closes_overlay_and_returns_to_prompt() {
-    let fixture = open_surface_case("surface_escape_closes_overlay", "config", "+ Config ")
+    let fixture = open_surface_case("surface_escape_closes_overlay", "config", "┌ Config ")
         .step(TestStep::Key(TestKey::Escape))
         .step(TestStep::Wait(SHORT_WAIT))
-        .step(TestStep::AssertScreenNotContains("+ Config ".into()))
+        .step(TestStep::AssertScreenNotContains("┌ Config ".into()))
         .step(TestStep::TypeText("after-escape".into()))
         .step(TestStep::AssertPromptContains("after-escape".into()))
         .step(TestStep::Snapshot("surface_escape_closed".into()))
@@ -395,11 +395,11 @@ fn surface_alias_escape_closes_overlay_and_returns_to_prompt() {
     let fixture = open_surface_case(
         "surface_alias_escape_closes_overlay",
         "perms",
-        "+ Permissions ",
+        "┌ Permissions ",
     )
     .step(TestStep::Key(TestKey::Escape))
     .step(TestStep::Wait(SHORT_WAIT))
-    .step(TestStep::AssertScreenNotContains("+ Permissions ".into()))
+    .step(TestStep::AssertScreenNotContains("┌ Permissions ".into()))
     .step(TestStep::TypeText("after-alias-escape".into()))
     .step(TestStep::AssertPromptContains("after-alias-escape".into()))
     .step(TestStep::Snapshot("surface_alias_escape_closed".into()))
@@ -410,7 +410,7 @@ fn surface_alias_escape_closes_overlay_and_returns_to_prompt() {
 
 #[test]
 fn surface_config_tabbed_navigation_changes_sections() {
-    let fixture = open_surface_case("surface_config_navigation", "config", "+ Config ")
+    let fixture = open_surface_case("surface_config_navigation", "config", "┌ Config ")
         .step(TestStep::AssertScreenContains("> Status".into()))
         .step(TestStep::Key(TestKey::Right))
         .step(TestStep::Wait(SHORT_WAIT))
@@ -432,7 +432,7 @@ fn surface_alias_permissions_navigation_changes_selection() {
     let fixture = open_surface_case(
         "surface_alias_permissions_navigation",
         "perms",
-        "+ Permissions ",
+        "┌ Permissions ",
     )
     .step(TestStep::AssertScreenContains("> Default".into()))
     .step(TestStep::Key(TestKey::Down))
@@ -470,7 +470,7 @@ fn surface_mcp_action_navigation_and_shortcuts() {
 
 #[test]
 fn surface_skills_filter_and_clear() {
-    let fixture = open_surface_case("surface_skills_filter", "skills", "+ Skills ")
+    let fixture = open_surface_case("surface_skills_filter", "skills", "┌ Skills ")
         .step(TestStep::TypeText("up".into()))
         .step(TestStep::Wait(SHORT_WAIT))
         .step(TestStep::AssertScreenContains("filter=up".into()))
@@ -489,7 +489,7 @@ fn surface_skills_filter_and_clear() {
 
 #[test]
 fn surface_model_filter_selects_mini() {
-    let fixture = open_surface_case("surface_model_filter", "model", "+ Model ")
+    let fixture = open_surface_case("surface_model_filter", "model", "┌ Model ")
         .step(TestStep::TypeText("gpt-5.4-mini".into()))
         .step(TestStep::Wait(SHORT_WAIT))
         .step(TestStep::AssertScreenContains(
@@ -510,7 +510,7 @@ fn surface_mcp_add_shortcut_fills_prompt() {
         .step(TestStep::TypeText("a".into()))
         .step(TestStep::Wait(SHORT_WAIT))
         .step(TestStep::AssertPromptContains("/mcp add ".into()))
-        .step(TestStep::AssertScreenNotContains("+ MCP ".into()))
+        .step(TestStep::AssertScreenNotContains("┌ MCP ".into()))
         .step(TestStep::Snapshot("surface_mcp_add_shortcut".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -526,7 +526,7 @@ fn surface_mcp_edit_action_fills_prompt() {
         .step(TestStep::Key(TestKey::Enter))
         .step(TestStep::Wait(SHORT_WAIT))
         .step(TestStep::AssertPromptContains("/mcp edit db ".into()))
-        .step(TestStep::AssertScreenNotContains("+ MCP ".into()))
+        .step(TestStep::AssertScreenNotContains("┌ MCP ".into()))
         .step(TestStep::Snapshot("surface_mcp_edit_action".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -535,11 +535,11 @@ fn surface_mcp_edit_action_fills_prompt() {
 
 #[test]
 fn surface_team_create_shortcut_fills_prompt() {
-    let fixture = open_surface_case("surface_team_create_shortcut", "team", "+ Team ")
+    let fixture = open_surface_case("surface_team_create_shortcut", "team", "┌ Team ")
         .step(TestStep::TypeText("c".into()))
         .step(TestStep::Wait(SHORT_WAIT))
         .step(TestStep::AssertPromptContains("/team create ".into()))
-        .step(TestStep::AssertScreenNotContains("+ Team ".into()))
+        .step(TestStep::AssertScreenNotContains("┌ Team ".into()))
         .step(TestStep::Snapshot("surface_team_create_shortcut".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -548,11 +548,11 @@ fn surface_team_create_shortcut_fills_prompt() {
 
 #[test]
 fn surface_alias_team_create_shortcut_fills_prompt() {
-    let fixture = open_surface_case("surface_alias_team_create_shortcut", "teams", "+ Team ")
+    let fixture = open_surface_case("surface_alias_team_create_shortcut", "teams", "┌ Team ")
         .step(TestStep::TypeText("c".into()))
         .step(TestStep::Wait(SHORT_WAIT))
         .step(TestStep::AssertPromptContains("/team create ".into()))
-        .step(TestStep::AssertScreenNotContains("+ Team ".into()))
+        .step(TestStep::AssertScreenNotContains("┌ Team ".into()))
         .step(TestStep::Snapshot(
             "surface_alias_team_create_shortcut".into(),
         ))
@@ -581,7 +581,7 @@ fn surface_login_status_action_submits_status() {
     let fixture = open_surface_case(
         "surface_login_status_action",
         "login",
-        "+ Login / allthecodes ",
+        "┌ Login / allthecodes ",
     )
     .step(TestStep::Key(TestKey::Enter))
     .step(TestStep::WaitForAny(
@@ -601,13 +601,13 @@ fn surface_login_status_action_submits_status() {
 
 #[test]
 fn surface_plugin_empty_row_is_disabled() {
-    let fixture = open_surface_case("surface_plugin_empty_disabled", "plugin", "+ Plugins ")
+    let fixture = open_surface_case("surface_plugin_empty_disabled", "plugin", "┌ Plugins ")
         .step(TestStep::AssertScreenContains(
             "disabled: no plugins found".into(),
         ))
         .step(TestStep::Key(TestKey::Enter))
         .step(TestStep::Wait(SHORT_WAIT))
-        .step(TestStep::AssertScreenContains("+ Plugins ".into()))
+        .step(TestStep::AssertScreenContains("┌ Plugins ".into()))
         .step(TestStep::AssertScreenContains(
             "No installed plugins".into(),
         ))
@@ -622,14 +622,14 @@ fn surface_alias_plugin_empty_row_is_disabled() {
     let fixture = open_surface_case(
         "surface_alias_plugin_empty_disabled",
         "plugins",
-        "+ Plugins ",
+        "┌ Plugins ",
     )
     .step(TestStep::AssertScreenContains(
         "disabled: no plugins found".into(),
     ))
     .step(TestStep::Key(TestKey::Enter))
     .step(TestStep::Wait(SHORT_WAIT))
-    .step(TestStep::AssertScreenContains("+ Plugins ".into()))
+    .step(TestStep::AssertScreenContains("┌ Plugins ".into()))
     .step(TestStep::AssertScreenContains(
         "No installed plugins".into(),
     ))
@@ -662,6 +662,8 @@ fn surface_mcp_reconnect_disabled_server_reports_disabled() {
     let fixture = mcp_surface_case("surface_mcp_reconnect_disabled")
         .step(TestStep::Key(TestKey::Right))
         .step(TestStep::Wait(SHORT_WAIT))
+        .step(TestStep::Key(TestKey::Right))
+        .step(TestStep::Wait(SHORT_WAIT))
         .step(TestStep::AssertScreenContains("> Reconnect".into()))
         .step(TestStep::Key(TestKey::Enter))
         .step(TestStep::WaitForAny(
@@ -680,6 +682,10 @@ fn surface_mcp_reconnect_disabled_server_reports_disabled() {
 #[test]
 fn surface_mcp_remove_action_updates_project_settings() {
     let fixture = mcp_surface_case("surface_mcp_remove_action")
+        .step(TestStep::Key(TestKey::Right))
+        .step(TestStep::Wait(SHORT_WAIT))
+        .step(TestStep::Key(TestKey::Right))
+        .step(TestStep::Wait(SHORT_WAIT))
         .step(TestStep::Key(TestKey::Right))
         .step(TestStep::Wait(SHORT_WAIT))
         .step(TestStep::AssertScreenContains("> Remove".into()))

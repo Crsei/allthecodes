@@ -53,6 +53,11 @@ fn render_places_prompt_after_compact_welcome() {
 
     let content = buffer_to_lines(terminal.backend().buffer(), 80, 24);
     assert!(
+        content[..8].iter().any(|line| line.contains("ALLTHECODES")),
+        "wide welcome should render the animated word tracker",
+    );
+    assert!(app.welcome_logo_visible);
+    assert!(
         content[8].trim().is_empty(),
         "welcome panel and prompt input should have a blank spacer row"
     );
@@ -1336,6 +1341,84 @@ fn tick_marks_dirty_for_streaming_thinking_animation() {
 }
 
 #[test]
+fn visible_welcome_logo_marks_dirty_every_eighty_ms() {
+    let mut app = App::new();
+    app.show_welcome = true;
+    app.workspace_trust_pending = false;
+    app.welcome_logo_visible = true;
+    app.dirty = false;
+
+    for _ in 0..4 {
+        app.tick();
+        assert!(!app.dirty);
+    }
+    app.tick();
+    assert!(app.dirty);
+    assert_eq!(app.welcome_logo.step(), 1);
+}
+
+#[test]
+fn hidden_or_trust_gated_logo_does_not_advance() {
+    for (show_welcome, logo_visible, trust_pending) in [
+        (false, true, false),
+        (true, false, false),
+        (true, true, true),
+    ] {
+        let mut app = App::new();
+        app.show_welcome = show_welcome;
+        app.welcome_logo_visible = logo_visible;
+        app.workspace_trust_pending = trust_pending;
+        app.dirty = false;
+        for _ in 0..5 {
+            app.tick();
+        }
+        assert_eq!(app.welcome_logo.step(), 0);
+        assert!(!app.dirty);
+    }
+}
+
+#[test]
+fn narrow_render_keeps_welcome_animation_paused() {
+    let mut app = App::new();
+    let mut terminal = Terminal::new(TestBackend::new(47, 24)).expect("terminal");
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+    assert!(!app.welcome_logo_visible);
+
+    app.dirty = false;
+    for _ in 0..5 {
+        app.tick();
+    }
+    assert_eq!(app.welcome_logo.step(), 0);
+    assert!(!app.dirty);
+}
+
+#[test]
+fn tiny_render_clears_stale_logo_visibility_before_returning() {
+    let mut app = App::new();
+    app.welcome_logo_visible = true;
+    let mut terminal = Terminal::new(TestBackend::new(9, 3)).expect("terminal");
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+    assert!(!app.welcome_logo_visible);
+}
+
+#[test]
+fn first_conversation_message_stops_welcome_animation() {
+    let mut app = App::new();
+    app.welcome_logo_visible = true;
+    app.add_message(Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 0,
+        role: "user".to_string(),
+        content: MessageContent::Text("hello".to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    }));
+    assert!(!app.show_welcome);
+    assert!(!app.welcome_logo_visible);
+}
+
+#[test]
 fn mouse_wheel_scrolls_transcript_view() {
     let mut app = App::new();
     app.view_mode = ViewMode::Transcript;
@@ -1553,11 +1636,47 @@ fn command_surface_renders_as_overlay() {
     terminal.draw(|frame| app.render(frame)).expect("draw");
 
     let content = buffer_to_lines(terminal.backend().buffer(), 100, 24);
-    assert!(content.join("\n").contains("LSP Plugin Recommendation"));
+    assert!(content.join("\n").contains("LSP plugin recommendation"));
     assert!(content.join("\n").contains("rust-analyzer"));
     assert_title_above_prompt_area(
         &content,
-        "LSP Plugin Recommendation",
+        "LSP plugin recommendation",
+        app.render_layout.prompt_area.expect("prompt area"),
+    );
+}
+
+#[test]
+fn model_surface_keeps_its_bottom_border_above_prompt_on_short_terminal() {
+    let mut app = App::new();
+    app.open_command_surface(CommandSurface::Model(
+        crate::ui::command_surface::ModelSurface::new(&AppState::default()),
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(180, 20)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let content = buffer_to_lines(terminal.backend().buffer(), 180, 20);
+    let joined = content.join("\n");
+    let title_line = content
+        .iter()
+        .find(|line| line.contains("┌ Model"))
+        .expect("model panel title");
+    assert!(
+        title_line.starts_with("┌ Model"),
+        "model panel should be anchored to the left edge: {title_line:?}"
+    );
+    assert!(joined.contains("Select the active model"));
+    assert!(joined.contains("Type filter | Up/Down navigate | Enter select | Esc close"));
+    assert!(
+        joined.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with('└') && trimmed.ends_with('┘')
+        }),
+        "rendered screen:\n{joined}"
+    );
+    assert_title_above_prompt_area(
+        &content,
+        "┌ Model",
         app.render_layout.prompt_area.expect("prompt area"),
     );
 }

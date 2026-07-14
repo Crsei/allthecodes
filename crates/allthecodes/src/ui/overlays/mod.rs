@@ -175,6 +175,38 @@ pub fn render_prompt_adjacent_dialog_lines(
         .render(overlay, buf);
 }
 
+/// Render a self-contained command surface directly above the prompt.
+///
+/// Command surfaces already include their own title and borders. Avoiding an
+/// additional dialog frame leaves the available rows for the actual panel.
+/// The panel is anchored to the left edge to match the command palette.
+pub fn render_prompt_adjacent_lines(
+    lines: Vec<Line<'static>>,
+    area: Rect,
+    prompt_area: Rect,
+    spec: PanelSizeSpec,
+    buf: &mut Buffer,
+    style: Style,
+) {
+    if area.width < 8 || area.height < 4 {
+        return;
+    }
+
+    let preferred_height = lines.len().min(u16::MAX as usize) as u16;
+    let centered = spec
+        .resolve_prompt_adjacent_rect(area, prompt_area, preferred_height)
+        .unwrap_or_else(|| centered_rect(area, area.width.min(spec.max_width), preferred_height));
+
+    let overlay = Rect {
+        x: area.x,
+        ..centered
+    };
+    Paragraph::new(lines)
+        .style(style)
+        .wrap(Wrap { trim: false })
+        .render(overlay, buf);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

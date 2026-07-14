@@ -526,11 +526,21 @@ fn routed_detail_lines(rendered: &str) -> Vec<String> {
 
 fn panel_line_to_text(line: &str) -> String {
     let trimmed = line.trim();
-    if trimmed.starts_with('+') || trimmed.starts_with("|---") {
+    if trimmed.starts_with('+')
+        || trimmed.starts_with("|---")
+        || trimmed.starts_with('┌')
+        || trimmed.starts_with('└')
+        || trimmed.starts_with("│─")
+    {
         return String::new();
     }
-    if trimmed.starts_with('|') {
-        let inner = trimmed.trim_start_matches('|').trim_end_matches('|');
+    if trimmed.starts_with('|') || trimmed.starts_with('│') {
+        let border = trimmed.chars().next().expect("non-empty panel line");
+        let inner = trimmed
+            .strip_prefix(border)
+            .unwrap_or(trimmed)
+            .strip_suffix(border)
+            .unwrap_or_else(|| trimmed.strip_prefix(border).unwrap_or(trimmed));
         let chars = inner.chars().collect::<Vec<_>>();
         let nav_start = 1;
         let nav_end = nav_start + NAV_WIDTH;

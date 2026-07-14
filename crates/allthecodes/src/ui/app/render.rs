@@ -16,7 +16,9 @@ use crate::ui::command_surface::CommandSurface;
 use crate::ui::history_search_dialog::HistorySearchDialog;
 use crate::ui::messages::{render_messages, MessageListViewModel, MessageRenderOptions};
 use crate::ui::notifications::in_app::{NotificationPriority, NotificationTone};
-use crate::ui::overlays::{render_prompt_adjacent_dialog_lines, CenteredOverlayFrame};
+use crate::ui::overlays::{
+    render_prompt_adjacent_dialog_lines, render_prompt_adjacent_lines, CenteredOverlayFrame,
+};
 use crate::ui::panel_layout::PanelSizePreset;
 use crate::ui::prompt_input::PromptInputRenderContext;
 use crate::ui::theme::identity::{agent_identity_style, AgentIdentity};
@@ -40,6 +42,7 @@ impl App {
 
     pub fn render(&mut self, frame: &mut Frame) {
         let size = frame.area();
+        self.welcome_logo_visible = false;
         if size.width < 10 || size.height < 4 {
             return;
         }
@@ -134,7 +137,12 @@ impl App {
         let max_content_height = size
             .height
             .saturating_sub(bottom_height.saturating_add(message_bottom_gap_height));
-        let content_height = if self.show_welcome {
+        let content_height = if self.overlays.command_surface.is_some() {
+            // A command surface is a modal panel above the prompt. Give it
+            // the full message area so the normal welcome height does not
+            // leave the prompt covering the panel's lower rows.
+            max_content_height
+        } else if self.show_welcome {
             welcome::welcome_height_for(size.width).min(max_content_height)
         } else {
             let (selected, selected_expanded) = self.conversation.render_context_inputs();
@@ -175,14 +183,19 @@ impl App {
 
         if self.show_welcome {
             // Welcome screen
-            welcome::render_welcome(
+            let logo_visible = welcome::render_welcome(
                 message_area,
                 frame.buffer_mut(),
-                env!("CARGO_PKG_VERSION"),
-                &self.session_ui.model_name,
-                &self.session_ui.session_id,
-                &self.session_ui.cwd,
+                welcome::WelcomeInfo {
+                    version: env!("CARGO_PKG_VERSION"),
+                    model_name: &self.session_ui.model_name,
+                    session_id: &self.session_ui.session_id,
+                    cwd: &self.session_ui.cwd,
+                },
+                self.welcome_logo.frame(),
+                self.design_theme_provider.colors(),
             );
+            self.welcome_logo_visible = logo_visible;
         } else {
             // Messages (virtual scroll)
             let (selected, selected_expanded) = self.conversation.render_context_inputs();
@@ -302,13 +315,7 @@ impl App {
         self.render_status_bar(bottom_chunks.status, frame.buffer_mut(), &custom_lines);
 
         if let Some(ref surface) = self.overlays.command_surface {
-            render_command_surface_overlay(
-                surface,
-                size,
-                bottom_chunks.input,
-                frame.buffer_mut(),
-                self.design_theme_provider.colors(),
-            );
+            render_command_surface_overlay(surface, size, bottom_chunks.input, frame.buffer_mut());
         }
 
         if let Some(ref dialog) = self.overlays.history_search_dialog {
@@ -1012,22 +1019,19 @@ fn render_command_surface_overlay(
     area: Rect,
     prompt_area: Rect,
     buf: &mut ratatui::buffer::Buffer,
-    colors: &ThemeColors,
 ) {
     let text = surface.render();
     let body = text
         .lines()
         .map(|line| Line::from(line.to_string()))
         .collect::<Vec<_>>();
-    render_prompt_adjacent_dialog_lines(
-        CenteredOverlayFrame::with_preset(surface.title(), PanelSizePreset::CommandSurface)
-            .color("accent"),
+    render_prompt_adjacent_lines(
         body,
         area,
         prompt_area,
+        PanelSizePreset::BetterViewPanel.spec(),
         buf,
-        colors,
-        Style::default().fg(Color::White).bg(Color::Rgb(8, 10, 14)),
+        Style::default(),
     );
 }
 

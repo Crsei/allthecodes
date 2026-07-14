@@ -6,6 +6,56 @@
 
 use crate::harness::*;
 
+#[test]
+fn wide_terminal_shows_nine_grid_logo() {
+    let session = PtySession::spawn(&default_args(), 120, 40, true);
+    std::thread::sleep(RENDER_WAIT);
+    skip_trust_gate(&session);
+
+    let has_tracker = session.wait_for_screen_text("ALLTHECODES", RENDER_WAIT);
+    let screen = session.current_screen();
+    let has_grid = screen.contains("╭────────╮") && screen.contains("██");
+    let output = session.finish_after_quit("welcome_logo_wide");
+
+    assert!(
+        has_tracker,
+        "wide welcome should show word tracker:\n{screen}"
+    );
+    assert!(has_grid, "wide welcome should show the 3x3 grid:\n{screen}");
+    assert!(
+        !output.contains("panicked"),
+        "logo startup should not panic"
+    );
+}
+
+#[test]
+fn forty_seven_columns_hides_grid_but_keeps_welcome() {
+    let session = PtySession::spawn(&default_args(), 47, 24, true);
+    std::thread::sleep(RENDER_WAIT);
+    skip_trust_gate(&session);
+
+    let has_wordmark = session.wait_for_screen_text("allthecodes", RENDER_WAIT);
+    let screen = session.current_screen();
+    let output = session.finish_after_quit("welcome_logo_47_cols");
+
+    assert!(
+        has_wordmark,
+        "narrow welcome should keep its wordmark:\n{screen}"
+    );
+    assert!(
+        !screen.contains("ALLTHECODES"),
+        "narrow welcome must hide tracker:\n{screen}"
+    );
+    assert!(
+        !screen.contains("╭────────╮"),
+        "narrow welcome must hide grid:\n{screen}"
+    );
+    assert!(
+        !output.contains("panicked"),
+        "narrow startup should not panic"
+    );
+}
+
 /// TUI 启动后应该显示输入提示符 ">"
 #[test]
 fn shows_prompt_on_startup() {

@@ -27,6 +27,8 @@ pub mod approval_overlay;
 pub mod better_view_panel;
 #[path = "components/bottom_pane.rs"]
 pub mod bottom_pane;
+#[path = "components/brand_logo.rs"]
+pub(crate) mod brand_logo;
 #[cfg(test)]
 #[path = "components/chat_composer.rs"]
 pub mod chat_composer;

@@ -1,0 +1,39 @@
+---
+source: crates/allthecodes/src/ui/components/welcome.rs
+expression: "render_responsive_test_cases([(64, 8), (48, 8), (47, 8), (19, 5), (64, 7)])"
+---
+64x8 logo=true
+┌ allthecodes ─────────────────────────────────────────────────┐
+│ ╭────────╮    Version: v0.1.0                                │
+│ │░░ ██ ░░│    Model:   sonnet-4                              │
+│ │██ ██ ██│    Session: abcdef12                              │
+│ │██ ░░ ██│    CWD:     /home/user/project                    │
+│ ╰────────╯    Tips:    Enter to send, /help for commands     │
+│ ALLTHECODES                                                  │
+└──────────────────────────────────────────────────────────────┘
+
+48x8 logo=true
+┌ allthecodes ─────────────────────────────────┐
+│ ╭────────╮    Version: v0.1.0                │
+│ │░░ ██ ░░│    Model:   sonnet-4              │
+│ │██ ██ ██│    Session: abcdef12              │
+│ │██ ░░ ██│    CWD:     /home/user/project    │
+│ ╰────────╯    Tips:    Enter to send, /hel...│
+│ ALLTHECODES                                  │
+└──────────────────────────────────────────────┘
+
+47x8 logo=false
+┌ allthecodes ────────────────────────────────┐
+│Version: v0.1.0                              │
+│Model:   sonnet-4                            │
+│Session: abcdef12                            │
+│CWD:     /home/user/project                  │
+│Tips:    Enter to send, /help for commands   │
+│                                             │
+└─────────────────────────────────────────────┘
+
+19x5 logo=false
+allthecodes v0.1.0
+
+64x7 logo=false
+allthecodes v0.1.0

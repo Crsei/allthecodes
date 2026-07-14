@@ -4,7 +4,6 @@ use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelSizePreset {
-    CommandSurface,
     HistorySearch,
     AgentTree,
     PermissionDialog,
@@ -137,7 +136,6 @@ impl PanelSizeSpec {
 impl PanelSizePreset {
     pub const fn spec(self) -> PanelSizeSpec {
         match self {
-            Self::CommandSurface => PanelSizeSpec::fixed(32, 148, 5, 40).with_padding(4, 2),
             Self::HistorySearch => PanelSizeSpec::fixed(20, 148, 8, 28).with_padding(4, 4),
             Self::AgentTree => PanelSizeSpec::fixed(24, 140, 8, 32).with_padding(4, 2),
             Self::PermissionDialog => PanelSizeSpec::fixed(56, 150, 8, u16::MAX).with_padding(2, 0),
@@ -194,17 +192,6 @@ pub fn prompt_adjacent_rect(area: Rect, prompt_area: Rect, width: u16, height: u
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fixed_overlay_preset_clamps_to_area_and_limits() {
-        let area = Rect::new(0, 0, 160, 40);
-        let rect = PanelSizePreset::CommandSurface
-            .spec()
-            .resolve_rect(area, 40)
-            .expect("rect");
-
-        assert_eq!(rect, Rect::new(6, 1, 148, 38));
-    }
 
     #[test]
     fn percent_width_preset_matches_dialog_defaults() {
