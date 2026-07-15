@@ -39,7 +39,7 @@ pub enum TestStep {
     Snapshot(String),
     /// 打开命令面板（发送 "/"），等待 "Commands" 出现。
     OpenPalette,
-    /// 在命令面板中选择第 N 个条目（Down N-1 次 + Enter）。
+    /// 在命令面板中执行第 N 个条目（Down N-1 次 + Enter）。
     PaletteSelect(usize),
     /// 关闭命令面板（Esc）。
     ClosePalette,

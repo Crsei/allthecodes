@@ -1130,7 +1130,7 @@ fn status_bar_renders_all_goal_statuses_distinctly() {
 }
 
 #[test]
-fn slash_opens_command_palette_and_selection_keeps_argument_entry() {
+fn slash_palette_enter_executes_selected_command_once() {
     let mut app = App::new();
 
     assert_eq!(send_key(&mut app, KeyCode::Char('/')), AppAction::None);
@@ -1138,13 +1138,71 @@ fn slash_opens_command_palette_and_selection_keeps_argument_entry() {
 
     assert_eq!(send_key(&mut app, KeyCode::Char('m')), AppAction::None);
     assert_eq!(send_key(&mut app, KeyCode::Char('c')), AppAction::None);
-    assert_eq!(send_key(&mut app, KeyCode::Enter), AppAction::None);
+    assert_eq!(
+        send_key(&mut app, KeyCode::Enter),
+        AppAction::Submit("/mcp".to_string())
+    );
+
+    assert!(app.prompt.input.is_empty());
+    assert!(!app.command_palette.active());
+}
+
+#[test]
+fn slash_palette_space_enters_arguments_then_enter_submits() {
+    let mut app = App::new();
+
+    for ch in "/mc".chars() {
+        assert_eq!(send_key(&mut app, KeyCode::Char(ch)), AppAction::None);
+    }
+    assert_eq!(send_key(&mut app, KeyCode::Char(' ')), AppAction::None);
 
     assert_eq!(app.prompt.input, "/mcp ");
     assert!(!app.command_palette.active());
     assert!(
         CommandPalette::argument_hint(&app.prompt.input, std::path::Path::new(app.cwd())).is_some()
     );
+
+    for ch in "status".chars() {
+        assert_eq!(send_key(&mut app, KeyCode::Char(ch)), AppAction::None);
+    }
+    assert_eq!(
+        send_key(&mut app, KeyCode::Enter),
+        AppAction::Submit("/mcp status".to_string())
+    );
+    assert!(app.prompt.input.is_empty());
+}
+
+#[test]
+fn slash_palette_enter_submits_unmatched_command_once() {
+    let mut app = App::new();
+    app.prompt.input = "/definitely-unknown-command".to_string();
+    app.prompt.cursor_position = app.prompt.input.len();
+    app.sync_command_palette();
+
+    assert!(app.command_palette.active());
+    assert!(app
+        .command_palette
+        .selected_command_for_execution()
+        .is_none());
+    assert_eq!(
+        send_key(&mut app, KeyCode::Enter),
+        AppAction::Submit("/definitely-unknown-command".to_string())
+    );
+    assert!(app.prompt.input.is_empty());
+    assert!(!app.command_palette.active());
+}
+
+#[test]
+fn slash_palette_space_preserves_unmatched_command() {
+    let mut app = App::new();
+    app.prompt.input = "/definitely-unknown-command".to_string();
+    app.prompt.cursor_position = app.prompt.input.len();
+    app.sync_command_palette();
+
+    assert_eq!(send_key(&mut app, KeyCode::Char(' ')), AppAction::None);
+    assert_eq!(app.prompt.input, "/definitely-unknown-command ");
+    assert_eq!(app.prompt.cursor_position, app.prompt.input.len());
+    assert!(!app.command_palette.active());
 }
 
 #[test]
@@ -1205,6 +1263,10 @@ fn command_palette_renders_above_prompt_input() {
     assert!(
         commands_row < prompt_row,
         "commands palette should render above the prompt input"
+    );
+    assert!(
+        content.join("\n").contains(CommandPalette::input_hint()),
+        "prompt should explain one-key command execution and argument entry"
     );
 }
 

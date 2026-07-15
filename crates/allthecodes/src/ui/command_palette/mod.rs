@@ -17,7 +17,7 @@ use filter::{command_from_argument_input, filtered_commands};
 use render::argument_edit_row_count;
 
 const MAX_ROWS: usize = 20;
-const RESERVED_NON_COMMAND_ROWS: usize = 7;
+const RESERVED_NON_COMMAND_ROWS: usize = 8;
 const BORDER_ROWS: u16 = 2;
 #[cfg(test)]
 const ARG_HELP_BASE_HEIGHT: u16 = 5;
@@ -133,28 +133,11 @@ impl CommandPalette {
             .map(|cmd| format!("/{} ", cmd.name))
     }
 
-    pub fn selected_item(&self) -> Option<&CommandItem> {
-        self.filtered.get(self.selected)
-    }
-
-    /// Apply the selected command suggestion.
-    ///
-    /// If `should_execute` is true and the command has no arguments, submit it
-    /// directly instead of inserting into the prompt.
-    pub fn apply_command_suggestion(
-        &self,
-        _item: &CommandItem,
-        should_execute: bool,
-    ) -> Option<CommandAction> {
-        let cmd = self.filtered.get(self.selected)?;
-
-        if should_execute
-            && (cmd.accepts_no_arguments() || cmd.executes_on_exact_palette_match(&self.query))
-        {
-            Some(CommandAction::Execute(format!("/{}", cmd.name)))
-        } else {
-            Some(CommandAction::Insert(format!("/{} ", cmd.name)))
-        }
+    /// Get the canonical bare command for immediate execution.
+    pub fn selected_command_for_execution(&self) -> Option<String> {
+        self.filtered
+            .get(self.selected)
+            .map(|cmd| format!("/{}", cmd.name))
     }
 
     /// Get the ghost suffix for the currently selected command.
@@ -248,6 +231,10 @@ impl CommandPalette {
         command_from_argument_input(input, cwd).map(|item| item.usage)
     }
 
+    pub fn input_hint() -> &'static str {
+        "Enter run | Space add args"
+    }
+
     #[cfg(test)]
     pub fn argument_help_height(input: &str, cwd: &Path) -> u16 {
         command_from_argument_input(input, cwd)
@@ -273,27 +260,8 @@ impl CommandPalette {
     }
 }
 
-impl CommandItem {
-    pub fn accepts_no_arguments(&self) -> bool {
-        self.usage.trim() == format!("/{}", self.name)
-    }
-
-    fn executes_on_exact_palette_match(&self, query: &str) -> bool {
-        matches!(self.name.as_str(), "compact" | "plan") && query.eq_ignore_ascii_case(&self.name)
-    }
-}
-
 impl Default for CommandPalette {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Action to take when applying a command suggestion.
-#[derive(Debug, Clone)]
-pub enum CommandAction {
-    /// Insert the command text into the prompt.
-    Insert(String),
-    /// Execute the command directly.
-    Execute(String),
 }

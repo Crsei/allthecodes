@@ -115,17 +115,10 @@ impl CommandPalette {
         if let Some(selected) = selected_item {
             lines.push(Line::default());
             lines.push(Line::from(Span::styled("Behavior", theme.dim)));
-            if selected.accepts_no_arguments() {
-                lines.push(Line::from(vec![
-                    Span::styled("  Enter runs: ", theme.dim),
-                    Span::styled(format!("/{}", selected.name), theme.info),
-                ]));
-            } else {
-                lines.push(Line::from(vec![
-                    Span::styled("  Enter inserts: ", theme.dim),
-                    Span::styled(format!("/{} ", selected.name), theme.info),
-                ]));
-            }
+            lines.push(Line::from(vec![
+                Span::styled("  Enter runs: ", theme.dim),
+                Span::styled(format!("/{}", selected.name), theme.info),
+            ]));
             // Ghost suffix hint
             let ghost = self.selected_ghost_suffix();
             if let Some(ghost_str) = ghost.filter(|s| !s.is_empty()) {
@@ -162,9 +155,8 @@ impl CommandPalette {
                         Span::styled(command_target_hint(), theme.info),
                     ]));
                 }
-            } else {
-                lines.push(Line::from(Span::styled(command_palette_hint(), theme.dim)));
             }
+            lines.push(Line::from(Span::styled(command_palette_hint(), theme.dim)));
         }
 
         if let Some(picker) = &self.edit_target_picker {
@@ -374,7 +366,8 @@ fn render_picker_lines(
 
 fn command_palette_hint() -> String {
     render_shortcut_hints(&[
-        ShortcutHint::new("Enter", "select"),
+        ShortcutHint::new("Enter", "run"),
+        ShortcutHint::new("Space", "add args"),
         ShortcutHint::new("Esc", "close"),
         ShortcutHint::new("type", "filter"),
     ])

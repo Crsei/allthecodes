@@ -294,6 +294,11 @@ impl App {
         );
 
         let argument_hint = CommandPalette::argument_hint(&self.prompt.input, cwd_path);
+        let prompt_hint = if self.command_palette.active() {
+            Some(CommandPalette::input_hint())
+        } else {
+            argument_hint.as_deref()
+        };
         let placeholder = self.prompt_placeholder();
         let mode_indicator = self.prompt_mode_indicator();
         self.prompt.render_with_context(
@@ -301,7 +306,7 @@ impl App {
             frame.buffer_mut(),
             &self.theme,
             PromptInputRenderContext {
-                hint: argument_hint.as_deref(),
+                hint: prompt_hint,
                 placeholder: Some(placeholder),
                 mode_indicator: Some(mode_indicator),
             },

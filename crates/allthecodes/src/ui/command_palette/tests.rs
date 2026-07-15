@@ -13,7 +13,7 @@ use allthecodes_commands as commands;
 use super::edit_targets::{display_path, file_uri};
 use super::metadata::command_meta;
 use super::render::visible_window_start;
-use super::{CommandAction, CommandPalette, ARG_HELP_BASE_HEIGHT, MAX_EDIT_ROWS, MAX_ROWS};
+use super::{CommandPalette, ARG_HELP_BASE_HEIGHT, MAX_EDIT_ROWS, MAX_ROWS};
 #[test]
 fn slash_opens_filtered_palette() {
     let mut palette = CommandPalette::new();
@@ -37,45 +37,37 @@ fn selected_command_keeps_space_for_arguments() {
 }
 
 #[test]
-fn command_suggestion_action_inserts_or_executes() {
+fn selected_command_supports_immediate_execution_and_argument_entry() {
     let mut palette = CommandPalette::new();
-    palette.sync_from_input("/status", Path::new("/repo"));
-    let item = palette.filtered[palette.selected].clone();
-    match palette.apply_command_suggestion(&item, true).unwrap() {
-        CommandAction::Execute(command) => assert_eq!(command, "/status"),
-        CommandAction::Insert(command) => panic!("expected execute action, got {command}"),
-    }
+    palette.sync_from_input("/mc", Path::new("/repo"));
 
-    palette.sync_from_input("/mcp", Path::new("/repo"));
-    let item = palette.filtered[palette.selected].clone();
-    match palette.apply_command_suggestion(&item, true).unwrap() {
-        CommandAction::Insert(command) => assert_eq!(command, "/mcp "),
-        CommandAction::Execute(command) => panic!("expected insert action, got {command}"),
-    }
+    assert_eq!(
+        palette.selected_command_for_execution().as_deref(),
+        Some("/mcp")
+    );
+    assert_eq!(palette.selected_command_input().as_deref(), Some("/mcp "));
 }
 
 #[test]
 fn exact_plan_suggestion_executes_bare_plan_command() {
     let mut palette = CommandPalette::new();
     palette.sync_from_input("/plan", Path::new("/repo"));
-    let item = palette.filtered[palette.selected].clone();
 
-    match palette.apply_command_suggestion(&item, true).unwrap() {
-        CommandAction::Execute(command) => assert_eq!(command, "/plan"),
-        CommandAction::Insert(command) => panic!("expected execute action, got {command}"),
-    }
+    assert_eq!(
+        palette.selected_command_for_execution().as_deref(),
+        Some("/plan")
+    );
 }
 
 #[test]
 fn exact_compact_suggestion_executes_bare_compact_command() {
     let mut palette = CommandPalette::new();
     palette.sync_from_input("/compact", Path::new("/repo"));
-    let item = palette.filtered[palette.selected].clone();
 
-    match palette.apply_command_suggestion(&item, true).unwrap() {
-        CommandAction::Execute(command) => assert_eq!(command, "/compact"),
-        CommandAction::Insert(command) => panic!("expected execute action, got {command}"),
-    }
+    assert_eq!(
+        palette.selected_command_for_execution().as_deref(),
+        Some("/compact")
+    );
 }
 
 #[test]
@@ -91,14 +83,14 @@ fn advisor_is_hidden_from_slash_palette() {
 #[test]
 fn command_aliases_render_without_gap_before_details() {
     let mut palette = CommandPalette::new();
-    palette.sync_from_input("/assistant", Path::new("/repo"));
+    palette.sync_from_input("/help", Path::new("/repo"));
 
     let area = Rect::new(0, 0, 100, palette.preferred_height());
     let mut buf = Buffer::empty(area);
     palette.render(area, &mut buf, &Theme::default());
 
     let rendered = buffer_text(&buf, area);
-    assert!(rendered.contains("/assistant(kairos)"));
+    assert!(rendered.contains("/help(h, ?)"));
     assert!(rendered.contains("Command details"));
 }
 

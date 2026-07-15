@@ -104,9 +104,6 @@ fn write_mcp_fixture(project_config_dir: &Path, server_name: &str, disabled: boo
 fn open_surface_steps(case: TestCase, cmd: &str, title: &str) -> TestCase {
     case.step(TestStep::Command(cmd.into()))
         .step(TestStep::Wait(Duration::from_millis(500)))
-        // In the PTY command flow, the first line submission selects/fills the
-        // slash command and this Enter commits it from the prompt.
-        .step(TestStep::Key(TestKey::Enter))
         .step(TestStep::WaitForScreenText(title.into(), SURFACE_WAIT))
 }
 
@@ -151,6 +148,20 @@ fn assert_command_with_args_does_not_open_surface(input: &str, forbidden_title: 
 // ─────────────────────────────────────────────────────────────────────────────
 // Open-state coverage
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn palette_space_enters_command_arguments() {
+    let fixture = isolated_surface_case("palette_space_enters_command_arguments")
+        .step(TestStep::OpenPalette)
+        .step(TestStep::AssertScreenContains("Enter run".into()))
+        .step(TestStep::AssertScreenContains("Space add args".into()))
+        .step(TestStep::TypeText("mc".into()))
+        .step(TestStep::TypeText(" ".into()))
+        .step(TestStep::AssertPromptContains("/mcp ".into()))
+        .step(TestStep::AssertNoPanic);
+
+    TestRunner::new().run(&fixture.case).assert_no_errors();
+}
 
 #[test]
 fn surface_agents_open_content() {

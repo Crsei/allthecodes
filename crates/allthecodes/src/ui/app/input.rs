@@ -4,7 +4,6 @@ use ratatui::layout::Rect;
 use crate::ui::clipboard_paste::{
     normalize_pasted_path, paste_image_to_temp_png, pasted_image_format, EncodedImageFormat,
 };
-use crate::ui::command_palette::CommandAction;
 use crate::ui::command_surface::CommandSurfaceOutcome;
 use crate::ui::completions::{
     CombinedCompleter, CommandCompletionProvider, CompletionContext, CompletionItem,
@@ -206,28 +205,27 @@ impl App {
                     }
                 }
                 (_, KeyCode::Enter) => {
-                    if let Some(command_input) = self.command_palette.selected_command_input() {
-                        let item = self.command_palette.selected_item().cloned();
-                        if let Some(item) = item {
-                            match self.command_palette.apply_command_suggestion(&item, true) {
-                                Some(CommandAction::Execute(command)) => {
-                                    self.command_palette.close();
-                                    return AppAction::Submit(command);
-                                }
-                                Some(CommandAction::Insert(command)) => {
-                                    self.prompt.input = command;
-                                }
-                                None => {
-                                    self.prompt.input = command_input;
-                                }
-                            }
-                        } else {
-                            self.prompt.input = command_input;
-                        }
-                        self.prompt.cursor_position = self.prompt.input.len();
+                    if let Some(command) = self.command_palette.selected_command_for_execution() {
+                        self.command_palette.close();
+                        self.prompt.input.clear();
+                        self.prompt.cursor_position = 0;
+                        return AppAction::Submit(command);
                     }
+
+                    // No suggestion matched. Submit the user's slash command
+                    // unchanged instead of swallowing the first Enter.
                     self.command_palette.close();
-                    return AppAction::None;
+                    return self
+                        .take_prompt_submission()
+                        .map_or(AppAction::None, AppAction::Submit);
+                }
+                (KeyModifiers::NONE, KeyCode::Char(' ')) => {
+                    if let Some(command_input) = self.command_palette.selected_command_input() {
+                        self.prompt.input = command_input;
+                        self.prompt.cursor_position = self.prompt.input.len();
+                        self.command_palette.close();
+                        return AppAction::None;
+                    }
                 }
                 (_, KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown) => {
                     self.command_palette.handle_key(key.code);

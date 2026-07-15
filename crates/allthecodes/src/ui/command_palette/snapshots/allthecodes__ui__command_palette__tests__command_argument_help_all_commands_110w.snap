@@ -1,6 +1,5 @@
 ---
 source: crates/allthecodes/src/ui/command_palette/tests.rs
-assertion_line: 325
 expression: normalize_snapshot_text(rendered)
 ---
 ## /init
@@ -248,6 +247,12 @@ expression: normalize_snapshot_text(rendered)
 │Usage: /insights [fast|full]                                                                                │
 │Example: /insights                                                                                          │
 │About: Session history analytics (cross-session statistics)                                                 │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+## /kairos
+┌ /kairos arguments ─────────────────────────────────────────────────────────────────────────────────────────┐
+│Usage: /kairos [status|enable|disable|start|stop|restart|feature|bridge]                                    │
+│Example: /kairos                                                                                            │
+│About: Configure, start, and inspect KAIROS                                                                 │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ## /keybindings
 ┌ /keybindings arguments ────────────────────────────────────────────────────────────────────────────────────┐
