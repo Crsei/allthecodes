@@ -110,14 +110,12 @@ fn install_permission_callback_with_timeout<H>(
             let tool_use_id = request.tool_use_id.clone();
             let tool_name = request.tool_name.clone();
             let tool_input = request.tool_input.clone();
-            let operation = request.operation.clone().unwrap_or_else(|| {
-                allthecodes_tool_display::ToolClassifier::classify_permission(
-                    &tool_name,
-                    &tool_input,
-                    Some(&request.message),
-                    allthecodes_types::tool_operation::OperationStatus::InProgress,
-                )
-            });
+            let operation = allthecodes_tool_display::normalize_permission_operation(
+                &tool_name,
+                &tool_input,
+                &request.message,
+                request.operation.as_ref(),
+            );
             let registered =
                 register_permission_then_send(pending.clone(), tool_use_id.clone(), || {
                     sink.send(&BackendMessage::PermissionRequest {

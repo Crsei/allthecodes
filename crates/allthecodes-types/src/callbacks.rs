@@ -5,6 +5,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(feature = "schema")]
+use schemars::JsonSchema;
+
 use crate::permission_events::{
     HookPermissionDecisionEvent, PermissionAutoReviewEvent, PermissionDecisionDebugEvent,
 };
@@ -15,6 +18,7 @@ use crate::tool_operation::ToolOperation;
 /// It deliberately contains rule IDs, sink labels, source categories, and
 /// digests only; the original remote payload is never part of this DTO.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct SecurityDecisionDisplay {
     pub sink: String,
     pub decision: String,

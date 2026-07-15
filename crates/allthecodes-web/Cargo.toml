@@ -33,6 +33,7 @@ allthecodes-services = { workspace = true }
 allthecodes-session = { workspace = true }
 allthecodes-skills = { workspace = true }
 allthecodes-tasks = { workspace = true }
+allthecodes-tools = { workspace = true }
 allthecodes-tool-display = { path = "../allthecodes-tool-display" }
 allthecodes-types = { workspace = true }
 allthecodes-utils = { workspace = true }
@@ -52,13 +53,13 @@ tokio = { workspace = true, features = ["rt", "macros", "sync", "process", "io-u
 tower-http = { workspace = true }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true, features = ["util"] }
-uuid = { workspace = true }
 
 [lints]
 workspace = true

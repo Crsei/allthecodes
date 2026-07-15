@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "schema")]
+use schemars::JsonSchema;
+
 /// Semantic kind of a tool operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
     Read,
@@ -42,6 +46,7 @@ impl OperationKind {
 
 /// Finer-grained subtype of an operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationSubtype {
     Build,
@@ -71,6 +76,7 @@ impl OperationSubtype {
 
 /// Risk level of an operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationRisk {
     /// Safe read-only operations.
@@ -99,6 +105,7 @@ impl OperationRisk {
 
 /// Confidence in the operation classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationConfidence {
     /// The classifier is certain based on tool name or explicit signal.
@@ -111,6 +118,7 @@ pub enum OperationConfidence {
 
 /// Execution status of an operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationStatus {
     /// The tool call has been issued but not yet completed.
@@ -196,4 +204,77 @@ pub struct ToolOperation {
     pub raw_output: Option<serde_json::Value>,
     /// Side-channel references.
     pub side_channels: Vec<OperationSideChannel>,
+}
+
+/// Display-safe projection of a classified tool operation.
+///
+/// This intentionally omits raw input/output, result bodies, and side-channel
+/// references. Transports that already expose their own bounded input field can
+/// add this projection without accidentally widening the data surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct ToolOperationDisplay {
+    pub kind: OperationKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtype: Option<OperationSubtype>,
+    pub status: OperationStatus,
+    pub risk: OperationRisk,
+    pub confidence: OperationConfidence,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_summary: Option<String>,
+    pub raw_tool_name: String,
+}
+
+impl From<&ToolOperation> for ToolOperationDisplay {
+    fn from(operation: &ToolOperation) -> Self {
+        Self {
+            kind: operation.kind,
+            subtype: operation.subtype,
+            status: operation.status,
+            risk: operation.risk,
+            confidence: operation.confidence,
+            label: operation.label.clone(),
+            target: operation.target.clone(),
+            command_summary: operation.command_summary.clone(),
+            raw_tool_name: operation.raw_tool_name.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn display_projection_omits_raw_and_side_channel_data() {
+        let operation = ToolOperation {
+            kind: OperationKind::Execute,
+            subtype: Some(OperationSubtype::Shell),
+            status: OperationStatus::InProgress,
+            risk: OperationRisk::High,
+            confidence: OperationConfidence::High,
+            label: "Run command".to_string(),
+            target: Some("workspace".to_string()),
+            command_summary: Some("redacted command".to_string()),
+            result_summary: None,
+            raw_tool_name: "Bash".to_string(),
+            raw_input: json!({"secret": "do-not-project"}),
+            raw_output: Some(json!({"secret": "do-not-project"})),
+            side_channels: vec![OperationSideChannel {
+                channel_type: "path".to_string(),
+                reference: "/private/live-channel".to_string(),
+                description: None,
+            }],
+        };
+
+        let value = serde_json::to_value(ToolOperationDisplay::from(&operation)).unwrap();
+        assert!(value.get("raw_input").is_none());
+        assert!(value.get("raw_output").is_none());
+        assert!(value.get("side_channels").is_none());
+        assert_eq!(value["raw_tool_name"], "Bash");
+    }
 }

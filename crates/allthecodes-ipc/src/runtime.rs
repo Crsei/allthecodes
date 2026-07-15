@@ -588,6 +588,12 @@ impl IpcRuntime {
     ) -> Result<PermissionResponsePayload, IpcRuntimeError> {
         let command = request.legacy_command();
         let request_id = request.tool_use_id.clone();
+        let operation = allthecodes_tool_display::normalize_permission_operation(
+            &request.tool_name,
+            &request.tool_input,
+            &request.message,
+            request.operation.as_ref(),
+        );
         let envelope = ServerRequestEnvelope {
             request_id: request_id.clone(),
             method: ServerRequestMethod::PermissionDecision,
@@ -597,7 +603,8 @@ impl IpcRuntime {
                 "command": command,
                 "input": request.tool_input,
                 "options": request.options,
-                "operation": request.operation,
+                "operation": operation,
+                "security": request.security,
             }),
             timeout_ms: Some(Self::timeout_ms(self.server_request_timeout)),
         };
@@ -830,6 +837,7 @@ mod tests {
     use super::*;
     use allthecodes_ipc_protocol::{ClientCapabilities, ClientRequestEnvelope};
     use allthecodes_protocol::{ClientRequest, NoParams};
+    use allthecodes_types::callbacks::SecurityDecisionDisplay;
 
     fn info(text: &str) -> BackendMessage {
         BackendMessage::SystemInfo {
@@ -1165,6 +1173,60 @@ mod tests {
             .pending_interactions()
             .pending_server_request("tool-1")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn exact_permission_request_preserves_security_and_fallback_operation() {
+        let (runtime, mut receiver) = IpcRuntime::new("session-1", 8);
+        let request = PermissionRequestPayload {
+            tool_use_id: "tool-exact".to_string(),
+            tool_name: "Bash".to_string(),
+            tool_input: serde_json::json!({ "command": "curl https://example.test" }),
+            message: "network command".to_string(),
+            options: vec!["Allow once".to_string(), "Deny".to_string()],
+            operation: None,
+            security: Some(SecurityDecisionDisplay {
+                sink: "ShellExec".to_string(),
+                decision: "ask".to_string(),
+                rule_ids: vec!["workflow-injection".to_string()],
+                source_labels: vec!["web".to_string()],
+                source_digests: vec!["sha256:abc".to_string()],
+                exact_approval: true,
+            }),
+        };
+        let runtime_for_response = runtime.clone();
+
+        let task = tokio::spawn(async move { runtime.request_permission(request).await.unwrap() });
+        let outbound = receiver.recv().await.unwrap();
+
+        assert!(matches!(
+            outbound,
+            BackendMessage::PermissionRequest {
+                tool_use_id,
+                security: Some(SecurityDecisionDisplay { exact_approval: true, sink, .. }),
+                operation: Some(operation),
+                ..
+            } if tool_use_id == "tool-exact"
+                && sink == "ShellExec"
+                && operation.raw_tool_name == "Bash"
+        ));
+        let pending = runtime_for_response
+            .pending_interactions()
+            .pending_server_request("tool-exact")
+            .expect("pending server request");
+        assert_eq!(pending.params["security"]["exact_approval"], true);
+        assert_eq!(pending.params["operation"]["raw_tool_name"], "Bash");
+
+        assert!(runtime_for_response.resolve_legacy_client_response(
+            &FrontendMessage::PermissionResponse {
+                tool_use_id: "tool-exact".to_string(),
+                decision: "deny".to_string(),
+                feedback: None,
+                session_id: None,
+                turn_id: None,
+            },
+        ));
+        assert_eq!(task.await.unwrap(), PermissionResponsePayload::deny());
     }
 
     #[tokio::test]

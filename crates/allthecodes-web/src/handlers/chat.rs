@@ -17,10 +17,11 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use allthecodes_engine::types::config::{QuerySource, SubmitContextMode, SubmitMessageOverrides};
+use allthecodes_protocol::v1::chat::{ChatPermissionRequestEvent, ChatPermissionResponseRequest};
 use allthecodes_types::callbacks::{PermissionRequestPayload, PermissionResponsePayload};
 use allthecodes_types::sdk::SdkMessage;
 
-use crate::state::WebState;
+use crate::state::{ChatPermissionRegisterError, ChatPermissionResolveError, WebState};
 use allthecodes_protocol::ApiError as ProtocolApiError;
 
 const CHAT_PERMISSION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -69,26 +70,6 @@ pub struct ChatRequest {
 pub struct AbortRequest {
     #[serde(default)]
     pub session_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct ChatPermissionResponseRequest {
-    pub session_id: String,
-    pub decision: String,
-    #[serde(default)]
-    pub feedback: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ChatPermissionRequestEvent {
-    #[serde(rename = "type")]
-    event_type: &'static str,
-    session_id: String,
-    tool_use_id: String,
-    tool: String,
-    command: String,
-    input: Value,
-    options: Vec<String>,
 }
 
 enum ChatSseItem {
@@ -255,17 +236,42 @@ pub async fn chat_handler(
                 let tool_use_id = request.tool_use_id.clone();
                 let tool_name = request.tool_name.clone();
                 let command = request.legacy_command();
+                let operation = allthecodes_tool_display::permission_operation_display(
+                    &request.tool_name,
+                    &request.tool_input,
+                    &request.message,
+                    request.operation.as_ref(),
+                );
                 let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-                state.insert_chat_permission(&session_id, &tool_use_id, response_tx);
+                let registration = match state.insert_chat_permission(
+                    &session_id,
+                    &request,
+                    &operation,
+                    response_tx,
+                ) {
+                    Ok(registration) => registration,
+                    Err(ChatPermissionRegisterError::Duplicate) => {
+                        warn!(
+                            session_id = %session_id,
+                            tool_use_id = %tool_use_id,
+                            tool = %tool_name,
+                            "duplicate live chat permission request rejected"
+                        );
+                        return PermissionResponsePayload::deny();
+                    }
+                };
 
                 let event = ChatPermissionRequestEvent {
-                    event_type: "permission_request",
+                    event_type: "permission_request".to_string(),
                     session_id: session_id.clone(),
                     tool_use_id: tool_use_id.clone(),
                     tool: request.tool_name,
                     command,
                     input: request.tool_input,
                     options: request.options,
+                    operation: Some(operation),
+                    security: request.security,
+                    response_binding: Some(registration.response_binding),
                 };
 
                 if sse_tx.send(ChatSseItem::Permission(event)).is_err() {
@@ -352,7 +358,13 @@ pub async fn chat_permission_response_handler(
     State(state): State<WebState>,
     Json(req): Json<ChatPermissionResponseRequest>,
 ) -> impl IntoResponse {
-    let decision = req.decision.trim().to_ascii_lowercase();
+    let ChatPermissionResponseRequest {
+        session_id,
+        decision,
+        feedback,
+        response_binding,
+    } = req;
+    let decision = decision.trim().to_ascii_lowercase();
     if !matches!(decision.as_str(), "allow" | "deny" | "always_allow") {
         return (
             StatusCode::BAD_REQUEST,
@@ -368,24 +380,44 @@ pub async fn chat_permission_response_handler(
     }
 
     let resolved = state.resolve_chat_permission(
-        &req.session_id,
+        &session_id,
         &tool_use_id,
-        PermissionResponsePayload::new(decision.clone(), req.feedback),
+        response_binding.as_deref(),
+        PermissionResponsePayload::new(decision.clone(), feedback),
     );
-    if !resolved {
+    if let Err(error) = resolved {
+        let (status, code, message) = match error {
+            ChatPermissionResolveError::ExactApprovalIsSingleUse => (
+                StatusCode::BAD_REQUEST,
+                "exact_permission_not_reusable",
+                "exact security approvals accept only allow or deny",
+            ),
+            ChatPermissionResolveError::BindingMismatch => (
+                StatusCode::CONFLICT,
+                "permission_binding_mismatch",
+                "permission response binding does not match the pending request",
+            ),
+            ChatPermissionResolveError::Stale
+            | ChatPermissionResolveError::ResponseReceiverClosed => (
+                StatusCode::CONFLICT,
+                "stale_permission_response",
+                "permission request is no longer pending",
+            ),
+        };
         warn!(
-            session_id = %req.session_id,
+            session_id = %session_id,
             tool_use_id = %tool_use_id,
             decision = %decision,
-            "stale chat permission response"
+            code,
+            "chat permission response rejected"
         );
         return (
-            StatusCode::CONFLICT,
+            status,
             Json(json!({
-                "error": "permission request is no longer pending",
-                "code": "stale_permission_response",
+                "error": message,
+                "code": code,
                 "details": {
-                    "session_id": req.session_id,
+                    "session_id": session_id,
                     "tool_use_id": tool_use_id,
                 },
             })),
@@ -394,7 +426,7 @@ pub async fn chat_permission_response_handler(
     }
 
     info!(
-        session_id = %req.session_id,
+        session_id = %session_id,
         tool_use_id = %tool_use_id,
         decision = %decision,
         "chat permission response accepted"
@@ -438,7 +470,10 @@ pub async fn abort_handler(
     let requested_session = req.session_id.as_deref().unwrap_or("");
     info!(session_id = %requested_session, "POST /api/abort");
     if requested_session.is_empty() {
-        state.engine().abort();
+        let engine = state.engine();
+        let session_id = engine.current_session_id().to_string();
+        engine.abort();
+        state.clear_chat_permissions_for_session(&session_id);
         state
             .is_streaming
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -447,6 +482,7 @@ pub async fn abort_handler(
             .engine_for_session(requested_session)
             .unwrap_or_else(|| state.engine())
             .abort();
+        state.clear_chat_permissions_for_session(requested_session);
         state.set_session_streaming(requested_session, false);
     }
     StatusCode::OK

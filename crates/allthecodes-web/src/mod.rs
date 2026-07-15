@@ -132,6 +132,10 @@ fn requires_privileged_capability(method: &Method, path: &str) -> bool {
         return true;
     }
 
+    if method == Method::POST && has_single_parameter(path, "chat/permissions/", "/response") {
+        return true;
+    }
+
     if method == Method::POST
         && (matches!(
             path,
@@ -741,6 +745,11 @@ mod tests {
     ) -> Vec<StatusCode> {
         let cases = [
             (Method::GET, "/api/terminal/sessions", None),
+            (
+                Method::POST,
+                "/api/chat/permissions/tool-1/response",
+                Some(json!({"session_id":"session-1","decision":"deny"})),
+            ),
             (Method::PUT, "/api/files/write", Some(json!({}))),
             (Method::POST, "/api/plugins/enable", Some(json!({}))),
             (Method::POST, "/api/providers", Some(json!({}))),
@@ -777,9 +786,9 @@ mod tests {
         let disabled_statuses =
             privileged_route_statuses(disabled_app, Some(TEST_PRIVILEGED_TOKEN)).await;
 
-        assert_eq!(missing_statuses, vec![StatusCode::FORBIDDEN; 5]);
-        assert_eq!(wrong_statuses, vec![StatusCode::FORBIDDEN; 5]);
-        assert_eq!(disabled_statuses, vec![StatusCode::FORBIDDEN; 5]);
+        assert_eq!(missing_statuses, vec![StatusCode::FORBIDDEN; 6]);
+        assert_eq!(wrong_statuses, vec![StatusCode::FORBIDDEN; 6]);
+        assert_eq!(disabled_statuses, vec![StatusCode::FORBIDDEN; 6]);
     }
 
     #[tokio::test]

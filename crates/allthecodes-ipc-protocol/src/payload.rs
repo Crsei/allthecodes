@@ -554,6 +554,7 @@ mod tests {
     use super::*;
     use crate::IpcEnvelope;
     use allthecodes_protocol::ClientResponse;
+    use allthecodes_types::callbacks::SecurityDecisionDisplay;
     use allthecodes_types::tool_operation::{
         OperationConfidence, OperationKind, OperationRisk, OperationStatus, ToolOperation,
     };
@@ -653,7 +654,14 @@ mod tests {
             input: json!({ "command": "ls" }),
             options: vec!["allow".to_string(), "deny".to_string()],
             operation: Some(operation.clone()),
-            security: None,
+            security: Some(SecurityDecisionDisplay {
+                sink: "ShellExec".to_string(),
+                decision: "ask".to_string(),
+                rule_ids: vec!["workflow-injection".to_string()],
+                source_labels: vec!["web".to_string()],
+                source_digests: vec!["sha256:abc".to_string()],
+                exact_approval: true,
+            }),
         };
         let payload = legacy_backend_to_payload(&legacy).unwrap();
 
@@ -666,6 +674,7 @@ mod tests {
                 ..
             }) if request_id == "tool-1"
                 && params["operation"]["kind"] == "permission"
+                && params["security"]["exact_approval"] == true
         ));
 
         let remapped = payload_to_legacy_backend(&payload).unwrap();
@@ -677,6 +686,7 @@ mod tests {
                 command,
                 options,
                 operation: Some(remapped_operation),
+                security: Some(remapped_security),
                 ..
             }
                 if tool_use_id == "tool-1"
@@ -684,6 +694,8 @@ mod tests {
                     && command == "ls"
                     && options == vec!["allow", "deny"]
                     && remapped_operation == operation
+                    && remapped_security.exact_approval
+                    && remapped_security.sink == "ShellExec"
         ));
     }
 
