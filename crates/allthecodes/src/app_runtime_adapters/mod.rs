@@ -9,7 +9,10 @@ pub(crate) mod callbacks;
 mod ingress;
 mod sdk_mapper;
 
-use allthecodes_ipc::agent_handlers::{AgentRuntimeHost, AgentTaskOutput, AgentTaskOutputBatch};
+use allthecodes_ipc::agent_handlers::{
+    AgentRuntimeHost, AgentTaskOutput, AgentTaskOutputBatch, CommandScopePolicy, RuntimeHostError,
+    TrustedCommandContext,
+};
 use allthecodes_ipc::headless::{
     BackgroundAgentCompletion, BoxHeadlessFuture, HeadlessRuntimeConfig, HeadlessRuntimeHost,
     PendingPermissions, PendingQuestions, SessionRuntime,
@@ -141,7 +144,7 @@ impl AgentRuntimeHost for RootAgentHost {
 
     fn write_team_message(&self, team_name: &str, to: &str, text: &str) -> Result<(), String> {
         let msg = allthecodes_teams::types::TeammateMessage {
-            from: "__frontend__".to_string(),
+            from: "__local__".to_string(),
             text: text.to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             read: false,
@@ -170,6 +173,170 @@ impl AgentRuntimeHost for RootAgentHost {
             })
             .collect())
     }
+
+    fn cancel_agent_for_scope(
+        &self,
+        context: &TrustedCommandContext,
+        agent_id: &str,
+    ) -> Result<Option<String>, RuntimeHostError> {
+        if context.scope_policy() == CommandScopePolicy::TrustedLocal {
+            return Ok(self.cancel_agent(agent_id));
+        }
+        allthecodes_engine::agent::supervisor::cancel_agent_for_owner(
+            agent_id,
+            context.session_id(),
+            context.canonical_workspace(),
+        )
+        .map(Some)
+        .map_err(map_agent_owner_error)
+    }
+
+    fn agent_output_batch_for_scope(
+        &self,
+        context: &TrustedCommandContext,
+        agent_id: &str,
+        after_seq: Option<u64>,
+        limit_bytes: usize,
+    ) -> Result<Option<AgentTaskOutputBatch>, RuntimeHostError> {
+        if context.scope_policy() == CommandScopePolicy::TrustedLocal {
+            return Ok(self.agent_output_batch(agent_id, after_seq, limit_bytes));
+        }
+        allthecodes_engine::agent::supervisor::output_events_for_owner(
+            agent_id,
+            context.session_id(),
+            context.canonical_workspace(),
+            after_seq,
+            limit_bytes,
+        )
+        .map(|task| {
+            task.map(|(id, output, metadata)| AgentTaskOutputBatch {
+                id,
+                output,
+                metadata,
+            })
+        })
+        .map_err(map_agent_owner_error)
+    }
+
+    fn agent_tree_snapshot_for_scope(
+        &self,
+        context: &TrustedCommandContext,
+    ) -> Result<Vec<allthecodes_types::agent_types::AgentNode>, RuntimeHostError> {
+        if context.scope_policy() == CommandScopePolicy::TrustedLocal {
+            return Ok(self.agent_tree_snapshot());
+        }
+        Ok(
+            allthecodes_engine::agent_runtime::agent_tree_snapshot_for_owner(
+                context.session_id(),
+                context.canonical_workspace(),
+            ),
+        )
+    }
+
+    fn write_team_message_for_scope(
+        &self,
+        context: &TrustedCommandContext,
+        team_name: &str,
+        to: &str,
+        from: &str,
+        text: &str,
+    ) -> Result<(), RuntimeHostError> {
+        if context.scope_policy() == CommandScopePolicy::TrustedLocal {
+            let message = allthecodes_teams::types::TeammateMessage {
+                from: from.to_string(),
+                text: text.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                read: false,
+                color: None,
+                summary: None,
+            };
+            return allthecodes_teams::mailbox::write_to_mailbox(to, message, team_name)
+                .map_err(|_| RuntimeHostError::Unavailable);
+        }
+        if from != context.server_sender_id() {
+            return Err(RuntimeHostError::Unauthorized);
+        }
+        let team = scoped_team_file(context, team_name)?;
+        let recipient = team
+            .members
+            .iter()
+            .find(|member| member.name == to && member.is_active != Some(false))
+            .ok_or(RuntimeHostError::InvalidRecipient)?;
+        let message = allthecodes_teams::types::TeammateMessage {
+            from: context.server_sender_id().to_string(),
+            text: text.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            read: false,
+            color: None,
+            summary: None,
+        };
+        allthecodes_teams::mailbox::write_to_mailbox(&recipient.name, message, &team.name)
+            .map_err(|_| RuntimeHostError::Unavailable)
+    }
+
+    fn team_members_for_scope(
+        &self,
+        context: &TrustedCommandContext,
+        team_name: &str,
+    ) -> Result<Vec<TeamMemberInfo>, RuntimeHostError> {
+        if context.scope_policy() == CommandScopePolicy::TrustedLocal {
+            return self
+                .team_members(team_name)
+                .map_err(|_| RuntimeHostError::NotFound);
+        }
+        let team = scoped_team_file(context, team_name)?;
+        team.members
+            .iter()
+            .map(|member| {
+                let unread_messages =
+                    allthecodes_teams::mailbox::read_unread_messages(&member.name, &team.name)
+                        .map_err(|_| RuntimeHostError::Unavailable)?
+                        .len();
+                Ok(TeamMemberInfo {
+                    agent_id: member.agent_id.clone(),
+                    agent_name: member.name.clone(),
+                    role: member.agent_type.clone(),
+                    is_active: member.is_active.unwrap_or(true),
+                    unread_messages,
+                })
+            })
+            .collect()
+    }
+}
+
+fn map_agent_owner_error(
+    error: allthecodes_engine::agent::supervisor::AgentOwnerLookupError,
+) -> RuntimeHostError {
+    use allthecodes_engine::agent::supervisor::AgentOwnerLookupError;
+
+    match error {
+        AgentOwnerLookupError::NotFound => RuntimeHostError::NotFound,
+        AgentOwnerLookupError::Unauthorized => RuntimeHostError::Unauthorized,
+        AgentOwnerLookupError::Terminal => RuntimeHostError::Terminal,
+        AgentOwnerLookupError::Conflict => RuntimeHostError::Conflict,
+        AgentOwnerLookupError::Unavailable => RuntimeHostError::Unavailable,
+    }
+}
+
+fn scoped_team_file(
+    context: &TrustedCommandContext,
+    team_name: &str,
+) -> Result<allthecodes_teams::types::TeamFile, RuntimeHostError> {
+    let team = allthecodes_teams::helpers::read_team_file(team_name)
+        .map_err(|_| RuntimeHostError::NotFound)?;
+    if team.name != team_name || team.lead_session_id.as_deref() != Some(context.session_id()) {
+        return Err(RuntimeHostError::Unauthorized);
+    }
+    let lead = team
+        .members
+        .iter()
+        .find(|member| member.agent_id == team.lead_agent_id)
+        .ok_or(RuntimeHostError::Unauthorized)?;
+    let workspace = std::fs::canonicalize(&lead.cwd).map_err(|_| RuntimeHostError::Unauthorized)?;
+    if workspace != context.canonical_workspace() {
+        return Err(RuntimeHostError::Unauthorized);
+    }
+    Ok(team)
 }
 
 struct RootSubsystemHost;

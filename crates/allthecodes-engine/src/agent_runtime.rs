@@ -5,6 +5,7 @@
 //! drains them at turn boundaries for injection into the conversation.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,6 +23,39 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentOwnerScope {
+    pub parent_session_id: String,
+    pub canonical_workspace: PathBuf,
+}
+
+impl AgentOwnerScope {
+    pub fn new(parent_session_id: impl Into<String>, canonical_workspace: PathBuf) -> Self {
+        Self {
+            parent_session_id: parent_session_id.into(),
+            canonical_workspace,
+        }
+    }
+
+    pub fn matches(&self, parent_session_id: &str, canonical_workspace: &Path) -> bool {
+        self.parent_session_id == parent_session_id
+            && self.canonical_workspace == canonical_workspace
+    }
+}
+
+static AGENT_OWNER_SCOPES: std::sync::LazyLock<Mutex<HashMap<String, AgentOwnerScope>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn inherited_agent_owner_scope(
+    parent_agent_id: Option<&str>,
+    root_session_id: &str,
+    current_workspace: &Path,
+) -> AgentOwnerScope {
+    parent_agent_id
+        .and_then(|agent_id| AGENT_OWNER_SCOPES.lock().get(agent_id).cloned())
+        .unwrap_or_else(|| AgentOwnerScope::new(root_session_id, current_workspace.to_path_buf()))
+}
 
 /// Result from a completed background Agent.
 #[derive(Debug, Clone)]
@@ -503,6 +537,13 @@ pub fn register_agent_node(node: AgentNode) {
     adapters().read().agent_tree.register(node);
 }
 
+pub fn register_agent_node_for_owner(node: AgentNode, owner: AgentOwnerScope) {
+    AGENT_OWNER_SCOPES
+        .lock()
+        .insert(node.agent_id.clone(), owner);
+    adapters().read().agent_tree.register(node);
+}
+
 pub fn update_agent_state(
     agent_id: &str,
     state: &str,
@@ -521,6 +562,44 @@ pub fn update_agent_state(
 
 pub fn agent_tree_snapshot() -> Vec<AgentNode> {
     adapters().read().agent_tree.snapshot()
+}
+
+pub fn agent_tree_snapshot_for_owner(
+    parent_session_id: &str,
+    canonical_workspace: &Path,
+) -> Vec<AgentNode> {
+    let owners = AGENT_OWNER_SCOPES.lock();
+    adapters()
+        .read()
+        .agent_tree
+        .snapshot()
+        .into_iter()
+        .filter_map(|node| {
+            filter_agent_node_for_owner(node, &owners, parent_session_id, canonical_workspace)
+        })
+        .collect()
+}
+
+fn filter_agent_node_for_owner(
+    mut node: AgentNode,
+    owners: &HashMap<String, AgentOwnerScope>,
+    parent_session_id: &str,
+    canonical_workspace: &Path,
+) -> Option<AgentNode> {
+    if !owners
+        .get(&node.agent_id)
+        .is_some_and(|owner| owner.matches(parent_session_id, canonical_workspace))
+    {
+        return None;
+    }
+    node.children = node
+        .children
+        .into_iter()
+        .filter_map(|child| {
+            filter_agent_node_for_owner(child, owners, parent_session_id, canonical_workspace)
+        })
+        .collect();
+    Some(node)
 }
 
 pub fn active_agent_count() -> usize {
@@ -668,5 +747,44 @@ mod tests {
         );
         assert_eq!(snapshot[0].children[0].duration_ms, Some(42));
         assert!(snapshot[0].children[0].completed_at.is_some());
+    }
+
+    #[test]
+    fn owner_filter_excludes_cross_session_roots_and_children() {
+        let workspace = PathBuf::from("/workspace");
+        let mut owned_root = make_node("owned-root", None);
+        owned_root.children = vec![
+            make_node("owned-child", Some("owned-root")),
+            make_node("foreign-child", Some("owned-root")),
+        ];
+        let foreign_root = make_node("foreign-root", None);
+        let owners = HashMap::from([
+            (
+                "owned-root".to_string(),
+                AgentOwnerScope::new("session-1", workspace.clone()),
+            ),
+            (
+                "owned-child".to_string(),
+                AgentOwnerScope::new("session-1", workspace.clone()),
+            ),
+            (
+                "foreign-child".to_string(),
+                AgentOwnerScope::new("session-2", workspace.clone()),
+            ),
+            (
+                "foreign-root".to_string(),
+                AgentOwnerScope::new("session-2", workspace.clone()),
+            ),
+        ]);
+
+        let owned = [owned_root, foreign_root]
+            .into_iter()
+            .filter_map(|node| filter_agent_node_for_owner(node, &owners, "session-1", &workspace))
+            .collect::<Vec<_>>();
+
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].agent_id, "owned-root");
+        assert_eq!(owned[0].children.len(), 1);
+        assert_eq!(owned[0].children[0].agent_id, "owned-child");
     }
 }

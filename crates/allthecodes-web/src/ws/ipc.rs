@@ -27,6 +27,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -39,6 +40,10 @@ use tracing::{info, warn};
 
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_ipc::adapters::extract_tool_result_output;
+use allthecodes_ipc::agent_handlers::{
+    dispatch_agent_command, dispatch_team_command, CommandDispatch, CommandError,
+    TrustedCommandContext,
+};
 use allthecodes_ipc_protocol::{BackendMessage, FrontendMessage};
 use allthecodes_server::{
     ConnectionClosedReason, ConnectionId, ConnectionOrigin, EventSeq, OriginRejection,
@@ -60,6 +65,12 @@ use crate::state::WebState;
 pub struct IpcWsParams {
     pub session_id: Option<String>,
     pub after_seq: Option<EventSeq>,
+}
+
+struct IpcConnectionBinding {
+    engine: Arc<QueryEngine>,
+    session_id: String,
+    canonical_workspace: PathBuf,
 }
 
 fn parse_legacy_frontend_text(text: &str) -> Result<FrontendMessage, Box<BackendMessage>> {
@@ -91,24 +102,19 @@ pub async fn ipc_ws_handler(
         }
     };
 
-    let engine = params
-        .session_id
-        .as_deref()
-        .and_then(|session_id| state.engine_for_session(session_id))
-        .unwrap_or_else(|| state.engine());
-    let _active_session_id = params
-        .session_id
-        .clone()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| engine.current_session_id().to_string());
+    let binding = match resolve_ipc_connection_binding(&state, params.session_id.as_deref()) {
+        Ok(binding) => binding,
+        Err(status) => return status.into_response(),
+    };
 
     let connection_id = ConnectionId::next();
     ws.on_upgrade(move |socket| {
         handle_ipc_socket(
             socket,
             state,
-            engine,
-            params.session_id,
+            binding.engine,
+            binding.session_id,
+            binding.canonical_workspace,
             params.after_seq,
             connection_id,
             origin,
@@ -117,20 +123,59 @@ pub async fn ipc_ws_handler(
     .into_response()
 }
 
+fn resolve_ipc_connection_binding(
+    state: &WebState,
+    requested_session_id: Option<&str>,
+) -> Result<IpcConnectionBinding, StatusCode> {
+    let foreground = state.engine();
+    let foreground_workspace =
+        std::fs::canonicalize(foreground.cwd()).map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let engine = match requested_session_id {
+        None => foreground,
+        Some(session_id) if session_id.is_empty() || session_id.trim() != session_id => {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        Some(session_id) => state
+            .engine_for_session(session_id)
+            .filter(|engine| engine.current_session_id().to_string() == session_id)
+            .ok_or(StatusCode::NOT_FOUND)?,
+    };
+    let session_id = engine.current_session_id().to_string();
+    let canonical_workspace =
+        std::fs::canonicalize(engine.cwd()).map_err(|_| StatusCode::NOT_FOUND)?;
+
+    // A session cached for another project must not become reachable through
+    // this listener merely because its opaque id is known.
+    if canonical_workspace != foreground_workspace {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    Ok(IpcConnectionBinding {
+        engine,
+        session_id,
+        canonical_workspace,
+    })
+}
+
 /// Drive the IPC WebSocket for the lifetime of the connection.
 async fn handle_ipc_socket(
     socket: WebSocket,
     state: WebState,
     engine: Arc<QueryEngine>,
-    session_id: Option<String>,
+    actual_session_id: String,
+    canonical_workspace: PathBuf,
     after_seq: Option<EventSeq>,
     connection_id: ConnectionId,
     origin: ConnectionOrigin,
 ) {
-    let actual_session_id = session_id
-        .clone()
-        .unwrap_or_else(|| engine.current_session_id().to_string());
     let hub = state.ipc_session_hub(&actual_session_id);
+    let runtime_projection_context = TrustedCommandContext::web(
+        actual_session_id.clone(),
+        canonical_workspace.clone(),
+        "__runtime__",
+        true,
+    );
     if let Some(mut bridge_rx) = hub.take_bridge_receiver() {
         let bridge_hub = hub.clone();
         tokio::spawn(async move {
@@ -142,9 +187,10 @@ async fn handle_ipc_socket(
     engine.set_bg_agent_tx(hub.agent_sender());
     if let Some(mut agent_rx) = hub.take_agent_receiver() {
         let runtime = hub.runtime().clone();
+        let runtime_projection_context = runtime_projection_context.clone();
         tokio::spawn(async move {
             while let Some(event) = agent_rx.recv().await {
-                if !forward_agent_ipc_event(&runtime, event).await {
+                if !forward_agent_ipc_event(&runtime, &runtime_projection_context, event).await {
                     break;
                 }
             }
@@ -172,7 +218,9 @@ async fn handle_ipc_socket(
         view_mode: None,
         keybindings: None,
     };
-    let mut outbound_rx = hub.register_connection(connection_id.clone());
+    let outbound_receivers = hub.register_connection(connection_id.clone());
+    let mut replayable_rx = outbound_receivers.replayable;
+    let mut direct_rx = outbound_receivers.direct;
 
     // ── Task: forward outbound messages to WebSocket ──────────────
     let writer_session_id = actual_session_id.clone();
@@ -223,22 +271,41 @@ async fn handle_ipc_socket(
             }
         }
 
-        while let Some(event) = outbound_rx.recv().await {
-            if event.seq <= replay_high_watermark {
-                continue;
-            }
-            if send_backend_ws_message(&mut ws_sender, &event.message)
-                .await
-                .is_err()
-            {
-                break;
-            }
-            let marker = ipc_seq_marker(&writer_session_id, event.seq);
-            if send_backend_ws_message(&mut ws_sender, &marker)
-                .await
-                .is_err()
-            {
-                break;
+        loop {
+            tokio::select! {
+                biased;
+                direct = direct_rx.recv() => {
+                    let Some(direct) = direct else {
+                        break;
+                    };
+                    if send_backend_ws_message(&mut ws_sender, &direct.message)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                replayable = replayable_rx.recv() => {
+                    let Some(event) = replayable else {
+                        break;
+                    };
+                    if event.seq <= replay_high_watermark {
+                        continue;
+                    }
+                    if send_backend_ws_message(&mut ws_sender, &event.message)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    let marker = ipc_seq_marker(&writer_session_id, event.seq);
+                    if send_backend_ws_message(&mut ws_sender, &marker)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
             }
         }
 
@@ -254,6 +321,12 @@ async fn handle_ipc_socket(
     let hub_inner = hub.clone();
     let sid = actual_session_id.clone();
     let inbound_connection_id = connection_id.clone();
+    let command_context = TrustedCommandContext::web(
+        sid.clone(),
+        canonical_workspace,
+        format!("web:{}", inbound_connection_id),
+        true,
+    );
 
     let mut inbound_handle = tokio::spawn(async move {
         let close_reason = loop {
@@ -277,6 +350,7 @@ async fn handle_ipc_socket(
                                 &engine_for_tasks,
                                 &hub_inner,
                                 &sid,
+                                &command_context,
                             ).await {
                                 break ConnectionClosedReason::ProtocolQuit;
                             }
@@ -428,6 +502,7 @@ async fn handle_frontend_message(
     engine: &Arc<QueryEngine>,
     hub: &Arc<IpcSessionHub>,
     session_id: &str,
+    command_context: &TrustedCommandContext,
 ) -> bool {
     match msg {
         FrontendMessage::SubmitPrompt { text, id } => {
@@ -487,22 +562,20 @@ async fn handle_frontend_message(
             let _ = hub.runtime().send_backend(msg).await;
             true
         }
-        // Agent/team commands — forward to engine
         FrontendMessage::AgentCommand { command } => {
-            // The engine's command dispatcher handles this
-            let msg = BackendMessage::SystemInfo {
-                text: format!("Agent command: {command:?}"),
-                level: "info".to_string(),
-            };
-            let _ = hub.runtime().send_backend(msg).await;
+            deliver_command_dispatch(
+                connection_id,
+                hub,
+                dispatch_agent_command(command_context, command),
+            );
             true
         }
         FrontendMessage::TeamCommand { command } => {
-            let msg = BackendMessage::SystemInfo {
-                text: format!("Team command: {command:?}"),
-                level: "info".to_string(),
-            };
-            let _ = hub.runtime().send_backend(msg).await;
+            deliver_command_dispatch(
+                connection_id,
+                hub,
+                dispatch_team_command(command_context, command),
+            );
             true
         }
         // Subsystem commands — TODO
@@ -535,6 +608,24 @@ async fn handle_frontend_message(
         | FrontendMessage::InstallRecommendedPlugin { .. }
         | FrontendMessage::RefreshPluginTelemetry
         | FrontendMessage::RequestLspRecommendations { .. } => true,
+    }
+}
+
+fn deliver_command_dispatch(
+    connection_id: &ConnectionId,
+    hub: &IpcSessionHub,
+    result: Result<CommandDispatch, CommandError>,
+) {
+    match result {
+        Ok(dispatch) => {
+            for message in dispatch.direct {
+                hub.send_control_to(connection_id, message);
+            }
+            for message in dispatch.publish {
+                hub.publish(message);
+            }
+        }
+        Err(error) => hub.send_control_to(connection_id, error.into_backend_message()),
     }
 }
 
@@ -974,10 +1065,40 @@ async fn execute_slash_command(
 
 #[cfg(test)]
 mod transport_tests {
+    use std::sync::atomic::AtomicBool;
+
+    use allthecodes_engine::types::config::QueryEngineConfig;
+    use allthecodes_types::agent_events::{AgentEvent, TeamEvent};
+
     use super::*;
 
     fn test_connection_id() -> ConnectionId {
         ConnectionId::from_static("test-ipc")
+    }
+
+    fn test_engine(cwd: &std::path::Path) -> Arc<QueryEngine> {
+        Arc::new(QueryEngine::new(QueryEngineConfig {
+            cwd: cwd.to_string_lossy().into_owned(),
+            tools: vec![],
+            custom_system_prompt: None,
+            append_system_prompt: None,
+            user_specified_model: None,
+            fallback_model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            task_budget: None,
+            verification_policy: None,
+            verbose: false,
+            initial_messages: None,
+            commands: vec![],
+            thinking_config: None,
+            json_schema: None,
+            replay_user_messages: false,
+            persist_session: false,
+            resolved_model: None,
+            auto_save_session: false,
+            agent_context: None,
+        }))
     }
 
     #[test]
@@ -1051,6 +1172,95 @@ mod transport_tests {
                 reason: ConnectionClosedReason::ClientClosed,
             } if connection_id == id
         ));
+    }
+
+    #[tokio::test]
+    async fn connection_binding_uses_exact_server_resolved_session() {
+        let workspace = tempfile::tempdir().unwrap();
+        let foreground = test_engine(workspace.path());
+        let foreground_id = foreground.current_session_id().to_string();
+        let state = WebState::new(foreground.clone(), Arc::new(AtomicBool::new(false)));
+
+        let omitted = resolve_ipc_connection_binding(&state, None).unwrap();
+        assert_eq!(omitted.session_id, foreground_id);
+        assert!(Arc::ptr_eq(&omitted.engine, &foreground));
+
+        let exact = resolve_ipc_connection_binding(&state, Some(&foreground_id)).unwrap();
+        assert_eq!(exact.session_id, foreground_id);
+        assert!(Arc::ptr_eq(&exact.engine, &foreground));
+
+        assert!(resolve_ipc_connection_binding(&state, Some("")).is_err());
+        assert!(resolve_ipc_connection_binding(&state, Some(" session ")).is_err());
+        assert!(resolve_ipc_connection_binding(&state, Some("unknown-session")).is_err());
+    }
+
+    #[tokio::test]
+    async fn connection_binding_accepts_same_workspace_cache_and_rejects_other_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let other_workspace = tempfile::tempdir().unwrap();
+        let foreground = test_engine(workspace.path());
+        let state = WebState::new(foreground, Arc::new(AtomicBool::new(false)));
+
+        let same_workspace = test_engine(workspace.path());
+        let same_id = same_workspace.current_session_id().to_string();
+        state.cache_session_engine(same_workspace.clone());
+        let binding = resolve_ipc_connection_binding(&state, Some(&same_id)).unwrap();
+        assert!(Arc::ptr_eq(&binding.engine, &same_workspace));
+
+        let inaccessible = test_engine(other_workspace.path());
+        let inaccessible_id = inaccessible.current_session_id().to_string();
+        state.cache_session_engine(inaccessible);
+        assert!(resolve_ipc_connection_binding(&state, Some(&inaccessible_id)).is_err());
+    }
+
+    #[tokio::test]
+    async fn command_delivery_keeps_direct_private_and_publishes_mutation_once() {
+        let hub = IpcSessionHub::new("session-1");
+        let requester = ConnectionId::from_static("requester");
+        let observer = ConnectionId::from_static("observer");
+        let mut requester_receivers = hub.register_connection(requester.clone());
+        let mut observer_receivers = hub.register_connection(observer);
+
+        deliver_command_dispatch(
+            &requester,
+            &hub,
+            Ok(CommandDispatch {
+                direct: vec![BackendMessage::TeamEvent {
+                    event: TeamEvent::StatusSnapshot {
+                        team_name: "team-1".to_string(),
+                        members: Vec::new(),
+                        pending_messages: 0,
+                    },
+                }],
+                publish: vec![BackendMessage::AgentEvent {
+                    event: AgentEvent::Aborted {
+                        agent_id: "agent-1".to_string(),
+                    },
+                }],
+            }),
+        );
+
+        assert!(matches!(
+            requester_receivers.direct.recv().await.unwrap().message,
+            BackendMessage::TeamEvent {
+                event: TeamEvent::StatusSnapshot { .. }
+            }
+        ));
+        assert!(observer_receivers.direct.try_recv().is_err());
+        assert!(matches!(
+            requester_receivers.replayable.recv().await.unwrap().message,
+            BackendMessage::AgentEvent {
+                event: AgentEvent::Aborted { .. }
+            }
+        ));
+        assert!(matches!(
+            observer_receivers.replayable.recv().await.unwrap().message,
+            BackendMessage::AgentEvent {
+                event: AgentEvent::Aborted { .. }
+            }
+        ));
+        assert_eq!(hub.latest_seq(), 1);
+        assert_eq!(hub.replay_after(Some(0)).events.len(), 1);
     }
 }
 

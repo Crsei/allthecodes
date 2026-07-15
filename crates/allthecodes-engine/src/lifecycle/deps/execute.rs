@@ -335,9 +335,14 @@ impl QueryEngineDeps {
             },
             session_id: self.audit_ctx.session_id.clone(),
             langfuse_session_id: self
-                .langfuse_trace
+                .agent_context
                 .as_ref()
-                .map(|trace| trace.session_id.clone())
+                .map(|context| context.langfuse_session_id.clone())
+                .or_else(|| {
+                    self.langfuse_trace
+                        .as_ref()
+                        .map(|trace| trace.session_id.clone())
+                })
                 .unwrap_or_else(|| self.audit_ctx.session_id.clone()),
             // AgentTool context inheritance must see the same conversation
             // snapshot that the parent tool call was evaluated against.

@@ -50,6 +50,11 @@ impl AgentTool {
         params.apply_fork_to_child_config(&mut child_config);
 
         let agent_tx = ctx.bg_agent_tx.as_ref();
+        let owner = crate::agent_runtime::inherited_agent_owner_scope(
+            ctx.agent_id.as_deref(),
+            &ctx.langfuse_session_id,
+            std::path::Path::new(&ctx.cwd),
+        );
 
         // Register sync agent in tree and emit Spawned event
         {
@@ -77,7 +82,7 @@ impl AgentTool {
                 fork_metadata: fork_metadata.clone(),
                 children: vec![],
             };
-            crate::agent_runtime::register_agent_node(node);
+            crate::agent_runtime::register_agent_node_for_owner(node, owner.clone());
 
             if let Some(tx) = agent_tx {
                 let _ = tx.send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
@@ -94,7 +99,10 @@ impl AgentTool {
                     },
                 ));
 
-                let roots = crate::agent_runtime::agent_tree_snapshot();
+                let roots = crate::agent_runtime::agent_tree_snapshot_for_owner(
+                    &owner.parent_session_id,
+                    &owner.canonical_workspace,
+                );
                 let _ = tx.send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
                     allthecodes_types::agent_events::AgentEvent::TreeSnapshot { roots },
                 ));
@@ -143,7 +151,10 @@ impl AgentTool {
                     },
                 ));
 
-                let roots = crate::agent_runtime::agent_tree_snapshot();
+                let roots = crate::agent_runtime::agent_tree_snapshot_for_owner(
+                    &owner.parent_session_id,
+                    &owner.canonical_workspace,
+                );
                 let _ = tx.send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
                     allthecodes_types::agent_events::AgentEvent::TreeSnapshot { roots },
                 ));

@@ -5,6 +5,9 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::warn;
 
+use allthecodes_ipc::agent_handlers::{
+    project_agent_event_for_web, project_team_event_for_web, TrustedCommandContext,
+};
 use allthecodes_ipc::runtime::IpcRuntime;
 use allthecodes_ipc_protocol::{
     payload_to_legacy_backend, BackendMessage, IpcPayload, LaggedEvent,
@@ -23,6 +26,9 @@ pub struct IpcSessionHub {
     agent_rx: Mutex<Option<AgentReceiver>>,
     event_log: EventLog<BackendMessage>,
     router: OutboundRouter<BackendMessage>,
+    /// Requester-only messages. These never enter the replay log and their
+    /// wrapper sequence is deliberately ignored by the WebSocket writer.
+    direct_router: OutboundRouter<BackendMessage>,
     active_owner: Mutex<Option<ConnectionId>>,
     lagged_disconnects: Mutex<HashMap<ConnectionId, u64>>,
 }
@@ -40,6 +46,7 @@ impl IpcSessionHub {
             agent_rx: Mutex::new(Some(agent_rx)),
             event_log: EventLog::new(DEFAULT_EVENT_LOG_CAPACITY),
             router: OutboundRouter::new(DEFAULT_WRITER_CHANNEL_CAPACITY),
+            direct_router: OutboundRouter::new(DEFAULT_WRITER_CHANNEL_CAPACITY),
             active_owner: Mutex::new(None),
             lagged_disconnects: Mutex::new(HashMap::new()),
         })
@@ -53,15 +60,16 @@ impl IpcSessionHub {
         &self.runtime
     }
 
-    pub fn register_connection(
-        &self,
-        connection_id: ConnectionId,
-    ) -> mpsc::Receiver<SequencedEvent<BackendMessage>> {
-        self.router.register(connection_id)
+    pub fn register_connection(&self, connection_id: ConnectionId) -> IpcConnectionReceivers {
+        IpcConnectionReceivers {
+            replayable: self.router.register(connection_id.clone()),
+            direct: self.direct_router.register(connection_id),
+        }
     }
 
     pub fn unregister_connection(&self, connection_id: &ConnectionId) {
         self.router.unregister(connection_id);
+        self.direct_router.unregister(connection_id);
         self.release_turn_if_owner(connection_id);
         self.lagged_disconnects.lock().remove(connection_id);
     }
@@ -139,11 +147,15 @@ impl IpcSessionHub {
     }
 
     pub fn send_control_to(&self, connection_id: &ConnectionId, message: BackendMessage) {
-        let event = SequencedEvent::new(self.latest_seq(), message);
-        match self.router.send_to(connection_id, event) {
+        // OutboundRouter has a SequencedEvent-shaped queue, but this is an
+        // independent lane: sequence zero is never inspected, persisted,
+        // replayed, or exposed as a session sequence marker.
+        let event = SequencedEvent::new(0, message);
+        match self.direct_router.send_to(connection_id, event) {
             Ok(()) => {}
             Err(RouterSendError::Full { .. }) | Err(RouterSendError::Closed { .. }) => {
                 self.router.unregister(connection_id);
+                self.direct_router.unregister(connection_id);
             }
             Err(RouterSendError::UnknownConnection { .. }) => {}
         }
@@ -186,10 +198,25 @@ impl IpcSessionHub {
     }
 }
 
-pub(crate) async fn forward_agent_ipc_event(runtime: &IpcRuntime, event: AgentIpcEvent) -> bool {
+pub struct IpcConnectionReceivers {
+    pub replayable: mpsc::Receiver<SequencedEvent<BackendMessage>>,
+    pub direct: mpsc::Receiver<SequencedEvent<BackendMessage>>,
+}
+
+pub(crate) async fn forward_agent_ipc_event(
+    runtime: &IpcRuntime,
+    context: &TrustedCommandContext,
+    event: AgentIpcEvent,
+) -> bool {
     let message = match event {
-        AgentIpcEvent::Agent(event) => BackendMessage::AgentEvent { event },
-        AgentIpcEvent::Team(event) => BackendMessage::TeamEvent { event },
+        AgentIpcEvent::Agent(event) => match project_agent_event_for_web(context, event) {
+            Ok(event) => BackendMessage::AgentEvent { event },
+            Err(error) => error.into_backend_message(),
+        },
+        AgentIpcEvent::Team(event) => match project_team_event_for_web(context, event) {
+            Ok(event) => BackendMessage::TeamEvent { event },
+            Err(error) => error.into_backend_message(),
+        },
     };
 
     runtime.send_backend(message).await.is_ok()
@@ -215,6 +242,9 @@ mod tests {
     use allthecodes_types::agent_events::AgentEvent;
     use allthecodes_types::agent_runtime_record::{
         AgentRuntimeExecutionRecord, AgentRuntimePermissionDecision,
+    };
+    use allthecodes_types::output::{
+        OutputEvent, OutputLifecycleState, OutputReadBatch, OutputStream,
     };
 
     fn info(text: &str) -> BackendMessage {
@@ -246,12 +276,12 @@ mod tests {
     async fn publish_logs_and_fans_out_to_registered_connections() {
         let hub = IpcSessionHub::new("session-1");
         let connection_id = ConnectionId::from_static("conn-1");
-        let mut rx = hub.register_connection(connection_id);
+        let mut receivers = hub.register_connection(connection_id);
 
         let event = hub.publish(info("hello"));
 
         assert_eq!(event.seq, 1);
-        let received = rx.recv().await.unwrap().message;
+        let received = receivers.replayable.recv().await.unwrap().message;
         assert!(matches!(
             received,
             BackendMessage::SystemInfo { text, .. } if text == "hello"
@@ -260,14 +290,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_control_is_requester_only_and_never_replayed() {
+        let hub = IpcSessionHub::new("session-1");
+        let requester = ConnectionId::from_static("requester");
+        let observer = ConnectionId::from_static("observer");
+        let mut requester_receivers = hub.register_connection(requester.clone());
+        let mut observer_receivers = hub.register_connection(observer);
+
+        hub.send_control_to(&requester, info("private"));
+
+        let received = requester_receivers.direct.recv().await.unwrap().message;
+        assert!(matches!(
+            received,
+            BackendMessage::SystemInfo { text, .. } if text == "private"
+        ));
+        assert!(observer_receivers.direct.try_recv().is_err());
+        assert!(requester_receivers.replayable.try_recv().is_err());
+        assert!(observer_receivers.replayable.try_recv().is_err());
+        assert_eq!(hub.latest_seq(), 0);
+        assert!(hub.replay_after(None).events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn first_direct_message_on_quiet_hub_is_not_sequence_filtered() {
+        let hub = IpcSessionHub::new("session-1");
+        let connection_id = ConnectionId::from_static("quiet");
+        let mut receivers = hub.register_connection(connection_id.clone());
+
+        hub.send_control_to(&connection_id, info("first"));
+
+        let event = receivers.direct.recv().await.expect("direct message");
+        assert_eq!(event.seq, 0);
+        assert!(matches!(
+            event.message,
+            BackendMessage::SystemInfo { text, .. } if text == "first"
+        ));
+        assert!(receivers.replayable.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn agent_sender_forwards_execution_record_to_runtime_queue() {
         let hub = IpcSessionHub::new("session-1");
         let mut bridge_rx = hub.take_bridge_receiver().expect("bridge receiver");
         let mut agent_rx = hub.take_agent_receiver().expect("agent receiver");
         let runtime = hub.runtime().clone();
+        let context = TrustedCommandContext::web(
+            "session-1",
+            std::path::PathBuf::from("/workspace"),
+            "__runtime__",
+            true,
+        );
         let bridge_task = tokio::spawn(async move {
             if let Some(event) = agent_rx.recv().await {
-                assert!(forward_agent_ipc_event(&runtime, event).await);
+                assert!(forward_agent_ipc_event(&runtime, &context, event).await);
             }
         });
 
@@ -291,6 +366,48 @@ mod tests {
         );
 
         bridge_task.await.expect("agent bridge task");
+    }
+
+    #[tokio::test]
+    async fn invalid_live_projection_becomes_a_bounded_backend_error() {
+        let (runtime, mut bridge_rx) = IpcRuntime::new("session-1", 4);
+        let context = TrustedCommandContext::web(
+            "session-1",
+            std::path::PathBuf::from("/workspace"),
+            "__runtime__",
+            true,
+        );
+        let event = AgentIpcEvent::Agent(AgentEvent::OutputBatch {
+            agent_id: "agent-1".to_string(),
+            task_id: "task-1".to_string(),
+            output: OutputReadBatch {
+                events: vec![OutputEvent {
+                    seq: 1,
+                    stream: OutputStream::Stdout,
+                    chunk: "output".to_string(),
+                    timestamp_ms: 1,
+                    process_or_run_id: "task-1".to_string(),
+                }],
+                next_seq: 1,
+                truncated: false,
+                first_available_seq: 1,
+                state: OutputLifecycleState::Running,
+            },
+            fork_metadata: None,
+        });
+
+        assert!(forward_agent_ipc_event(&runtime, &context, event).await);
+        let outbound = bridge_rx.recv().await.expect("bounded projection error");
+        let BackendMessage::Error {
+            message,
+            recoverable,
+        } = &outbound
+        else {
+            panic!("expected backend error");
+        };
+        assert!(message.starts_with("runtime_unavailable:"));
+        assert!(*recoverable);
+        assert!(serde_json::to_vec(&outbound).unwrap().len() < 1024);
     }
 
     #[test]

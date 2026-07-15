@@ -162,6 +162,8 @@ pub enum AgentCommand {
     QueryActiveAgents,
     QueryAgentOutput {
         agent_id: String,
+        /// Last event sequence consumed by the caller. For a subsequent page,
+        /// pass the previous response's `next_seq - 1`.
         #[serde(default)]
         after_seq: Option<EventSeq>,
         #[serde(default)]
@@ -267,5 +269,108 @@ mod tests {
 
         let value = serde_json::to_value(event).unwrap();
         assert!(value.get("fork_metadata").is_none());
+    }
+
+    #[test]
+    fn agent_command_json_contract_remains_backward_compatible() {
+        assert!(matches!(
+            serde_json::from_value::<AgentCommand>(json!({"kind": "query_active_agents"})).unwrap(),
+            AgentCommand::QueryActiveAgents
+        ));
+        assert!(matches!(
+            serde_json::from_value::<AgentCommand>(json!({
+                "kind": "abort_agent",
+                "agent_id": "agent-1"
+            }))
+            .unwrap(),
+            AgentCommand::AbortAgent { agent_id } if agent_id == "agent-1"
+        ));
+        assert!(matches!(
+            serde_json::from_value::<AgentCommand>(json!({
+                "kind": "query_agent_output",
+                "agent_id": "agent-1",
+                "after_seq": 7,
+                "limit_bytes": 4096
+            }))
+            .unwrap(),
+            AgentCommand::QueryAgentOutput {
+                agent_id,
+                after_seq: Some(7),
+                limit_bytes: Some(4096)
+            } if agent_id == "agent-1"
+        ));
+    }
+
+    #[test]
+    fn team_command_json_contract_remains_backward_compatible() {
+        assert!(matches!(
+            serde_json::from_value::<TeamCommand>(json!({
+                "kind": "query_team_status",
+                "team_name": "team-1"
+            }))
+            .unwrap(),
+            TeamCommand::QueryTeamStatus { team_name } if team_name == "team-1"
+        ));
+        assert!(matches!(
+            serde_json::from_value::<TeamCommand>(json!({
+                "kind": "inject_message",
+                "team_name": "team-1",
+                "to": "worker",
+                "text": "hello"
+            }))
+            .unwrap(),
+            TeamCommand::InjectMessage {
+                team_name,
+                to,
+                text
+            } if team_name == "team-1" && to == "worker" && text == "hello"
+        ));
+    }
+
+    #[test]
+    fn command_result_event_json_contract_remains_backward_compatible() {
+        let events = [
+            serde_json::to_value(AgentEvent::Aborted {
+                agent_id: "agent-1".to_string(),
+            })
+            .unwrap(),
+            serde_json::to_value(AgentEvent::TreeSnapshot { roots: Vec::new() }).unwrap(),
+            serde_json::to_value(AgentEvent::OutputBatch {
+                agent_id: "agent-1".to_string(),
+                task_id: "task-1".to_string(),
+                output: OutputReadBatch {
+                    events: Vec::new(),
+                    next_seq: 1,
+                    truncated: false,
+                    first_available_seq: 1,
+                    state: super::super::output::OutputLifecycleState::Running,
+                },
+                fork_metadata: None,
+            })
+            .unwrap(),
+        ];
+        assert_eq!(events[0]["kind"], json!("aborted"));
+        assert_eq!(events[1]["kind"], json!("tree_snapshot"));
+        assert_eq!(events[2]["kind"], json!("output_batch"));
+
+        let team_events = [
+            serde_json::to_value(TeamEvent::StatusSnapshot {
+                team_name: "team-1".to_string(),
+                members: Vec::new(),
+                pending_messages: 0,
+            })
+            .unwrap(),
+            serde_json::to_value(TeamEvent::MessageRouted {
+                team_name: "team-1".to_string(),
+                from: "web:connection-1".to_string(),
+                to: "worker".to_string(),
+                text: "hello".to_string(),
+                timestamp: "2026-07-16T00:00:00Z".to_string(),
+                summary: None,
+            })
+            .unwrap(),
+        ];
+        assert_eq!(team_events[0]["kind"], json!("status_snapshot"));
+        assert_eq!(team_events[1]["kind"], json!("message_routed"));
     }
 }

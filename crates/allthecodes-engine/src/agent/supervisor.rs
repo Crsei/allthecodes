@@ -69,15 +69,22 @@ struct PreparedRuntime {
 struct BackgroundJob {
     agent_id: String,
     task_ref: crate::agent_runtime::AgentTaskRef,
+    owner: crate::agent_runtime::AgentOwnerScope,
     cancellation_token: CancellationToken,
     handle: Option<tokio::task::JoinHandle<()>>,
     worktree: Option<WorktreeRuntime>,
 }
 
+#[derive(Clone)]
+struct OwnedTaskRef {
+    task_ref: crate::agent_runtime::AgentTaskRef,
+    owner: crate::agent_runtime::AgentOwnerScope,
+}
+
 #[derive(Default)]
 struct SupervisorState {
     active: HashMap<String, BackgroundJob>,
-    known_tasks: HashMap<String, crate::agent_runtime::AgentTaskRef>,
+    known_tasks: HashMap<String, OwnedTaskRef>,
 }
 
 #[derive(Default)]
@@ -87,6 +94,15 @@ struct BackgroundSupervisor {
 
 static BACKGROUND_SUPERVISOR: std::sync::LazyLock<BackgroundSupervisor> =
     std::sync::LazyLock::new(BackgroundSupervisor::default);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentOwnerLookupError {
+    NotFound,
+    Unauthorized,
+    Terminal,
+    Conflict,
+    Unavailable,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn spawn_background_agent(
@@ -217,6 +233,12 @@ pub(super) async fn spawn_background_agent(
     let cancellation_token = CancellationToken::new();
     task_store.register_runtime_handle(&task_ref, cancellation_token.clone());
 
+    let owner = crate::agent_runtime::inherited_agent_owner_scope(
+        ctx.agent_id.as_deref(),
+        &ctx.langfuse_session_id,
+        std::path::Path::new(&ctx.cwd),
+    );
+
     register_agent_tree(
         &agent_id,
         ctx.agent_id.clone(),
@@ -229,12 +251,14 @@ pub(super) async fn spawn_background_agent(
             .map(|t| t.chain_id.clone())
             .unwrap_or_default(),
         fork_metadata.clone(),
+        owner.clone(),
         &bg_tx,
     );
 
     BACKGROUND_SUPERVISOR.register(BackgroundJob {
         agent_id: agent_id.clone(),
         task_ref: task_ref.clone(),
+        owner: owner.clone(),
         cancellation_token: cancellation_token.clone(),
         handle: None,
         worktree: prepared.worktree.clone(),
@@ -263,6 +287,7 @@ pub(super) async fn spawn_background_agent(
         ask_user_callback: ctx.ask_user_callback.clone(),
         permission_pending_count: Arc::new(AtomicUsize::new(0)),
         fork_metadata,
+        owner,
     };
 
     let handle = tokio::spawn(async move {
@@ -285,13 +310,37 @@ pub fn cancel_agent(agent_id: &str) -> Option<String> {
     Some(task_ref.task_id)
 }
 
+pub fn cancel_agent_for_owner(
+    agent_id: &str,
+    parent_session_id: &str,
+    canonical_workspace: &std::path::Path,
+) -> std::result::Result<String, AgentOwnerLookupError> {
+    let task_ref = BACKGROUND_SUPERVISOR.task_ref_for_owner(
+        agent_id,
+        parent_session_id,
+        canonical_workspace,
+    )?;
+    let store = crate::agent_runtime::global_task_store();
+    let task = store
+        .get(&task_ref)
+        .ok_or(AgentOwnerLookupError::NotFound)?;
+    if task.status.is_terminal() {
+        return Err(AgentOwnerLookupError::Terminal);
+    }
+    let task_ref = BACKGROUND_SUPERVISOR.cancel_agent_for_owner(
+        agent_id,
+        parent_session_id,
+        canonical_workspace,
+    )?;
+    if let Err(err) = store.try_stop(&task_ref) {
+        warn!(task_id = %task_ref.task_id, error = %err, "failed to stop owned background agent task");
+    }
+    Ok(task_ref.task_id)
+}
+
 pub fn output_for_agent(agent_id: &str) -> Option<TaskEntry> {
     let task_ref = BACKGROUND_SUPERVISOR.task_ref(agent_id)?;
-    let entry = crate::agent_runtime::global_task_store().get(&task_ref);
-    if entry.as_ref().is_some_and(|task| task.status.is_terminal()) {
-        BACKGROUND_SUPERVISOR.forget(agent_id);
-    }
-    entry
+    crate::agent_runtime::global_task_store().get(&task_ref)
 }
 
 pub fn output_events_for_agent(
@@ -312,9 +361,34 @@ pub fn output_events_for_agent(
     let output = store.read_output_events(&task_ref, after_seq, limit_bytes)?;
     let task = store.get(&task_ref);
     let metadata = task.as_ref().and_then(|task| task.metadata.clone());
-    if task.as_ref().is_some_and(|task| task.status.is_terminal()) {
-        BACKGROUND_SUPERVISOR.forget(agent_id);
-    }
+    Ok(output.map(|output| (task_ref.task_id, output, metadata)))
+}
+
+pub fn output_events_for_owner(
+    agent_id: &str,
+    parent_session_id: &str,
+    canonical_workspace: &std::path::Path,
+    after_seq: Option<allthecodes_types::output::EventSeq>,
+    limit_bytes: usize,
+) -> std::result::Result<
+    Option<(
+        String,
+        allthecodes_types::output::OutputReadBatch,
+        Option<serde_json::Value>,
+    )>,
+    AgentOwnerLookupError,
+> {
+    let task_ref = BACKGROUND_SUPERVISOR.task_ref_for_owner(
+        agent_id,
+        parent_session_id,
+        canonical_workspace,
+    )?;
+    let store = crate::agent_runtime::global_task_store();
+    let output = store
+        .read_output_events(&task_ref, after_seq, limit_bytes)
+        .map_err(|_| AgentOwnerLookupError::Unavailable)?;
+    let task = store.get(&task_ref);
+    let metadata = task.as_ref().and_then(|task| task.metadata.clone());
     Ok(output.map(|output| (task_ref.task_id, output, metadata)))
 }
 
@@ -394,6 +468,7 @@ struct AgentRuntime {
     ask_user_callback: Option<AskUserCallback>,
     permission_pending_count: Arc<AtomicUsize>,
     fork_metadata: Option<allthecodes_types::agent_types::ForkLaunchMetadata>,
+    owner: crate::agent_runtime::AgentOwnerScope,
 }
 
 impl AgentRuntime {
@@ -798,7 +873,10 @@ impl AgentRuntime {
                 },
             ));
 
-        let roots = crate::agent_runtime::agent_tree_snapshot();
+        let roots = crate::agent_runtime::agent_tree_snapshot_for_owner(
+            &self.owner.parent_session_id,
+            &self.owner.canonical_workspace,
+        );
         let _ = self
             .bg_tx
             .send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
@@ -827,9 +905,13 @@ fn emit_runtime_activity(
 impl BackgroundSupervisor {
     fn register(&self, job: BackgroundJob) {
         let mut state = self.state.lock();
-        state
-            .known_tasks
-            .insert(job.agent_id.clone(), job.task_ref.clone());
+        state.known_tasks.insert(
+            job.agent_id.clone(),
+            OwnedTaskRef {
+                task_ref: job.task_ref.clone(),
+                owner: job.owner.clone(),
+            },
+        );
         state.active.insert(job.agent_id.clone(), job);
     }
 
@@ -846,16 +928,57 @@ impl BackgroundSupervisor {
         Some(job.task_ref.clone())
     }
 
+    fn cancel_agent_for_owner(
+        &self,
+        agent_id: &str,
+        parent_session_id: &str,
+        canonical_workspace: &std::path::Path,
+    ) -> std::result::Result<crate::agent_runtime::AgentTaskRef, AgentOwnerLookupError> {
+        let state = self.state.lock();
+        let Some(job) = state.active.get(agent_id) else {
+            return if state.known_tasks.contains_key(agent_id) {
+                Err(AgentOwnerLookupError::Terminal)
+            } else {
+                Err(AgentOwnerLookupError::NotFound)
+            };
+        };
+        if !job.owner.matches(parent_session_id, canonical_workspace) {
+            return Err(AgentOwnerLookupError::Unauthorized);
+        }
+        if job.cancellation_token.is_cancelled() {
+            return Err(AgentOwnerLookupError::Conflict);
+        }
+        job.cancellation_token.cancel();
+        Ok(job.task_ref.clone())
+    }
+
     fn complete(&self, agent_id: &str) {
         self.state.lock().active.remove(agent_id);
     }
 
     fn task_ref(&self, agent_id: &str) -> Option<crate::agent_runtime::AgentTaskRef> {
-        self.state.lock().known_tasks.get(agent_id).cloned()
+        self.state
+            .lock()
+            .known_tasks
+            .get(agent_id)
+            .map(|owned| owned.task_ref.clone())
     }
 
-    fn forget(&self, agent_id: &str) {
-        self.state.lock().known_tasks.remove(agent_id);
+    fn task_ref_for_owner(
+        &self,
+        agent_id: &str,
+        parent_session_id: &str,
+        canonical_workspace: &std::path::Path,
+    ) -> std::result::Result<crate::agent_runtime::AgentTaskRef, AgentOwnerLookupError> {
+        let state = self.state.lock();
+        let owned = state
+            .known_tasks
+            .get(agent_id)
+            .ok_or(AgentOwnerLookupError::NotFound)?;
+        if !owned.owner.matches(parent_session_id, canonical_workspace) {
+            return Err(AgentOwnerLookupError::Unauthorized);
+        }
+        Ok(owned.task_ref.clone())
     }
 
     fn take_active_jobs(&self) -> Vec<BackgroundJob> {
@@ -874,6 +997,7 @@ fn register_agent_tree(
     current_depth: usize,
     chain_id: String,
     fork_metadata: Option<allthecodes_types::agent_types::ForkLaunchMetadata>,
+    owner: crate::agent_runtime::AgentOwnerScope,
     bg_tx: &allthecodes_types::agent_channel::AgentSender,
 ) {
     let node = allthecodes_types::agent_types::AgentNode {
@@ -894,7 +1018,7 @@ fn register_agent_tree(
         fork_metadata: fork_metadata.clone(),
         children: vec![],
     };
-    crate::agent_runtime::register_agent_node(node);
+    crate::agent_runtime::register_agent_node_for_owner(node, owner.clone());
 
     let _ = bg_tx.send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
         allthecodes_types::agent_events::AgentEvent::Spawned {
@@ -910,7 +1034,10 @@ fn register_agent_tree(
         },
     ));
 
-    let roots = crate::agent_runtime::agent_tree_snapshot();
+    let roots = crate::agent_runtime::agent_tree_snapshot_for_owner(
+        &owner.parent_session_id,
+        &owner.canonical_workspace,
+    );
     let _ = bg_tx.send(allthecodes_types::agent_channel::AgentIpcEvent::Agent(
         allthecodes_types::agent_events::AgentEvent::TreeSnapshot { roots },
     ));
@@ -1454,6 +1581,10 @@ mod tests {
                 task_list_id: DEFAULT_TASK_LIST_ID.to_string(),
                 task_id: task_id.clone(),
             },
+            owner: crate::agent_runtime::AgentOwnerScope::new(
+                "test-session",
+                std::path::PathBuf::from("/test-workspace"),
+            ),
             cancellation_token: token.clone(),
             handle: None,
             worktree: None,
@@ -1467,6 +1598,40 @@ mod tests {
             Some(task_id)
         );
         assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn owner_scoped_lookup_rejects_cross_session_and_cancels_once() {
+        let token = CancellationToken::new();
+        let agent_id = format!("owned-agent-{}", uuid::Uuid::new_v4());
+        let task_id = format!("owned-task-{}", uuid::Uuid::new_v4());
+        let workspace = std::path::PathBuf::from("/test-workspace");
+        BACKGROUND_SUPERVISOR.register(BackgroundJob {
+            agent_id: agent_id.clone(),
+            task_ref: crate::agent_runtime::AgentTaskRef {
+                task_list_id: DEFAULT_TASK_LIST_ID.to_string(),
+                task_id: task_id.clone(),
+            },
+            owner: crate::agent_runtime::AgentOwnerScope::new("session-owner", workspace.clone()),
+            cancellation_token: token.clone(),
+            handle: None,
+            worktree: None,
+        });
+
+        assert!(matches!(
+            BACKGROUND_SUPERVISOR.task_ref_for_owner(&agent_id, "session-other", &workspace),
+            Err(AgentOwnerLookupError::Unauthorized)
+        ));
+        let cancelled = BACKGROUND_SUPERVISOR
+            .cancel_agent_for_owner(&agent_id, "session-owner", &workspace)
+            .unwrap();
+        assert_eq!(cancelled.task_id, task_id);
+        assert!(token.is_cancelled());
+        assert!(matches!(
+            BACKGROUND_SUPERVISOR.cancel_agent_for_owner(&agent_id, "session-owner", &workspace),
+            Err(AgentOwnerLookupError::Conflict)
+        ));
+        BACKGROUND_SUPERVISOR.complete(&agent_id);
     }
 
     #[test]

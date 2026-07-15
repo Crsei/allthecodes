@@ -235,12 +235,18 @@ pub(crate) async fn dispatch(
         }
         FrontendMessage::AgentCommand { command } => {
             debug!("headless: Agent command: {:?}", command);
-            let msgs = allthecodes_ipc::agent_handlers::handle_agent_command(command);
+            let context = trusted_local_command_context(engine);
+            let msgs = allthecodes_ipc::agent_handlers::dispatch_agent_command(&context, command)
+                .map(allthecodes_ipc::agent_handlers::CommandDispatch::into_messages)
+                .unwrap_or_else(|error| vec![error.into_backend_message()]);
             let _ = sink.send_many(msgs);
         }
         FrontendMessage::TeamCommand { command } => {
             debug!("headless: Team command: {:?}", command);
-            let msgs = allthecodes_ipc::agent_handlers::handle_team_command(command);
+            let context = trusted_local_command_context(engine);
+            let msgs = allthecodes_ipc::agent_handlers::dispatch_team_command(&context, command)
+                .map(allthecodes_ipc::agent_handlers::CommandDispatch::into_messages)
+                .unwrap_or_else(|error| vec![error.into_backend_message()]);
             let _ = sink.send_many(msgs);
         }
 
@@ -623,8 +629,15 @@ async fn handle_slash_command(
         if command_name == "team" {
             if let Some(tc) = ctx.app_state.team_context.as_ref() {
                 if !tc.team_name.is_empty() {
-                    let events =
-                        allthecodes_ipc::agent_handlers::build_team_status_events(&tc.team_name);
+                    let context = trusted_local_command_context(engine);
+                    let events = allthecodes_ipc::agent_handlers::dispatch_team_command(
+                        &context,
+                        allthecodes_types::agent_events::TeamCommand::QueryTeamStatus {
+                            team_name: tc.team_name.clone(),
+                        },
+                    )
+                    .map(allthecodes_ipc::agent_handlers::CommandDispatch::into_messages)
+                    .unwrap_or_else(|error| vec![error.into_backend_message()]);
                     let _ = sink.send_many(events);
                 }
             }
@@ -732,4 +745,16 @@ async fn handle_slash_command(
             });
         }
     }
+}
+
+fn trusted_local_command_context(
+    engine: &QueryEngine,
+) -> allthecodes_ipc::agent_handlers::TrustedCommandContext {
+    let workspace = std::fs::canonicalize(engine.cwd())
+        .unwrap_or_else(|_| std::path::PathBuf::from(engine.cwd()));
+    allthecodes_ipc::agent_handlers::TrustedCommandContext::trusted_local(
+        engine.current_session_id().to_string(),
+        workspace,
+        "__headless__",
+    )
 }
