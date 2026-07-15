@@ -35,6 +35,11 @@ pub fn current_manager() -> Option<SharedMcpManager> {
     MANAGER.read().clone()
 }
 
+/// Remove and return the installed manager, releasing the global owner.
+pub fn take_installed_manager() -> Option<SharedMcpManager> {
+    MANAGER.write().take()
+}
+
 /// Disconnect every live client without holding the manager lock across I/O.
 pub async fn disconnect_all(manager: &SharedMcpManager) {
     let clients = manager.lock().await.take_all_clients();
