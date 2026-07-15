@@ -765,6 +765,26 @@ pub fn file_handlers() -> HandlerRegistry {
 pub fn skill_handlers() -> HandlerRegistry {
     handlers::skills::handlers()
         .handle(
+            ApiMethod::SkillProposalsList,
+            get(handlers::skill_proposals_list_handler),
+        )
+        .handle(
+            ApiMethod::SkillProposalDetail,
+            get(handlers::skill_proposal_detail_handler),
+        )
+        .handle(
+            ApiMethod::SkillProposalDiff,
+            get(handlers::skill_proposal_diff_handler),
+        )
+        .handle(
+            ApiMethod::SkillProposalApprove,
+            post(handlers::skill_proposal_approve_handler),
+        )
+        .handle(
+            ApiMethod::SkillProposalReject,
+            post(handlers::skill_proposal_reject_handler),
+        )
+        .handle(
             ApiMethod::SkillsDetail,
             get(handlers::skills_detail_handler),
         )

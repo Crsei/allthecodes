@@ -65,14 +65,15 @@ impl CommandHandler for LearnHandler {
             &ctx.cwd,
         )
         .map_err(skill_error)?;
+        let proposal_id = format!("native:project:{}", proposal.id);
 
         Ok(CommandResult::Output(format!(
-            "Skill proposal {} staged for '{}'.\nProposed path: {}\nUse /skills diff {} then /skills approve {} to install it.",
-            proposal.id,
+            "Skill proposal {} staged for '{}'.\nProposed path: .allthecodes/skills/{}/SKILL.md\nUse /skills diff {} then /skills approve {} to install it.",
+            proposal_id,
             proposal.skill_name,
-            proposal.proposed_path.display(),
-            proposal.id,
-            proposal.id
+            proposal.skill_name,
+            proposal_id,
+            proposal_id
         )))
     }
 }
@@ -162,6 +163,9 @@ mod tests {
             _ => panic!("Expected Output"),
         };
         assert!(text.contains("Skill proposal"));
+        assert!(text.contains("native:project:skill-proposal-"));
+        assert!(text.contains("/skills diff native:project:"));
+        assert!(!text.contains(&cwd.display().to_string()));
 
         let proposals = allthecodes_skills::list_skill_proposals(&cwd).unwrap();
         assert_eq!(proposals.len(), 1);

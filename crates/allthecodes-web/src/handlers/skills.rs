@@ -8,8 +8,19 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use allthecodes_protocol::v1::skills::SkillsListResponse as ProtocolSkillsListResponse;
+use allthecodes_protocol::v1::skills::{
+    SkillProposalAction as ApiProposalAction, SkillProposalDetailResponse,
+    SkillProposalDiagnostic as ApiProposalDiagnostic, SkillProposalDiffResponse,
+    SkillProposalDisposition as ApiProposalDisposition, SkillProposalExpectedTarget,
+    SkillProposalListQuery, SkillProposalListResponse, SkillProposalMutationParams,
+    SkillProposalMutationRequest, SkillProposalMutationResponse, SkillProposalParams,
+    SkillProposalScope as ApiProposalScope, SkillProposalSource as ApiProposalSource,
+    SkillProposalSummary as ApiProposalSummary,
+    SkillProposalValidationState as ApiProposalValidationState,
+};
 use allthecodes_protocol::ApiError as ProtocolApiError;
 use allthecodes_protocol::ApiMethod;
+use allthecodes_protocol::SerializationScope;
 use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
@@ -21,6 +32,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use allthecodes_config::paths;
+use allthecodes_engine::services::skill_proposals::{
+    ExpectedTarget, ProposalAccess, ProposalAction, ProposalDetail, ProposalDiff,
+    ProposalDisposition, ProposalList, ProposalListFilter, ProposalMutationOutcome, ProposalScope,
+    ProposalSource, ProposalSummary, ProposalValidationState, SkillProposalService,
+    SkillProposalServiceError,
+};
 use allthecodes_skills::{
     find_skill, get_all_skills, get_skill_diagnostics, registry_revision, SkillContext,
     SkillDefinition, SkillDiagnostic, SkillSource,
@@ -108,6 +125,366 @@ impl Processor for SkillsListProcessor {
             revision,
             profile_id: None,
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct SkillProposalsListProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SkillProposalsListProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SkillProposalsListProcessor {
+    type Request = SkillProposalListQuery;
+    type Response = SkillProposalListResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "skills.proposals.list"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let filter = ProposalListFilter {
+            source: params.source.map(from_api_proposal_source),
+            scope: params.scope.map(from_api_proposal_scope),
+            action: params.action.map(from_api_proposal_action),
+            cursor: params.cursor,
+            limit: params.limit,
+        };
+        proposal_service(&self.state)
+            .list(filter)
+            .map(project_proposal_list)
+            .map_err(|error| proposal_api_error(error, None))
+    }
+}
+
+#[derive(Clone)]
+pub struct SkillProposalDetailProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SkillProposalDetailProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SkillProposalDetailProcessor {
+    type Request = SkillProposalParams;
+    type Response = SkillProposalDetailResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "skills.proposals.detail"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let proposal_id = params.proposal_id;
+        proposal_service(&self.state)
+            .detail(&proposal_id)
+            .map(project_proposal_detail)
+            .map_err(|error| proposal_api_error(error, Some(proposal_id)))
+    }
+}
+
+#[derive(Clone)]
+pub struct SkillProposalDiffProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SkillProposalDiffProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SkillProposalDiffProcessor {
+    type Request = SkillProposalParams;
+    type Response = SkillProposalDiffResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "skills.proposals.diff"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        let proposal_id = params.proposal_id;
+        proposal_service(&self.state)
+            .diff(&proposal_id)
+            .map(project_proposal_diff)
+            .map_err(|error| proposal_api_error(error, Some(proposal_id)))
+    }
+}
+
+#[derive(Clone)]
+pub struct SkillProposalApproveProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SkillProposalApproveProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SkillProposalApproveProcessor {
+    type Request = SkillProposalMutationParams;
+    type Response = SkillProposalMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "skills.proposals.approve"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "proposal_id")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        decide_proposal(&self.state, params, ProposalDisposition::Approved)
+    }
+}
+
+#[derive(Clone)]
+pub struct SkillProposalRejectProcessor {
+    state: WebState,
+}
+
+impl From<WebState> for SkillProposalRejectProcessor {
+    fn from(state: WebState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl Processor for SkillProposalRejectProcessor {
+    type Request = SkillProposalMutationParams;
+    type Response = SkillProposalMutationResponse;
+    type Error = ProtocolApiError;
+
+    fn handler_name() -> &'static str {
+        "skills.proposals.reject"
+    }
+
+    fn serialization_layer(&self) -> Option<SerializationLayer> {
+        Some(self.state.serialization.clone())
+    }
+
+    fn serialization_scope(params: &Self::Request) -> SerializationScope {
+        SerializationScope::per_key(params, "proposal_id")
+    }
+
+    async fn handle(&self, params: Self::Request) -> Result<Self::Response, Self::Error> {
+        decide_proposal(&self.state, params, ProposalDisposition::Rejected)
+    }
+}
+
+fn decide_proposal(
+    state: &WebState,
+    params: SkillProposalMutationParams,
+    disposition: ProposalDisposition,
+) -> Result<SkillProposalMutationResponse, ProtocolApiError> {
+    let proposal_id = params.proposal_id;
+    let request = allthecodes_engine::services::skill_proposals::ProposalMutationRequest {
+        request_id: params.request_id,
+        expected_proposal_digest: params.expected_proposal_digest,
+        expected_target: from_api_expected_target(params.expected_target_digest),
+    };
+    let result = match disposition {
+        ProposalDisposition::Approved => proposal_service(state).approve(&proposal_id, request),
+        ProposalDisposition::Rejected => proposal_service(state).reject(&proposal_id, request),
+    };
+    result
+        .map(project_proposal_mutation)
+        .map_err(|error| proposal_api_error(error, Some(proposal_id)))
+}
+
+fn proposal_service(state: &WebState) -> SkillProposalService {
+    SkillProposalService::new(
+        PathBuf::from(state.engine().cwd()),
+        ProposalAccess {
+            project: true,
+            user: true,
+        },
+    )
+}
+
+fn proposal_api_error(
+    error: SkillProposalServiceError,
+    proposal_id: Option<String>,
+) -> ProtocolApiError {
+    match error {
+        SkillProposalServiceError::Invalid { code, message } => {
+            ProtocolApiError::BadRequest { code, message }
+        }
+        SkillProposalServiceError::Forbidden => ProtocolApiError::Forbidden {
+            code: "proposal_scope_forbidden",
+            message: "skill proposal scope is forbidden".to_string(),
+        },
+        SkillProposalServiceError::NotFound => ProtocolApiError::NotFound {
+            entity: "skill_proposal",
+            id: proposal_id.unwrap_or_default(),
+        },
+        SkillProposalServiceError::ProposalChanged
+        | SkillProposalServiceError::TargetChanged
+        | SkillProposalServiceError::ProposalConsumed => ProtocolApiError::Conflict {
+            reason: format!("{}: {}", error.code(), error),
+        },
+        SkillProposalServiceError::NotActionable => ProtocolApiError::Validation {
+            field: "proposal_id".to_string(),
+            message: "proposal_not_actionable: skill proposal is not actionable".to_string(),
+        },
+        SkillProposalServiceError::ProposalTooLarge => ProtocolApiError::PayloadTooLarge {
+            code: "proposal_too_large",
+            message: "skill proposal content exceeds the supported limit".to_string(),
+        },
+        SkillProposalServiceError::StoreUnavailable => ProtocolApiError::ServiceUnavailable {
+            code: "proposal_store_unavailable",
+            message: "skill proposal store is unavailable".to_string(),
+        },
+    }
+}
+
+fn project_proposal_list(list: ProposalList) -> SkillProposalListResponse {
+    SkillProposalListResponse {
+        proposals: list
+            .proposals
+            .into_iter()
+            .map(project_proposal_summary)
+            .collect(),
+        next_cursor: list.next_cursor,
+        diagnostic_count: list.diagnostic_count,
+        truncated: list.truncated,
+    }
+}
+
+fn project_proposal_detail(detail: ProposalDetail) -> SkillProposalDetailResponse {
+    SkillProposalDetailResponse {
+        proposal: project_proposal_summary(detail.summary),
+        markdown: detail.markdown,
+        markdown_bytes: detail.markdown_bytes,
+        current_target_digest: detail.current_target_digest,
+        target_exists: detail.target_exists,
+        diagnostics: detail
+            .diagnostics
+            .into_iter()
+            .map(|diagnostic| ApiProposalDiagnostic {
+                code: diagnostic.code,
+                message: diagnostic.message,
+            })
+            .collect(),
+    }
+}
+
+fn project_proposal_diff(diff: ProposalDiff) -> SkillProposalDiffResponse {
+    SkillProposalDiffResponse {
+        proposal_id: diff.proposal_id,
+        proposal_digest: diff.proposal_digest,
+        baseline_digest: diff.baseline_digest,
+        diff: diff.diff,
+        truncated: diff.truncated,
+        untruncated_bytes: diff.untruncated_bytes,
+    }
+}
+
+fn project_proposal_mutation(outcome: ProposalMutationOutcome) -> SkillProposalMutationResponse {
+    SkillProposalMutationResponse {
+        proposal_id: outcome.proposal_id,
+        request_id: outcome.request_id,
+        disposition: match outcome.disposition {
+            ProposalDisposition::Approved => ApiProposalDisposition::Approved,
+            ProposalDisposition::Rejected => ApiProposalDisposition::Rejected,
+        },
+        skill_name: outcome.skill_name,
+        scope: project_proposal_scope(outcome.scope),
+        resulting_target_digest: outcome.resulting_target_digest,
+        idempotent_replay: outcome.idempotent_replay,
+    }
+}
+
+fn project_proposal_summary(summary: ProposalSummary) -> ApiProposalSummary {
+    ApiProposalSummary {
+        proposal_id: summary.proposal_id,
+        source: match summary.source {
+            ProposalSource::Native => ApiProposalSource::Native,
+            ProposalSource::BackgroundReview => ApiProposalSource::BackgroundReview,
+        },
+        action: match summary.action {
+            ProposalAction::Create => ApiProposalAction::Create,
+            ProposalAction::Patch => ApiProposalAction::Patch,
+        },
+        scope: project_proposal_scope(summary.scope),
+        skill_name: summary.skill_name,
+        source_session_id: summary.source_session_id,
+        created_at: summary.created_at,
+        relative_target: summary.relative_target,
+        proposal_digest: summary.proposal_digest,
+        validation_state: match summary.validation_state {
+            ProposalValidationState::Valid => ApiProposalValidationState::Valid,
+            ProposalValidationState::Invalid => ApiProposalValidationState::Invalid,
+        },
+        actionable: summary.actionable,
+        summary: summary.summary,
+    }
+}
+
+fn project_proposal_scope(scope: ProposalScope) -> ApiProposalScope {
+    match scope {
+        ProposalScope::User => ApiProposalScope::User,
+        ProposalScope::Project => ApiProposalScope::Project,
+    }
+}
+
+fn from_api_proposal_source(source: ApiProposalSource) -> ProposalSource {
+    match source {
+        ApiProposalSource::Native => ProposalSource::Native,
+        ApiProposalSource::BackgroundReview => ProposalSource::BackgroundReview,
+    }
+}
+
+fn from_api_proposal_action(action: ApiProposalAction) -> ProposalAction {
+    match action {
+        ApiProposalAction::Create => ProposalAction::Create,
+        ApiProposalAction::Patch => ProposalAction::Patch,
+    }
+}
+
+fn from_api_proposal_scope(scope: ApiProposalScope) -> ProposalScope {
+    match scope {
+        ApiProposalScope::User => ProposalScope::User,
+        ApiProposalScope::Project => ProposalScope::Project,
+    }
+}
+
+fn from_api_expected_target(target: SkillProposalExpectedTarget) -> ExpectedTarget {
+    match target {
+        SkillProposalExpectedTarget::Absent => ExpectedTarget::Absent,
+        SkillProposalExpectedTarget::Digest { digest } => ExpectedTarget::Digest { digest },
     }
 }
 
@@ -242,6 +619,89 @@ pub async fn skills_list_handler(
         },
     )
     .await
+}
+
+/// `GET /api/skills/proposals` -- list bounded, owner-qualified proposals.
+pub async fn skill_proposals_list_handler(
+    State(state): State<WebState>,
+    Query(query): Query<SkillProposalListQuery>,
+) -> Response {
+    rest_processor_response::<SkillProposalsListProcessor>(
+        state,
+        ApiMethod::SkillProposalsList,
+        query,
+    )
+    .await
+}
+
+/// `GET /api/skills/proposals/{proposal_id}` -- validated proposal detail.
+pub async fn skill_proposal_detail_handler(
+    AxumPath(proposal_id): AxumPath<String>,
+    State(state): State<WebState>,
+) -> Response {
+    rest_processor_response::<SkillProposalDetailProcessor>(
+        state,
+        ApiMethod::SkillProposalDetail,
+        SkillProposalParams { proposal_id },
+    )
+    .await
+}
+
+/// `GET /api/skills/proposals/{proposal_id}/diff` -- server-generated diff.
+pub async fn skill_proposal_diff_handler(
+    AxumPath(proposal_id): AxumPath<String>,
+    State(state): State<WebState>,
+) -> Response {
+    rest_processor_response::<SkillProposalDiffProcessor>(
+        state,
+        ApiMethod::SkillProposalDiff,
+        SkillProposalParams { proposal_id },
+    )
+    .await
+}
+
+/// `POST /api/skills/proposals/{proposal_id}/approve` -- consume and install.
+///
+/// The route must be registered behind the privileged-write middleware.
+pub async fn skill_proposal_approve_handler(
+    AxumPath(proposal_id): AxumPath<String>,
+    State(state): State<WebState>,
+    Json(request): Json<SkillProposalMutationRequest>,
+) -> Response {
+    rest_processor_response::<SkillProposalApproveProcessor>(
+        state,
+        ApiMethod::SkillProposalApprove,
+        mutation_params(proposal_id, request),
+    )
+    .await
+}
+
+/// `POST /api/skills/proposals/{proposal_id}/reject` -- consume without install.
+///
+/// The route must be registered behind the privileged-write middleware.
+pub async fn skill_proposal_reject_handler(
+    AxumPath(proposal_id): AxumPath<String>,
+    State(state): State<WebState>,
+    Json(request): Json<SkillProposalMutationRequest>,
+) -> Response {
+    rest_processor_response::<SkillProposalRejectProcessor>(
+        state,
+        ApiMethod::SkillProposalReject,
+        mutation_params(proposal_id, request),
+    )
+    .await
+}
+
+fn mutation_params(
+    proposal_id: String,
+    request: SkillProposalMutationRequest,
+) -> SkillProposalMutationParams {
+    SkillProposalMutationParams {
+        proposal_id,
+        request_id: request.request_id,
+        expected_proposal_digest: request.expected_proposal_digest,
+        expected_target_digest: request.expected_target_digest,
+    }
 }
 
 /// `GET /api/skills/{id}` -- detail with prompt body, frontmatter, metadata.

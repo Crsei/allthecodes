@@ -9,9 +9,12 @@ description = "Skill discovery, loading, and registry for allthecodes (bundled +
 allthecodes-config = { path = "../allthecodes-config" }
 allthecodes-types = { workspace = true }
 chrono = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 parking_lot = { workspace = true }
+thiserror = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

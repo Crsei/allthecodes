@@ -16,6 +16,10 @@ pub enum ApiError {
     Conflict { reason: String },
     #[error("validation failed for {field}: {message}")]
     Validation { field: String, message: String },
+    #[error("payload too large: {message}")]
+    PayloadTooLarge { code: &'static str, message: String },
+    #[error("service unavailable: {message}")]
+    ServiceUnavailable { code: &'static str, message: String },
     #[error("engine is busy")]
     EngineBusy,
     #[error("experimental API is not enabled: {0}")]
@@ -42,6 +46,8 @@ impl ApiError {
             Self::NotFound { .. } => 404,
             Self::Conflict { .. } => 409,
             Self::Validation { .. } => 422,
+            Self::PayloadTooLarge { .. } => 413,
+            Self::ServiceUnavailable { .. } => 503,
             Self::EngineBusy => 503,
             Self::Experimental(_) => 403,
             Self::NotImplemented { .. } => 501,
@@ -56,6 +62,8 @@ impl ApiError {
             Self::NotFound { .. } => "not_found",
             Self::Conflict { .. } => "conflict",
             Self::Validation { .. } => "validation",
+            Self::PayloadTooLarge { code, .. } => code,
+            Self::ServiceUnavailable { code, .. } => code,
             Self::EngineBusy => "engine_busy",
             Self::Experimental(_) => "experimental",
             Self::NotImplemented { .. } => "capability_not_implemented",
@@ -102,6 +110,11 @@ impl ApiError {
                 "field": field,
                 "message": message,
             }),
+            Self::PayloadTooLarge { message, .. } | Self::ServiceUnavailable { message, .. } => {
+                json!({
+                    "message": message,
+                })
+            }
             Self::EngineBusy => json!({}),
             Self::Experimental(reason) => json!({
                 "reason": reason,
@@ -147,6 +160,22 @@ mod tests {
         );
         assert_eq!(ApiError::EngineBusy.status_code(), 503);
         assert_eq!(
+            ApiError::PayloadTooLarge {
+                code: "proposal_too_large",
+                message: "too large".to_string(),
+            }
+            .status_code(),
+            413
+        );
+        assert_eq!(
+            ApiError::ServiceUnavailable {
+                code: "proposal_store_unavailable",
+                message: "unavailable".to_string(),
+            }
+            .status_code(),
+            503
+        );
+        assert_eq!(
             ApiError::Experimental("session-mutations".to_string()).status_code(),
             403
         );
@@ -171,5 +200,37 @@ mod tests {
         assert_eq!(body.details["entity"], "session");
         assert_eq!(body.details["id"], "session-1");
         assert!(body.error.contains("session"));
+    }
+
+    #[test]
+    fn capacity_error_bodies_preserve_status_and_stable_codes() {
+        let cases = [
+            (
+                ApiError::PayloadTooLarge {
+                    code: "proposal_too_large",
+                    message: "proposal exceeds its bound".to_string(),
+                },
+                413,
+                "proposal_too_large",
+            ),
+            (
+                ApiError::ServiceUnavailable {
+                    code: "proposal_store_unavailable",
+                    message: "proposal store is unavailable".to_string(),
+                },
+                503,
+                "proposal_store_unavailable",
+            ),
+        ];
+
+        for (error, expected_status, expected_code) in cases {
+            assert_eq!(error.status_code(), expected_status);
+            let body = serde_json::to_value(error.into_body()).unwrap();
+            assert_eq!(body["code"], expected_code);
+            assert!(body["error"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()));
+            assert!(body["details"]["message"].is_string());
+        }
     }
 }

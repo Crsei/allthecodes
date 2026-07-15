@@ -153,6 +153,13 @@ fn requires_privileged_capability(method: &Method, path: &str) -> bool {
     }
 
     if method == Method::POST
+        && (has_single_parameter(path, "skills/proposals/", "/approve")
+            || has_single_parameter(path, "skills/proposals/", "/reject"))
+    {
+        return true;
+    }
+
+    if method == Method::POST
         && (matches!(
             path,
             "plugins/install"
@@ -796,6 +803,32 @@ mod tests {
         ] {
             assert!(requires_privileged_capability(&Method::POST, path));
         }
+    }
+
+    #[test]
+    fn skill_proposal_mutations_require_privileged_capability_but_reads_do_not() {
+        for path in [
+            "/api/skills/proposals",
+            "/api/skills/proposals/native:project:proposal-1",
+            "/api/skills/proposals/native:project:proposal-1/diff",
+        ] {
+            assert!(!requires_privileged_capability(&Method::GET, path));
+        }
+        for path in [
+            "/api/skills/proposals/native:project:proposal-1/approve",
+            "/api/skills/proposals/native:project:proposal-1/reject",
+        ] {
+            assert!(requires_privileged_capability(&Method::POST, path));
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_proposals_static_route_is_not_captured_as_skill_detail() {
+        let (status, body) =
+            get_json(build_router(make_web_state()), "/api/skills/proposals").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.get("proposals").is_some(), "unexpected body: {body}");
     }
 
     async fn privileged_route_statuses(

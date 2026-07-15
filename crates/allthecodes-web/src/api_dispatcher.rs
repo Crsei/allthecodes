@@ -246,6 +246,11 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::FilesMove - dispatched.
 // ClientRequest::FilesDelete - dispatched.
 // ClientRequest::SkillsList - dispatched.
+// ClientRequest::SkillProposalsList - dispatched.
+// ClientRequest::SkillProposalDetail - dispatched.
+// ClientRequest::SkillProposalDiff - dispatched.
+// ClientRequest::SkillProposalApprove - dispatched.
+// ClientRequest::SkillProposalReject - dispatched.
 // ClientRequest::SkillsDetail - legacy REST handler, SkillProcessor target.
 // ClientRequest::SkillsPatch - legacy REST handler, SkillProcessor target.
 // ClientRequest::SkillsFiles - legacy REST handler, SkillProcessor target.
@@ -659,6 +664,45 @@ pub async fn dispatch(
             )
             .await?;
             Ok(ClientResponse::SkillsList(response))
+        }
+        ClientRequest::SkillProposalsList(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::skills::SkillProposalsListProcessor,
+            >(state, context, ApiMethod::SkillProposalsList, params)
+            .await?;
+            Ok(ClientResponse::SkillProposalsList(response))
+        }
+        ClientRequest::SkillProposalDetail(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::skills::SkillProposalDetailProcessor,
+            >(state, context, ApiMethod::SkillProposalDetail, params)
+            .await?;
+            Ok(ClientResponse::SkillProposalDetail(response))
+        }
+        ClientRequest::SkillProposalDiff(params) => {
+            let response =
+                dispatch_tracked_processor::<handlers::skills::SkillProposalDiffProcessor>(
+                    state,
+                    context,
+                    ApiMethod::SkillProposalDiff,
+                    params,
+                )
+                .await?;
+            Ok(ClientResponse::SkillProposalDiff(response))
+        }
+        ClientRequest::SkillProposalApprove(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::skills::SkillProposalApproveProcessor,
+            >(state, context, ApiMethod::SkillProposalApprove, params)
+            .await?;
+            Ok(ClientResponse::SkillProposalApprove(response))
+        }
+        ClientRequest::SkillProposalReject(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::skills::SkillProposalRejectProcessor,
+            >(state, context, ApiMethod::SkillProposalReject, params)
+            .await?;
+            Ok(ClientResponse::SkillProposalReject(response))
         }
         ClientRequest::ChatModesList(NoParams {}) => {
             let response = dispatch_tracked_processor::<handlers::ChatModesListProcessor>(
@@ -1338,7 +1382,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 61);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 66);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

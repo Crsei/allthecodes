@@ -26,6 +26,7 @@ serde_json = { workspace = true }
 
 # Errors / logging
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
@@ -34,6 +35,9 @@ opentelemetry-langfuse = { workspace = true, optional = true }
 
 # Shared primitives
 chrono = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+similar = { workspace = true }
 uuid = { workspace = true }
 parking_lot = { workspace = true }
 url = { workspace = true }

@@ -6,6 +6,7 @@
 pub mod bundled;
 pub mod invocation;
 pub mod loader;
+pub mod proposals;
 pub mod usage;
 
 use parking_lot::Mutex;
@@ -545,11 +546,7 @@ pub fn stage_skill_proposal(
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    let path = proposal_storage_path(&id, draft.scope, cwd);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, serde_json::to_vec_pretty(&proposal)?)?;
+    proposals::write_pending_skill_proposal(&proposal, cwd)?;
     Ok(proposal)
 }
 
@@ -595,33 +592,20 @@ pub fn load_skill_proposal(id: &str, cwd: &Path) -> SkillProposalResult<SkillPro
 
 pub fn approve_skill_proposal(id: &str, cwd: &Path) -> SkillProposalResult<PathBuf> {
     let proposal = load_skill_proposal(id, cwd)?;
-    let allowed_root = skills_root_for_scope(proposal.scope, cwd);
-    if !proposal.proposed_path.starts_with(&allowed_root) {
-        return Err(format!(
-            "proposal '{}' target escapes skills directory {}",
-            proposal.id,
-            allowed_root.display()
-        )
-        .into());
-    }
-
-    if let Some(parent) = proposal.proposed_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&proposal.proposed_path, proposal.markdown.as_bytes())?;
-    let storage = proposal_storage_path(&proposal.id, proposal.scope, cwd);
-    if storage.exists() {
-        std::fs::remove_file(storage)?;
-    }
-    Ok(proposal.proposed_path)
+    let claim = proposals::claim_skill_proposal(&proposal.id, proposal.scope, cwd)?;
+    let path = claim.proposal().proposed_path.clone();
+    let target_digest = proposals::install_skill_proposal(claim.proposal(), cwd)?;
+    claim.commit(
+        proposals::SkillProposalDisposition::Approved,
+        Some(target_digest),
+    )?;
+    Ok(path)
 }
 
 pub fn reject_skill_proposal(id: &str, cwd: &Path) -> SkillProposalResult<SkillProposal> {
     let proposal = load_skill_proposal(id, cwd)?;
-    let storage = proposal_storage_path(&proposal.id, proposal.scope, cwd);
-    if storage.exists() {
-        std::fs::remove_file(storage)?;
-    }
+    let claim = proposals::claim_skill_proposal(&proposal.id, proposal.scope, cwd)?;
+    claim.commit(proposals::SkillProposalDisposition::Rejected, None)?;
     Ok(proposal)
 }
 
@@ -631,7 +615,7 @@ fn proposed_skill_path(scope: SkillProposalScope, cwd: &Path, skill_name: &str) 
         .join("SKILL.md")
 }
 
-fn skills_root_for_scope(scope: SkillProposalScope, cwd: &Path) -> PathBuf {
+pub(crate) fn skills_root_for_scope(scope: SkillProposalScope, cwd: &Path) -> PathBuf {
     match scope {
         SkillProposalScope::User => allthecodes_config::paths::skills_dir_global(),
         SkillProposalScope::Project => allthecodes_config::paths::project_skills_dir(cwd),

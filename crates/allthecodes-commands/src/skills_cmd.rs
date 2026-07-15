@@ -1,11 +1,11 @@
 //! `/skills` command: list, inspect, diagnose, and reload skill packages.
 
-use allthecodes_engine::services::background_review::{
-    self, BackgroundReviewProposal, BackgroundReviewProposalKind,
+use allthecodes_engine::services::skill_proposals::{
+    ProposalAction, ProposalDisposition, ProposalListFilter, ProposalScope, ProposalSource,
+    SkillProposalService, SkillProposalServiceError,
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use std::error::Error;
 use std::sync::{OnceLock, RwLock};
 
 use crate::{
@@ -220,40 +220,44 @@ fn handle_proposal_command(arg: &str, ctx: &CommandContext) -> Result<Option<Str
             if id.is_empty() {
                 return Ok(Some("Usage: /skills diff <id>".to_string()));
             }
-            match allthecodes_skills::load_skill_proposal(id, &ctx.cwd) {
-                Ok(proposal) => Ok(Some(format!(
-                    "Skill proposal {}\nAction: {:?}\nSkill: {}\nProposed path: {}\n\n{}",
-                    proposal.id,
-                    proposal.action,
-                    proposal.skill_name,
-                    proposal.proposed_path.display(),
-                    proposal.markdown
-                ))),
-                Err(_) => match background_review::load_background_review_proposal(id) {
-                    Ok(proposal) if is_skill_review_proposal(&proposal) => Ok(Some(format!(
-                        "Background review proposal {}\nKind: {:?}\nSource session: {}\nSummary: {}\n\n{}",
-                        proposal.id,
-                        proposal.kind,
-                        proposal.source_session_id,
-                        proposal.summary,
-                        serde_json::to_string_pretty(&proposal.payload).unwrap_or_default()
-                    ))),
-                    _ => Ok(Some(format!("Skill proposal '{}' not found.", id))),
-                },
-            }
+            let service = SkillProposalService::trusted_local(&ctx.cwd);
+            let detail = match service.detail(id) {
+                Ok(detail) => detail,
+                Err(error) => return Ok(Some(format_proposal_error(id, &error))),
+            };
+            let diff = match service.diff(id) {
+                Ok(diff) => diff,
+                Err(error) => return Ok(Some(format_proposal_error(id, &error))),
+            };
+            Ok(Some(format!(
+                "Skill proposal {}\nSource: {}\nAction: {}\nScope: {}\nSkill: {}\nTarget: {}\nProposal digest: {}\n\n{}",
+                detail.summary.proposal_id,
+                source_label(detail.summary.source),
+                action_label(detail.summary.action),
+                scope_label(detail.summary.scope),
+                detail.summary.skill_name,
+                detail.summary.relative_target,
+                detail.summary.proposal_digest,
+                diff.diff
+            )))
         }
         "approve" => {
             let id = parts.next().unwrap_or_default();
             if id.is_empty() {
                 return Ok(Some("Usage: /skills approve <id>".to_string()));
             }
-            match allthecodes_skills::approve_skill_proposal(id, &ctx.cwd) {
-                Ok(path) => Ok(Some(format!(
-                    "Approved skill proposal {}.\nWrote {}.\nUse /skills reload if the skill list is already loaded.",
-                    id,
-                    path.display()
+            let service = SkillProposalService::trusted_local(&ctx.cwd);
+            match service.decide_current(
+                id,
+                ProposalDisposition::Approved,
+                format!("cli-{}", uuid::Uuid::new_v4()),
+            ) {
+                Ok(outcome) => Ok(Some(format!(
+                    "Approved skill proposal {}.\nInstalled {}.\nUse /skills reload if the skill list is already loaded.",
+                    outcome.proposal_id,
+                    relative_target(outcome.scope, &outcome.skill_name)
                 ))),
-                Err(_) => approve_background_skill_proposal(id, &ctx.cwd).map(Some),
+                Err(error) => Ok(Some(format_proposal_error(id, &error))),
             }
         }
         "reject" => {
@@ -261,18 +265,17 @@ fn handle_proposal_command(arg: &str, ctx: &CommandContext) -> Result<Option<Str
             if id.is_empty() {
                 return Ok(Some("Usage: /skills reject <id>".to_string()));
             }
-            match allthecodes_skills::reject_skill_proposal(id, &ctx.cwd) {
-                Ok(proposal) => Ok(Some(format!(
+            let service = SkillProposalService::trusted_local(&ctx.cwd);
+            match service.decide_current(
+                id,
+                ProposalDisposition::Rejected,
+                format!("cli-{}", uuid::Uuid::new_v4()),
+            ) {
+                Ok(outcome) => Ok(Some(format!(
                     "Rejected skill proposal {} for '{}'.",
-                    proposal.id, proposal.skill_name
+                    outcome.proposal_id, outcome.skill_name
                 ))),
-                Err(_) => match background_review::load_background_review_proposal(id) {
-                    Ok(proposal) if is_skill_review_proposal(&proposal) => {
-                        background_review::reject_background_review_proposal(id)?;
-                        Ok(Some(format!("Rejected skill proposal {}.", proposal.id)))
-                    }
-                    _ => Ok(Some(format!("Skill proposal '{}' not found.", id))),
-                },
+                Err(error) => Ok(Some(format_proposal_error(id, &error))),
             }
         }
         _ => Ok(None),
@@ -280,111 +283,64 @@ fn handle_proposal_command(arg: &str, ctx: &CommandContext) -> Result<Option<Str
 }
 
 fn format_pending_proposals(cwd: &std::path::Path) -> Result<String> {
-    let proposals = allthecodes_skills::list_skill_proposals(cwd).map_err(skill_error)?;
-    let review_proposals = background_review::list_background_review_proposals()?
-        .into_iter()
-        .filter(is_skill_review_proposal)
-        .collect::<Vec<_>>();
-    if proposals.is_empty() && review_proposals.is_empty() {
+    let proposals = SkillProposalService::trusted_local(cwd)
+        .list(ProposalListFilter::default())?
+        .proposals;
+    if proposals.is_empty() {
         return Ok("No pending skill proposals.".to_string());
     }
-    let mut lines = vec![format!(
-        "Pending skill proposals ({})",
-        proposals.len() + review_proposals.len()
-    )];
+    let mut lines = vec![format!("Pending skill proposals ({})", proposals.len())];
     for proposal in proposals {
         lines.push(format!(
-            "  {} [{}] {} -> {}",
-            proposal.id,
-            match proposal.scope {
-                allthecodes_skills::SkillProposalScope::User => "user",
-                allthecodes_skills::SkillProposalScope::Project => "project",
-            },
+            "  {} [{} {} {}] {} -> {}",
+            proposal.proposal_id,
+            source_label(proposal.source),
+            scope_label(proposal.scope),
+            action_label(proposal.action),
             proposal.skill_name,
-            proposal.proposed_path.display()
-        ));
-    }
-    for proposal in review_proposals {
-        lines.push(format!(
-            "  {} [background {:?}] {}",
-            proposal.id,
-            proposal.kind,
-            truncate(&proposal.summary, 80)
+            proposal.relative_target
         ));
     }
     Ok(lines.join("\n"))
 }
 
-fn skill_error(error: Box<dyn Error + Send + Sync + 'static>) -> anyhow::Error {
-    anyhow::anyhow!("{error}")
-}
-
-fn is_skill_review_proposal(proposal: &BackgroundReviewProposal) -> bool {
-    matches!(
-        proposal.kind,
-        BackgroundReviewProposalKind::SkillCreate
-            | BackgroundReviewProposalKind::SkillPatch
-            | BackgroundReviewProposalKind::WorkflowWarning
-    )
-}
-
-fn approve_background_skill_proposal(id: &str, cwd: &std::path::Path) -> Result<String> {
-    let proposal = match background_review::load_background_review_proposal(id) {
-        Ok(proposal) if is_skill_review_proposal(&proposal) => proposal,
-        _ => return Ok(format!("Skill proposal '{}' not found.", id)),
-    };
-    if proposal.kind == BackgroundReviewProposalKind::WorkflowWarning {
-        background_review::reject_background_review_proposal(id)?;
-        return Ok(format!(
-            "Acknowledged background review proposal {}. No skill was written.",
-            id
-        ));
+fn format_proposal_error(id: &str, error: &SkillProposalServiceError) -> String {
+    match error {
+        SkillProposalServiceError::NotFound => format!("Skill proposal '{}' not found.", id),
+        _ => format!(
+            "Skill proposal '{}' could not be processed ({}): {}",
+            id,
+            error.code(),
+            error
+        ),
     }
-
-    let Some(draft) = skill_draft_from_review(&proposal) else {
-        return Ok(format!(
-            "Skill proposal '{}' has no concrete skill payload. No skill was written.",
-            id
-        ));
-    };
-    let staged = allthecodes_skills::stage_skill_proposal(draft, cwd).map_err(skill_error)?;
-    let path = allthecodes_skills::approve_skill_proposal(&staged.id, cwd).map_err(skill_error)?;
-    background_review::reject_background_review_proposal(id)?;
-    Ok(format!(
-        "Approved skill proposal {}.\nWrote {}.\nUse /skills reload if the skill list is already loaded.",
-        id,
-        path.display()
-    ))
 }
 
-fn skill_draft_from_review(
-    proposal: &BackgroundReviewProposal,
-) -> Option<allthecodes_skills::SkillProposalDraft> {
-    let skill = proposal.payload.get("skill").unwrap_or(&proposal.payload);
-    let skill_name = skill.get("skill_name")?.as_str()?.to_string();
-    let markdown = skill.get("markdown")?.as_str()?.to_string();
-    let scope = match skill.get("scope").and_then(|value| value.as_str()) {
-        Some("user") => allthecodes_skills::SkillProposalScope::User,
-        _ => allthecodes_skills::SkillProposalScope::Project,
-    };
-    let action = match proposal.kind {
-        BackgroundReviewProposalKind::SkillPatch => allthecodes_skills::SkillProposalAction::Patch,
-        _ => allthecodes_skills::SkillProposalAction::Create,
-    };
-    Some(allthecodes_skills::SkillProposalDraft {
-        action,
-        scope,
-        skill_name,
-        source_session_id: Some(proposal.source_session_id.clone()),
-        markdown,
-    })
+fn source_label(source: ProposalSource) -> &'static str {
+    match source {
+        ProposalSource::Native => "native",
+        ProposalSource::BackgroundReview => "background_review",
+    }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
+fn action_label(action: ProposalAction) -> &'static str {
+    match action {
+        ProposalAction::Create => "create",
+        ProposalAction::Patch => "patch",
+    }
+}
+
+fn scope_label(scope: ProposalScope) -> &'static str {
+    match scope {
+        ProposalScope::User => "user",
+        ProposalScope::Project => "project",
+    }
+}
+
+fn relative_target(scope: ProposalScope, skill_name: &str) -> String {
+    match scope {
+        ProposalScope::User => format!("skills/{skill_name}/SKILL.md"),
+        ProposalScope::Project => format!(".allthecodes/skills/{skill_name}/SKILL.md"),
     }
 }
 
@@ -747,9 +703,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_skills_proposal_commands_approve_and_reject() {
         allthecodes_skills::clear_skills();
         let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", tmp.path());
         let mut ctx = test_ctx();
         ctx.cwd = tmp.path().join("project");
         std::fs::create_dir_all(&ctx.cwd).unwrap();
@@ -766,16 +724,17 @@ mod tests {
             &ctx.cwd,
         )
         .unwrap();
+        let proposal_id = format!("native:project:{}", proposal.id);
 
         let handler = SkillsHandler;
         let pending = handler.execute("pending", &mut ctx).await.unwrap();
         match pending {
-            CommandResult::Output(text) => assert!(text.contains(&proposal.id)),
+            CommandResult::Output(text) => assert!(text.contains(&proposal_id)),
             _ => panic!("Expected Output"),
         }
 
         let diff = handler
-            .execute(&format!("diff {}", proposal.id), &mut ctx)
+            .execute(&format!("diff {proposal_id}"), &mut ctx)
             .await
             .unwrap();
         match diff {
@@ -784,7 +743,7 @@ mod tests {
         }
 
         let approve = handler
-            .execute(&format!("approve {}", proposal.id), &mut ctx)
+            .execute(&format!("approve {proposal_id}"), &mut ctx)
             .await
             .unwrap();
         match approve {
@@ -810,8 +769,9 @@ mod tests {
             &ctx.cwd,
         )
         .unwrap();
+        let rejected_id = format!("native:project:{}", rejected.id);
         let reject = handler
-            .execute(&format!("reject {}", rejected.id), &mut ctx)
+            .execute(&format!("reject {rejected_id}"), &mut ctx)
             .await
             .unwrap();
         match reject {
@@ -829,7 +789,7 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn test_skills_pending_lists_background_review_without_writing_skill() {
+    async fn test_skills_excludes_workflow_warning_without_consuming_it() {
         allthecodes_skills::clear_skills();
         let tmp = tempfile::tempdir().unwrap();
         let _home = EnvGuard::set_path("ALLTHECODES_HOME", tmp.path());
@@ -860,24 +820,28 @@ mod tests {
         let handler = SkillsHandler;
         let pending = handler.execute("pending", &mut ctx).await.unwrap();
         match pending {
-            CommandResult::Output(text) => assert!(text.contains(&proposal.id)),
+            CommandResult::Output(text) => assert_eq!(text, "No pending skill proposals."),
             _ => panic!("Expected Output"),
         }
 
         let approve = handler
-            .execute(&format!("approve {}", proposal.id), &mut ctx)
+            .execute(
+                &format!("approve background_review:{}", proposal.id),
+                &mut ctx,
+            )
             .await
             .unwrap();
         match approve {
-            CommandResult::Output(text) => assert!(text.contains("No skill was written")),
+            CommandResult::Output(text) => assert!(text.contains("not found")),
             _ => panic!("Expected Output"),
         }
 
         assert!(!ctx.cwd.join(".allthecodes").join("skills").exists());
-        assert!(
+        assert_eq!(
             allthecodes_engine::services::background_review::list_background_review_proposals()
                 .unwrap()
-                .is_empty()
+                .len(),
+            1
         );
     }
 }

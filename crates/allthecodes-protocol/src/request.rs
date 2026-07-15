@@ -873,6 +873,33 @@ crate::api_definitions! {
         params: v1::skills::SkillsListQuery,
         response: v1::skills::SkillsListResponse,
     },
+    SkillProposalsList => "GET /api/skills/proposals" {
+        params: v1::skills::SkillProposalListQuery,
+        response: v1::skills::SkillProposalListResponse,
+        errors: [BadRequest, Forbidden, PayloadTooLarge, ServiceUnavailable],
+    },
+    SkillProposalDetail => "GET /api/skills/proposals/{proposal_id}" {
+        params: v1::skills::SkillProposalParams,
+        response: v1::skills::SkillProposalDetailResponse,
+        errors: [BadRequest, Forbidden, NotFound, Validation, PayloadTooLarge, ServiceUnavailable],
+    },
+    SkillProposalDiff => "GET /api/skills/proposals/{proposal_id}/diff" {
+        params: v1::skills::SkillProposalParams,
+        response: v1::skills::SkillProposalDiffResponse,
+        errors: [BadRequest, Forbidden, NotFound, Validation, PayloadTooLarge, ServiceUnavailable],
+    },
+    SkillProposalApprove => "POST /api/skills/proposals/{proposal_id}/approve" {
+        params: v1::skills::SkillProposalMutationParams,
+        response: v1::skills::SkillProposalMutationResponse,
+        errors: [BadRequest, Forbidden, NotFound, Conflict, Validation, PayloadTooLarge, ServiceUnavailable],
+        serialization: PerKey("proposal_id"),
+    },
+    SkillProposalReject => "POST /api/skills/proposals/{proposal_id}/reject" {
+        params: v1::skills::SkillProposalMutationParams,
+        response: v1::skills::SkillProposalMutationResponse,
+        errors: [BadRequest, Forbidden, NotFound, Conflict, Validation, PayloadTooLarge, ServiceUnavailable],
+        serialization: PerKey("proposal_id"),
+    },
     SkillsDetail => "GET /api/skills/{id}" {
         response: v1::skills::SkillDetailResponse,
     },

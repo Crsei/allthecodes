@@ -287,6 +287,211 @@ async fn skills_files_rejects_hidden_files() {
     allthecodes_skills::clear_skills();
 }
 
+fn stage_project_proposal(cwd: &std::path::Path, name: &str) -> allthecodes_skills::SkillProposal {
+    allthecodes_skills::stage_skill_proposal(
+        allthecodes_skills::SkillProposalDraft {
+            action: allthecodes_skills::SkillProposalAction::Create,
+            scope: allthecodes_skills::SkillProposalScope::Project,
+            skill_name: name.to_string(),
+            source_session_id: Some("web-skills-session".to_string()),
+            markdown: format!("---\nname: {name}\ndescription: Review {name}.\n---\n\nUse {name}."),
+        },
+        cwd,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn skill_proposal_handlers_list_detail_and_diff_without_host_paths() {
+    let (_home, _guard) = temp_home();
+    let project = tempfile::tempdir().unwrap();
+    let proposal = stage_project_proposal(project.path(), "web-proposal");
+    let proposal_id = format!("native:project:{}", proposal.id);
+    let state = make_web_state_with_cwd(project.path());
+
+    let response = skill_proposals_list_handler(
+        State(state.clone()),
+        Query(SkillProposalListQuery::default()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["proposals"][0]["proposal_id"], proposal_id);
+    assert_eq!(body["proposals"][0]["source"], "native");
+    assert_eq!(
+        body["proposals"][0]["relative_target"],
+        ".allthecodes/skills/web-proposal/SKILL.md"
+    );
+    assert!(!body
+        .to_string()
+        .contains(&project.path().display().to_string()));
+
+    let response =
+        skill_proposal_detail_handler(AxumPath(proposal_id.clone()), State(state.clone())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["proposal"]["proposal_id"], proposal_id);
+    assert!(body["markdown"].as_str().unwrap().contains("web-proposal"));
+    assert!(!body
+        .to_string()
+        .contains(&project.path().display().to_string()));
+
+    let response = skill_proposal_diff_handler(AxumPath(proposal_id), State(state)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["diff"].as_str().unwrap().contains("web-proposal"));
+    assert!(!body
+        .to_string()
+        .contains(&project.path().display().to_string()));
+}
+
+#[tokio::test]
+#[serial]
+async fn skill_proposal_approve_is_atomic_and_idempotent() {
+    let (_home, _guard) = temp_home();
+    let project = tempfile::tempdir().unwrap();
+    let proposal = stage_project_proposal(project.path(), "approved-web-proposal");
+    let proposal_id = format!("native:project:{}", proposal.id);
+    let state = make_web_state_with_cwd(project.path());
+    let detail =
+        allthecodes_engine::services::skill_proposals::SkillProposalService::trusted_local(
+            project.path(),
+        )
+        .detail(&proposal_id)
+        .unwrap();
+    let request = SkillProposalMutationRequest {
+        request_id: "web-approve-request".to_string(),
+        expected_proposal_digest: detail.summary.proposal_digest,
+        expected_target_digest: SkillProposalExpectedTarget::Absent,
+    };
+
+    let response = skill_proposal_approve_handler(
+        AxumPath(proposal_id.clone()),
+        State(state.clone()),
+        Json(request.clone()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["disposition"], "approved");
+    assert_eq!(body["idempotent_replay"], false);
+    assert!(project
+        .path()
+        .join(".allthecodes/skills/approved-web-proposal/SKILL.md")
+        .is_file());
+
+    let response =
+        skill_proposal_approve_handler(AxumPath(proposal_id), State(state), Json(request)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["idempotent_replay"], true);
+}
+
+#[tokio::test]
+#[serial]
+async fn skill_proposal_api_excludes_workflow_warnings_without_consuming_them() {
+    let (_home, _guard) = temp_home();
+    let project = tempfile::tempdir().unwrap();
+    let warning = allthecodes_engine::services::background_review::stage_background_review_if_due(
+        allthecodes_engine::services::background_review::BackgroundReviewInput {
+            source_session_id: "web-workflow-warning".to_string(),
+            cwd: project.path().display().to_string(),
+            turn_count: 1,
+            replay_seq_start: None,
+            replay_seq_end: None,
+            recent_summary: "warning must stay in the memory domain".to_string(),
+            tool_errors: Vec::new(),
+            similar_session_hits: Vec::new(),
+        },
+        &allthecodes_engine::services::background_review::BackgroundReviewConfig {
+            enabled: true,
+            turn_threshold: 1,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    let state = make_web_state_with_cwd(project.path());
+
+    let response = skill_proposals_list_handler(
+        State(state.clone()),
+        Query(SkillProposalListQuery::default()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json(response).await["proposals"], json!([]));
+
+    let response = skill_proposal_detail_handler(
+        AxumPath(format!("background_review:{}", warning.id)),
+        State(state),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(
+        allthecodes_engine::services::background_review::load_background_review_proposal(
+            &warning.id
+        )
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn skill_proposal_handlers_preserve_limit_size_and_store_error_statuses() {
+    let (_home, _guard) = temp_home();
+    let project = tempfile::tempdir().unwrap();
+    let state = make_web_state_with_cwd(project.path());
+
+    let response = skill_proposals_list_handler(
+        State(state.clone()),
+        Query(SkillProposalListQuery {
+            limit: Some(101),
+            ..Default::default()
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(response).await["code"], "invalid_limit");
+
+    let proposal_id = "oversized-proposal";
+    let proposal = allthecodes_skills::SkillProposal {
+        id: proposal_id.to_string(),
+        action: allthecodes_skills::SkillProposalAction::Create,
+        scope: allthecodes_skills::SkillProposalScope::Project,
+        skill_name: "oversized-skill".to_string(),
+        source_session_id: None,
+        proposed_path: project
+            .path()
+            .join(".allthecodes/skills/oversized-skill/SKILL.md"),
+        markdown: "x".repeat(allthecodes_skills::proposals::MAX_PROPOSAL_MARKDOWN_BYTES + 1),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let owner = project.path().join(".allthecodes/skill_proposals");
+    std::fs::create_dir_all(&owner).unwrap();
+    std::fs::write(
+        owner.join(format!("{proposal_id}.json")),
+        serde_json::to_vec(&proposal).unwrap(),
+    )
+    .unwrap();
+    let response = skill_proposal_detail_handler(
+        AxumPath(format!("native:project:{proposal_id}")),
+        State(state.clone()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response_json(response).await["code"], "proposal_too_large");
+
+    std::fs::remove_dir_all(&owner).unwrap();
+    std::fs::write(&owner, b"not a directory").unwrap();
+    let response =
+        skill_proposals_list_handler(State(state), Query(SkillProposalListQuery::default())).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response_json(response).await["code"],
+        "proposal_store_unavailable"
+    );
+}
+
 #[tokio::test]
 #[serial]
 async fn skills_files_rejects_directory() {
