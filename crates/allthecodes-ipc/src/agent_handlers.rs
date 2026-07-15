@@ -951,6 +951,16 @@ fn bounded_redacted(context: &TrustedCommandContext, value: &str, max_bytes: usi
     truncate_utf8(redacted, max_bytes)
 }
 
+/// Apply the same workspace/path/secret projection used by Web IPC agent
+/// events to an incremental runtime output chunk.
+pub fn project_agent_output_for_web(
+    context: &TrustedCommandContext,
+    value: &str,
+    max_bytes: usize,
+) -> String {
+    bounded_redacted(context, value, max_bytes.min(MAX_AGENT_OUTPUT_LIMIT_BYTES))
+}
+
 fn redact_sensitive_lines_and_paths(value: &str) -> String {
     value
         .split_inclusive('\n')

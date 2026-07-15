@@ -955,16 +955,24 @@ fn openapi_operation(endpoint: &ApiOperationMetadata) -> Value {
         }
     }
 
+    let success_media_type = if endpoint.stream_events.is_empty() {
+        "application/json"
+    } else {
+        "text/event-stream"
+    };
+    let mut success_content = Map::new();
+    success_content.insert(
+        success_media_type.to_string(),
+        json!({
+            "schema": openapi_type_ref(endpoint.response),
+        }),
+    );
     operation.insert(
         "responses".to_string(),
         json!({
             "200": {
                 "description": "OK",
-                "content": {
-                    "application/json": {
-                        "schema": openapi_type_ref(endpoint.response),
-                    },
-                },
+                "content": success_content,
             },
             "default": {
                 "description": "API error",
@@ -1666,6 +1674,26 @@ mod tests {
 
         let operation = openapi_operation(&metadata);
         assert_eq!(operation["x-allthecodes-stream-events"][0], "FixtureEvent");
+        assert_eq!(
+            operation["responses"]["200"]["content"]["text/event-stream"]["schema"],
+            json!({})
+        );
+        assert!(operation["responses"]["200"]["content"]
+            .get("application/json")
+            .is_none());
+    }
+
+    #[test]
+    fn group_chat_stream_openapi_uses_sse_envelope_response() {
+        let openapi = generate_openapi_value();
+        let response_content = &openapi["paths"]["/api/group-chat/rooms/{id}/stream"]["get"]
+            ["responses"]["200"]["content"];
+
+        assert_eq!(
+            response_content["text/event-stream"]["schema"]["$ref"],
+            "#/components/schemas/GroupChatStreamEnvelope"
+        );
+        assert!(response_content.get("application/json").is_none());
     }
 
     #[test]

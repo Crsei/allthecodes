@@ -254,6 +254,10 @@ pub fn delegate_task_schema() -> Value {
                 "type": "string",
                 "description": "Task prompt for the child agent"
             },
+            "model": {
+                "type": "string",
+                "description": "Optional model override for the delegated child agent"
+            },
             "cwd": {
                 "type": "string",
                 "description": "Optional working directory for the delegated task"

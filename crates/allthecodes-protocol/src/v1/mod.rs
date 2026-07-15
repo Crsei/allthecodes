@@ -10,6 +10,7 @@ pub mod discovery;
 pub mod files;
 pub mod gateways;
 pub mod git;
+pub mod group_chat;
 pub mod health;
 pub mod hooks;
 pub mod image_generate;

@@ -124,6 +124,8 @@ pub struct DelegateTaskInput {
     pub role: String,
     pub prompt: String,
     #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
     pub worktree: Option<String>,
@@ -149,6 +151,9 @@ fn parse_delegate_task_input(input: Value) -> Result<DelegateTaskInput> {
     parsed.prompt = parsed.prompt.trim().to_string();
     parsed.cwd = parsed
         .cwd
+        .and_then(|value| normalize_non_empty_string(&value));
+    parsed.model = parsed
+        .model
         .and_then(|value| normalize_non_empty_string(&value));
     parsed.worktree = parsed
         .worktree
@@ -289,6 +294,7 @@ fn delegate_task_create_options(
             "parent_session_id": ctx.session_id,
             "child_session_id": child_session_id,
             "prompt": input.prompt,
+            "model": input.model,
             "cwd": cwd,
             "max_turns": input.max_turns,
             "verification_policy": input.verification_policy,
@@ -297,6 +303,7 @@ fn delegate_task_create_options(
                 "prompt": input.prompt,
                 "description": delegate_task_subject(input),
                 "subagent_type": input.role,
+                "model": input.model,
                 "run_in_background": true,
                 "isolation": worktree_slug.as_ref().map(|_| "worktree"),
                 "max_turns": input.max_turns,
@@ -451,6 +458,7 @@ impl Tool for DelegateTaskTool {
                 "prompt": input.prompt,
                 "description": subject,
                 "subagent_type": input.role,
+                "model": input.model,
                 "run_in_background": true,
                 "isolation": worktree_slug.as_ref().map(|_| "worktree"),
                 "max_turns": input.max_turns,
@@ -1265,6 +1273,7 @@ mod tests {
                 json!({
                     "role": "explorer",
                     "prompt": "Find every delegate task lineage marker",
+                    "model": "test-delegate-model",
                     "cwd": workspace.path().display().to_string(),
                     "worktree": "delegate-lineage",
                     "max_turns": 4,
@@ -1302,6 +1311,7 @@ mod tests {
         assert_eq!(task["isolation"], "worktree");
         assert_eq!(task["metadata"]["parent_session_id"], "parent-session");
         assert_eq!(task["metadata"]["delegate_role"], "explorer");
+        assert_eq!(task["metadata"]["model"], "test-delegate-model");
         assert_eq!(task["metadata"]["max_turns"], 4);
         assert_eq!(task["metadata"]["verification_policy"], "targeted_tests");
         assert_eq!(task["status"], "in_progress");
@@ -1310,6 +1320,7 @@ mod tests {
         let request = captured.lock().clone().expect("captured Agent request");
         assert_eq!(request.tool_name, "Agent");
         assert_eq!(request.input["run_in_background"], true);
+        assert_eq!(request.input["model"], "test-delegate-model");
         assert_eq!(request.input["_delegate_task_id"], task_id);
         assert_eq!(request.input["_delegate_session_id"], child_session_id);
         assert_eq!(

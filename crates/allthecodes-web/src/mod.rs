@@ -206,7 +206,9 @@ fn requires_privileged_capability(method: &Method, path: &str) -> bool {
         return true;
     }
 
-    is_provider_oauth_mutation(method, path) || is_mcp_oauth_mutation(method, path)
+    is_group_chat_mutation(method, path)
+        || is_provider_oauth_mutation(method, path)
+        || is_mcp_oauth_mutation(method, path)
 }
 
 fn api_path_suffix(path: &str) -> Option<&str> {
@@ -218,6 +220,27 @@ fn has_single_parameter(path: &str, prefix: &str, suffix: &str) -> bool {
     path.strip_prefix(prefix)
         .and_then(|path| path.strip_suffix(suffix))
         .is_some_and(|parameter| !parameter.is_empty() && !parameter.contains('/'))
+}
+
+fn is_group_chat_mutation(method: &Method, path: &str) -> bool {
+    let segments = path.split('/').collect::<Vec<_>>();
+    match (method, segments.as_slice()) {
+        (&Method::POST, ["group-chat", "rooms"]) => true,
+        (&Method::POST, ["group-chat", "rooms", room_id, "agents"]) => !room_id.is_empty(),
+        (&Method::POST, ["group-chat", "rooms", room_id, action]) => {
+            !room_id.is_empty()
+                && matches!(
+                    *action,
+                    "clone" | "invite" | "messages" | "context-compression"
+                )
+        }
+        (&Method::DELETE, ["group-chat", "rooms", room_id]) => !room_id.is_empty(),
+        (
+            &Method::PATCH | &Method::DELETE,
+            ["group-chat", "rooms", room_id, "agents", agent_id],
+        ) => !room_id.is_empty() && !agent_id.is_empty(),
+        _ => false,
+    }
 }
 
 fn is_provider_oauth_mutation(method: &Method, path: &str) -> bool {
@@ -857,6 +880,38 @@ mod tests {
             "/api/backend-services/backups",
         ] {
             assert!(requires_privileged_capability(&Method::POST, path));
+        }
+    }
+
+    #[test]
+    fn group_chat_mutations_require_privileged_capability_but_reads_do_not() {
+        for path in [
+            "/api/group-chat/rooms",
+            "/api/group-chat/rooms/room-1",
+            "/api/group-chat/rooms/room-1/invite",
+            "/api/group-chat/rooms/room-1/stream",
+        ] {
+            assert!(!requires_privileged_capability(&Method::GET, path));
+        }
+
+        for (method, path) in [
+            (Method::POST, "/api/group-chat/rooms"),
+            (Method::POST, "/api/group-chat/rooms/room-1/clone"),
+            (Method::POST, "/api/group-chat/rooms/room-1/invite"),
+            (Method::POST, "/api/group-chat/rooms/room-1/agents"),
+            (Method::PATCH, "/api/group-chat/rooms/room-1/agents/agent-1"),
+            (
+                Method::DELETE,
+                "/api/group-chat/rooms/room-1/agents/agent-1",
+            ),
+            (Method::POST, "/api/group-chat/rooms/room-1/messages"),
+            (
+                Method::POST,
+                "/api/group-chat/rooms/room-1/context-compression",
+            ),
+            (Method::DELETE, "/api/group-chat/rooms/room-1"),
+        ] {
+            assert!(requires_privileged_capability(&method, path), "{path}");
         }
     }
 

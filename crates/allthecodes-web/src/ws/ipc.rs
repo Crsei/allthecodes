@@ -112,9 +112,7 @@ pub async fn ipc_ws_handler(
         handle_ipc_socket(
             socket,
             state,
-            binding.engine,
-            binding.session_id,
-            binding.canonical_workspace,
+            binding,
             params.after_seq,
             connection_id,
             origin,
@@ -162,13 +160,16 @@ fn resolve_ipc_connection_binding(
 async fn handle_ipc_socket(
     socket: WebSocket,
     state: WebState,
-    engine: Arc<QueryEngine>,
-    actual_session_id: String,
-    canonical_workspace: PathBuf,
+    binding: IpcConnectionBinding,
     after_seq: Option<EventSeq>,
     connection_id: ConnectionId,
     origin: ConnectionOrigin,
 ) {
+    let IpcConnectionBinding {
+        engine,
+        session_id: actual_session_id,
+        canonical_workspace,
+    } = binding;
     let hub = state.ipc_session_hub(&actual_session_id);
     let runtime_projection_context = TrustedCommandContext::web(
         actual_session_id.clone(),

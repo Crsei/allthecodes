@@ -74,6 +74,7 @@ dependencies = [
  "allthecodes-observability",
  "allthecodes-permissions",
  "allthecodes-plugins",
+ "allthecodes-protocol",
  "allthecodes-safety",
  "allthecodes-sandbox",
  "allthecodes-server",

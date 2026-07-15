@@ -516,6 +516,12 @@ impl QueryEngine {
         self.auto_classifier_fn = f;
     }
 
+    /// Clone the current auto-mode classifier for a server-owned sibling
+    /// engine that must enforce the same runtime policy.
+    pub fn auto_classifier_fn(&self) -> Option<AutoClassifierFn> {
+        self.auto_classifier_fn.clone()
+    }
+
     pub fn pending_background_results(&self) -> crate::agent_runtime::PendingBackgroundResults {
         self.pending_bg_results.clone()
     }
@@ -661,6 +667,13 @@ impl QueryEngine {
     pub fn set_current_session_id(&self, session_id: SessionId) {
         *self.active_session_id.write() = session_id;
         crate::bootstrap::PROCESS_STATE.write().session_id = self.current_session_id();
+    }
+
+    /// Assign a session identity to an isolated server-owned engine without
+    /// changing the process-wide foreground session marker.
+    pub fn assign_server_owned_session_id(&mut self, session_id: SessionId) {
+        self.session_id = session_id.clone();
+        *self.active_session_id.write() = session_id;
     }
 
     /// Clear runtime conversation state and start writing future turns to a

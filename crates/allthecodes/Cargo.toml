@@ -160,6 +160,7 @@ allthecodes-commands = { workspace = true }
 allthecodes-daemon = { workspace = true }
 allthecodes-ipc = { workspace = true }
 allthecodes-ipc-protocol = { workspace = true }
+allthecodes-protocol = { workspace = true }
 allthecodes-startup = { workspace = true }
 allthecodes-voice = { workspace = true }
 allthecodes-web = { workspace = true }

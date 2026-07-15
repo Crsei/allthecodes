@@ -10,8 +10,8 @@ mod ingress;
 mod sdk_mapper;
 
 use allthecodes_ipc::agent_handlers::{
-    AgentRuntimeHost, AgentTaskOutput, AgentTaskOutputBatch, CommandScopePolicy, RuntimeHostError,
-    TrustedCommandContext,
+    project_agent_output_for_web, AgentRuntimeHost, AgentTaskOutput, AgentTaskOutputBatch,
+    CommandScopePolicy, RuntimeHostError, TrustedCommandContext,
 };
 use allthecodes_ipc::headless::{
     BackgroundAgentCompletion, BoxHeadlessFuture, HeadlessRuntimeConfig, HeadlessRuntimeHost,
@@ -28,6 +28,11 @@ use allthecodes_ipc_protocol::subsystem_events::{
 use allthecodes_ipc_protocol::subsystem_types::*;
 use allthecodes_services::prompt_suggestion::PromptSuggestionService;
 use allthecodes_types::agent_types::TeamMemberInfo;
+use allthecodes_types::output::{OutputLifecycleState, OutputStream};
+use allthecodes_web::handlers::group_chat::{
+    GroupChatLaunchRequest, GroupChatLaunchResult, GroupChatObserveRequest, GroupChatRuntimeFuture,
+    GroupChatRuntimeHost, GroupChatRuntimeObservation, GroupChatRuntimeOutput,
+};
 
 static INSTALL: Once = Once::new();
 
@@ -39,10 +44,185 @@ pub fn ensure_installed() {
             RootAgentDefinitionsHost,
         ));
         allthecodes_tools::runtime::system_status::set_runtime_host(Arc::new(RootSystemStatusHost));
+        allthecodes_web::handlers::group_chat::set_group_chat_runtime_host(Arc::new(
+            RootGroupChatRuntimeHost,
+        ));
         let mut adapters = allthecodes_engine::agent_runtime::agent_runtime_adapters();
         adapters.builtin_agents = Arc::new(RootAgentDefinitionRegistry);
         allthecodes_engine::agent_runtime::set_agent_runtime_adapters(adapters);
     });
+}
+
+struct RootGroupChatRuntimeHost;
+
+impl GroupChatRuntimeHost for RootGroupChatRuntimeHost {
+    fn launch(
+        &self,
+        foreground: Arc<allthecodes_engine::lifecycle::QueryEngine>,
+        request: GroupChatLaunchRequest,
+    ) -> GroupChatRuntimeFuture<GroupChatLaunchResult> {
+        Box::pin(async move {
+            let coordinator = group_chat_coordinator_engine(&foreground, &request)?;
+            let result = coordinator
+                .execute_server_tool(
+                    "DelegateTask",
+                    serde_json::json!({
+                        "role": request.role,
+                        "prompt": request.prompt,
+                        "model": request.model,
+                        "cwd": request.canonical_workspace.to_string_lossy(),
+                    }),
+                    "web-group-chat",
+                )
+                .await
+                .map_err(|_| "delegated Agent launch was denied or failed".to_string())?;
+
+            Ok(GroupChatLaunchResult {
+                task_id: required_group_chat_launch_field(&result.data, "task_id")?,
+                child_session_id: required_group_chat_launch_field(
+                    &result.data,
+                    "child_session_id",
+                )?,
+                runtime_agent_id: required_group_chat_launch_field(&result.data, "agent_id")?,
+            })
+        })
+    }
+
+    fn observe(
+        &self,
+        request: GroupChatObserveRequest,
+    ) -> Result<GroupChatRuntimeObservation, String> {
+        let output_limit = request.limit_bytes.clamp(
+            1,
+            allthecodes_ipc::agent_handlers::MAX_AGENT_OUTPUT_LIMIT_BYTES,
+        );
+        let context = TrustedCommandContext::web(
+            request.coordinator_session_id.clone(),
+            request.canonical_workspace.clone(),
+            "group-chat-runtime",
+            false,
+        );
+        let Some((_task_id, batch, _metadata)) =
+            allthecodes_engine::agent::supervisor::output_events_for_owner(
+                &request.runtime_agent_id,
+                &request.coordinator_session_id,
+                &request.canonical_workspace,
+                request.after_seq,
+                output_limit,
+            )
+            .map_err(|_| "group chat runtime target is unavailable".to_string())?
+        else {
+            return Err("group chat runtime output is unavailable".to_string());
+        };
+
+        let status = match batch.state {
+            OutputLifecycleState::Starting | OutputLifecycleState::Running => {
+                allthecodes_protocol::v1::group_chat::GroupChatDispatchStatus::Running
+            }
+            OutputLifecycleState::Exited => {
+                allthecodes_protocol::v1::group_chat::GroupChatDispatchStatus::Completed
+            }
+            OutputLifecycleState::Expired => {
+                allthecodes_protocol::v1::group_chat::GroupChatDispatchStatus::Cancelled
+            }
+            OutputLifecycleState::Failed => {
+                allthecodes_protocol::v1::group_chat::GroupChatDispatchStatus::Failed
+            }
+        };
+        let output = batch
+            .events
+            .into_iter()
+            .map(|event| GroupChatRuntimeOutput {
+                sequence: event.seq,
+                stream: match event.stream {
+                    OutputStream::Stdout => "stdout",
+                    OutputStream::Stderr => "stderr",
+                    OutputStream::Pty => "pty",
+                    OutputStream::System => "system",
+                }
+                .to_string(),
+                chunk: project_agent_output_for_web(&context, &event.chunk, output_limit),
+            })
+            .collect();
+        let (summary, error) = match status {
+            allthecodes_protocol::v1::group_chat::GroupChatDispatchStatus::Completed => {
+                (Some("Agent completed".to_string()), None)
+            }
+            allthecodes_protocol::v1::group_chat::GroupChatDispatchStatus::Cancelled => {
+                (Some("Agent was cancelled".to_string()), None)
+            }
+            allthecodes_protocol::v1::group_chat::GroupChatDispatchStatus::Failed => (
+                Some("Agent failed".to_string()),
+                Some("Agent execution failed".to_string()),
+            ),
+            _ => (None, None),
+        };
+
+        Ok(GroupChatRuntimeObservation {
+            status,
+            output,
+            next_seq: batch.next_seq,
+            truncated: batch.truncated,
+            summary,
+            error,
+        })
+    }
+}
+
+fn group_chat_coordinator_engine(
+    foreground: &allthecodes_engine::lifecycle::QueryEngine,
+    request: &GroupChatLaunchRequest,
+) -> Result<Arc<allthecodes_engine::lifecycle::QueryEngine>, String> {
+    if request.coordinator_session_id.trim().is_empty()
+        || request.coordinator_session_id.len() > 256
+    {
+        return Err("invalid group chat coordinator session".to_string());
+    }
+    let foreground_workspace = std::fs::canonicalize(foreground.cwd())
+        .map_err(|_| "foreground workspace is unavailable".to_string())?;
+    if foreground_workspace != request.canonical_workspace {
+        return Err("group chat workspace binding changed before launch".to_string());
+    }
+
+    let mut config = foreground.config_ref().clone();
+    config.cwd = request.canonical_workspace.to_string_lossy().into_owned();
+    config.tools = foreground.tools_snapshot();
+    config.initial_messages = None;
+    config.persist_session = true;
+    config.auto_save_session = true;
+    config.agent_context = None;
+
+    let mut coordinator = allthecodes_engine::lifecycle::QueryEngine::new(config);
+    coordinator.set_hook_runner(foreground.hook_runner());
+    coordinator.set_command_dispatcher(foreground.command_dispatcher());
+    coordinator.set_command_executor(foreground.command_executor());
+    coordinator.set_auto_classifier_fn(foreground.auto_classifier_fn());
+    coordinator.set_audit_context(foreground.audit_context());
+    let mut app_state = foreground.app_state();
+    app_state.team_context = None;
+    app_state.tool_permission_context.clear_session_grants();
+    coordinator.update_app_state(|state| *state = app_state);
+    coordinator.assign_server_owned_session_id(
+        allthecodes_engine::bootstrap::SessionId::from_string(&request.coordinator_session_id),
+    );
+
+    let (agent_tx, mut agent_rx) = allthecodes_types::agent_channel::agent_channel();
+    coordinator.set_bg_agent_tx(agent_tx);
+    tokio::spawn(async move { while agent_rx.recv().await.is_some() {} });
+    Ok(Arc::new(coordinator))
+}
+
+fn required_group_chat_launch_field(
+    value: &serde_json::Value,
+    field: &'static str,
+) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 256)
+        .map(ToString::to_string)
+        .ok_or_else(|| "delegated Agent returned an invalid launch identity".to_string())
 }
 
 pub fn headless_config(

@@ -955,6 +955,90 @@ pub async fn dispatch(
             .await?;
             Ok(ClientResponse::ModelsList(response))
         }
+        ClientRequest::GroupChatRoomsList(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatRoomsListProcessor,
+            >(state, context, ApiMethod::GroupChatRoomsList, params)
+            .await?;
+            Ok(ClientResponse::GroupChatRoomsList(response))
+        }
+        ClientRequest::GroupChatRoomCreate(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatRoomCreateProcessor,
+            >(state, context, ApiMethod::GroupChatRoomCreate, params)
+            .await?;
+            Ok(ClientResponse::GroupChatRoomCreate(response))
+        }
+        ClientRequest::GroupChatRoomDetail(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatRoomDetailProcessor,
+            >(state, context, ApiMethod::GroupChatRoomDetail, params)
+            .await?;
+            Ok(ClientResponse::GroupChatRoomDetail(response))
+        }
+        ClientRequest::GroupChatRoomDelete(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatRoomDeleteProcessor,
+            >(state, context, ApiMethod::GroupChatRoomDelete, params)
+            .await?;
+            Ok(ClientResponse::GroupChatRoomDelete(response))
+        }
+        ClientRequest::GroupChatRoomClone(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatRoomCloneProcessor,
+            >(state, context, ApiMethod::GroupChatRoomClone, params)
+            .await?;
+            Ok(ClientResponse::GroupChatRoomClone(response))
+        }
+        ClientRequest::GroupChatInvite(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatInviteReadProcessor,
+            >(state, context, ApiMethod::GroupChatInvite, params)
+            .await?;
+            Ok(ClientResponse::GroupChatInvite(response))
+        }
+        ClientRequest::GroupChatInviteMutation(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatInviteMutationProcessor,
+            >(state, context, ApiMethod::GroupChatInviteMutation, params)
+            .await?;
+            Ok(ClientResponse::GroupChatInviteMutation(response))
+        }
+        ClientRequest::GroupChatAgentAdd(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatAgentAddProcessor,
+            >(state, context, ApiMethod::GroupChatAgentAdd, params)
+            .await?;
+            Ok(ClientResponse::GroupChatAgentAdd(response))
+        }
+        ClientRequest::GroupChatAgentUpdate(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatAgentUpdateProcessor,
+            >(state, context, ApiMethod::GroupChatAgentUpdate, params)
+            .await?;
+            Ok(ClientResponse::GroupChatAgentUpdate(response))
+        }
+        ClientRequest::GroupChatAgentDelete(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatAgentDeleteProcessor,
+            >(state, context, ApiMethod::GroupChatAgentDelete, params)
+            .await?;
+            Ok(ClientResponse::GroupChatAgentDelete(response))
+        }
+        ClientRequest::GroupChatMessage(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatMessageProcessor,
+            >(state, context, ApiMethod::GroupChatMessage, params)
+            .await?;
+            Ok(ClientResponse::GroupChatMessage(response))
+        }
+        ClientRequest::GroupChatCompression(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::group_chat::GroupChatCompressionProcessor,
+            >(state, context, ApiMethod::GroupChatCompression, params)
+            .await?;
+            Ok(ClientResponse::GroupChatCompression(response))
+        }
         ClientRequest::BackendServices(params) => {
             let response = dispatch_tracked_processor::<
                 handlers::backend_services::BackendServicesProcessor,
@@ -1446,7 +1530,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 72);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 84);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

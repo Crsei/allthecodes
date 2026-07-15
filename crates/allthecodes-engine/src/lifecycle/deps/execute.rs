@@ -642,6 +642,105 @@ impl QueryEngineDeps {
     }
 }
 
+impl crate::lifecycle::QueryEngine {
+    /// Execute a trusted server-selected tool without synthesizing a chat turn.
+    ///
+    /// The caller selects the tool name, while the existing engine pipeline
+    /// remains authoritative for validation, permissions, hooks, taint policy,
+    /// task/session persistence, and Agent supervision. This is intentionally
+    /// narrower than exposing the internal `QueryEngineDeps` facade.
+    pub async fn execute_server_tool(
+        &self,
+        tool_name: &str,
+        input: serde_json::Value,
+        source_label: &str,
+    ) -> anyhow::Result<crate::types::tool::ToolResult> {
+        let session_id = self.current_session_id().to_string();
+        let _ = self.ensure_session_recorder().await?;
+        let tools = self.tools_snapshot();
+        let (
+            permission_callback,
+            permission_event_callback,
+            bg_agent_tx,
+            tool_progress_callback,
+            audit_ctx,
+        ) = {
+            let state = self.state.read();
+            let mut audit_ctx = state.runtime.audit_ctx.clone();
+            audit_ctx.session_id = session_id.clone();
+            audit_ctx.source = source_label.to_string();
+            (
+                state.permissions.permission_callback.clone(),
+                state.permissions.permission_event_callback.clone(),
+                state.runtime.bg_agent_tx.clone(),
+                state.runtime.tool_progress_callback.clone(),
+                audit_ctx.with_submit(),
+            )
+        };
+        let deps = QueryEngineDeps {
+            aborted: self.aborted.clone(),
+            state: self.state.clone(),
+            runtime_services: self.runtime_services.clone(),
+            cwd: self.config.cwd.clone(),
+            session_id,
+            query_source: crate::types::config::QuerySource::Sdk,
+            audit_ctx,
+            langfuse_trace: None,
+            api_client: None,
+            session_recorder: self.session_recorder.clone(),
+            agent_context: self.config.agent_context.clone(),
+            permission_callback,
+            permission_event_callback,
+            bg_agent_tx,
+            tool_progress_callback,
+            pending_bg_results: self.pending_bg_results.clone(),
+            active_steer_state: self.active_steer_state.clone(),
+            hook_runner: self.hook_runner.clone(),
+            command_dispatcher: self.command_dispatcher.clone(),
+            auto_classifier_fn: self.auto_classifier_fn.clone(),
+            submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
+            submit_tools: Some(tools.clone()),
+            verification_incomplete: Arc::new(parking_lot::Mutex::new(None)),
+        };
+        let parent_message = crate::types::message::AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            role: "assistant".to_string(),
+            content: Vec::new(),
+            usage: None,
+            stop_reason: None,
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        };
+        let execution = QueryDeps::execute_tool(
+            &deps,
+            ToolExecRequest {
+                tool_use_id: format!("server-{}", uuid::Uuid::new_v4()),
+                tool_name: tool_name.to_string(),
+                input,
+                langfuse_batch_span: None,
+            },
+            &tools,
+            &parent_message,
+            None,
+        )
+        .await?;
+
+        if execution.is_error {
+            let message = execution
+                .result
+                .data
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("server tool execution was denied or failed")
+                .to_string();
+            anyhow::bail!(message);
+        }
+        Ok(execution.result)
+    }
+}
+
 fn filter_tools_for_allowed_override(tools: Tools, allowed_tools: Option<&Vec<String>>) -> Tools {
     let Some(allowed_tools) = allowed_tools else {
         return tools;

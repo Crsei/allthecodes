@@ -850,6 +850,10 @@ pub fn group_chat_handlers() -> HandlerRegistry {
             get(handlers::group_chat_invite_handler),
         )
         .handle(
+            ApiMethod::GroupChatInviteMutation,
+            post(handlers::group_chat_invite_mutation_handler),
+        )
+        .handle(
             ApiMethod::GroupChatAgentAdd,
             post(handlers::group_chat_agent_add_handler),
         )
