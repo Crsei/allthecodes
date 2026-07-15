@@ -298,21 +298,14 @@ async fn proposal_routes_exclude_skill_domain_and_consume_memory_approval_once()
     assert_eq!(list["proposals"].as_array().unwrap().len(), 1);
     assert_eq!(list["proposals"][0]["id"], memory.id);
 
-    let approved = memory_proposal_approve_handler(
-        AxumPath(memory.id.clone()),
-        State(state.clone()),
-    )
-    .await;
+    let approved =
+        memory_proposal_approve_handler(AxumPath(memory.id.clone()), State(state.clone())).await;
     assert_eq!(approved.status(), StatusCode::OK);
     let approved = response_json(approved).await;
     assert_eq!(approved["disposition"], "approved");
     assert_eq!(approved["entry"]["approval_id"], memory.id);
 
-    let replay = memory_proposal_approve_handler(
-        AxumPath(memory.id.clone()),
-        State(state),
-    )
-    .await;
+    let replay = memory_proposal_approve_handler(AxumPath(memory.id.clone()), State(state)).await;
     assert_eq!(replay.status(), StatusCode::NOT_FOUND);
     assert!(background_review::proposal_path(&skill.id).is_file());
     assert_eq!(

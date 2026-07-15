@@ -21,10 +21,10 @@ use allthecodes_engine::services::background_review::{
 use allthecodes_protocol::v1::memory::{
     MemoryDreamDetailResponse, MemoryDreamListQuery, MemoryDreamListResponse, MemoryDreamSummary,
     MemoryEntry as ApiMemoryEntry, MemoryListQuery, MemoryListResponse, MemoryMigrationReport,
-    MemoryProposal, MemoryProposalDecisionResponse,
-    MemoryProposalDetailResponse, MemoryProposalDisposition, MemoryProposalKind,
-    MemoryProposalListQuery, MemoryProposalListResponse, MemoryScope as ApiMemoryScope,
-    MemoryType as ApiMemoryType, MemoryUpdateRequest, MemoryUpdateResponse,
+    MemoryProposal, MemoryProposalDecisionResponse, MemoryProposalDetailResponse,
+    MemoryProposalDisposition, MemoryProposalKind, MemoryProposalListQuery,
+    MemoryProposalListResponse, MemoryScope as ApiMemoryScope, MemoryType as ApiMemoryType,
+    MemoryUpdateRequest, MemoryUpdateResponse,
 };
 use allthecodes_session::memdir::{
     self, MemoryEntry, MemoryEntryUpdate, MemoryImportOutcome, MemoryScope, MemoryType,
