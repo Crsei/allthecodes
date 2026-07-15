@@ -1,161 +1,452 @@
 //! Generated API artifacts from protocol metadata.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::error::ApiErrorBody;
 use crate::notification::ServerNotification;
 use crate::request::{ApiOperationMetadata, ApiTypeMetadata, SerializationPolicy, API_METADATA};
 use crate::request::{ClientRequest, ClientResponse, EmptyResponse, NoParams};
 
-const FRONTEND_GENERATED_RELATIVE_DIR: &str = "../../../allthecodes-web/src/lib/generated";
-const FRONTEND_GENERATED_FIX_BUGS_RELATIVE_DIR: &str =
-    "../../../allthecodes-web-fix-bugs/src/lib/generated";
 const FRONTEND_GENERATED_DIR_ENV: &str = "ALLTHECODES_FRONTEND_GENERATED_DIR";
+const BACKEND_ROUTES_FILE: &str = "docs/api/routes.md";
+const BACKEND_SCHEMA_FILE: &str = "docs/api/schema.json";
+const BACKEND_OPENAPI_FILE: &str = "docs/api/openapi.json";
 const FRONTEND_TYPES_FILE: &str = "api-types.ts";
 const FRONTEND_ROUTES_FILE: &str = "api-routes.ts";
 const FRONTEND_SCHEMA_FILE: &str = "api-schema.json";
+const BACKEND_REGENERATION_COMMAND: &str = "cargo run --locked -p allthecodes-protocol --features codegen --bin codegen -- --target backend-docs";
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ArtifactOwner {
+    Backend,
+    Frontend,
+}
+
+impl fmt::Display for ArtifactOwner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Backend => "backend",
+            Self::Frontend => "frontend",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactTarget {
+    BackendDocs,
+    Frontend,
+    All,
+}
+
+impl ArtifactTarget {
+    pub fn parse(value: &str) -> Result<Self, CodegenError> {
+        match value {
+            "backend-docs" => Ok(Self::BackendDocs),
+            "frontend" => Ok(Self::Frontend),
+            "all" => Ok(Self::All),
+            _ => Err(CodegenError::InvalidTarget {
+                target: value.to_string(),
+            }),
+        }
+    }
+
+    fn includes(self, owner: ArtifactOwner) -> bool {
+        matches!(
+            (self, owner),
+            (Self::BackendDocs, ArtifactOwner::Backend)
+                | (Self::Frontend, ArtifactOwner::Frontend)
+                | (Self::All, _)
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedArtifact {
+    pub owner: ArtifactOwner,
+    pub relative_path: &'static str,
+    pub contents: String,
+}
+
+#[derive(Debug)]
+struct ResolvedArtifact {
+    artifact: GeneratedArtifact,
+    path: PathBuf,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CodegenError {
     #[error("failed to serialize generated JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("failed to write {path}: {source}")]
-    Write {
+    #[error("failed to {action} {path}: {source}")]
+    Io {
+        action: &'static str,
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to read {path}: {source}")]
-    Read {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    #[error("generated output is stale: {path}")]
-    Stale { path: PathBuf },
+    #[error("protocol manifest directory has no repository root: {manifest_dir}")]
+    InvalidManifestDirectory { manifest_dir: PathBuf },
+    #[error(
+        "frontend target requires --frontend-dir <path> or ALLTHECODES_FRONTEND_GENERATED_DIR"
+    )]
+    MissingFrontendDirectory,
+    #[error("unknown generation target '{target}'; expected backend-docs, frontend, or all")]
+    InvalidTarget { target: String },
+    #[error("duplicate generated output path: {path}")]
+    DuplicateOutputPath { path: PathBuf },
+    #[error("duplicate API operation metadata: {operation}")]
+    DuplicateOperation { operation: String },
+    #[error("duplicate API method/path metadata: {method} {path}")]
+    DuplicateEndpoint { method: String, path: String },
+    #[error("conflicting generated schema name '{name}'")]
+    DuplicateSchema { name: String },
+    #[error("generated artifacts are stale or missing:\n{details}")]
+    StaleArtifacts { details: String },
 }
 
-pub fn default_frontend_types_path(manifest_dir: &Path) -> PathBuf {
-    default_frontend_generated_dir(manifest_dir).join(FRONTEND_TYPES_FILE)
+pub fn generate_all_artifacts() -> Result<Vec<GeneratedArtifact>, CodegenError> {
+    validate_protocol_metadata(API_METADATA)?;
+    let digest = protocol_digest();
+    let schema = generate_schema_json_pretty_with_digest(&digest)?;
+    let artifacts = vec![
+        GeneratedArtifact {
+            owner: ArtifactOwner::Backend,
+            relative_path: BACKEND_ROUTES_FILE,
+            contents: generate_route_markdown_with_digest(&digest),
+        },
+        GeneratedArtifact {
+            owner: ArtifactOwner::Backend,
+            relative_path: BACKEND_SCHEMA_FILE,
+            contents: schema.clone(),
+        },
+        GeneratedArtifact {
+            owner: ArtifactOwner::Backend,
+            relative_path: BACKEND_OPENAPI_FILE,
+            contents: generate_openapi_json_pretty_with_digest(&digest)?,
+        },
+        GeneratedArtifact {
+            owner: ArtifactOwner::Frontend,
+            relative_path: FRONTEND_TYPES_FILE,
+            contents: generate_typescript_types_with_digest(&digest),
+        },
+        GeneratedArtifact {
+            owner: ArtifactOwner::Frontend,
+            relative_path: FRONTEND_ROUTES_FILE,
+            contents: generate_typescript_routes_with_digest(&digest),
+        },
+        GeneratedArtifact {
+            owner: ArtifactOwner::Frontend,
+            relative_path: FRONTEND_SCHEMA_FILE,
+            contents: schema,
+        },
+    ];
+    validate_artifact_manifest(&artifacts)?;
+    Ok(artifacts)
 }
 
-pub fn default_frontend_routes_path(manifest_dir: &Path) -> PathBuf {
-    default_frontend_generated_dir(manifest_dir).join(FRONTEND_ROUTES_FILE)
+pub fn protocol_digest() -> String {
+    hex::encode(Sha256::digest(canonical_protocol_value().to_string()))
 }
 
-pub fn default_frontend_schema_path(manifest_dir: &Path) -> PathBuf {
-    default_frontend_generated_dir(manifest_dir).join(FRONTEND_SCHEMA_FILE)
+pub fn backend_repository_root(manifest_dir: &Path) -> Result<PathBuf, CodegenError> {
+    manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| CodegenError::InvalidManifestDirectory {
+            manifest_dir: manifest_dir.to_path_buf(),
+        })
 }
 
-pub fn default_frontend_generated_dir(manifest_dir: &Path) -> PathBuf {
-    if let Some(path) = std::env::var_os(FRONTEND_GENERATED_DIR_ENV) {
-        return PathBuf::from(path);
-    }
-    let fix_bugs_dir = manifest_dir.join(FRONTEND_GENERATED_FIX_BUGS_RELATIVE_DIR);
-    if fix_bugs_dir.exists() {
-        return fix_bugs_dir;
-    }
-    manifest_dir.join(FRONTEND_GENERATED_RELATIVE_DIR)
+pub fn resolve_frontend_generated_dir(explicit: Option<&Path>) -> Result<PathBuf, CodegenError> {
+    resolve_frontend_generated_dir_with_env(
+        explicit,
+        std::env::var_os(FRONTEND_GENERATED_DIR_ENV).map(PathBuf::from),
+    )
 }
 
-pub fn default_frontend_artifact_paths(manifest_dir: &Path) -> Vec<PathBuf> {
-    vec![
-        default_frontend_types_path(manifest_dir),
-        default_frontend_routes_path(manifest_dir),
-        default_frontend_schema_path(manifest_dir),
-    ]
+fn resolve_frontend_generated_dir_with_env(
+    explicit: Option<&Path>,
+    environment: Option<PathBuf>,
+) -> Result<PathBuf, CodegenError> {
+    let path = explicit
+        .map(Path::to_path_buf)
+        .or(environment)
+        .ok_or(CodegenError::MissingFrontendDirectory)?;
+    absolute_path(path)
 }
 
-pub fn write_frontend_api_artifacts(manifest_dir: &Path) -> Result<Vec<PathBuf>, CodegenError> {
-    let outputs = frontend_artifact_outputs(manifest_dir)?;
-    for (path, contents) in &outputs {
-        write_if_changed(path, contents)?;
-    }
-    Ok(outputs.into_iter().map(|(path, _)| path).collect())
+pub fn artifact_paths(
+    manifest_dir: &Path,
+    target: ArtifactTarget,
+    frontend_dir: Option<&Path>,
+) -> Result<Vec<PathBuf>, CodegenError> {
+    Ok(resolve_artifacts(manifest_dir, target, frontend_dir)?
+        .into_iter()
+        .map(|artifact| artifact.path)
+        .collect())
 }
 
-pub fn check_frontend_api_artifacts_up_to_date(manifest_dir: &Path) -> Result<(), CodegenError> {
-    for (path, expected) in frontend_artifact_outputs(manifest_dir)? {
-        let actual = std::fs::read_to_string(&path).map_err(|source| CodegenError::Read {
-            path: path.clone(),
-            source,
-        })?;
+pub fn write_api_artifacts(
+    manifest_dir: &Path,
+    target: ArtifactTarget,
+    frontend_dir: Option<&Path>,
+) -> Result<Vec<PathBuf>, CodegenError> {
+    let resolved = resolve_artifacts(manifest_dir, target, frontend_dir)?;
+    write_resolved_artifacts(&resolved)?;
+    Ok(resolved.into_iter().map(|artifact| artifact.path).collect())
+}
 
-        if actual != expected {
-            return Err(CodegenError::Stale { path });
+pub fn check_api_artifacts_up_to_date(
+    manifest_dir: &Path,
+    target: ArtifactTarget,
+    frontend_dir: Option<&Path>,
+) -> Result<Vec<PathBuf>, CodegenError> {
+    let resolved = resolve_artifacts(manifest_dir, target, frontend_dir)?;
+    let mut stale = Vec::new();
+
+    for artifact in &resolved {
+        match std::fs::read(&artifact.path) {
+            Ok(actual) if actual == artifact.artifact.contents.as_bytes() => {}
+            Ok(_) => stale.push(format_stale_artifact(artifact, frontend_dir, "stale")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                stale.push(format_stale_artifact(artifact, frontend_dir, "missing"));
+            }
+            Err(source) => {
+                return Err(CodegenError::Io {
+                    action: "read",
+                    path: artifact.path.clone(),
+                    source,
+                });
+            }
         }
     }
 
-    Ok(())
+    if !stale.is_empty() {
+        return Err(CodegenError::StaleArtifacts {
+            details: stale.join("\n"),
+        });
+    }
+
+    Ok(resolved.into_iter().map(|artifact| artifact.path).collect())
 }
 
-pub fn write_frontend_types(manifest_dir: &Path) -> Result<PathBuf, CodegenError> {
-    let path = default_frontend_types_path(manifest_dir);
-    write_if_changed(&path, &generate_typescript_types())?;
-    Ok(path)
+fn resolve_artifacts(
+    manifest_dir: &Path,
+    target: ArtifactTarget,
+    frontend_dir: Option<&Path>,
+) -> Result<Vec<ResolvedArtifact>, CodegenError> {
+    let artifacts = generate_all_artifacts()?;
+    let backend_root = absolute_path(backend_repository_root(manifest_dir)?)?;
+    let frontend_root = if target.includes(ArtifactOwner::Frontend) {
+        Some(resolve_frontend_generated_dir(frontend_dir)?)
+    } else {
+        None
+    };
+
+    let mut resolved = Vec::new();
+    for artifact in artifacts
+        .into_iter()
+        .filter(|artifact| target.includes(artifact.owner))
+    {
+        let path = match artifact.owner {
+            ArtifactOwner::Backend => backend_root.join(artifact.relative_path),
+            ArtifactOwner::Frontend => {
+                let root = frontend_root
+                    .as_ref()
+                    .ok_or(CodegenError::MissingFrontendDirectory)?;
+                root.join(artifact.relative_path)
+            }
+        };
+        resolved.push(ResolvedArtifact { artifact, path });
+    }
+    validate_resolved_paths(&resolved)?;
+    Ok(resolved)
 }
 
-pub fn check_frontend_types_up_to_date(manifest_dir: &Path) -> Result<(), CodegenError> {
-    let path = default_frontend_types_path(manifest_dir);
-    let expected = generate_typescript_types();
-    let actual = std::fs::read_to_string(&path).map_err(|source| CodegenError::Read {
+fn absolute_path(path: PathBuf) -> Result<PathBuf, CodegenError> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    let current_dir = std::env::current_dir().map_err(|source| CodegenError::Io {
+        action: "resolve current directory for",
         path: path.clone(),
         source,
     })?;
+    Ok(current_dir.join(path))
+}
 
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(CodegenError::Stale { path })
+fn validate_artifact_manifest(artifacts: &[GeneratedArtifact]) -> Result<(), CodegenError> {
+    let mut paths = BTreeSet::new();
+    for artifact in artifacts {
+        if !paths.insert((artifact.owner, artifact.relative_path)) {
+            return Err(CodegenError::DuplicateOutputPath {
+                path: PathBuf::from(artifact.relative_path),
+            });
+        }
     }
+    Ok(())
 }
 
-fn frontend_artifact_outputs(manifest_dir: &Path) -> Result<Vec<(PathBuf, String)>, CodegenError> {
-    Ok(vec![
-        (
-            default_frontend_types_path(manifest_dir),
-            generate_typescript_types(),
-        ),
-        (
-            default_frontend_routes_path(manifest_dir),
-            generate_typescript_routes(),
-        ),
-        (
-            default_frontend_schema_path(manifest_dir),
-            generate_schema_json_pretty()?,
-        ),
-    ])
+fn validate_resolved_paths(artifacts: &[ResolvedArtifact]) -> Result<(), CodegenError> {
+    let mut paths = BTreeSet::new();
+    for artifact in artifacts {
+        if !paths.insert(artifact.path.clone()) {
+            return Err(CodegenError::DuplicateOutputPath {
+                path: artifact.path.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
-pub fn write_if_changed(path: &Path, contents: &str) -> Result<(), CodegenError> {
-    if let Ok(existing) = std::fs::read_to_string(path) {
-        if existing == contents {
-            return Ok(());
+fn write_resolved_artifacts(artifacts: &[ResolvedArtifact]) -> Result<(), CodegenError> {
+    validate_resolved_paths(artifacts)?;
+    let mut staged = Vec::new();
+
+    for artifact in artifacts {
+        if std::fs::read(&artifact.path)
+            .is_ok_and(|current| current == artifact.artifact.contents.as_bytes())
+        {
+            continue;
+        }
+        match stage_resolved_artifact(artifact) {
+            Ok(temp_path) => staged.push((temp_path, artifact.path.clone())),
+            Err(error) => {
+                for (temp_path, _) in staged {
+                    let _ = std::fs::remove_file(temp_path);
+                }
+                return Err(error);
+            }
         }
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| CodegenError::Write {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+    for (index, (temp_path, output_path)) in staged.iter().enumerate() {
+        if let Err(source) = std::fs::rename(temp_path, output_path) {
+            for (remaining_temp, _) in staged.iter().skip(index) {
+                let _ = std::fs::remove_file(remaining_temp);
+            }
+            return Err(CodegenError::Io {
+                action: "atomically replace",
+                path: output_path.clone(),
+                source,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn stage_resolved_artifact(artifact: &ResolvedArtifact) -> Result<PathBuf, CodegenError> {
+    let parent = artifact.path.parent().ok_or_else(|| CodegenError::Io {
+        action: "resolve parent directory for",
+        path: artifact.path.clone(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "generated artifact has no parent directory",
+        ),
+    })?;
+    std::fs::create_dir_all(parent).map_err(|source| CodegenError::Io {
+        action: "create directory for",
+        path: artifact.path.clone(),
+        source,
+    })?;
+    stage_atomic_file(&artifact.path, artifact.artifact.contents.as_bytes())
+}
+
+fn stage_atomic_file(path: &Path, contents: &[u8]) -> Result<PathBuf, CodegenError> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+
+    for _ in 0..100 {
+        let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_path = path.with_file_name(format!(
+            ".{file_name}.tmp-{}-{sequence}",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(mut file) => {
+                if let Err(source) = file.write_all(contents).and_then(|()| file.sync_all()) {
+                    let _ = std::fs::remove_file(&temp_path);
+                    return Err(CodegenError::Io {
+                        action: "stage",
+                        path: path.to_path_buf(),
+                        source,
+                    });
+                }
+                return Ok(temp_path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(CodegenError::Io {
+                    action: "stage",
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        }
     }
 
-    std::fs::write(path, contents).map_err(|source| CodegenError::Write {
+    Err(CodegenError::Io {
+        action: "stage",
         path: path.to_path_buf(),
-        source,
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique temporary file",
+        ),
     })
 }
 
+fn format_stale_artifact(
+    artifact: &ResolvedArtifact,
+    frontend_dir: Option<&Path>,
+    status: &str,
+) -> String {
+    let command = match artifact.artifact.owner {
+        ArtifactOwner::Backend => BACKEND_REGENERATION_COMMAND.to_string(),
+        ArtifactOwner::Frontend => {
+            let directory = frontend_dir
+                .map(Path::to_path_buf)
+                .or_else(|| artifact.path.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| PathBuf::from("."));
+            format!(
+                "cargo run --locked -p allthecodes-protocol --features codegen --bin codegen -- --target frontend --frontend-dir {}",
+                directory.display()
+            )
+        }
+    };
+    format!(
+        "- [{}] {} ({status})\n  regenerate: {command}",
+        artifact.artifact.owner,
+        artifact.path.display()
+    )
+}
+
 pub fn generate_typescript_types() -> String {
-    let schemas = collect_typescript_schemas();
+    generate_typescript_types_with_digest(&protocol_digest())
+}
+
+fn generate_typescript_types_with_digest(digest: &str) -> String {
+    let schemas = collect_typescript_schemas(API_METADATA);
     let mut output = String::new();
 
     output.push_str("// AUTO-GENERATED by allthecodes-protocol. Do not edit by hand.\n");
-    output.push_str(
-        "// Run `cargo run -p allthecodes-protocol --features codegen --bin codegen` from the backend repo.\n\n",
-    );
+    output.push_str(&format!("// Protocol digest: {digest}\n"));
+    output.push_str("// Run `cargo run --locked -p allthecodes-protocol --features codegen --bin codegen -- --target frontend --frontend-dir <path>` from the backend repo.\n\n");
     output.push_str(
         "export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };\n",
     );
@@ -216,12 +507,15 @@ pub fn generate_typescript_types() -> String {
 }
 
 pub fn generate_typescript_routes() -> String {
+    generate_typescript_routes_with_digest(&protocol_digest())
+}
+
+fn generate_typescript_routes_with_digest(digest: &str) -> String {
     let mut output = String::new();
 
     output.push_str("// AUTO-GENERATED by allthecodes-protocol. Do not edit by hand.\n");
-    output.push_str(
-        "// Run `cargo run -p allthecodes-protocol --features codegen --bin codegen` from the backend repo.\n\n",
-    );
+    output.push_str(&format!("// Protocol digest: {digest}\n"));
+    output.push_str("// Run `cargo run --locked -p allthecodes-protocol --features codegen --bin codegen -- --target frontend --frontend-dir <path>` from the backend repo.\n\n");
     output.push_str("export interface V1ApiRoute {\n");
     output.push_str("  operation: string;\n");
     output.push_str("  method: string;\n");
@@ -230,6 +524,8 @@ pub fn generate_typescript_routes() -> String {
     output.push_str("  response: string;\n");
     output.push_str("  serialization: string;\n");
     output.push_str("  errors: readonly string[];\n");
+    output.push_str("  streamEvents?: readonly string[];\n");
+    output.push_str("  transport?: 'websocket';\n");
     output.push_str("  experimental?: string;\n");
     output.push_str("}\n\n");
 
@@ -263,6 +559,19 @@ pub fn generate_typescript_routes() -> String {
         )));
         output.push_str(",\n    errors: ");
         output.push_str(&typescript_string_array(endpoint.errors));
+        if !endpoint.stream_events.is_empty() {
+            let stream_events = endpoint
+                .stream_events
+                .iter()
+                .map(|event| typescript_type_for_rust(event.rust_type))
+                .collect::<Vec<_>>();
+            output.push_str(",\n    streamEvents: ");
+            output.push_str(&typescript_owned_string_array(&stream_events));
+        }
+        if let Some(transport) = endpoint_transport(endpoint) {
+            output.push_str(",\n    transport: ");
+            output.push_str(&ts_string_literal(transport));
+        }
         if let Some(reason) = endpoint.experimental {
             output.push_str(",\n    experimental: ");
             output.push_str(&ts_string_literal(reason));
@@ -277,11 +586,34 @@ pub fn generate_typescript_routes() -> String {
 }
 
 pub fn generate_schema_json_pretty() -> Result<String, CodegenError> {
-    let schema = generate_schema_value();
+    generate_schema_json_pretty_with_digest(&protocol_digest())
+}
+
+fn generate_schema_json_pretty_with_digest(digest: &str) -> Result<String, CodegenError> {
+    let schema = generate_schema_value_with_digest(digest);
     Ok(format!("{}\n", serde_json::to_string_pretty(&schema)?))
 }
 
 pub fn generate_schema_value() -> Value {
+    generate_schema_value_with_digest(&protocol_digest())
+}
+
+fn generate_schema_value_with_digest(digest: &str) -> Value {
+    let mut schema = canonical_protocol_value();
+    if let Some(object) = schema.as_object_mut() {
+        object.insert(
+            "_generated".to_string(),
+            json!({
+                "generator": "allthecodes-protocol",
+                "version": "v1",
+                "protocol_digest": digest,
+            }),
+        );
+    }
+    schema
+}
+
+fn canonical_protocol_value() -> Value {
     let mut schemas = Map::new();
 
     insert_schema(
@@ -320,13 +652,16 @@ pub fn generate_schema_value() -> Value {
             &typescript_type_for_rust(endpoint.response.rust_type),
             root_schema_value(endpoint.response),
         );
+        for event in endpoint.stream_events {
+            insert_schema(
+                &mut schemas,
+                &typescript_type_for_rust(event.rust_type),
+                root_schema_value(*event),
+            );
+        }
     }
 
     json!({
-        "_generated": {
-            "generator": "allthecodes-protocol",
-            "version": "v1",
-        },
         "version": "v1",
         "endpoints": endpoint_values(),
         "schemas": schemas,
@@ -334,17 +669,28 @@ pub fn generate_schema_value() -> Value {
 }
 
 pub fn generate_route_markdown() -> String {
+    generate_route_markdown_with_digest(&protocol_digest())
+}
+
+fn generate_route_markdown_with_digest(digest: &str) -> String {
     let mut output = String::new();
     output.push_str("# allthecodes API Routes\n\n");
     output.push_str("Generated from `allthecodes-protocol` metadata.\n\n");
-    output.push_str("| Operation | Method | Path | Params | Response | Serialization | Errors | Experimental |\n");
-    output.push_str("|---|---|---|---|---|---|---|---|\n");
+    output.push_str(&format!("Protocol digest: `{digest}`.\n\n"));
+    output.push_str("| Operation | Method | Path | Transport | Params | Response | Stream events | Serialization | Errors | Experimental |\n");
+    output.push_str("|---|---|---|---|---|---|---|---|---|---|\n");
 
     for endpoint in API_METADATA {
         output.push('|');
         output.push_str(&format!(" `{:?}` |", endpoint.endpoint.operation));
         output.push_str(&format!(" `{}` |", endpoint.endpoint.http_method));
         output.push_str(&format!(" `{}` |", endpoint.endpoint.path));
+        output.push_str(&format!(
+            " {} |",
+            endpoint_transport(endpoint)
+                .map(|transport| format!("`{transport}`"))
+                .unwrap_or_else(|| "-".to_string())
+        ));
         output.push_str(&format!(
             " {} |",
             endpoint
@@ -355,6 +701,19 @@ pub fn generate_route_markdown() -> String {
         output.push_str(&format!(
             " `{}` |",
             typescript_type_for_rust(endpoint.response.rust_type)
+        ));
+        output.push_str(&format!(
+            " {} |",
+            if endpoint.stream_events.is_empty() {
+                "-".to_string()
+            } else {
+                endpoint
+                    .stream_events
+                    .iter()
+                    .map(|event| format!("`{}`", typescript_type_for_rust(event.rust_type)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
         ));
         output.push_str(&format!(
             " `{}` |",
@@ -386,11 +745,19 @@ pub fn generate_route_markdown() -> String {
 }
 
 pub fn generate_openapi_json_pretty() -> Result<String, CodegenError> {
-    let openapi = generate_openapi_value();
+    generate_openapi_json_pretty_with_digest(&protocol_digest())
+}
+
+fn generate_openapi_json_pretty_with_digest(digest: &str) -> Result<String, CodegenError> {
+    let openapi = generate_openapi_value_with_digest(digest);
     Ok(format!("{}\n", serde_json::to_string_pretty(&openapi)?))
 }
 
 pub fn generate_openapi_value() -> Value {
+    generate_openapi_value_with_digest(&protocol_digest())
+}
+
+fn generate_openapi_value_with_digest(digest: &str) -> Value {
     let mut paths = Map::new();
     let mut components = Map::new();
     components.insert(
@@ -403,6 +770,9 @@ pub fn generate_openapi_value() -> Value {
             collect_component_schema(&mut components, params);
         }
         collect_component_schema(&mut components, endpoint.response);
+        for event in endpoint.stream_events {
+            collect_component_schema(&mut components, *event);
+        }
 
         let path = openapi_path(endpoint.endpoint.path);
         let method = endpoint.endpoint.http_method.to_ascii_lowercase();
@@ -431,6 +801,7 @@ pub fn generate_openapi_value() -> Value {
         "info": {
             "title": "allthecodes Web API",
             "version": "v1",
+            "x-allthecodes-protocol-digest": digest,
         },
         "paths": paths,
         "components": {
@@ -439,14 +810,17 @@ pub fn generate_openapi_value() -> Value {
     })
 }
 
-fn collect_typescript_schemas() -> BTreeMap<String, Value> {
+fn collect_typescript_schemas(metadata: &[ApiOperationMetadata]) -> BTreeMap<String, Value> {
     let mut schemas = BTreeMap::new();
 
-    for endpoint in API_METADATA {
+    for endpoint in metadata {
         if let Some(params) = endpoint.params {
             collect_typescript_schema(&mut schemas, params);
         }
         collect_typescript_schema(&mut schemas, endpoint.response);
+        for event in endpoint.stream_events {
+            collect_typescript_schema(&mut schemas, *event);
+        }
     }
 
     schemas
@@ -511,6 +885,8 @@ fn endpoint_values() -> Vec<Value> {
                 "path": endpoint.endpoint.path,
                 "params": endpoint.params.map(|params| typescript_type_for_rust(params.rust_type)),
                 "response": typescript_type_for_rust(endpoint.response.rust_type),
+                "stream_events": endpoint.stream_events.iter().map(|event| typescript_type_for_rust(event.rust_type)).collect::<Vec<_>>(),
+                "transport": endpoint_transport(endpoint),
                 "errors": endpoint.errors,
                 "serialization": serialization_label(endpoint.serialization),
                 "experimental": endpoint.experimental,
@@ -529,6 +905,28 @@ fn openapi_operation(endpoint: &ApiOperationMetadata) -> Value {
         "x-allthecodes-serialization".to_string(),
         Value::String(serialization_label(endpoint.serialization)),
     );
+    if endpoint.endpoint.http_method == "ANY" {
+        operation.insert(
+            "x-allthecodes-source-method".to_string(),
+            Value::String("ANY".to_string()),
+        );
+        operation.insert(
+            "x-allthecodes-transport".to_string(),
+            Value::String("websocket".to_string()),
+        );
+    }
+    if !endpoint.stream_events.is_empty() {
+        operation.insert(
+            "x-allthecodes-stream-events".to_string(),
+            Value::Array(
+                endpoint
+                    .stream_events
+                    .iter()
+                    .map(|event| Value::String(typescript_type_for_rust(event.rust_type)))
+                    .collect(),
+            ),
+        );
+    }
     if let Some(reason) = endpoint.experimental {
         operation.insert(
             "x-allthecodes-experimental".to_string(),
@@ -915,6 +1313,93 @@ fn typescript_type_for_rust(rust_type: &str) -> String {
         .unwrap_or_else(|| "JsonValue".to_string())
 }
 
+fn validate_protocol_metadata(metadata: &[ApiOperationMetadata]) -> Result<(), CodegenError> {
+    let mut operations = BTreeSet::new();
+    let mut endpoints = BTreeSet::new();
+    let mut schemas = BTreeMap::new();
+
+    for endpoint in metadata {
+        let operation = format!("{:?}", endpoint.endpoint.operation);
+        if !operations.insert(operation.clone()) {
+            return Err(CodegenError::DuplicateOperation { operation });
+        }
+        let endpoint_key = (
+            effective_http_method(endpoint).to_string(),
+            endpoint.endpoint.path.to_string(),
+        );
+        if !endpoints.insert(endpoint_key.clone()) {
+            return Err(CodegenError::DuplicateEndpoint {
+                method: endpoint_key.0,
+                path: endpoint_key.1,
+            });
+        }
+
+        if let Some(params) = endpoint.params {
+            validate_type_schema(&mut schemas, params)?;
+        }
+        validate_type_schema(&mut schemas, endpoint.response)?;
+        for event in endpoint.stream_events {
+            validate_type_schema(&mut schemas, *event)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_type_schema(
+    schemas: &mut BTreeMap<String, Value>,
+    metadata: ApiTypeMetadata,
+) -> Result<(), CodegenError> {
+    let root = root_schema_value(metadata);
+    if let Some(definitions) = root.get("definitions").and_then(Value::as_object) {
+        for (name, schema) in definitions {
+            insert_checked_schema(schemas, sanitize_type_name(name), schema.clone())?;
+        }
+    }
+
+    let name = typescript_type_for_rust(metadata.rust_type);
+    if name != "JsonValue" && !name.ends_with("[]") {
+        insert_checked_schema(schemas, name, root)?;
+    }
+    Ok(())
+}
+
+fn insert_checked_schema(
+    schemas: &mut BTreeMap<String, Value>,
+    name: String,
+    schema: Value,
+) -> Result<(), CodegenError> {
+    let schema = normalized_schema_for_collision(schema);
+    match schemas.get(&name) {
+        Some(existing) if existing != &schema => Err(CodegenError::DuplicateSchema { name }),
+        Some(_) => Ok(()),
+        None => {
+            schemas.insert(name, schema);
+            Ok(())
+        }
+    }
+}
+
+fn normalized_schema_for_collision(mut schema: Value) -> Value {
+    if let Some(object) = schema.as_object_mut() {
+        object.remove("$schema");
+        object.remove("definitions");
+        object.remove("title");
+    }
+    schema
+}
+
+fn endpoint_transport(endpoint: &ApiOperationMetadata) -> Option<&'static str> {
+    (endpoint.endpoint.http_method == "ANY").then_some("websocket")
+}
+
+fn effective_http_method(endpoint: &ApiOperationMetadata) -> &'static str {
+    if endpoint.endpoint.http_method == "ANY" {
+        "GET"
+    } else {
+        endpoint.endpoint.http_method
+    }
+}
+
 fn method_literal(endpoint: &ApiOperationMetadata) -> String {
     format!(
         "{} {}",
@@ -971,9 +1456,50 @@ fn typescript_string_array(values: &[&str]) -> String {
     format!("[{values}]")
 }
 
+fn typescript_owned_string_array(values: &[String]) -> String {
+    let values = values
+        .iter()
+        .map(|value| ts_string_literal(value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{values}]")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use tempfile::tempdir;
+
+    #[allow(dead_code)]
+    mod stream_fixture {
+        use schemars::JsonSchema;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+        pub struct FixtureEvent {
+            pub message: String,
+        }
+
+        crate::api_definitions! {
+            Fixture => "GET /fixture" {
+                response: serde_json::Value,
+                stream: [FixtureEvent],
+            },
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    struct ConflictingFixtureEvent {
+        count: u64,
+    }
+
+    fn temporary_manifest_dir(root: &Path) -> PathBuf {
+        let manifest_dir = root.join("repository/crates/allthecodes-protocol");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        manifest_dir
+    }
 
     #[test]
     fn typescript_output_contains_request_and_response_unions() {
@@ -1014,5 +1540,267 @@ mod tests {
         assert!(output
             .pointer("/components/schemas/SessionCreateParams")
             .is_some());
+    }
+
+    #[test]
+    fn generated_manifest_is_complete_deterministic_and_digest_linked() {
+        let first = generate_all_artifacts().unwrap();
+        let second = generate_all_artifacts().unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 6);
+        assert_eq!(
+            first
+                .iter()
+                .filter(|artifact| artifact.owner == ArtifactOwner::Backend)
+                .count(),
+            3
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|artifact| artifact.owner == ArtifactOwner::Frontend)
+                .count(),
+            3
+        );
+
+        let digest = protocol_digest();
+        assert_eq!(digest.len(), 64);
+        assert!(first
+            .iter()
+            .all(|artifact| artifact.contents.contains(&digest)));
+    }
+
+    #[test]
+    fn route_rows_match_metadata_and_any_routes_are_websocket_gets() {
+        let markdown = generate_route_markdown();
+        let rows = markdown
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .count();
+        assert_eq!(rows, API_METADATA.len());
+
+        let openapi = generate_openapi_value();
+        let websocket_operations = API_METADATA
+            .iter()
+            .filter(|endpoint| endpoint.endpoint.http_method == "ANY")
+            .collect::<Vec<_>>();
+        assert!(!websocket_operations.is_empty());
+        for endpoint in websocket_operations {
+            let path = openapi_path(endpoint.endpoint.path);
+            let operation = &openapi["paths"][&path]["get"];
+            assert_eq!(operation["x-allthecodes-source-method"], "ANY");
+            assert_eq!(operation["x-allthecodes-transport"], "websocket");
+            assert!(openapi["paths"][&path].get("any").is_none());
+        }
+    }
+
+    #[test]
+    fn schema_and_openapi_cover_every_declared_operation_and_root_type() {
+        let schema = generate_schema_value();
+        let endpoints = schema["endpoints"].as_array().unwrap();
+        let schemas = schema["schemas"].as_object().unwrap();
+        let openapi = generate_openapi_value();
+
+        assert_eq!(endpoints.len(), API_METADATA.len());
+        for (declared, generated) in API_METADATA.iter().zip(endpoints) {
+            let operation = format!("{:?}", declared.endpoint.operation);
+            assert_eq!(generated["operation"], operation);
+            assert_eq!(generated["method"], declared.endpoint.http_method);
+            assert_eq!(generated["path"], declared.endpoint.path);
+
+            let path = openapi_path(declared.endpoint.path);
+            let method = effective_http_method(declared).to_ascii_lowercase();
+            assert_eq!(openapi["paths"][&path][&method]["operationId"], operation);
+
+            for metadata in declared
+                .params
+                .iter()
+                .chain(std::iter::once(&declared.response))
+                .chain(declared.stream_events.iter())
+            {
+                let name = typescript_type_for_rust(metadata.rust_type);
+                if name != "JsonValue" && !name.ends_with("[]") {
+                    assert!(
+                        schemas.contains_key(&name),
+                        "schema is missing declared type {name} for {operation}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stream_metadata_reaches_schema_collectors_and_openapi_extension() {
+        assert_eq!(stream_fixture::API_METADATA.len(), 1);
+        assert_eq!(
+            stream_fixture::API_METADATA[0].stream_events[0].rust_type,
+            "FixtureEvent"
+        );
+
+        let stream_events: &'static [ApiTypeMetadata] =
+            crate::__api_stream_metadata!(stream_fixture::FixtureEvent);
+        let metadata = ApiOperationMetadata {
+            endpoint: crate::request::ApiEndpoint {
+                operation: crate::request::ApiMethod::Chat,
+                http_method: "GET",
+                path: "/fixture",
+            },
+            params: None,
+            response: ApiTypeMetadata {
+                rust_type: "serde_json::Value",
+                schema: crate::request::schema_for::<serde_json::Value>,
+            },
+            stream_events,
+            errors: &[],
+            serialization: SerializationPolicy::Concurrent,
+            experimental: None,
+        };
+
+        let schemas = collect_typescript_schemas(&[metadata]);
+        assert!(schemas.contains_key("FixtureEvent"));
+
+        let mut components = Map::new();
+        collect_component_schema(&mut components, stream_events[0]);
+        assert!(components.contains_key("FixtureEvent"));
+
+        let operation = openapi_operation(&metadata);
+        assert_eq!(operation["x-allthecodes-stream-events"][0], "FixtureEvent");
+    }
+
+    #[test]
+    fn backend_resolution_does_not_require_a_frontend_directory() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temporary_manifest_dir(temp.path());
+        let paths = artifact_paths(&manifest_dir, ArtifactTarget::BackendDocs, None).unwrap();
+
+        assert_eq!(paths.len(), 3);
+        assert!(paths
+            .iter()
+            .all(|path| path.starts_with(temp.path().join("repository/docs/api"))));
+    }
+
+    #[test]
+    fn explicit_frontend_directory_wins_and_missing_directory_fails() {
+        let temp = tempdir().unwrap();
+        let explicit = temp.path().join("explicit");
+        let environment = temp.path().join("environment");
+
+        assert_eq!(
+            resolve_frontend_generated_dir_with_env(Some(&explicit), Some(environment.clone()))
+                .unwrap(),
+            explicit
+        );
+        assert_eq!(
+            resolve_frontend_generated_dir_with_env(None, Some(environment.clone())).unwrap(),
+            environment
+        );
+        assert!(matches!(
+            resolve_frontend_generated_dir_with_env(None, None),
+            Err(CodegenError::MissingFrontendDirectory)
+        ));
+    }
+
+    #[test]
+    fn write_and_check_share_the_manifest() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temporary_manifest_dir(temp.path());
+        let frontend_dir = temp.path().join("frontend-generated");
+        let written =
+            write_api_artifacts(&manifest_dir, ArtifactTarget::All, Some(&frontend_dir)).unwrap();
+        let checked =
+            check_api_artifacts_up_to_date(&manifest_dir, ArtifactTarget::All, Some(&frontend_dir))
+                .unwrap();
+
+        assert_eq!(written, checked);
+        assert_eq!(written.len(), 6);
+    }
+
+    #[test]
+    fn stale_check_reports_every_path_and_regeneration_command() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temporary_manifest_dir(temp.path());
+        let paths = write_api_artifacts(&manifest_dir, ArtifactTarget::BackendDocs, None).unwrap();
+        std::fs::write(&paths[0], "stale\n").unwrap();
+        std::fs::remove_file(&paths[1]).unwrap();
+
+        let error =
+            check_api_artifacts_up_to_date(&manifest_dir, ArtifactTarget::BackendDocs, None)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains(&paths[0].display().to_string()));
+        assert!(error.contains("(stale)"));
+        assert!(error.contains(&paths[1].display().to_string()));
+        assert!(error.contains("(missing)"));
+        assert!(error.contains(BACKEND_REGENERATION_COMMAND));
+    }
+
+    #[test]
+    fn duplicate_manifest_paths_fail_before_writing() {
+        let artifact = GeneratedArtifact {
+            owner: ArtifactOwner::Backend,
+            relative_path: "docs/api/duplicate.json",
+            contents: "{}\n".to_string(),
+        };
+        assert!(matches!(
+            validate_artifact_manifest(&[artifact.clone(), artifact]),
+            Err(CodegenError::DuplicateOutputPath { .. })
+        ));
+    }
+
+    #[test]
+    fn staging_failure_preserves_existing_artifacts() {
+        let temp = tempdir().unwrap();
+        let existing = temp.path().join("existing.json");
+        std::fs::write(&existing, "old\n").unwrap();
+        let blocked_parent = temp.path().join("not-a-directory");
+        std::fs::write(&blocked_parent, "block").unwrap();
+
+        let artifacts = vec![
+            ResolvedArtifact {
+                artifact: GeneratedArtifact {
+                    owner: ArtifactOwner::Backend,
+                    relative_path: "existing.json",
+                    contents: "new\n".to_string(),
+                },
+                path: existing.clone(),
+            },
+            ResolvedArtifact {
+                artifact: GeneratedArtifact {
+                    owner: ArtifactOwner::Backend,
+                    relative_path: "blocked.json",
+                    contents: "new\n".to_string(),
+                },
+                path: blocked_parent.join("blocked.json"),
+            },
+        ];
+
+        assert!(write_resolved_artifacts(&artifacts).is_err());
+        assert_eq!(std::fs::read_to_string(existing).unwrap(), "old\n");
+        assert!(std::fs::read_dir(temp.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")
+        }));
+    }
+
+    #[test]
+    fn conflicting_schema_names_are_rejected() {
+        let first = ApiTypeMetadata {
+            rust_type: "stream_fixture::FixtureEvent",
+            schema: crate::request::schema_for::<stream_fixture::FixtureEvent>,
+        };
+        let second = ApiTypeMetadata {
+            rust_type: "stream_fixture::FixtureEvent",
+            schema: crate::request::schema_for::<ConflictingFixtureEvent>,
+        };
+        let mut schemas = BTreeMap::new();
+        validate_type_schema(&mut schemas, first).unwrap();
+        assert!(matches!(
+            validate_type_schema(&mut schemas, second),
+            Err(CodegenError::DuplicateSchema { .. })
+        ));
     }
 }

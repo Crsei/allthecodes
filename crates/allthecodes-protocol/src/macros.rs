@@ -6,6 +6,7 @@ macro_rules! api_definitions {
             $variant:ident => $route:literal {
                 $(params: $params:ty,)?
                 $(response: $response:ty,)?
+                $(stream: [$($stream_event:ty),* $(,)?],)?
                 $(errors: [$($errors:ident),* $(,)?],)?
                 $(serialization: $serialization:ident $(($serialization_arg:literal))?,)?
                 $(#[experimental($experimental:literal)])?
@@ -138,6 +139,9 @@ macro_rules! api_definitions {
             pub endpoint: ApiEndpoint,
             pub params: Option<ApiTypeMetadata>,
             pub response: ApiTypeMetadata,
+            /// Additional event DTOs emitted by streaming transports whose
+            /// HTTP response body cannot name every event variant directly.
+            pub stream_events: &'static [ApiTypeMetadata],
             pub errors: &'static [&'static str],
             pub serialization: SerializationPolicy,
             pub experimental: Option<&'static str>,
@@ -253,6 +257,7 @@ macro_rules! api_definitions {
                     endpoint: ApiEndpoint::from_route(ApiMethod::$variant, $route),
                     params: $crate::__api_params_metadata!($($params)?),
                     response: $crate::__api_response_metadata!($($response)?),
+                    stream_events: $crate::__api_stream_metadata!($($($stream_event),*)?),
                     errors: &[$($(stringify!($errors)),*)?],
                     serialization: $crate::__api_serialization_policy!(
                         $($serialization $(($serialization_arg))?)?
@@ -367,6 +372,25 @@ macro_rules! __api_response_metadata {
             #[cfg(feature = "schema")]
             schema: $crate::request::schema_for::<$response>,
         }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __api_stream_metadata {
+    () => {
+        &[]
+    };
+    ($($stream_event:ty),+ $(,)?) => {
+        &[
+            $(
+                ApiTypeMetadata {
+                    rust_type: stringify!($stream_event),
+                    #[cfg(feature = "schema")]
+                    schema: $crate::request::schema_for::<$stream_event>,
+                },
+            )+
+        ]
     };
 }
 

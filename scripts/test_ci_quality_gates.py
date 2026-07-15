@@ -104,6 +104,9 @@ class WorkflowQualityGates(unittest.TestCase):
         text = CI.read_text(encoding="utf-8")
         self.assertIn("--no-default-features", text)
         self.assertRegex(text, r"allthecodes-protocol.+--features codegen.+--bins")
+        self.assertRegex(text, r"--check --target backend-docs")
+        self.assertIn("git diff --exit-code -- docs/api", text)
+        self.assertIn("git status --porcelain -- docs/api", text)
         self.assertRegex(text, r"-p allthecodes\b.+--all-features")
         self.assertRegex(
             text,

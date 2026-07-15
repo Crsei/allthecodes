@@ -76,6 +76,7 @@ crate::api_definitions! {
     Chat => "POST /api/chat" {
         params: v1::chat::ChatRequest,
         response: Value,
+        stream: [v1::chat::ChatPermissionRequestEvent],
         serialization: PerKey("session_id"),
     },
     /// Abort an active chat request.
