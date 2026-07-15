@@ -123,6 +123,7 @@ pub fn all_api_handlers() -> HandlerRegistry {
         .extend(gateway_handlers())
         .extend(integration_handlers())
         .extend(settings_handlers())
+        .extend(memory_handlers())
         .extend(workspace_handlers())
         .extend(auth_handlers())
         .extend(profile_handlers())
@@ -448,11 +449,6 @@ pub fn settings_handlers() -> HandlerRegistry {
             ApiMethod::MemoryConfigPatch,
             patch(handlers::memory_config_patch_handler),
         )
-        .handle(ApiMethod::MemoryList, get(handlers::memory_list_handler))
-        .handle(
-            ApiMethod::MemoryUpdate,
-            patch(handlers::memory_update_handler),
-        )
         .handle(
             ApiMethod::SpeechModels,
             get(handlers::speech_models_handler),
@@ -490,6 +486,39 @@ pub fn settings_handlers() -> HandlerRegistry {
         )
         .handle(ApiMethod::DebugAction, post(handlers::debug_action_handler))
         .handle(ApiMethod::ProtocolRoutes, get(protocol_routes_handler))
+}
+
+pub fn memory_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::MemoryList, get(handlers::memory_list_handler))
+        .handle(
+            ApiMethod::MemoryUpdate,
+            patch(handlers::memory_update_handler),
+        )
+        .handle(
+            ApiMethod::MemoryDreamList,
+            get(handlers::memory_dream_list_handler),
+        )
+        .handle(
+            ApiMethod::MemoryDreamDetail,
+            get(handlers::memory_dream_detail_handler),
+        )
+        .handle(
+            ApiMethod::MemoryProposalList,
+            get(handlers::memory_proposal_list_handler),
+        )
+        .handle(
+            ApiMethod::MemoryProposalDetail,
+            get(handlers::memory_proposal_detail_handler),
+        )
+        .handle(
+            ApiMethod::MemoryProposalApprove,
+            post(handlers::memory_proposal_approve_handler),
+        )
+        .handle(
+            ApiMethod::MemoryProposalReject,
+            post(handlers::memory_proposal_reject_handler),
+        )
 }
 
 pub fn workspace_handlers() -> HandlerRegistry {

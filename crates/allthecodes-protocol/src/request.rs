@@ -502,11 +502,40 @@ crate::api_definitions! {
         response: Value,
     },
     MemoryList => "GET /api/memory" {
-        response: Value,
+        params: v1::memory::MemoryListQuery,
+        response: v1::memory::MemoryListResponse,
     },
     MemoryUpdate => "PATCH /api/memory/{id}" {
-        params: Value,
-        response: Value,
+        params: v1::memory::MemoryUpdateRequest,
+        response: v1::memory::MemoryUpdateResponse,
+        errors: [NotFound],
+        serialization: PerProcess,
+    },
+    MemoryDreamList => "GET /api/memory/dream" {
+        params: v1::memory::MemoryDreamListQuery,
+        response: v1::memory::MemoryDreamListResponse,
+    },
+    MemoryDreamDetail => "GET /api/memory/dream/{date}" {
+        response: v1::memory::MemoryDreamDetailResponse,
+        errors: [NotFound],
+    },
+    MemoryProposalList => "GET /api/memory/proposals" {
+        params: v1::memory::MemoryProposalListQuery,
+        response: v1::memory::MemoryProposalListResponse,
+    },
+    MemoryProposalDetail => "GET /api/memory/proposals/{id}" {
+        response: v1::memory::MemoryProposalDetailResponse,
+        errors: [NotFound],
+    },
+    MemoryProposalApprove => "POST /api/memory/proposals/{id}/approve" {
+        response: v1::memory::MemoryProposalDecisionResponse,
+        errors: [NotFound, Conflict],
+        serialization: PerProcess,
+    },
+    MemoryProposalReject => "POST /api/memory/proposals/{id}/reject" {
+        response: v1::memory::MemoryProposalDecisionResponse,
+        errors: [NotFound, Conflict],
+        serialization: PerProcess,
     },
     SpeechModels => "GET /api/speech/models" {
         response: Value,

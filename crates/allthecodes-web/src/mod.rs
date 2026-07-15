@@ -136,6 +136,14 @@ fn requires_privileged_capability(method: &Method, path: &str) -> bool {
         return true;
     }
 
+    if (method == Method::PATCH && has_single_parameter(path, "memory/", ""))
+        || (method == Method::POST
+            && (has_single_parameter(path, "memory/proposals/", "/approve")
+                || has_single_parameter(path, "memory/proposals/", "/reject")))
+    {
+        return true;
+    }
+
     if method == Method::POST
         && (matches!(
             path,
@@ -737,6 +745,30 @@ mod tests {
         ] {
             assert!(requires_privileged_capability(&Method::POST, path));
         }
+    }
+
+    #[test]
+    fn memory_mutations_require_privileged_capability_but_reads_do_not() {
+        for path in [
+            "/api/memory",
+            "/api/memory/dream",
+            "/api/memory/proposals",
+            "/api/memory/proposals/proposal-1",
+        ] {
+            assert!(!requires_privileged_capability(&Method::GET, path));
+        }
+        assert!(requires_privileged_capability(
+            &Method::PATCH,
+            "/api/memory/project:bWVtb3J5"
+        ));
+        assert!(requires_privileged_capability(
+            &Method::POST,
+            "/api/memory/proposals/proposal-1/approve"
+        ));
+        assert!(requires_privileged_capability(
+            &Method::POST,
+            "/api/memory/proposals/proposal-1/reject"
+        ));
     }
 
     async fn privileged_route_statuses(

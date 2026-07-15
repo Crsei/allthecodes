@@ -35,6 +35,13 @@ pub struct MemoryEntry {
     /// Optional search terms used by relevant-memory recall.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub search_terms: Vec<String>,
+    /// User-managed labels retained in the canonical memdir record for Web and
+    /// CLI projections. They are not stored in a Web-only sidecar.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// User-managed pin state retained with the canonical entry.
+    #[serde(default)]
+    pub pinned: bool,
     /// Session that produced or justified this curated memory, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_session_id: Option<String>,
@@ -46,6 +53,26 @@ pub struct MemoryEntry {
     pub created_at: String,
     /// When this entry was last updated (ISO 8601).
     pub updated_at: String,
+}
+
+/// Partial canonical update. Omitted fields preserve the existing entry,
+/// including creation time and approval/source provenance.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemoryEntryUpdate {
+    pub value: Option<String>,
+    pub category: Option<String>,
+    pub memory_type: Option<Option<MemoryType>>,
+    pub description: Option<Option<String>>,
+    pub search_terms: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
+    pub pinned: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryImportOutcome {
+    Imported,
+    AlreadyPresent,
+    Conflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

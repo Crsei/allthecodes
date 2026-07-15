@@ -8,8 +8,8 @@ use super::index::{
     refresh_memory_index,
 };
 use super::types::{
-    CuratedMemorySnapshot, CuratedMemoryTarget, CuratedMemoryWrite, MemoryEntry, MemoryScope,
-    MemoryType, CURATED_MEMORY_PROFILE_MAX_BYTES,
+    CuratedMemorySnapshot, CuratedMemoryTarget, CuratedMemoryWrite, MemoryEntry, MemoryEntryUpdate,
+    MemoryImportOutcome, MemoryScope, MemoryType, CURATED_MEMORY_PROFILE_MAX_BYTES,
 };
 
 /// Write a memory entry.
@@ -27,13 +27,9 @@ pub fn write_memory(
     let now = Utc::now().to_rfc3339();
 
     // Check if entry exists to preserve created_at
-    let created_at = if file_path.exists() {
-        read_memory(key, scope, cwd)
-            .ok()
-            .map(|e| e.created_at)
-            .unwrap_or_else(|| now.clone())
-    } else {
-        now.clone()
+    let created_at = match existing_memory_at_path(key, scope, cwd, &file_path)? {
+        Some(existing) => existing.created_at,
+        None => now.clone(),
     };
 
     let entry = MemoryEntry {
@@ -43,15 +39,15 @@ pub fn write_memory(
         memory_type: MemoryType::parse(category),
         description: None,
         search_terms: Vec::new(),
+        tags: Vec::new(),
+        pinned: false,
         source_session_id: None,
         approval_id: None,
         created_at,
         updated_at: now,
     };
 
-    let json = serde_json::to_string_pretty(&entry).context("Failed to serialize memory entry")?;
-    std::fs::write(&file_path, json)
-        .with_context(|| format!("Failed to write memory file: {}", file_path.display()))?;
+    persist_memory_entry(&file_path, &entry)?;
 
     refresh_memory_index(scope, cwd)?;
 
@@ -71,13 +67,9 @@ pub fn write_curated_memory(write: CuratedMemoryWrite, cwd: &Path) -> Result<Mem
     let file_path = dir.join(&filename);
     let now = Utc::now().to_rfc3339();
 
-    let created_at = if file_path.exists() {
-        read_memory(&write.key, scope, cwd)
-            .ok()
-            .map(|entry| entry.created_at)
-            .unwrap_or_else(|| now.clone())
-    } else {
-        now.clone()
+    let created_at = match existing_memory_at_path(&write.key, scope, cwd, &file_path)? {
+        Some(existing) => existing.created_at,
+        None => now.clone(),
     };
 
     let entry = MemoryEntry {
@@ -87,15 +79,15 @@ pub fn write_curated_memory(write: CuratedMemoryWrite, cwd: &Path) -> Result<Mem
         memory_type: Some(target.memory_type()),
         description: None,
         search_terms: Vec::new(),
+        tags: Vec::new(),
+        pinned: false,
         source_session_id: write.source_session_id,
         approval_id: write.approval_id,
         created_at,
         updated_at: now,
     };
 
-    let json = serde_json::to_string_pretty(&entry).context("Failed to serialize memory entry")?;
-    std::fs::write(&file_path, json)
-        .with_context(|| format!("Failed to write memory file: {}", file_path.display()))?;
+    persist_memory_entry(&file_path, &entry)?;
 
     refresh_memory_index(scope, cwd)?;
     refresh_curated_memory_profile(target, cwd, CURATED_MEMORY_PROFILE_MAX_BYTES)?;
@@ -178,7 +170,148 @@ pub fn read_memory(key: &str, scope: MemoryScope, cwd: &Path) -> Result<MemoryEn
     let content = std::fs::read_to_string(&file_path)
         .with_context(|| format!("Memory '{}' not found", key))?;
 
-    serde_json::from_str(&content).context("Failed to parse memory entry")
+    let entry: MemoryEntry =
+        serde_json::from_str(&content).context("Failed to parse memory entry")?;
+    anyhow::ensure!(
+        entry.key == key,
+        "Memory key collision: requested '{}' but canonical record is '{}'",
+        key,
+        entry.key
+    );
+    Ok(entry)
+}
+
+/// Update a canonical memdir entry while preserving provenance and omitted
+/// fields. The entry and its derived indexes are updated through one owner.
+pub fn update_memory(
+    key: &str,
+    scope: MemoryScope,
+    cwd: &Path,
+    update: MemoryEntryUpdate,
+) -> Result<MemoryEntry> {
+    let mut entry = read_memory(key, scope, cwd)?;
+    let previous_target = entry.effective_memory_type().map(memory_target_for_type);
+    if let Some(value) = update.value {
+        entry.value = value;
+    }
+    if let Some(category) = update.category {
+        entry.category = category;
+    }
+    if let Some(memory_type) = update.memory_type {
+        entry.memory_type = memory_type;
+    }
+    if let Some(description) = update.description {
+        entry.description = description;
+    }
+    if let Some(search_terms) = update.search_terms {
+        entry.search_terms = search_terms;
+    }
+    if let Some(tags) = update.tags {
+        entry.tags = tags;
+    }
+    if let Some(pinned) = update.pinned {
+        entry.pinned = pinned;
+    }
+    entry.updated_at = Utc::now().to_rfc3339();
+
+    let path = memory_dir(scope, cwd)?.join(key_to_filename(key));
+    persist_memory_entry(&path, &entry)?;
+    refresh_memory_index(scope, cwd)?;
+    if let Some(target) = previous_target {
+        if target.default_scope() == scope {
+            refresh_curated_memory_profile(target, cwd, CURATED_MEMORY_PROFILE_MAX_BYTES)?;
+        }
+    }
+    let current_target = entry.effective_memory_type().map(memory_target_for_type);
+    if current_target != previous_target {
+        if let Some(target) = current_target {
+            if target.default_scope() == scope {
+                refresh_curated_memory_profile(target, cwd, CURATED_MEMORY_PROFILE_MAX_BYTES)?;
+            }
+        }
+    }
+    Ok(entry)
+}
+
+/// Import an already validated entry without overwriting a different canonical
+/// record. This is used by one-time migrations that preserve timestamps and
+/// provenance.
+pub fn import_memory_entry(
+    entry: &MemoryEntry,
+    scope: MemoryScope,
+    cwd: &Path,
+) -> Result<MemoryImportOutcome> {
+    let path = ensure_memory_dir(scope, cwd)?.join(key_to_filename(&entry.key));
+    if path.exists() {
+        return match read_memory(&entry.key, scope, cwd) {
+            Ok(existing) if existing == *entry => Ok(MemoryImportOutcome::AlreadyPresent),
+            _ => Ok(MemoryImportOutcome::Conflict),
+        };
+    }
+    persist_memory_entry(&path, entry)?;
+    refresh_memory_index(scope, cwd)?;
+    Ok(MemoryImportOutcome::Imported)
+}
+
+/// Classify a validated import without writing it. Callers can preflight an
+/// entire migration batch and avoid partially importing rows when any key or
+/// sanitized-filename collision is present.
+pub fn classify_memory_import(
+    entry: &MemoryEntry,
+    scope: MemoryScope,
+    cwd: &Path,
+) -> Result<MemoryImportOutcome> {
+    let path = memory_dir(scope, cwd)?.join(key_to_filename(&entry.key));
+    if !path.exists() {
+        return Ok(MemoryImportOutcome::Imported);
+    }
+    match read_memory(&entry.key, scope, cwd) {
+        Ok(existing) if existing == *entry => Ok(MemoryImportOutcome::AlreadyPresent),
+        Ok(_) | Err(_) => Ok(MemoryImportOutcome::Conflict),
+    }
+}
+
+fn memory_target_for_type(memory_type: MemoryType) -> CuratedMemoryTarget {
+    match memory_type {
+        MemoryType::User => CuratedMemoryTarget::User,
+        MemoryType::Feedback => CuratedMemoryTarget::Feedback,
+        MemoryType::Project => CuratedMemoryTarget::Project,
+        MemoryType::Reference => CuratedMemoryTarget::Reference,
+    }
+}
+
+fn persist_memory_entry(path: &Path, entry: &MemoryEntry) -> Result<()> {
+    let json = serde_json::to_vec_pretty(entry).context("Failed to serialize memory entry")?;
+    let parent = path.parent().context("Memory entry path has no parent")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("Failed to create memory directory: {}", parent.display()))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("memory"),
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::write(&temporary, json)
+        .with_context(|| format!("Failed to write memory file: {}", temporary.display()))?;
+    if let Err(error) = std::fs::rename(&temporary, path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(anyhow::Error::new(error)
+            .context(format!("Failed to install memory file: {}", path.display())));
+    }
+    Ok(())
+}
+
+fn existing_memory_at_path(
+    key: &str,
+    scope: MemoryScope,
+    cwd: &Path,
+    path: &Path,
+) -> Result<Option<MemoryEntry>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    read_memory(key, scope, cwd).map(Some)
 }
 
 /// Delete a memory entry.

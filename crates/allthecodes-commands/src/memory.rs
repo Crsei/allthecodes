@@ -35,7 +35,7 @@ use allthecodes_config::features::{self, Feature};
 use allthecodes_config::paths as cfg_paths;
 use allthecodes_config::settings;
 use allthecodes_engine::services::background_review::{
-    self, BackgroundReviewProposal, BackgroundReviewProposalKind,
+    self, BackgroundReviewDecisionError, BackgroundReviewDisposition,
 };
 use allthecodes_session::memdir::{self, MemoryEntry, MemoryScope};
 
@@ -104,7 +104,7 @@ impl CommandHandler for MemoryHandler {
             }
             "reject" => {
                 let id = parts.get(1).copied().unwrap_or("");
-                reject_proposal(id)
+                reject_proposal(id, &ctx.cwd)
             }
             "auto" => {
                 let action = parts.get(1).copied().unwrap_or("status");
@@ -326,7 +326,7 @@ fn search_entries(query: &str, cwd: &Path) -> Result<CommandResult> {
 fn pending_proposals() -> Result<CommandResult> {
     let proposals = background_review::list_background_review_proposals()?
         .into_iter()
-        .filter(is_memory_review_proposal)
+        .filter(background_review::is_memory_review_proposal)
         .collect::<Vec<_>>();
     if proposals.is_empty() {
         return Ok(CommandResult::Output(
@@ -352,93 +352,86 @@ fn approve_proposal(id: &str, cwd: &Path) -> Result<CommandResult> {
             "Usage: /memory approve <id>".to_string(),
         ));
     }
-    let proposal = match background_review::load_background_review_proposal(id) {
-        Ok(proposal) if is_memory_review_proposal(&proposal) => proposal,
-        _ => {
-            return Ok(CommandResult::Output(format!(
-                "Memory proposal '{}' not found.",
-                id
-            )));
-        }
-    };
-
-    match proposal.kind {
-        BackgroundReviewProposalKind::WorkflowWarning => {
-            background_review::reject_background_review_proposal(id)?;
-            Ok(CommandResult::Output(format!(
-                "Acknowledged background review proposal {}. No memory was written.",
-                id
-            )))
-        }
-        BackgroundReviewProposalKind::MemoryAdd | BackgroundReviewProposalKind::MemoryReplace => {
-            let Some(write) = memory_write_from_review(&proposal) else {
-                return Ok(CommandResult::Output(format!(
-                    "Memory proposal '{}' has no concrete memory payload. No memory was written.",
-                    id
-                )));
-            };
-            let entry = memdir::write_curated_memory(write, cwd)?;
-            background_review::reject_background_review_proposal(id)?;
-            Ok(CommandResult::Output(format!(
+    match background_review::decide_memory_background_review_proposal(
+        id,
+        cwd,
+        BackgroundReviewDisposition::Approved,
+    ) {
+        Ok(outcome) => match outcome.memory {
+            Some(entry) => Ok(CommandResult::Output(format!(
                 "Approved memory proposal {}. Wrote memory '{}'.",
                 id, entry.key
-            )))
-        }
-        _ => Ok(CommandResult::Output(format!(
+            ))),
+            None => Ok(CommandResult::Output(format!(
+                "Acknowledged background review proposal {}. No memory was written.",
+                id
+            ))),
+        },
+        Err(BackgroundReviewDecisionError::InvalidPayload) => Ok(CommandResult::Output(format!(
+            "Memory proposal '{}' has no concrete memory payload. No memory was written.",
+            id
+        ))),
+        Err(
+            BackgroundReviewDecisionError::InvalidId
+            | BackgroundReviewDecisionError::NotFound
+            | BackgroundReviewDecisionError::WrongDomain,
+        ) => Ok(CommandResult::Output(format!(
             "Memory proposal '{}' not found.",
             id
         ))),
+        Err(BackgroundReviewDecisionError::AlreadyClaimed) => Ok(CommandResult::Output(format!(
+            "Memory proposal '{}' is already being decided.",
+            id
+        ))),
+        Err(BackgroundReviewDecisionError::AlreadyDecided(receipt)) => {
+            Ok(CommandResult::Output(format!(
+                "Memory proposal '{}' was already {:?}.",
+                id, receipt.disposition
+            )))
+        }
+        Err(BackgroundReviewDecisionError::Io(error)) => Err(error),
     }
 }
 
-fn reject_proposal(id: &str) -> Result<CommandResult> {
+fn reject_proposal(id: &str, cwd: &Path) -> Result<CommandResult> {
     if id.trim().is_empty() {
         return Ok(CommandResult::Output(
             "Usage: /memory reject <id>".to_string(),
         ));
     }
-    match background_review::load_background_review_proposal(id) {
-        Ok(proposal) if is_memory_review_proposal(&proposal) => {
-            background_review::reject_background_review_proposal(id)?;
-            Ok(CommandResult::Output(format!(
-                "Rejected memory proposal {}.",
-                proposal.id
-            )))
-        }
-        _ => Ok(CommandResult::Output(format!(
+    match background_review::decide_memory_background_review_proposal(
+        id,
+        cwd,
+        BackgroundReviewDisposition::Rejected,
+    ) {
+        Ok(outcome) => Ok(CommandResult::Output(format!(
+            "Rejected memory proposal {}.",
+            outcome.proposal.id
+        ))),
+        Err(
+            BackgroundReviewDecisionError::InvalidId
+            | BackgroundReviewDecisionError::NotFound
+            | BackgroundReviewDecisionError::WrongDomain,
+        ) => Ok(CommandResult::Output(format!(
             "Memory proposal '{}' not found.",
             id
         ))),
+        Err(BackgroundReviewDecisionError::AlreadyClaimed) => Ok(CommandResult::Output(format!(
+            "Memory proposal '{}' is already being decided.",
+            id
+        ))),
+        Err(BackgroundReviewDecisionError::AlreadyDecided(receipt)) => {
+            Ok(CommandResult::Output(format!(
+                "Memory proposal '{}' was already {:?}.",
+                id, receipt.disposition
+            )))
+        }
+        Err(BackgroundReviewDecisionError::InvalidPayload) => Ok(CommandResult::Output(format!(
+            "Memory proposal '{}' has invalid content.",
+            id
+        ))),
+        Err(BackgroundReviewDecisionError::Io(error)) => Err(error),
     }
-}
-
-fn is_memory_review_proposal(proposal: &BackgroundReviewProposal) -> bool {
-    matches!(
-        proposal.kind,
-        BackgroundReviewProposalKind::MemoryAdd
-            | BackgroundReviewProposalKind::MemoryReplace
-            | BackgroundReviewProposalKind::WorkflowWarning
-    )
-}
-
-fn memory_write_from_review(
-    proposal: &BackgroundReviewProposal,
-) -> Option<memdir::CuratedMemoryWrite> {
-    let memory = proposal.payload.get("memory").unwrap_or(&proposal.payload);
-    let target = match memory.get("target")?.as_str()? {
-        "user" => memdir::CuratedMemoryTarget::User,
-        "project" => memdir::CuratedMemoryTarget::Project,
-        "reference" => memdir::CuratedMemoryTarget::Reference,
-        "feedback" => memdir::CuratedMemoryTarget::Feedback,
-        _ => return None,
-    };
-    Some(memdir::CuratedMemoryWrite {
-        target,
-        key: memory.get("key")?.as_str()?.to_string(),
-        value: memory.get("value")?.as_str()?.to_string(),
-        source_session_id: Some(proposal.source_session_id.clone()),
-        approval_id: Some(proposal.id.clone()),
-    })
 }
 
 // ---------------------------------------------------------------------------

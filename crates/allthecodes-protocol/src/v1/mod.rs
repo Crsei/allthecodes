@@ -15,6 +15,7 @@ pub mod kairos;
 pub mod kanban;
 pub mod launchpad;
 pub mod logs;
+pub mod memory;
 pub mod mentions;
 pub mod messaging;
 pub mod models;

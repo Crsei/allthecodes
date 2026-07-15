@@ -13,8 +13,9 @@ mod types;
 
 pub use crud::{
     build_curated_memory_profile, build_memory_context, build_memory_context_with,
-    capture_curated_memory_snapshot, curated_memory_profile_path, delete_memory, read_memory,
-    refresh_curated_memory_profile, search_memories, write_curated_memory, write_memory,
+    capture_curated_memory_snapshot, classify_memory_import, curated_memory_profile_path,
+    delete_memory, import_memory_entry, read_memory, refresh_curated_memory_profile,
+    search_memories, update_memory, write_curated_memory, write_memory,
 };
 pub use index::{
     build_memory_index, list_memories, memory_dir, query_requests_memory_ignore, read_memory_index,
@@ -107,6 +108,105 @@ mod tests {
         let second = write_memory("key1", "value2", "cat", MemoryScope::Project, &cwd).unwrap();
         assert_eq!(second.created_at, created);
         assert_eq!(second.value, "value2");
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn test_canonical_update_preserves_provenance_and_omitted_fields() {
+        let cwd = make_temp_dir();
+        let original = write_curated_memory(
+            CuratedMemoryWrite {
+                target: CuratedMemoryTarget::Project,
+                key: "release-contract".to_string(),
+                value: "original".to_string(),
+                source_session_id: Some("session-42".to_string()),
+                approval_id: Some("approval-42".to_string()),
+            },
+            &cwd,
+        )
+        .unwrap();
+
+        let updated = update_memory(
+            &original.key,
+            MemoryScope::Project,
+            &cwd,
+            MemoryEntryUpdate {
+                value: Some("updated".to_string()),
+                tags: Some(vec!["api".to_string()]),
+                pinned: Some(true),
+                ..MemoryEntryUpdate::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(updated.created_at, original.created_at);
+        assert_eq!(updated.source_session_id, original.source_session_id);
+        assert_eq!(updated.approval_id, original.approval_id);
+        assert_eq!(updated.memory_type, original.memory_type);
+        assert_eq!(updated.description, original.description);
+        assert_eq!(updated.search_terms, original.search_terms);
+        assert_eq!(updated.value, "updated");
+        assert_eq!(updated.tags, vec!["api"]);
+        assert!(updated.pinned);
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn test_sanitized_filename_collision_never_overwrites_another_key() {
+        let cwd = make_temp_dir();
+        write_memory(
+            "release/plan",
+            "first",
+            "project",
+            MemoryScope::Project,
+            &cwd,
+        )
+        .unwrap();
+
+        let error = write_memory(
+            "release?plan",
+            "second",
+            "project",
+            MemoryScope::Project,
+            &cwd,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Memory key collision"));
+        assert_eq!(
+            read_memory("release/plan", MemoryScope::Project, &cwd)
+                .unwrap()
+                .value,
+            "first"
+        );
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn test_import_preflight_classifies_equal_and_conflicting_records() {
+        let cwd = make_temp_dir();
+        let existing = write_memory(
+            "legacy-entry",
+            "canonical",
+            "legacy",
+            MemoryScope::Project,
+            &cwd,
+        )
+        .unwrap();
+
+        assert_eq!(
+            classify_memory_import(&existing, MemoryScope::Project, &cwd).unwrap(),
+            MemoryImportOutcome::AlreadyPresent
+        );
+        let mut conflicting = existing.clone();
+        conflicting.value = "different".to_string();
+        assert_eq!(
+            classify_memory_import(&conflicting, MemoryScope::Project, &cwd).unwrap(),
+            MemoryImportOutcome::Conflict
+        );
 
         cleanup(&cwd);
     }
@@ -234,6 +334,8 @@ mod tests {
                 memory_type: Some(MemoryType::Project),
                 description: None,
                 search_terms: Vec::new(),
+                tags: Vec::new(),
+                pinned: false,
                 source_session_id: None,
                 approval_id: None,
                 created_at: "2026-05-06T00:00:00Z".to_string(),
