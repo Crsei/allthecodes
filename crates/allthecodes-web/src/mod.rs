@@ -206,7 +206,8 @@ fn requires_privileged_capability(method: &Method, path: &str) -> bool {
         return true;
     }
 
-    is_group_chat_mutation(method, path)
+    is_jobs_mutation(method, path)
+        || is_group_chat_mutation(method, path)
         || is_provider_oauth_mutation(method, path)
         || is_mcp_oauth_mutation(method, path)
 }
@@ -220,6 +221,18 @@ fn has_single_parameter(path: &str, prefix: &str, suffix: &str) -> bool {
     path.strip_prefix(prefix)
         .and_then(|path| path.strip_suffix(suffix))
         .is_some_and(|parameter| !parameter.is_empty() && !parameter.contains('/'))
+}
+
+fn is_jobs_mutation(method: &Method, path: &str) -> bool {
+    let segments = path.split('/').collect::<Vec<_>>();
+    match (method, segments.as_slice()) {
+        (&Method::POST, ["jobs"]) => true,
+        (&Method::PATCH | &Method::DELETE, ["jobs", job_id]) => !job_id.is_empty(),
+        (&Method::POST, ["jobs", job_id, action]) => {
+            !job_id.is_empty() && matches!(*action, "pause" | "resume" | "run")
+        }
+        _ => false,
+    }
 }
 
 fn is_group_chat_mutation(method: &Method, path: &str) -> bool {
@@ -880,6 +893,24 @@ mod tests {
             "/api/backend-services/backups",
         ] {
             assert!(requires_privileged_capability(&Method::POST, path));
+        }
+    }
+
+    #[test]
+    fn jobs_mutations_require_privileged_capability_but_reads_do_not() {
+        for path in ["/api/jobs", "/api/cron/history"] {
+            assert!(!requires_privileged_capability(&Method::GET, path));
+        }
+
+        for (method, path) in [
+            (Method::POST, "/api/jobs"),
+            (Method::PATCH, "/api/jobs/job-1"),
+            (Method::DELETE, "/api/jobs/job-1"),
+            (Method::POST, "/api/jobs/job-1/pause"),
+            (Method::POST, "/api/jobs/job-1/resume"),
+            (Method::POST, "/api/jobs/job-1/run"),
+        ] {
+            assert!(requires_privileged_capability(&method, path), "{path}");
         }
     }
 

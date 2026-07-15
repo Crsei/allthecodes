@@ -14,6 +14,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use allthecodes_services::scheduler::{
+    SchedulerDispatchReceipt, SchedulerRunCompletion, SchedulerRunId, SchedulerRunStatus,
+    SchedulerRunStore,
+};
+
 pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -274,6 +279,10 @@ impl DaemonProtocolStore {
 
             let mut command = transition_command(command, DaemonCommandStatus::Acked, None);
             command.acked_at = Some(Utc::now());
+            // Advance scheduler history before persisting the command ack. If
+            // the run store is unavailable the command remains pending and can
+            // be retried instead of becoming an unclaimable acked command.
+            scheduler_run_started(&command)?;
             self.write_command(&command)?;
             self.append_event(
                 worker_id,
@@ -294,6 +303,7 @@ impl DaemonProtocolStore {
         let mut command = transition_command(command, DaemonCommandStatus::Handled, None);
         command.handled_at = Some(Utc::now());
         self.write_command(&command)?;
+        scheduler_run_completed(&command)?;
         Ok(command)
     }
 
@@ -306,6 +316,7 @@ impl DaemonProtocolStore {
             transition_command(command, DaemonCommandStatus::Failed, Some(error.into()));
         command.handled_at = Some(Utc::now());
         self.write_command(&command)?;
+        scheduler_run_failed(&command)?;
         Ok(command)
     }
 
@@ -371,6 +382,125 @@ impl DaemonProtocolStore {
             .into_iter()
             .find(|command| command.idempotency_key.as_deref() == Some(idempotency_key)))
     }
+}
+
+fn scheduler_run_started(command: &DaemonCommand) -> Result<()> {
+    let Some((store, run_id)) = scheduler_run(command)? else {
+        return Ok(());
+    };
+    let run = ensure_scheduler_run_queued(&store, &run_id, command)?;
+    if run.status == SchedulerRunStatus::Queued {
+        store
+            .mark_running(
+                &run_id,
+                Some(run.revision),
+                command.acked_at.unwrap_or_else(Utc::now),
+                None,
+                scheduler_session_id(command),
+            )
+            .context("failed to mark scheduler run running")?;
+    }
+    Ok(())
+}
+
+fn scheduler_run_completed(command: &DaemonCommand) -> Result<()> {
+    let Some((store, run_id)) = scheduler_run(command)? else {
+        return Ok(());
+    };
+    let run = ensure_scheduler_run_queued(&store, &run_id, command)?;
+    if matches!(
+        run.status,
+        SchedulerRunStatus::Queued | SchedulerRunStatus::Running
+    ) {
+        store
+            .mark_completed(
+                &run_id,
+                Some(run.revision),
+                SchedulerRunCompletion {
+                    completed_at: command.handled_at,
+                    session_id: scheduler_session_id(command),
+                    ..SchedulerRunCompletion::default()
+                },
+            )
+            .context("failed to mark scheduler run completed")?;
+    }
+    Ok(())
+}
+
+fn scheduler_run_failed(command: &DaemonCommand) -> Result<()> {
+    let Some((store, run_id)) = scheduler_run(command)? else {
+        return Ok(());
+    };
+    let run = ensure_scheduler_run_queued(&store, &run_id, command)?;
+    if matches!(
+        run.status,
+        SchedulerRunStatus::Queued | SchedulerRunStatus::Running
+    ) {
+        store
+            .mark_failed(
+                &run_id,
+                Some(run.revision),
+                SchedulerRunCompletion {
+                    completed_at: command.handled_at,
+                    session_id: scheduler_session_id(command),
+                    ..SchedulerRunCompletion::default()
+                },
+                command.error.as_deref().unwrap_or("daemon command failed"),
+            )
+            .context("failed to mark scheduler run failed")?;
+    }
+    Ok(())
+}
+
+fn scheduler_run(command: &DaemonCommand) -> Result<Option<(SchedulerRunStore, SchedulerRunId)>> {
+    let Some(value) = command
+        .payload
+        .pointer("/scheduler_run/run_id")
+        .and_then(Value::as_str)
+    else {
+        return Ok(None);
+    };
+    let run_id = SchedulerRunId::parse(value.to_string())
+        .map_err(anyhow::Error::new)
+        .context("daemon command contains invalid scheduler run id")?;
+    Ok(Some((SchedulerRunStore::open_default(), run_id)))
+}
+
+fn ensure_scheduler_run_queued(
+    store: &SchedulerRunStore,
+    run_id: &SchedulerRunId,
+    command: &DaemonCommand,
+) -> Result<allthecodes_services::scheduler::SchedulerRunRecord> {
+    let run = store
+        .get(run_id)
+        .context("failed to load scheduler run for daemon command")?;
+    if run.status != SchedulerRunStatus::Enqueueing {
+        return Ok(run);
+    }
+    let idempotency_key = command
+        .idempotency_key
+        .clone()
+        .context("scheduler daemon command is missing its idempotency key")?;
+    store
+        .mark_queued(
+            run_id,
+            Some(run.revision),
+            &SchedulerDispatchReceipt {
+                run_id: run_id.clone(),
+                command_id: command.command_id.clone(),
+                accepted_at: command.created_at,
+                idempotency_key,
+            },
+        )
+        .context("failed to reconcile accepted scheduler command")
+}
+
+fn scheduler_session_id(command: &DaemonCommand) -> Option<String> {
+    command
+        .payload
+        .pointer("/scheduler_run/session_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
 }
 
 impl DaemonCommandKind {

@@ -1,20 +1,91 @@
 //! Persistent scheduled-task worker loop.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
-use chrono::{Local, NaiveDate};
+use anyhow::{anyhow, Result};
+use chrono::{Local, NaiveDate, Utc};
 use serde_json::json;
 use tracing::{debug, info, warn};
 
 use allthecodes_config::features::{self, Feature};
-use allthecodes_services::scheduler::{SchedulerStore, TaskPayload};
+use allthecodes_services::scheduler::{
+    migrate_default_scheduler_data, SchedulerCommandDispatcher, SchedulerDispatchReceipt,
+    SchedulerDispatchRequest, SchedulerDispatcherError, SchedulerRunTriggerSource,
+    SchedulerService, TaskPayload,
+};
 
 use super::state::DaemonState;
 use crate::protocol::{DaemonCommand, DaemonCommandKind};
 use crate::supervisor::ASSISTANT_WORKER_ID;
 
 pub const SCHEDULER_TICK_INTERVAL_MS: u64 = 15_000;
+
+/// Daemon-owned implementation of the scheduler enqueue capability. Keeping
+/// this adapter here lets Web composition inject a narrow dispatcher without
+/// exposing the daemon protocol store itself.
+#[derive(Debug, Default)]
+pub struct DaemonSchedulerDispatcher;
+
+impl SchedulerCommandDispatcher for DaemonSchedulerDispatcher {
+    fn dispatch(
+        &self,
+        request: SchedulerDispatchRequest,
+    ) -> Result<SchedulerDispatchReceipt, SchedulerDispatcherError> {
+        let prompt = match &request.task.payload {
+            TaskPayload::Prompt(text) | TaskPayload::SlashCommand(text) => text.clone(),
+        };
+        let source = match request.trigger_source {
+            SchedulerRunTriggerSource::Manual => "manual_job",
+            SchedulerRunTriggerSource::Scheduled => "scheduled_task",
+        };
+        let command = crate::protocol_store()
+            .enqueue_command(
+                ASSISTANT_WORKER_ID,
+                DaemonCommandKind::Submit,
+                json!({
+                    "text": prompt,
+                    "message_id": format!("scheduler-run-{}", request.run_id.as_str()),
+                    "source": source,
+                    "scheduled_task": {
+                        "task_id": request.task.id.as_str(),
+                        "name": request.task.name,
+                        "payload_kind": request.task.payload.kind_label(),
+                        "next_run_at": request.task.next_run_at.to_rfc3339(),
+                        "definition_revision": request.task.revision,
+                    },
+                    "scheduler_run": {
+                        "run_id": request.run_id.as_str(),
+                        "trigger_source": request.trigger_source.as_str(),
+                        "scheduled_for": request.scheduled_for.map(|value| value.to_rfc3339()),
+                        "idempotency_key": request.idempotency_key.clone(),
+                        "profile_id": request.task.metadata.profile_id,
+                        "session_id": request.task.metadata.session_id,
+                        "working_directory": request.task.metadata.working_directory,
+                    },
+                }),
+                Some(request.idempotency_key.clone()),
+            )
+            .map_err(|error| SchedulerDispatcherError::EnqueueFailed(error.to_string()))?;
+
+        if command
+            .payload
+            .pointer("/scheduler_run/run_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(request.run_id.as_str())
+        {
+            return Err(SchedulerDispatcherError::Rejected(
+                "idempotency key is already bound to a different scheduler run".to_string(),
+            ));
+        }
+        Ok(SchedulerDispatchReceipt {
+            run_id: request.run_id,
+            command_id: command.command_id,
+            accepted_at: command.created_at,
+            idempotency_key: request.idempotency_key,
+        })
+    }
+}
 
 pub async fn scheduler_loop(state: DaemonState) {
     let mut interval = tokio::time::interval(Duration::from_millis(SCHEDULER_TICK_INTERVAL_MS));
@@ -70,38 +141,21 @@ pub fn enqueue_due_scheduled_task_once() -> Result<Option<DaemonCommand>> {
 }
 
 fn enqueue_due_scheduled_task_unchecked() -> Result<Option<DaemonCommand>> {
-    let store = SchedulerStore::open_default();
-    let due = store.due_tasks()?;
-    let Some(task) = due.into_iter().next() else {
+    let service =
+        SchedulerService::open_default().with_dispatcher(Arc::new(DaemonSchedulerDispatcher));
+    migrate_default_scheduler_data(&service)?;
+    let Some(dispatched) = service.dispatch_due_once(Utc::now())? else {
         return Ok(None);
     };
-
-    let prompt = match &task.payload {
-        TaskPayload::Prompt(text) | TaskPayload::SlashCommand(text) => text.clone(),
-    };
-    let idempotency_key = format!(
-        "scheduled_task:{}:{}",
-        task.id.as_str(),
-        task.next_run_at.timestamp_millis()
-    );
-    let command = crate::protocol_store().enqueue_command(
-        ASSISTANT_WORKER_ID,
-        DaemonCommandKind::Submit,
-        json!({
-            "text": prompt,
-            "message_id": format!("scheduled-task-{}", task.id.as_str()),
-            "source": "scheduled_task",
-            "scheduled_task": {
-                "task_id": task.id.as_str(),
-                "name": task.name,
-                "payload_kind": task.payload.kind_label(),
-                "next_run_at": task.next_run_at.to_rfc3339(),
-            },
-        }),
-        Some(idempotency_key),
-    )?;
-    store.record_fired(&task.id)?;
-    Ok(Some(command))
+    crate::protocol_store()
+        .read_command(ASSISTANT_WORKER_ID, &dispatched.accepted.receipt.command_id)?
+        .map(Some)
+        .ok_or_else(|| {
+            anyhow!(
+                "accepted scheduler command '{}' is missing from daemon store",
+                dispatched.accepted.receipt.command_id
+            )
+        })
 }
 
 fn scheduled_dispatch_enabled_by_hermes(
@@ -115,7 +169,10 @@ mod tests {
     use super::*;
     use allthecodes_config::features::FeatureFlags;
     use allthecodes_services::scheduler::{
-        Interval, ScheduledTask, SchedulerKind, SchedulerStore, TaskPayload,
+        Interval, ScheduledTask, SchedulerDispatchRequest, SchedulerDispatcherError, SchedulerKind,
+        SchedulerRunFailureCode, SchedulerRunId, SchedulerRunQuery, SchedulerRunStatus,
+        SchedulerRunStore, SchedulerRunTriggerSource, SchedulerService, SchedulerStore,
+        TaskPayload,
     };
     use chrono::{Datelike, TimeZone};
     use serial_test::serial;
@@ -235,6 +292,30 @@ mod tests {
         );
         assert_eq!(command.payload["text"], "summarize queue");
         assert!(store.get(&task.id).unwrap().last_run_at.is_some());
+
+        let run_store = SchedulerRunStore::open_default();
+        let queued = run_store.query(&SchedulerRunQuery::default()).unwrap();
+        assert_eq!(queued.runs.len(), 1);
+        assert_eq!(queued.runs[0].status, SchedulerRunStatus::Queued);
+        assert_eq!(
+            queued.runs[0].command_id.as_deref(),
+            Some(command.command_id.as_str())
+        );
+
+        let protocol = crate::protocol_store();
+        let claimed = protocol
+            .claim_next_pending_command(ASSISTANT_WORKER_ID, "assistant")
+            .unwrap()
+            .expect("scheduler command should be claimable");
+        assert_eq!(
+            run_store.get(&queued.runs[0].id).unwrap().status,
+            SchedulerRunStatus::Running
+        );
+        protocol.mark_command_handled(claimed).unwrap();
+        assert_eq!(
+            run_store.get(&queued.runs[0].id).unwrap().status,
+            SchedulerRunStatus::Completed
+        );
     }
 
     #[test]
@@ -262,6 +343,91 @@ mod tests {
             .read_worker_commands(ASSISTANT_WORKER_ID)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn scheduler_dispatch_rejects_idempotency_collision_with_unrelated_command() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let now = chrono::Utc::now();
+        let task = ScheduledTask::new(
+            SchedulerKind::LocalCron,
+            "collision",
+            "60s",
+            Interval::from_seconds(60),
+            TaskPayload::Prompt("scheduler payload".to_string()),
+            now,
+        );
+        let idempotency_key = "shared-but-not-scheduler".to_string();
+        crate::protocol_store()
+            .enqueue_command(
+                ASSISTANT_WORKER_ID,
+                DaemonCommandKind::Submit,
+                json!({ "text": "unrelated payload" }),
+                Some(idempotency_key.clone()),
+            )
+            .unwrap();
+
+        let error = DaemonSchedulerDispatcher
+            .dispatch(SchedulerDispatchRequest {
+                run_id: SchedulerRunId::new(),
+                task,
+                trigger_source: SchedulerRunTriggerSource::Manual,
+                scheduled_for: None,
+                idempotency_key,
+                requested_at: now,
+            })
+            .unwrap_err();
+
+        assert!(matches!(error, SchedulerDispatcherError::Rejected(_)));
+        assert_eq!(
+            crate::protocol_store()
+                .read_worker_commands(ASSISTANT_WORKER_ID)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn manual_scheduler_command_failure_updates_canonical_history() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("ALLTHECODES_HOME", home.path());
+        let now = chrono::Utc::now();
+        let task = SchedulerStore::open_default()
+            .add(ScheduledTask::new(
+                SchedulerKind::LocalCron,
+                "manual failure",
+                "60s",
+                Interval::from_seconds(60),
+                TaskPayload::Prompt("fail truthfully".to_string()),
+                now,
+            ))
+            .unwrap();
+        let service =
+            SchedulerService::open_default().with_dispatcher(Arc::new(DaemonSchedulerDispatcher));
+        let accepted = service
+            .trigger_manual(&task.id, task.revision, "manual-worker-failure", now)
+            .unwrap();
+
+        let protocol = crate::protocol_store();
+        let claimed = protocol
+            .claim_next_pending_command(ASSISTANT_WORKER_ID, "assistant")
+            .unwrap()
+            .expect("manual scheduler command should be claimable");
+        protocol
+            .mark_command_failed(claimed, "worker execution failed")
+            .unwrap();
+
+        let failed = SchedulerRunStore::open_default()
+            .get(&accepted.run.id)
+            .unwrap();
+        assert_eq!(failed.status, SchedulerRunStatus::Failed);
+        let failure = failed.failure.expect("failed run has typed failure");
+        assert_eq!(failure.code, SchedulerRunFailureCode::ExecutionFailed);
+        assert_eq!(failure.message, "worker execution failed");
     }
 
     #[test]

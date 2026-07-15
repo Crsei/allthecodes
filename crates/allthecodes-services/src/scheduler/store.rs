@@ -24,7 +24,7 @@ use super::task::{ScheduledTask, SchedulerKind, TaskId};
 
 /// Schema version for the on-disk JSON so we can evolve the format later
 /// without silently deserializing a mismatched layout.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Error)]
 pub enum SchedulerError {
@@ -44,6 +44,10 @@ pub enum SchedulerError {
     Encode(#[source] serde_json::Error),
     #[error("task '{0}' not found")]
     NotFound(String),
+    #[error("task '{0}' already exists")]
+    AlreadyExists(String),
+    #[error("task revision conflict: expected {expected}, current {actual}")]
+    RevisionConflict { expected: u64, actual: u64 },
     #[error("could not acquire scheduler lock at {path} within {}ms", timeout_ms.as_millis())]
     LockTimeout { path: PathBuf, timeout_ms: Duration },
     #[error("remote-trigger tasks are not supported yet — see issue #60")]
@@ -130,10 +134,12 @@ impl SchedulerStore {
     }
 
     /// Add a new task, persisting immediately.
-    pub fn add(&self, task: ScheduledTask) -> Result<ScheduledTask, SchedulerError> {
+    pub fn add(&self, mut task: ScheduledTask) -> Result<ScheduledTask, SchedulerError> {
         if matches!(task.kind, SchedulerKind::RemoteTrigger) {
             return Err(SchedulerError::RemoteTriggerUnsupported);
         }
+        task.revision = task.revision.max(1);
+        task.updated_at.get_or_insert(task.created_at);
         let _guard = self.inner.lock();
         #[cfg(feature = "sqlite-storage")]
         match self.sqlite_add(task.clone()) {
@@ -141,11 +147,15 @@ impl SchedulerStore {
                 self.write_json_backup_from_sqlite();
                 return Ok(task);
             }
+            Err(err @ SchedulerError::AlreadyExists(_)) => return Err(err),
             Err(err) => self.warn_sqlite_fallback("add scheduler task", &err),
         }
 
         let _file_guard = self.acquire_lock()?;
         let mut state = self.read_state()?;
+        if state.tasks.iter().any(|existing| existing.id == task.id) {
+            return Err(SchedulerError::AlreadyExists(task.id.to_string()));
+        }
         state.tasks.push(task.clone());
         self.write_state(&state)?;
         Ok(task)
@@ -153,16 +163,24 @@ impl SchedulerStore {
 
     /// Remove a task by id. Returns the removed task or `NotFound`.
     pub fn remove(&self, id: &TaskId) -> Result<ScheduledTask, SchedulerError> {
+        self.remove_if_revision(id, None)
+    }
+
+    /// Remove a task after an optional optimistic revision check.
+    pub fn remove_if_revision(
+        &self,
+        id: &TaskId,
+        expected_revision: Option<u64>,
+    ) -> Result<ScheduledTask, SchedulerError> {
         let _guard = self.inner.lock();
         #[cfg(feature = "sqlite-storage")]
-        match self.sqlite_remove(id) {
+        match self.sqlite_remove(id, expected_revision) {
             Ok(task) => {
                 self.write_json_backup_from_sqlite();
                 return Ok(task);
             }
-            Err(SchedulerError::NotFound(_)) => {
-                return Err(SchedulerError::NotFound(id.to_string()))
-            }
+            Err(err @ SchedulerError::NotFound(_))
+            | Err(err @ SchedulerError::RevisionConflict { .. }) => return Err(err),
             Err(err) => self.warn_sqlite_fallback("remove scheduler task", &err),
         }
 
@@ -173,9 +191,50 @@ impl SchedulerStore {
             .iter()
             .position(|t| t.id == *id)
             .ok_or_else(|| SchedulerError::NotFound(id.to_string()))?;
+        check_revision(&state.tasks[pos], expected_revision)?;
         let removed = state.tasks.remove(pos);
         self.write_state(&state)?;
         Ok(removed)
+    }
+
+    /// Atomically replace a task definition and increment its revision.
+    pub fn replace(
+        &self,
+        id: &TaskId,
+        expected_revision: u64,
+        mut replacement: ScheduledTask,
+    ) -> Result<ScheduledTask, SchedulerError> {
+        if matches!(replacement.kind, SchedulerKind::RemoteTrigger) {
+            return Err(SchedulerError::RemoteTriggerUnsupported);
+        }
+        replacement.id = id.clone();
+        let _guard = self.inner.lock();
+        #[cfg(feature = "sqlite-storage")]
+        match self.sqlite_replace(id, expected_revision, replacement.clone()) {
+            Ok(task) => {
+                self.write_json_backup_from_sqlite();
+                return Ok(task);
+            }
+            Err(err @ SchedulerError::NotFound(_))
+            | Err(err @ SchedulerError::RevisionConflict { .. }) => return Err(err),
+            Err(err) => self.warn_sqlite_fallback("replace scheduler task", &err),
+        }
+
+        let _file_guard = self.acquire_lock()?;
+        let mut state = self.read_state()?;
+        let task = state
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == *id)
+            .ok_or_else(|| SchedulerError::NotFound(id.to_string()))?;
+        check_revision(task, Some(expected_revision))?;
+        replacement.created_at = task.created_at;
+        replacement.last_run_at = task.last_run_at;
+        replacement.revision = task.revision.saturating_add(1);
+        replacement.updated_at = Some(Utc::now());
+        *task = replacement.clone();
+        self.write_state(&state)?;
+        Ok(replacement)
     }
 
     /// Fetch a single task snapshot.
@@ -184,9 +243,8 @@ impl SchedulerStore {
         #[cfg(feature = "sqlite-storage")]
         match self.sqlite_get(id) {
             Ok(task) => return Ok(task),
-            Err(SchedulerError::NotFound(_)) => {
-                return Err(SchedulerError::NotFound(id.to_string()))
-            }
+            Err(err @ SchedulerError::NotFound(_))
+            | Err(err @ SchedulerError::RevisionConflict { .. }) => return Err(err),
             Err(err) => self.warn_sqlite_fallback("get scheduler task", &err),
         }
 
@@ -200,16 +258,24 @@ impl SchedulerStore {
 
     /// Pause or resume a task by id.
     pub fn set_paused(&self, id: &TaskId, paused: bool) -> Result<ScheduledTask, SchedulerError> {
+        self.set_paused_if_revision(id, paused, None)
+    }
+
+    pub fn set_paused_if_revision(
+        &self,
+        id: &TaskId,
+        paused: bool,
+        expected_revision: Option<u64>,
+    ) -> Result<ScheduledTask, SchedulerError> {
         let _guard = self.inner.lock();
         #[cfg(feature = "sqlite-storage")]
-        match self.sqlite_set_paused(id, paused) {
+        match self.sqlite_set_paused(id, paused, expected_revision) {
             Ok(task) => {
                 self.write_json_backup_from_sqlite();
                 return Ok(task);
             }
-            Err(SchedulerError::NotFound(_)) => {
-                return Err(SchedulerError::NotFound(id.to_string()))
-            }
+            Err(err @ SchedulerError::NotFound(_))
+            | Err(err @ SchedulerError::RevisionConflict { .. }) => return Err(err),
             Err(err) => self.warn_sqlite_fallback("set scheduler pause state", &err),
         }
 
@@ -220,7 +286,10 @@ impl SchedulerStore {
             .iter_mut()
             .find(|t| t.id == *id)
             .ok_or_else(|| SchedulerError::NotFound(id.to_string()))?;
+        check_revision(task, expected_revision)?;
         task.paused = paused;
+        task.revision = task.revision.saturating_add(1);
+        task.updated_at = Some(Utc::now());
         let snapshot = task.clone();
         self.write_state(&state)?;
         Ok(snapshot)
@@ -229,16 +298,23 @@ impl SchedulerStore {
     /// Mark a task as fired (advance its `next_run_at`). This is what the
     /// daemon should call after it successfully dispatches a task.
     pub fn record_fired(&self, id: &TaskId) -> Result<ScheduledTask, SchedulerError> {
+        self.record_fired_if_revision(id, None)
+    }
+
+    pub fn record_fired_if_revision(
+        &self,
+        id: &TaskId,
+        expected_revision: Option<u64>,
+    ) -> Result<ScheduledTask, SchedulerError> {
         let _guard = self.inner.lock();
         #[cfg(feature = "sqlite-storage")]
-        match self.sqlite_record_fired(id) {
+        match self.sqlite_record_fired(id, expected_revision) {
             Ok(task) => {
                 self.write_json_backup_from_sqlite();
                 return Ok(task);
             }
-            Err(SchedulerError::NotFound(_)) => {
-                return Err(SchedulerError::NotFound(id.to_string()))
-            }
+            Err(err @ SchedulerError::NotFound(_))
+            | Err(err @ SchedulerError::RevisionConflict { .. }) => return Err(err),
             Err(err) => self.warn_sqlite_fallback("record scheduler task fired", &err),
         }
 
@@ -249,6 +325,7 @@ impl SchedulerStore {
             .iter_mut()
             .find(|t| t.id == *id)
             .ok_or_else(|| SchedulerError::NotFound(id.to_string()))?;
+        check_revision(task, expected_revision)?;
         task.mark_fired(Utc::now());
         let snapshot = task.clone();
         self.write_state(&state)?;
@@ -296,10 +373,15 @@ impl SchedulerStore {
         if buf.trim().is_empty() {
             return Ok(StateFile::default());
         }
-        let parsed: StateFile = serde_json::from_str(&buf).map_err(|e| SchedulerError::Decode {
-            path: self.state_path.clone(),
-            source: e,
-        })?;
+        let mut parsed: StateFile =
+            serde_json::from_str(&buf).map_err(|e| SchedulerError::Decode {
+                path: self.state_path.clone(),
+                source: e,
+            })?;
+        parsed.version = SCHEMA_VERSION;
+        for task in &mut parsed.tasks {
+            task.revision = task.revision.max(1);
+        }
         Ok(parsed)
     }
 
@@ -421,10 +503,36 @@ impl SchedulerStore {
     }
 
     #[cfg(feature = "sqlite-storage")]
-    fn sqlite_remove(&self, id: &TaskId) -> Result<ScheduledTask, SchedulerError> {
-        sqlite_store::remove(&self.sqlite_data_root, &self.state_path, id)
-            .map_err(sqlite_error)?
-            .ok_or_else(|| SchedulerError::NotFound(id.to_string()))
+    fn sqlite_remove(
+        &self,
+        id: &TaskId,
+        expected_revision: Option<u64>,
+    ) -> Result<ScheduledTask, SchedulerError> {
+        sqlite_store::remove(
+            &self.sqlite_data_root,
+            &self.state_path,
+            id,
+            expected_revision,
+        )
+        .map_err(sqlite_error)?
+        .ok_or_else(|| SchedulerError::NotFound(id.to_string()))
+    }
+
+    #[cfg(feature = "sqlite-storage")]
+    fn sqlite_replace(
+        &self,
+        id: &TaskId,
+        expected_revision: u64,
+        replacement: ScheduledTask,
+    ) -> Result<ScheduledTask, SchedulerError> {
+        sqlite_store::replace(
+            &self.sqlite_data_root,
+            &self.state_path,
+            id,
+            expected_revision,
+            replacement,
+        )
+        .map_err(sqlite_error)
     }
 
     #[cfg(feature = "sqlite-storage")]
@@ -439,17 +547,33 @@ impl SchedulerStore {
         &self,
         id: &TaskId,
         paused: bool,
+        expected_revision: Option<u64>,
     ) -> Result<ScheduledTask, SchedulerError> {
-        sqlite_store::set_paused(&self.sqlite_data_root, &self.state_path, id, paused)
-            .map_err(sqlite_error)?
-            .ok_or_else(|| SchedulerError::NotFound(id.to_string()))
+        sqlite_store::set_paused(
+            &self.sqlite_data_root,
+            &self.state_path,
+            id,
+            paused,
+            expected_revision,
+        )
+        .map_err(sqlite_error)?
+        .ok_or_else(|| SchedulerError::NotFound(id.to_string()))
     }
 
     #[cfg(feature = "sqlite-storage")]
-    fn sqlite_record_fired(&self, id: &TaskId) -> Result<ScheduledTask, SchedulerError> {
-        sqlite_store::record_fired(&self.sqlite_data_root, &self.state_path, id)
-            .map_err(sqlite_error)?
-            .ok_or_else(|| SchedulerError::NotFound(id.to_string()))
+    fn sqlite_record_fired(
+        &self,
+        id: &TaskId,
+        expected_revision: Option<u64>,
+    ) -> Result<ScheduledTask, SchedulerError> {
+        sqlite_store::record_fired(
+            &self.sqlite_data_root,
+            &self.state_path,
+            id,
+            expected_revision,
+        )
+        .map_err(sqlite_error)?
+        .ok_or_else(|| SchedulerError::NotFound(id.to_string()))
     }
 
     #[cfg(feature = "sqlite-storage")]
@@ -460,7 +584,25 @@ impl SchedulerStore {
 
 #[cfg(feature = "sqlite-storage")]
 fn sqlite_error(error: anyhow::Error) -> SchedulerError {
-    SchedulerError::Sqlite(error)
+    match error.downcast::<SchedulerError>() {
+        Ok(error) => error,
+        Err(error) => SchedulerError::Sqlite(error),
+    }
+}
+
+fn check_revision(
+    task: &ScheduledTask,
+    expected_revision: Option<u64>,
+) -> Result<(), SchedulerError> {
+    if let Some(expected) = expected_revision {
+        if task.revision != expected {
+            return Err(SchedulerError::RevisionConflict {
+                expected,
+                actual: task.revision,
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "sqlite-storage")]
@@ -498,6 +640,17 @@ mod sqlite_store {
                 ON scheduled_tasks(paused, next_run_at)
             "#,
         ),
+        Migration::new(
+            3,
+            r#"
+            ALTER TABLE scheduled_tasks
+                ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE scheduled_tasks
+                ADD COLUMN updated_at INTEGER;
+            ALTER TABLE scheduled_tasks
+                ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+            "#,
+        ),
     ];
 
     pub(super) fn load(data_root: &Path, json_path: &Path) -> Result<Vec<ScheduledTask>> {
@@ -520,7 +673,7 @@ mod sqlite_store {
         task: ScheduledTask,
     ) -> Result<ScheduledTask> {
         run(data_root, json_path, move |pool| async move {
-            insert_task(&pool, &task).await?;
+            insert_task_new(&pool, &task).await?;
             Ok(task)
         })
     }
@@ -529,18 +682,47 @@ mod sqlite_store {
         data_root: &Path,
         json_path: &Path,
         id: &TaskId,
+        expected_revision: Option<u64>,
     ) -> Result<Option<ScheduledTask>> {
         let id = id.clone();
-        run(data_root, json_path, |pool| async move {
-            let task = get_from_pool(&pool, &id).await?;
-            if task.is_some() {
-                sqlx::query("DELETE FROM scheduled_tasks WHERE id = ?")
-                    .bind(id.as_str())
-                    .execute(&pool)
-                    .await
-                    .context("failed to delete sqlite scheduled task")?;
+        run(data_root, json_path, move |pool| async move {
+            let Some(task) = get_from_pool(&pool, &id).await? else {
+                return Ok(None);
+            };
+            check_revision(&task, expected_revision).map_err(anyhow::Error::new)?;
+            let result = sqlx::query("DELETE FROM scheduled_tasks WHERE id = ? AND revision = ?")
+                .bind(id.as_str())
+                .bind(u64_to_i64(task.revision))
+                .execute(&pool)
+                .await
+                .context("failed to delete sqlite scheduled task")?;
+            if result.rows_affected() == 0 {
+                return Err(current_revision_conflict(&pool, &id, task.revision).await);
             }
-            Ok(task)
+            Ok(Some(task))
+        })
+    }
+
+    pub(super) fn replace(
+        data_root: &Path,
+        json_path: &Path,
+        id: &TaskId,
+        expected_revision: u64,
+        mut replacement: ScheduledTask,
+    ) -> Result<ScheduledTask> {
+        let id = id.clone();
+        run(data_root, json_path, move |pool| async move {
+            let Some(current) = get_from_pool(&pool, &id).await? else {
+                return Err(anyhow::Error::new(SchedulerError::NotFound(id.to_string())));
+            };
+            check_revision(&current, Some(expected_revision)).map_err(anyhow::Error::new)?;
+            replacement.id = id.clone();
+            replacement.created_at = current.created_at;
+            replacement.last_run_at = current.last_run_at;
+            replacement.revision = current.revision.saturating_add(1);
+            replacement.updated_at = Some(Utc::now());
+            update_task_cas(&pool, current.revision, &replacement).await?;
+            Ok(replacement)
         })
     }
 
@@ -560,14 +742,19 @@ mod sqlite_store {
         json_path: &Path,
         id: &TaskId,
         paused: bool,
+        expected_revision: Option<u64>,
     ) -> Result<Option<ScheduledTask>> {
         let id = id.clone();
         run(data_root, json_path, move |pool| async move {
             let Some(mut task) = get_from_pool(&pool, &id).await? else {
                 return Ok(None);
             };
+            check_revision(&task, expected_revision).map_err(anyhow::Error::new)?;
+            let previous_revision = task.revision;
             task.paused = paused;
-            insert_task(&pool, &task).await?;
+            task.revision = task.revision.saturating_add(1);
+            task.updated_at = Some(Utc::now());
+            update_task_cas(&pool, previous_revision, &task).await?;
             Ok(Some(task))
         })
     }
@@ -576,14 +763,17 @@ mod sqlite_store {
         data_root: &Path,
         json_path: &Path,
         id: &TaskId,
+        expected_revision: Option<u64>,
     ) -> Result<Option<ScheduledTask>> {
         let id = id.clone();
-        run(data_root, json_path, |pool| async move {
+        run(data_root, json_path, move |pool| async move {
             let Some(mut task) = get_from_pool(&pool, &id).await? else {
                 return Ok(None);
             };
+            check_revision(&task, expected_revision).map_err(anyhow::Error::new)?;
+            let previous_revision = task.revision;
             task.mark_fired(Utc::now());
-            insert_task(&pool, &task).await?;
+            update_task_cas(&pool, previous_revision, &task).await?;
             Ok(Some(task))
         })
     }
@@ -701,9 +891,12 @@ mod sqlite_store {
                 created_at,
                 last_run_at,
                 next_run_at,
-                paused
+                paused,
+                revision,
+                updated_at,
+                metadata_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 kind = excluded.kind,
                 name = excluded.name,
@@ -715,7 +908,10 @@ mod sqlite_store {
                 created_at = excluded.created_at,
                 last_run_at = excluded.last_run_at,
                 next_run_at = excluded.next_run_at,
-                paused = excluded.paused
+                paused = excluded.paused,
+                revision = excluded.revision,
+                updated_at = excluded.updated_at,
+                metadata_json = excluded.metadata_json
             "#,
         )
         .bind(task.id.as_str())
@@ -730,10 +926,106 @@ mod sqlite_store {
         .bind(task.last_run_at.map(datetime_to_ns).transpose()?)
         .bind(datetime_to_ns(task.next_run_at)?)
         .bind(if task.paused { 1_i64 } else { 0_i64 })
+        .bind(u64_to_i64(task.revision))
+        .bind(task.updated_at.map(datetime_to_ns).transpose()?)
+        .bind(serde_json::to_string(&task.metadata).context("failed to encode task metadata")?)
         .execute(pool)
         .await
         .context("failed to upsert sqlite scheduled task")?;
         Ok(())
+    }
+
+    async fn insert_task_new(pool: &SqlitePool, task: &ScheduledTask) -> Result<()> {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO scheduled_tasks (
+                id, kind, name, schedule, schedule_kind, timezone,
+                interval_seconds, payload_json, created_at, last_run_at,
+                next_run_at, paused, revision, updated_at, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
+            "#,
+        )
+        .bind(task.id.as_str())
+        .bind(kind_to_str(task.kind))
+        .bind(&task.name)
+        .bind(&task.schedule)
+        .bind(schedule_kind_to_str(task.schedule_kind))
+        .bind(&task.timezone)
+        .bind(u64_to_i64(task.interval_seconds))
+        .bind(serde_json::to_string(&task.payload).context("failed to encode task payload")?)
+        .bind(datetime_to_ns(task.created_at)?)
+        .bind(task.last_run_at.map(datetime_to_ns).transpose()?)
+        .bind(datetime_to_ns(task.next_run_at)?)
+        .bind(if task.paused { 1_i64 } else { 0_i64 })
+        .bind(u64_to_i64(task.revision))
+        .bind(task.updated_at.map(datetime_to_ns).transpose()?)
+        .bind(serde_json::to_string(&task.metadata).context("failed to encode task metadata")?)
+        .execute(pool)
+        .await
+        .context("failed to insert sqlite scheduled task")?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::Error::new(SchedulerError::AlreadyExists(
+                task.id.to_string(),
+            )));
+        }
+        Ok(())
+    }
+
+    async fn update_task_cas(
+        pool: &SqlitePool,
+        previous_revision: u64,
+        task: &ScheduledTask,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            r#"
+            UPDATE scheduled_tasks SET
+                kind = ?, name = ?, schedule = ?, schedule_kind = ?,
+                timezone = ?, interval_seconds = ?, payload_json = ?,
+                created_at = ?, last_run_at = ?, next_run_at = ?, paused = ?,
+                revision = ?, updated_at = ?, metadata_json = ?
+            WHERE id = ? AND revision = ?
+            "#,
+        )
+        .bind(kind_to_str(task.kind))
+        .bind(&task.name)
+        .bind(&task.schedule)
+        .bind(schedule_kind_to_str(task.schedule_kind))
+        .bind(&task.timezone)
+        .bind(u64_to_i64(task.interval_seconds))
+        .bind(serde_json::to_string(&task.payload).context("failed to encode task payload")?)
+        .bind(datetime_to_ns(task.created_at)?)
+        .bind(task.last_run_at.map(datetime_to_ns).transpose()?)
+        .bind(datetime_to_ns(task.next_run_at)?)
+        .bind(if task.paused { 1_i64 } else { 0_i64 })
+        .bind(u64_to_i64(task.revision))
+        .bind(task.updated_at.map(datetime_to_ns).transpose()?)
+        .bind(serde_json::to_string(&task.metadata).context("failed to encode task metadata")?)
+        .bind(task.id.as_str())
+        .bind(u64_to_i64(previous_revision))
+        .execute(pool)
+        .await
+        .context("failed to update sqlite scheduled task")?;
+        if result.rows_affected() == 0 {
+            return Err(current_revision_conflict(pool, &task.id, previous_revision).await);
+        }
+        Ok(())
+    }
+
+    async fn current_revision_conflict(
+        pool: &SqlitePool,
+        id: &TaskId,
+        expected: u64,
+    ) -> anyhow::Error {
+        match get_from_pool(pool, id).await {
+            Ok(Some(current)) => anyhow::Error::new(SchedulerError::RevisionConflict {
+                expected,
+                actual: current.revision,
+            }),
+            Ok(None) => anyhow::Error::new(SchedulerError::NotFound(id.to_string())),
+            Err(error) => error,
+        }
     }
 
     fn task_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ScheduledTask> {
@@ -742,6 +1034,8 @@ mod sqlite_store {
         let payload_json: String = row.try_get("payload_json")?;
         let interval_seconds: i64 = row.try_get("interval_seconds")?;
         let last_run_at: Option<i64> = row.try_get("last_run_at")?;
+        let updated_at: Option<i64> = row.try_get("updated_at")?;
+        let metadata_json: String = row.try_get("metadata_json")?;
         Ok(ScheduledTask {
             id: TaskId(row.try_get("id")?),
             kind: kind_from_str(&kind)?,
@@ -756,6 +1050,10 @@ mod sqlite_store {
             last_run_at: last_run_at.map(ns_to_datetime).transpose()?,
             next_run_at: ns_to_datetime(row.try_get("next_run_at")?)?,
             paused: row.try_get::<i64, _>("paused")? != 0,
+            revision: i64_to_u64(row.try_get("revision")?),
+            updated_at: updated_at.map(ns_to_datetime).transpose()?,
+            metadata: serde_json::from_str(&metadata_json)
+                .context("failed to decode task metadata")?,
         })
     }
 
@@ -865,6 +1163,123 @@ mod tests {
         let removed = store.remove(&created.id).unwrap();
         assert_eq!(removed.id, created.id);
         assert!(store.load().unwrap().is_empty());
+    }
+
+    #[test]
+    fn duplicate_add_is_rejected_without_overwriting_definition() {
+        let (_dir, store) = fresh_store();
+        let original = store.add(make_task("one", 60)).unwrap();
+        let mut duplicate = make_task("replacement", 120);
+        duplicate.id = original.id.clone();
+
+        let err = store.add(duplicate).unwrap_err();
+        assert!(matches!(err, SchedulerError::AlreadyExists(_)));
+        assert_eq!(store.get(&original.id).unwrap().name, "one");
+    }
+
+    #[test]
+    fn replace_uses_compare_and_swap_and_preserves_runtime_history() {
+        let (_dir, store) = fresh_store();
+        let original = store.add(make_task("one", 60)).unwrap();
+        let fired = store
+            .record_fired_if_revision(&original.id, Some(original.revision))
+            .unwrap();
+        let last_run_at = fired.last_run_at;
+
+        let mut replacement = make_task("renamed", 120);
+        replacement.metadata.description = Some("canonical metadata".to_string());
+        let replaced = store
+            .replace(&original.id, fired.revision, replacement)
+            .unwrap();
+
+        assert_eq!(replaced.id, original.id);
+        assert_eq!(replaced.name, "renamed");
+        assert_eq!(replaced.created_at, original.created_at);
+        assert_eq!(replaced.last_run_at, last_run_at);
+        assert_eq!(replaced.revision, fired.revision + 1);
+        assert_eq!(
+            replaced.metadata.description.as_deref(),
+            Some("canonical metadata")
+        );
+
+        let err = store
+            .replace(&original.id, fired.revision, make_task("stale", 30))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SchedulerError::RevisionConflict {
+                expected,
+                actual
+            } if expected == fired.revision && actual == replaced.revision
+        ));
+        assert_eq!(store.get(&original.id).unwrap().name, "renamed");
+    }
+
+    #[test]
+    fn pause_fire_and_delete_reject_stale_revisions() {
+        let (_dir, store) = fresh_store();
+        let original = store.add(make_task("one", 60)).unwrap();
+        let paused = store
+            .set_paused_if_revision(&original.id, true, Some(original.revision))
+            .unwrap();
+        assert_eq!(paused.revision, original.revision + 1);
+
+        let stale_fire = store
+            .record_fired_if_revision(&original.id, Some(original.revision))
+            .unwrap_err();
+        assert!(matches!(
+            stale_fire,
+            SchedulerError::RevisionConflict { .. }
+        ));
+
+        let stale_delete = store
+            .remove_if_revision(&original.id, Some(original.revision))
+            .unwrap_err();
+        assert!(matches!(
+            stale_delete,
+            SchedulerError::RevisionConflict { .. }
+        ));
+
+        let fired = store
+            .record_fired_if_revision(&original.id, Some(paused.revision))
+            .unwrap();
+        assert_eq!(fired.revision, paused.revision + 1);
+        store
+            .remove_if_revision(&original.id, Some(fired.revision))
+            .unwrap();
+        assert!(matches!(
+            store.get(&original.id),
+            Err(SchedulerError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn legacy_json_defaults_revision_without_rewriting_on_read() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("scheduled_tasks.json");
+        let task = make_task("legacy", 60);
+        let mut value = serde_json::to_value(StateFile {
+            version: 1,
+            tasks: vec![task.clone()],
+        })
+        .unwrap();
+        let object = value["tasks"][0].as_object_mut().unwrap();
+        object.remove("revision");
+        object.remove("updated_at");
+        object.remove("metadata");
+        std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let store = SchedulerStore::new(&path);
+        let loaded = store.get(&task.id).unwrap();
+        assert_eq!(loaded.revision, 1);
+        assert_eq!(loaded.updated_at, None);
+        assert!(loaded.metadata.artifact_links.is_empty());
+
+        let paused = store
+            .set_paused_if_revision(&task.id, true, Some(1))
+            .unwrap();
+        assert_eq!(paused.revision, 2);
+        assert!(paused.updated_at.is_some());
     }
 
     #[test]

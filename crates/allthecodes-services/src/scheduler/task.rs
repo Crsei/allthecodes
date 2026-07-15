@@ -8,6 +8,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 /// Stable identifier for a scheduled task. Wraps a short UUID-derived string
@@ -87,6 +88,25 @@ pub enum TaskPayload {
     Prompt(String),
 }
 
+/// Optional API/runtime metadata that does not affect schedule evaluation.
+/// Keeping it on the canonical task prevents Web adapters from maintaining a
+/// second definition store merely to retain profile or artifact context.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledTaskMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Execution workspace retained for legacy scheduled-agent migration and
+    /// daemon policy evaluation. Web Jobs DTOs intentionally do not expose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_links: Vec<Value>,
+}
+
 impl TaskPayload {
     /// Build a payload from raw user input; strings starting with `/` become
     /// slash-command payloads, everything else is a plain prompt.
@@ -144,6 +164,19 @@ pub struct ScheduledTask {
     /// without being deleted.
     #[serde(default)]
     pub paused: bool,
+    /// Monotonic optimistic-concurrency revision. Legacy records migrate to 1.
+    #[serde(default = "initial_revision")]
+    pub revision: u64,
+    /// Last canonical definition/schedule transition time. Legacy records may
+    /// omit it; adapters can fall back to `created_at` without rewriting reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub metadata: ScheduledTaskMetadata,
+}
+
+const fn initial_revision() -> u64 {
+    1
 }
 
 impl ScheduledTask {
@@ -170,6 +203,9 @@ impl ScheduledTask {
             last_run_at: None,
             next_run_at: now + chrono::Duration::seconds(interval_seconds as i64),
             paused: false,
+            revision: 1,
+            updated_at: Some(now),
+            metadata: ScheduledTaskMetadata::default(),
         }
     }
 
@@ -178,6 +214,8 @@ impl ScheduledTask {
     pub fn mark_fired(&mut self, now: DateTime<Utc>) {
         self.last_run_at = Some(now);
         self.next_run_at = self.compute_next_run(now);
+        self.updated_at = Some(now);
+        self.revision = self.revision.saturating_add(1);
     }
 
     /// Is this task due to fire relative to `now`?
@@ -254,6 +292,8 @@ mod tests {
 
         assert_eq!(task.last_run_at, Some(fired_at));
         assert_eq!(task.next_run_at, fired_at + chrono::Duration::seconds(300));
+        assert_eq!(task.updated_at, Some(fired_at));
+        assert_eq!(task.revision, 2);
     }
 
     #[test]

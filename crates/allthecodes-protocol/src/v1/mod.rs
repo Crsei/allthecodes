@@ -14,6 +14,7 @@ pub mod group_chat;
 pub mod health;
 pub mod hooks;
 pub mod image_generate;
+pub mod jobs;
 pub mod kairos;
 pub mod kanban;
 pub mod launchpad;

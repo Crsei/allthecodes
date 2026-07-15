@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use allthecodes_config::paths;
 use allthecodes_engine::lifecycle::QueryEngine;
+use allthecodes_services::scheduler::{SchedulerCommandDispatcher, SchedulerService};
 use allthecodes_types::callbacks::{PermissionRequestPayload, PermissionResponsePayload};
 use allthecodes_types::tool_operation::ToolOperationDisplay;
 use allthecodes_web_state::WebUiStore;
@@ -70,6 +71,8 @@ pub struct WebState {
     pub queue: Arc<RwLock<VecDeque<QueueEntry>>>,
     /// Desktop account auth state shared by account auth endpoints.
     pub account_auth: Arc<Mutex<AccountAuthMemory>>,
+    /// Daemon-owned enqueue capability used by the canonical scheduler API.
+    scheduler_dispatcher: Option<Arc<dyn SchedulerCommandDispatcher>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -134,6 +137,7 @@ impl WebState {
             web_ui_store: WebUiStore::new(paths::data_root().join("web").join("state.db")),
             queue: Arc::new(RwLock::new(VecDeque::new())),
             account_auth: Arc::new(Mutex::new(AccountAuthMemory::default())),
+            scheduler_dispatcher: None,
         };
         install_plugin_mcp_hooks();
         state.install_plugin_account_token_provider();
@@ -168,6 +172,24 @@ impl WebState {
     pub fn with_listener_authority(mut self, authority: impl Into<String>) -> Self {
         self.listener_authority = Some(Arc::from(authority.into()));
         self
+    }
+
+    /// Install the daemon-owned enqueue boundary used by Jobs/Cron handlers.
+    pub fn with_scheduler_dispatcher(
+        mut self,
+        dispatcher: Arc<dyn SchedulerCommandDispatcher>,
+    ) -> Self {
+        self.scheduler_dispatcher = Some(dispatcher);
+        self
+    }
+
+    /// Open the canonical scheduler stores with this server's enqueue boundary.
+    pub fn scheduler_service(&self) -> SchedulerService {
+        let service = SchedulerService::open_default();
+        match &self.scheduler_dispatcher {
+            Some(dispatcher) => service.with_dispatcher(dispatcher.clone()),
+            None => service,
+        }
     }
 
     /// Application version reported to Web clients.

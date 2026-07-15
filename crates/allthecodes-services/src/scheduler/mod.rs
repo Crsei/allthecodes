@@ -20,9 +20,29 @@
 //! two capability lines stay separate — see `SchedulerKind`.
 
 pub mod interval;
+pub mod migration;
+pub mod run;
+pub mod service;
 pub mod store;
 pub mod task;
 
 pub use interval::{parse_cron, parse_interval, CronParseError, CronSchedule, Interval};
+pub use migration::{
+    migrate_default_scheduler_data, migrate_legacy_scheduler_data, SchedulerMigrationError,
+    SchedulerMigrationMapping, SchedulerMigrationQuarantine, SchedulerMigrationReport,
+};
+pub use run::{
+    LegacySchedulerRunInput, SchedulerDispatchReceipt, SchedulerRunBegin, SchedulerRunCompletion,
+    SchedulerRunFailure, SchedulerRunFailureCode, SchedulerRunId, SchedulerRunPage,
+    SchedulerRunQuery, SchedulerRunRecord, SchedulerRunStatus, SchedulerRunStore,
+    SchedulerRunStoreError, SchedulerRunTriggerSource,
+};
+pub use service::{
+    AcceptedSchedulerRun, SchedulerCommandDispatcher, SchedulerDefinitionInput,
+    SchedulerDispatchRequest, SchedulerDispatcherError, SchedulerDueDispatch, SchedulerService,
+    SchedulerServiceError,
+};
 pub use store::{SchedulerError, SchedulerStore};
-pub use task::{ScheduleKind, ScheduledTask, SchedulerKind, TaskId, TaskPayload};
+pub use task::{
+    ScheduleKind, ScheduledTask, ScheduledTaskMetadata, SchedulerKind, TaskId, TaskPayload,
+};

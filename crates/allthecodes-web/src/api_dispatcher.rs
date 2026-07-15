@@ -266,25 +266,26 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::WorkflowRunStatus - dispatched.
 // ClientRequest::WorkflowRunAdvance - dispatched; production policy remains fail-closed on Ask.
 // ClientRequest::WorkflowRunCancel - dispatched; production policy remains fail-closed on Ask.
-// ClientRequest::JobsList - legacy REST handler, JobsProcessor target.
-// ClientRequest::JobsCreate - legacy REST handler, JobsProcessor target.
-// ClientRequest::JobsUpdate - legacy REST handler, JobsProcessor target.
-// ClientRequest::JobsDelete - legacy REST handler, JobsProcessor target.
-// ClientRequest::JobsPause - legacy REST handler, JobsProcessor target.
-// ClientRequest::JobsResume - legacy REST handler, JobsProcessor target.
-// ClientRequest::JobsRun - legacy REST handler, JobsProcessor target.
-// ClientRequest::CronHistory - legacy REST handler, JobsProcessor target.
-// ClientRequest::GroupChatRoomsList - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatRoomCreate - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatRoomDetail - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatRoomDelete - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatRoomClone - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatInvite - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatAgentAdd - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatAgentUpdate - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatAgentDelete - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatMessage - legacy REST handler, GroupChatProcessor target.
-// ClientRequest::GroupChatCompression - legacy REST handler, GroupChatProcessor target.
+// ClientRequest::JobsList - dispatched.
+// ClientRequest::JobsCreate - dispatched.
+// ClientRequest::JobsUpdate - dispatched.
+// ClientRequest::JobsDelete - dispatched.
+// ClientRequest::JobsPause - dispatched.
+// ClientRequest::JobsResume - dispatched.
+// ClientRequest::JobsRun - dispatched.
+// ClientRequest::CronHistory - dispatched.
+// ClientRequest::GroupChatRoomsList - dispatched.
+// ClientRequest::GroupChatRoomCreate - dispatched.
+// ClientRequest::GroupChatRoomDetail - dispatched.
+// ClientRequest::GroupChatRoomDelete - dispatched.
+// ClientRequest::GroupChatRoomClone - dispatched.
+// ClientRequest::GroupChatInvite - dispatched.
+// ClientRequest::GroupChatInviteMutation - dispatched.
+// ClientRequest::GroupChatAgentAdd - dispatched.
+// ClientRequest::GroupChatAgentUpdate - dispatched.
+// ClientRequest::GroupChatAgentDelete - dispatched.
+// ClientRequest::GroupChatMessage - dispatched.
+// ClientRequest::GroupChatCompression - dispatched.
 // ClientRequest::GroupChatStream - SSE group-chat transport, excluded from JSON dispatcher.
 // ClientRequest::BackendServices - dispatched.
 // ClientRequest::BackendServicesSessionsSync - dispatched.
@@ -925,6 +926,86 @@ pub async fn dispatch(
             .await?;
             Ok(ClientResponse::PluginsRestart(response))
         }
+        ClientRequest::JobsList(params) => {
+            let response = dispatch_tracked_processor::<handlers::jobs::JobsListProcessor>(
+                state,
+                context,
+                ApiMethod::JobsList,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::JobsList(response))
+        }
+        ClientRequest::JobsCreate(params) => {
+            let response = dispatch_tracked_processor::<handlers::jobs::JobsCreateProcessor>(
+                state,
+                context,
+                ApiMethod::JobsCreate,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::JobsCreate(response))
+        }
+        ClientRequest::JobsUpdate(params) => {
+            let response = dispatch_tracked_processor::<handlers::jobs::JobsUpdateProcessor>(
+                state,
+                context,
+                ApiMethod::JobsUpdate,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::JobsUpdate(response))
+        }
+        ClientRequest::JobsDelete(params) => {
+            let response = dispatch_tracked_processor::<handlers::jobs::JobsDeleteProcessor>(
+                state,
+                context,
+                ApiMethod::JobsDelete,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::JobsDelete(response))
+        }
+        ClientRequest::JobsPause(params) => {
+            let response = dispatch_tracked_processor::<handlers::jobs::JobsPauseProcessor>(
+                state,
+                context,
+                ApiMethod::JobsPause,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::JobsPause(response))
+        }
+        ClientRequest::JobsResume(params) => {
+            let response = dispatch_tracked_processor::<handlers::jobs::JobsResumeProcessor>(
+                state,
+                context,
+                ApiMethod::JobsResume,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::JobsResume(response))
+        }
+        ClientRequest::JobsRun(params) => {
+            let response = dispatch_tracked_processor::<handlers::jobs::JobsRunProcessor>(
+                state,
+                context,
+                ApiMethod::JobsRun,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::JobsRun(response))
+        }
+        ClientRequest::CronHistory(params) => {
+            let response = dispatch_tracked_processor::<handlers::jobs::CronHistoryProcessor>(
+                state,
+                context,
+                ApiMethod::CronHistory,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::CronHistory(response))
+        }
         ClientRequest::GatewayStatus(NoParams {}) => {
             let response = dispatch_tracked_processor::<handlers::GatewayStatusProcessor>(
                 state,
@@ -1530,7 +1611,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 84);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 92);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

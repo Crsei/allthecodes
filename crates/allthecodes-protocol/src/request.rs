@@ -974,30 +974,50 @@ crate::api_definitions! {
     },
 
     JobsList => "GET /api/jobs" {
-        response: Value,
+        params: v1::jobs::JobsQuery,
+        response: v1::jobs::JobsListResponse,
+        errors: [BadRequest, PayloadTooLarge],
     },
     JobsCreate => "POST /api/jobs" {
-        params: Value,
-        response: Value,
+        params: v1::jobs::JobCreateRequest,
+        response: v1::jobs::JobMutationResponse,
+        errors: [BadRequest, Conflict, PayloadTooLarge],
+        serialization: PerProcess,
     },
     JobsUpdate => "PATCH /api/jobs/{id}" {
-        params: Value,
-        response: Value,
+        params: v1::jobs::JobUpdateParams,
+        response: v1::jobs::JobMutationResponse,
+        errors: [BadRequest, NotFound, Conflict, PayloadTooLarge],
+        serialization: PerKey("id"),
     },
     JobsDelete => "DELETE /api/jobs/{id}" {
-        response: Value,
+        params: v1::jobs::JobDeleteParams,
+        response: v1::jobs::JobMutationResponse,
+        errors: [BadRequest, NotFound, Conflict],
+        serialization: PerKey("id"),
     },
     JobsPause => "POST /api/jobs/{id}/pause" {
-        response: Value,
+        params: v1::jobs::JobActionParams,
+        response: v1::jobs::JobMutationResponse,
+        errors: [BadRequest, NotFound, Conflict],
+        serialization: PerKey("id"),
     },
     JobsResume => "POST /api/jobs/{id}/resume" {
-        response: Value,
+        params: v1::jobs::JobActionParams,
+        response: v1::jobs::JobMutationResponse,
+        errors: [BadRequest, NotFound, Conflict],
+        serialization: PerKey("id"),
     },
     JobsRun => "POST /api/jobs/{id}/run" {
-        response: Value,
+        params: v1::jobs::JobRunParams,
+        response: v1::jobs::JobRunResponse,
+        errors: [BadRequest, NotFound, Conflict, PayloadTooLarge, ServiceUnavailable],
+        serialization: PerKey("id"),
     },
     CronHistory => "GET /api/cron/history" {
-        response: Value,
+        params: v1::jobs::CronHistoryQuery,
+        response: v1::jobs::CronHistoryResponse,
+        errors: [BadRequest, PayloadTooLarge],
     },
 
     GroupChatRoomsList => "GET /api/group-chat/rooms" {

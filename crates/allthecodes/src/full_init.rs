@@ -85,7 +85,10 @@ pub(crate) async fn run_server_mode(
             web_addr
                 .context("Web mode requires a listener address")?
                 .to_string(),
-        );
+        )
+        .with_scheduler_dispatcher(Arc::new(
+            allthecodes_daemon::scheduler_loop::DaemonSchedulerDispatcher,
+        ));
         if let Some(token) = web_privileged_token.as_deref() {
             web_state = web_state.with_privileged_token(token);
         }

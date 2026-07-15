@@ -12,7 +12,10 @@ use allthecodes_protocol::v1::tasks::{
 };
 use allthecodes_protocol::ApiError as ProtocolApiError;
 use allthecodes_protocol::ApiMethod;
-use allthecodes_tasks::{ScheduleSpec, ScheduledAgentTask, TaskEntry, TaskStatus};
+use allthecodes_services::scheduler::{
+    migrate_default_scheduler_data, ScheduleKind, ScheduledTask, SchedulerService, TaskPayload,
+};
+use allthecodes_tasks::{TaskEntry, TaskStatus};
 
 use crate::api_dispatcher::rest_processor_response;
 use crate::handler_registry::HandlerRegistry;
@@ -51,11 +54,16 @@ impl Processor for TaskListProcessor {
 
     async fn handle(&self, _params: Self::Request) -> Result<Self::Response, Self::Error> {
         let _ = &self.state;
-        let scheduled_tasks = allthecodes_tasks::load_scheduled_tasks().map_err(|error| {
-            ProtocolApiError::Internal {
-                message: error.to_string(),
-            }
+        let scheduler = SchedulerService::open_default();
+        migrate_default_scheduler_data(&scheduler).map_err(|error| ProtocolApiError::Internal {
+            message: error.to_string(),
         })?;
+        let scheduled_tasks =
+            scheduler
+                .list_definitions()
+                .map_err(|error| ProtocolApiError::Internal {
+                    message: error.to_string(),
+                })?;
         let task_store = allthecodes_tasks::global_store();
         let tracked_tasks = task_store.list();
         let mut tasks: Vec<TaskItem> = scheduled_tasks.iter().map(scheduled_task_item).collect();
@@ -98,14 +106,18 @@ impl Processor for TaskDetailProcessor {
             });
         }
 
-        let tasks = allthecodes_tasks::load_scheduled_tasks().map_err(|error| {
-            ProtocolApiError::Internal {
-                message: error.to_string(),
-            }
+        let scheduler = SchedulerService::open_default();
+        migrate_default_scheduler_data(&scheduler).map_err(|error| ProtocolApiError::Internal {
+            message: error.to_string(),
         })?;
+        let tasks = scheduler
+            .list_definitions()
+            .map_err(|error| ProtocolApiError::Internal {
+                message: error.to_string(),
+            })?;
         let task = tasks
             .iter()
-            .find(|task| task.id == params.id)
+            .find(|task| task.id.as_str() == params.id)
             .map(scheduled_task_item)
             .ok_or(ProtocolApiError::NotFound {
                 entity: "task",
@@ -179,58 +191,50 @@ fn task_entry_cwd(entry: &TaskEntry) -> Option<String> {
         .or_else(|| entry.worktree_path.clone())
 }
 
-fn scheduled_task_item(task: &ScheduledAgentTask) -> TaskItem {
+fn scheduled_task_item(task: &ScheduledTask) -> TaskItem {
     TaskItem {
-        id: task.id.clone(),
-        title: scheduled_task_title(&task.prompt),
+        id: task.id.to_string(),
+        title: task.name.clone(),
         kind: "scheduled_agent".to_string(),
-        state: if task.enabled {
-            "pending".to_string()
-        } else {
+        state: if task.paused {
             "canceled".to_string()
+        } else {
+            "pending".to_string()
         },
         progress_current: None,
         progress_total: None,
         summary: scheduled_task_summary(task),
         elapsed_ms: 0,
-        session_id: None,
-        cwd: Some(task.cwd.clone()),
-        schedule: Some(schedule_label(&task.schedule)),
-        schedule_kind: Some(schedule_kind(&task.schedule).to_string()),
-        enabled: Some(task.enabled),
-        last_run_at: task.last_run_at.clone(),
-        next_run_at: task.next_run_at.clone(),
+        session_id: task.metadata.session_id.clone(),
+        cwd: task.metadata.working_directory.clone(),
+        schedule: Some(task.schedule.clone()),
+        schedule_kind: Some(schedule_kind(task.schedule_kind).to_string()),
+        enabled: Some(!task.paused),
+        last_run_at: task.last_run_at.map(|value| value.to_rfc3339()),
+        next_run_at: Some(task.next_run_at.to_rfc3339()),
     }
 }
 
-fn scheduled_task_title(prompt: &str) -> String {
-    let first_line = prompt.lines().next().unwrap_or("").trim();
-    if first_line.is_empty() {
-        "Scheduled task".to_string()
-    } else {
-        first_line.chars().take(120).collect()
+fn scheduled_task_summary(task: &ScheduledTask) -> String {
+    if task.paused {
+        return "Disabled".to_string();
+    }
+    match &task.payload {
+        TaskPayload::Prompt(prompt) | TaskPayload::SlashCommand(prompt) => {
+            let first_line = prompt.lines().next().unwrap_or("").trim();
+            if first_line.is_empty() {
+                format!("Next run at {}", task.next_run_at.to_rfc3339())
+            } else {
+                first_line.chars().take(160).collect()
+            }
+        }
     }
 }
 
-fn scheduled_task_summary(task: &ScheduledAgentTask) -> String {
-    match (&task.enabled, task.next_run_at.as_deref()) {
-        (true, Some(next_run_at)) => format!("Next run at {next_run_at}"),
-        (true, None) => "Enabled".to_string(),
-        (false, _) => "Disabled".to_string(),
-    }
-}
-
-fn schedule_label(schedule: &ScheduleSpec) -> String {
+fn schedule_kind(schedule: ScheduleKind) -> &'static str {
     match schedule {
-        ScheduleSpec::Interval { every_seconds } => format!("every {every_seconds}s"),
-        ScheduleSpec::Once { run_at } => format!("once at {run_at}"),
-    }
-}
-
-fn schedule_kind(schedule: &ScheduleSpec) -> &'static str {
-    match schedule {
-        ScheduleSpec::Interval { .. } => "interval",
-        ScheduleSpec::Once { .. } => "once",
+        ScheduleKind::Interval => "interval",
+        ScheduleKind::Cron => "cron",
     }
 }
 
@@ -270,40 +274,33 @@ pub fn handlers() -> HandlerRegistry {
 mod tests {
     use super::*;
     use crate::handlers::test_support::{make_web_state, temp_home};
-    use allthecodes_tasks::{
-        ScheduleSpec, ScheduledAgentTask, TaskCreateOptions, TaskStatus, TaskStore,
-        TASK_KIND_LOCAL_AGENT,
-    };
+    use allthecodes_services::scheduler::{Interval, SchedulerKind, SchedulerStore};
+    use allthecodes_tasks::{TaskCreateOptions, TaskStatus, TaskStore, TASK_KIND_LOCAL_AGENT};
     use serde_json::json;
     use tempfile::TempDir;
 
     #[test]
     fn scheduled_task_maps_to_task_item() {
-        let task = ScheduledAgentTask {
-            id: "daily-review".to_string(),
-            prompt: "summarize today's work".to_string(),
-            cwd: "/repo".to_string(),
-            schedule: ScheduleSpec::Interval {
-                every_seconds: 3600,
-            },
-            enabled: true,
-            last_run_at: None,
-            next_run_at: Some("2026-07-04T12:00:00+00:00".to_string()),
-        };
+        let now = chrono::Utc::now();
+        let task = ScheduledTask::new(
+            SchedulerKind::LocalCron,
+            "daily-review",
+            "1h",
+            Interval::from_seconds(3600),
+            TaskPayload::Prompt("summarize today's work".to_string()),
+            now,
+        );
 
         let item = scheduled_task_item(&task);
 
-        assert_eq!(item.id, "daily-review");
-        assert_eq!(item.title, "summarize today's work");
+        assert_eq!(item.id, task.id.as_str());
+        assert_eq!(item.title, "daily-review");
         assert_eq!(item.kind, "scheduled_agent");
         assert_eq!(item.state, "pending");
-        assert_eq!(item.cwd.as_deref(), Some("/repo"));
+        assert_eq!(item.cwd, None);
         assert_eq!(item.schedule_kind.as_deref(), Some("interval"));
-        assert_eq!(item.schedule.as_deref(), Some("every 3600s"));
-        assert_eq!(
-            item.next_run_at.as_deref(),
-            Some("2026-07-04T12:00:00+00:00")
-        );
+        assert_eq!(item.schedule.as_deref(), Some("1h"));
+        assert_eq!(item.next_run_at, Some(task.next_run_at.to_rfc3339()));
     }
 
     #[test]
@@ -386,5 +383,53 @@ mod tests {
             .expect("task detail response");
         assert_eq!(detail.task.id, entry.id);
         assert_eq!(detail.task.cwd.as_deref(), Some("/repo"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn task_processors_project_canonical_scheduler_definitions() {
+        let (_home, _guard) = temp_home();
+        let now = chrono::Utc::now();
+        let mut scheduled = ScheduledTask::new(
+            SchedulerKind::LocalCron,
+            "canonical-nightly-review",
+            "1h",
+            Interval::from_seconds(3600),
+            TaskPayload::Prompt("summarize the canonical scheduler".to_string()),
+            now,
+        );
+        scheduled.metadata.session_id = Some("scheduled-session".to_string());
+        scheduled.metadata.working_directory = Some("/repo/scheduled".to_string());
+        let scheduled = SchedulerStore::open_default()
+            .add(scheduled)
+            .expect("persist canonical scheduler definition");
+
+        let state = make_web_state();
+        let list = TaskListProcessor::from(state.clone())
+            .handle(allthecodes_protocol::NoParams {})
+            .await
+            .expect("task list response");
+        let item = list
+            .tasks
+            .iter()
+            .find(|item| item.id == scheduled.id.as_str())
+            .expect("canonical scheduler definition should be listed");
+        assert_eq!(item.title, "canonical-nightly-review");
+        assert_eq!(item.kind, "scheduled_agent");
+        assert_eq!(item.session_id.as_deref(), Some("scheduled-session"));
+        assert_eq!(item.cwd.as_deref(), Some("/repo/scheduled"));
+        assert_eq!(item.schedule.as_deref(), Some("1h"));
+        assert_eq!(item.schedule_kind.as_deref(), Some("interval"));
+
+        let detail = TaskDetailProcessor::from(state)
+            .handle(TaskDetailParams {
+                id: scheduled.id.to_string(),
+            })
+            .await
+            .expect("task detail response");
+        assert_eq!(detail.task.id, scheduled.id.as_str());
+        assert_eq!(detail.task.title, "canonical-nightly-review");
+        assert_eq!(detail.task.session_id.as_deref(), Some("scheduled-session"));
+        assert_eq!(detail.task.cwd.as_deref(), Some("/repo/scheduled"));
     }
 }
