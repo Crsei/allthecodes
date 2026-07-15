@@ -82,7 +82,7 @@ pub struct PluginHandler;
 
 #[async_trait]
 impl CommandHandler for PluginHandler {
-    async fn execute(&self, args: &str, _ctx: &mut CommandContext) -> Result<CommandResult> {
+    async fn execute(&self, args: &str, ctx: &mut CommandContext) -> Result<CommandResult> {
         let parts: Vec<&str> = args.split_whitespace().collect();
 
         match parts.first().copied() {
@@ -116,7 +116,7 @@ impl CommandHandler for PluginHandler {
                     .strip_prefix("search")
                     .map(str::trim)
                     .unwrap_or_default();
-                handle_search(query)
+                handle_search(query, &ctx.cwd)
             }
             Some("marketplace") | Some("mp") => {
                 let sub = parts.get(1).copied().unwrap_or("list");
@@ -528,20 +528,29 @@ fn handle_install(source: &str, scope: Option<&str>) -> Result<CommandResult> {
     }
 }
 
-fn handle_search(query: &str) -> Result<CommandResult> {
+fn handle_search(query: &str, workspace: &std::path::Path) -> Result<CommandResult> {
     if query.trim().is_empty() {
         return Ok(CommandResult::Output(
             "Usage: /plugin search <query>".to_string(),
         ));
     }
 
-    match allthecodes_tools::discovery_search::run_plugin_search(
+    let context = match allthecodes_tools::discovery_search::DiscoveryContext::new(workspace) {
+        Ok(context) => context,
+        Err(error) => {
+            return Ok(CommandResult::Output(format!(
+                "Plugin search failed: {error}"
+            )));
+        }
+    };
+    match allthecodes_tools::discovery_search::run_plugin_search_with_context(
         allthecodes_tools::discovery_search::DiscoverySearchInput {
             query: query.to_string(),
             source_filter: None,
             max_results: 10,
             include_summaries: true,
         },
+        &context,
     ) {
         Ok(output) => {
             let mut notes = vec![
@@ -710,7 +719,7 @@ mod tests {
     fn test_ctx() -> CommandContext {
         CommandContext {
             messages: Vec::new(),
-            cwd: PathBuf::from("/test/project"),
+            cwd: PathBuf::from("/tmp"),
             app_state: Default::default(),
             session_id: SessionId::new(),
         }

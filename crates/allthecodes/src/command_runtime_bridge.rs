@@ -47,8 +47,8 @@ pub(crate) fn install_command_runtime_providers() {
     allthecodes_commands::runtime::set_fork_runner(fork_runner_for_commands);
     allthecodes_tools::discovery_search::install_discovery_search_runtime(
         allthecodes_tools::discovery_search::DiscoverySearchRuntime::new()
-            .with_mcp_items_provider(mcp_discovery_rows_for_tools)
-            .with_plugin_items_provider(plugin_discovery_rows_for_tools),
+            .with_contextual_mcp_items_provider(mcp_discovery_rows_for_tools)
+            .with_contextual_plugin_items_provider(plugin_discovery_rows_for_tools),
     );
     allthecodes_mcp::runtime::install_mcp_skill_cleanup_hook(|server_name| {
         let _ = allthecodes_skills::clear_mcp_skills_for_server(server_name);
@@ -915,17 +915,25 @@ pub(crate) fn plugin_dependency_context() -> (
     (available, manifests)
 }
 
-fn mcp_discovery_rows_for_tools() -> Vec<allthecodes_tools::discovery_search::DiscoverySearchResult>
-{
+fn mcp_discovery_rows_for_tools(
+    context: &allthecodes_tools::discovery_search::DiscoveryContext,
+) -> Result<
+    allthecodes_tools::discovery_search::DiscoveryProviderCollection,
+    allthecodes_tools::discovery_search::DiscoveryProviderFailure,
+> {
     let mut rows = Vec::new();
-    rows.extend(configured_mcp_discovery_rows_for_tools());
+    rows.extend(configured_mcp_discovery_rows_for_tools(context)?);
+    let mut partial_error = None;
     if let Some(manager) = allthecodes_mcp::runtime::current_manager() {
         match manager.try_lock() {
             Ok(manager) => rows.extend(manager.discovery_search_results()),
-            Err(error) => {
-                tracing::debug!(
-                    error = %error,
-                    "MCP discovery search skipped runtime rows because manager is busy"
+            Err(_) => {
+                partial_error = Some(
+                    allthecodes_tools::discovery_search::DiscoveryProviderFailure::new(
+                        "provider_busy",
+                        "MCP runtime discovery is temporarily busy",
+                        true,
+                    ),
                 );
             }
         }
@@ -933,30 +941,34 @@ fn mcp_discovery_rows_for_tools() -> Vec<allthecodes_tools::discovery_search::Di
     if allthecodes_config::features::enabled(allthecodes_config::features::Feature::McpSkills) {
         rows.extend(mcp_skill_discovery_rows_for_tools());
     }
-    rows
+    let mut collection =
+        allthecodes_tools::discovery_search::DiscoveryProviderCollection::success(rows);
+    collection.partial_error = partial_error;
+    Ok(collection)
 }
 
 fn configured_mcp_discovery_rows_for_tools(
-) -> Vec<allthecodes_tools::discovery_search::DiscoverySearchResult> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let scoped = match allthecodes_mcp::discovery::discover_mcp_servers_scoped(&cwd) {
-        Ok(scoped) => scoped,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "MCP discovery search could not read configured servers"
-            );
-            return Vec::new();
-        }
-    };
+    context: &allthecodes_tools::discovery_search::DiscoveryContext,
+) -> Result<
+    Vec<allthecodes_tools::discovery_search::DiscoverySearchResult>,
+    allthecodes_tools::discovery_search::DiscoveryProviderFailure,
+> {
+    let scoped = allthecodes_mcp::discovery::discover_mcp_servers_scoped(context.workspace())
+        .map_err(|_| {
+            allthecodes_tools::discovery_search::DiscoveryProviderFailure::new(
+                "provider_failed",
+                "MCP configuration discovery failed",
+                true,
+            )
+        })?;
 
-    scoped
+    Ok(scoped
         .into_iter()
         .map(|entry| {
             let source = mcp_discovery_scope_source(&entry.scope);
-            let mut status = if let Some(error) = entry.error {
+            let mut status = if entry.error.is_some() {
                 allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("error")
-                    .with_detail(error)
+                    .with_detail("configuration unavailable")
             } else if entry.config.disabled.unwrap_or(false) {
                 allthecodes_tools::discovery_search::DiscoveryStatusSummary::new("disabled")
             } else {
@@ -987,7 +999,7 @@ fn configured_mcp_discovery_rows_for_tools(
             )
             .with_signal(allthecodes_tools::discovery_search::DiscoverySignal::ExplicitSearch)
         })
-        .collect()
+        .collect())
 }
 
 fn mcp_discovery_scope_source(scope: &allthecodes_mcp::discovery::DiscoveryScope) -> &'static str {
@@ -1001,18 +1013,8 @@ fn mcp_discovery_scope_source(scope: &allthecodes_mcp::discovery::DiscoveryScope
 
 fn mcp_config_description(config: &allthecodes_mcp::McpServerConfig) -> String {
     match config.transport.as_str() {
-        "stdio" => match (&config.command, &config.args) {
-            (Some(command), Some(args)) if !args.is_empty() => {
-                format!("stdio MCP server: {} {}", command, args.join(" "))
-            }
-            (Some(command), _) => format!("stdio MCP server: {command}"),
-            _ => "stdio MCP server".to_string(),
-        },
-        "sse" | "streamable-http" => config
-            .url
-            .as_ref()
-            .map(|url| format!("{} MCP server: {}", config.transport, url))
-            .unwrap_or_else(|| format!("{} MCP server", config.transport)),
+        "stdio" => "stdio MCP server".to_string(),
+        "sse" | "streamable-http" => format!("{} MCP server", config.transport),
         other => format!("{other} MCP server"),
     }
 }
@@ -1087,11 +1089,19 @@ fn mcp_skill_discovery_rows_for_tools(
 }
 
 fn plugin_discovery_rows_for_tools(
-) -> Vec<allthecodes_tools::discovery_search::DiscoverySearchResult> {
-    plugin_discovery_rows_from_sources(
-        allthecodes_plugins::loader::load_installed_plugins(),
-        allthecodes_plugins::get_enabled_plugins(),
-        allthecodes_plugins::marketplace::list_all_marketplaces(),
+    _context: &allthecodes_tools::discovery_search::DiscoveryContext,
+) -> Result<
+    allthecodes_tools::discovery_search::DiscoveryProviderCollection,
+    allthecodes_tools::discovery_search::DiscoveryProviderFailure,
+> {
+    Ok(
+        allthecodes_tools::discovery_search::DiscoveryProviderCollection::success(
+            plugin_discovery_rows_from_sources(
+                allthecodes_plugins::loader::load_installed_plugins(),
+                allthecodes_plugins::get_enabled_plugins(),
+                allthecodes_plugins::marketplace::list_all_marketplaces(),
+            ),
+        ),
     )
 }
 

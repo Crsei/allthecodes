@@ -82,6 +82,7 @@ pub(crate) const DISPATCHED_OPERATIONS: &[ApiMethod] = &[
     ApiMethod::FilesCopy,
     ApiMethod::FilesMove,
     ApiMethod::FilesDelete,
+    ApiMethod::DiscoverySearch,
     ApiMethod::SkillsList,
     ApiMethod::ChatModesList,
     ApiMethod::ChatModesResources,

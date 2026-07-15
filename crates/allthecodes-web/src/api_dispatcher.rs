@@ -184,6 +184,7 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::DebugState - legacy REST handler, DebugProcessor target.
 // ClientRequest::DebugSessionTrace - legacy REST handler, DebugProcessor target.
 // ClientRequest::DebugAction - legacy REST handler, DebugProcessor target.
+// ClientRequest::DiscoverySearch - dispatched.
 // ClientRequest::ProtocolRoutes - legacy REST handler, registry diagnostics target.
 // ClientRequest::WorkspacesList - legacy REST handler, WorkspaceProcessor target.
 // ClientRequest::WorkspacePatch - legacy REST handler, WorkspaceProcessor target.
@@ -641,6 +642,13 @@ pub async fn dispatch(
             )
             .await?;
             Ok(ClientResponse::FilesDelete(response))
+        }
+        ClientRequest::DiscoverySearch(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::discovery::DiscoverySearchProcessor,
+            >(state, context, ApiMethod::DiscoverySearch, params)
+            .await?;
+            Ok(ClientResponse::DiscoverySearch(response))
         }
         ClientRequest::SkillsList(params) => {
             let response = dispatch_tracked_processor::<handlers::SkillsListProcessor>(
@@ -1243,6 +1251,42 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
+    async fn dispatcher_routes_discovery_with_typed_partial_provider_states() {
+        allthecodes_tools::discovery_search::install_discovery_search_runtime(
+            allthecodes_tools::discovery_search::DiscoverySearchRuntime::new(),
+        );
+        let workspace = tempfile::tempdir().expect("workspace");
+        let response = dispatch(
+            make_web_state_with_cwd(workspace.path()),
+            ApiRequestContext::direct(),
+            ClientRequest::DiscoverySearch(v1::discovery::DiscoverySearchQuery {
+                q: "github".to_string(),
+                provider: v1::discovery::DiscoveryProviderSelector::All,
+                mcp_scope: v1::discovery::McpDiscoveryScope::All,
+                plugin_source: v1::discovery::PluginDiscoverySource::All,
+                kind: None,
+                limit: None,
+                include_summaries: None,
+            }),
+        )
+        .await
+        .expect("discovery should dispatch even when providers are unavailable");
+
+        match response {
+            ClientResponse::DiscoverySearch(body) => {
+                assert!(body.partial);
+                assert!(body.results.is_empty());
+                assert_eq!(body.providers.len(), 2);
+                assert!(body.providers.iter().all(|provider| {
+                    provider.status == v1::discovery::DiscoveryProviderStatus::Unavailable
+                }));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
     async fn dispatcher_handles_plugin_disable_request() {
         let (_home, _guard) = temp_home();
         allthecodes_plugins::clear_plugins();
@@ -1294,7 +1338,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 60);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 61);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

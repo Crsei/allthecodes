@@ -578,6 +578,11 @@ crate::api_definitions! {
         params: Value,
         response: Value,
     },
+    DiscoverySearch => "GET /api/discovery/search" {
+        params: v1::discovery::DiscoverySearchQuery,
+        response: v1::discovery::DiscoverySearchResponse,
+        errors: [BadRequest, Internal],
+    },
     ProtocolRoutes => "GET /api/-/routes" {
         response: Value,
     },

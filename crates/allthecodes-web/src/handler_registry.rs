@@ -124,6 +124,7 @@ pub fn all_api_handlers() -> HandlerRegistry {
         .extend(integration_handlers())
         .extend(settings_handlers())
         .extend(memory_handlers())
+        .extend(handlers::discovery::handlers())
         .extend(workspace_handlers())
         .extend(auth_handlers())
         .extend(profile_handlers())

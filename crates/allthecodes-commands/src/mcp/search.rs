@@ -1,8 +1,9 @@
 use anyhow::Result;
+use std::path::Path;
 
 use crate::{search_format::format_discovery_search_results, CommandResult};
 
-pub(super) fn handle_search(args: &str) -> Result<CommandResult> {
+pub(super) fn handle_search(args: &str, workspace: &Path) -> Result<CommandResult> {
     let query = args
         .trim()
         .strip_prefix("search")
@@ -14,13 +15,20 @@ pub(super) fn handle_search(args: &str) -> Result<CommandResult> {
         ));
     }
 
-    match allthecodes_tools::discovery_search::run_mcp_search(
+    let context = match allthecodes_tools::discovery_search::DiscoveryContext::new(workspace) {
+        Ok(context) => context,
+        Err(error) => {
+            return Ok(CommandResult::Output(format!("MCP search failed: {error}")));
+        }
+    };
+    match allthecodes_tools::discovery_search::run_mcp_search_with_context(
         allthecodes_tools::discovery_search::DiscoverySearchInput {
             query: query.to_string(),
             source_filter: None,
             max_results: 10,
             include_summaries: true,
         },
+        &context,
     ) {
         Ok(output) => {
             let mut notes = vec![

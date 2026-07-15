@@ -5,6 +5,7 @@ pub mod capabilities;
 pub mod channels;
 pub mod chat;
 pub mod chat_modes;
+pub mod discovery;
 pub mod files;
 pub mod gateways;
 pub mod git;

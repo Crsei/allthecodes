@@ -1032,6 +1032,7 @@ dependencies = [
  "allthecodes-skills",
  "allthecodes-tasks",
  "allthecodes-tool-display",
+ "allthecodes-tools",
  "allthecodes-types",
  "allthecodes-utils",
  "allthecodes-web-state",

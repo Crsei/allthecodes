@@ -42,7 +42,7 @@ impl CommandHandler for McpHandler {
             Some("help") | Some("-h") | Some("--help") => Ok(CommandResult::Output(help_text())),
             Some("list") | Some("ls") => handle_list(ctx).await,
             Some("status") => handle_status(ctx).await,
-            Some("search") => handle_search(args),
+            Some("search") => handle_search(args, &ctx.cwd),
             Some("add") => handle_add(&parts[1..], ctx),
             Some("edit") | Some("update") => handle_edit(&parts[1..], ctx),
             Some("remove") | Some("rm") | Some("delete") => handle_remove(&parts[1..], ctx),

@@ -20,6 +20,7 @@ pub mod chrome_relay;
 pub mod commands;
 pub mod computer_use;
 pub mod credentials;
+pub mod discovery;
 pub mod files;
 pub mod gateways;
 pub mod git;
