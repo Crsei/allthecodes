@@ -1,7 +1,10 @@
 # API Architecture Upgrade — Implementation Review
 
 > 对照 `09-api-architecture-upgrade-plan.md` 审查当前代码的落地情况。
-> 审查日期: 2026-06-07
+> 原始审查日期: 2026-06-07
+>
+> 2026-07-16 已按冻结快照 `d5e16fde..6d426dc9` 追加复核。下文原始
+> 阶段记录保留历史语境；生成物状态以“2026-07-16 跟进复核”为准。
 
 ## 阶段进展总览
 
@@ -11,8 +14,8 @@
 | 阶段 1 | 从协议定义生成路由 | ~95% | ✅ 基本完成 |
 | 阶段 2 | Processor 模式 | ~55% | ⚠️ 基础设施完备，已迁移 4/7 |
 | 阶段 3 | 序列化作用域控制 | ~60% | ⚠️ `SessionOwnership` 未被替换 |
-| 阶段 4 | 代码生成流水线 | ~100% | ✅ 全部完成 |
-| 阶段 5 | 传输层抽象 | ~40% | ⚠️ Traits 定义完成，暂无传输实现 |
+| 阶段 4 | 代码生成流水线 | ~90% | ⚠️ 生成器完成，自动写入/仓库 freshness gate 不完整 |
+| 阶段 5 | 传输层抽象 | ~60% | ⚠️ Traits 与进程内 `DirectTransport` 已完成，可选 socket transport 尚未实现 |
 
 ---
 
@@ -20,7 +23,7 @@
 
 **计划产出** | **实现情况**
 ---|---
-`crates/allthecodes-protocol/` 脚手架 | ✅ 完成，含 `Cargo.toml`、`build.rs`
+`crates/allthecodes-protocol/` 脚手架 | ✅ Crate 已完成；原 `build.rs` 后续移除，改为显式 codegen CLI
 `src/macros.rs` — `api_definitions!` 宏 | ✅ 完成，生成 `ClientRequest`/`ClientResponse`/`ApiMethod`/`ApiEndpoint`/`ApiTypeMetadata`/`SerializationPolicy`/`SerializationScope`/`ApiOperationMetadata`/`ALL_ENDPOINTS`/`API_METADATA`
 `src/error.rs` — 结构化 `ApiError` | ✅ 含 `status_code()`、`into_body()`、`to_body()`、`ApiErrorBody`
 `src/request.rs` — 请求类型 + 辅助函数 | ✅ `split_route`、`serialization_key`、`schema_for`
@@ -55,7 +58,7 @@
 
 **计划产出** | **实现情况**
 ---|---
-`Processor` trait + `process_processor` 泛型适配器 | ✅ `handlers::Processor` + `processor_json_handler`/`processor_no_params_handler` + `process_processor`
+`Processor` trait + `process_processor` 泛型适配器 | ✅ `crate::processors::Processor` + `processor_json_handler`/`processor_no_params_handler` + `process_processor`
 错误转换: `Processor::Error: Into<ProtocolApiError>` | ✅ `protocol_error_response()` 使用正确的 `ApiError.status_code()`
 序列化层集成 | ✅ `serialization_layer()`、`serialization_scope()`、`serialization_key()` 关联方法
 `CapabilitiesProcessor` | ✅ 已迁移（`processor_no_params_handler::<CapabilitiesProcessor>`）
@@ -75,7 +78,8 @@
 
 **问题**:
 - 多数非 Session/File handlers 未从 Processor 模式受益（标准错误路径、序列化集成）
-- `handlers/capabilities.rs` 中旧 `capabilities_handler()` 自由函数未删除，属于死代码
+- `handlers/capabilities.rs::capabilities_handler()` 是已注册的 REST shim，并通过
+  `rest_processor_response::<CapabilitiesProcessor>` 调用 Processor；它不是死代码
 
 ---
 
@@ -93,7 +97,7 @@
 
 ---
 
-## 阶段 4: Code Generation Pipeline ✅
+## 阶段 4: Code Generation Pipeline ⚠️
 
 **计划产出** | **实现情况**
 ---|---
@@ -102,16 +106,21 @@
 `bin/schema-export.rs` — JSON Schema 导出 | ✅ `generate_schema_json_pretty()`
 `bin/route-doc.rs` — 路由 Markdown 文档 | ✅ `generate_route_markdown()`
 `bin/openapi-export.rs` — OpenAPI 3.0 导出 | ✅ `generate_openapi_json_pretty()`
-`build.rs` — 构建时自动生成 TS 类型 | ✅ 条件式写入（仅当前端目录存在时）
-`check_ts_types_up_to_date` — CI 集成测试 | ✅ 通过
+`build.rs` — 构建时自动生成 TS 类型 | ❌ 当前 crate 无 `build.rs`；仅有显式 `codegen` CLI
+`check_frontend_api_artifacts_up_to_date` — 前端生成物检查 | ✅ 覆盖 sibling frontend 的 types/routes/schema
 生成的文件:
-- `allthecodes-web/src/lib/api-types.ts` | ✅ 2692 行，最新
-- `docs/api/schema.json` | ✅ 360KB
-- `docs/api/routes.md` | ✅ ~200 个端点的表格
-- `docs/api/openapi.json` | ✅ 237KB
+- `allthecodes-web/src/lib/generated/api-types.ts` | ✅ 已纳入 frontend artifact check
+- `allthecodes-web/src/lib/generated/api-routes.ts` | ✅ 已纳入 frontend artifact check
+- `allthecodes-web/src/lib/generated/api-schema.json` | ✅ 已纳入 frontend artifact check
+- `docs/api/schema.json` | ⚠️ 有导出器，但未纳入仓库 diff check
+- `docs/api/routes.md` | ⚠️ 协议生成段落为 207 条，当前生成源为 253 条
+- `docs/api/openapi.json` | ⚠️ 有导出器，但未纳入仓库 diff check
 
 **问题**:
-- `build.rs` 中当前端目录不存在时静默跳过。对于独立后端构建来说可以接受，但在 CI 中可能令人惊讶。
+- `codegen` 默认推断 sibling frontend 路径；CI 应显式传入/固定输出目录，避免
+  检查到错误 checkout。
+- `route-doc`、`schema-export`、`openapi-export` 只向 stdout 输出；CI 没有校验
+  `docs/api/*` 重新生成后是否产生 diff。
 
 ---
 
@@ -180,11 +189,13 @@ error[E0631]: type mismatch in function arguments
 
 ### 🟢 5. 生成文件所有权
 
-`allthecodes-web/src/lib/api-types.ts` 由 `build.rs` 在编译期间自动写入。如果多个 agent 并行工作，可能导致竞态条件。当前通过 `write_if_changed()` 已有缓解（仅当内容不同时才写入）。
+`allthecodes-web/src/lib/generated/` 三件套由 codegen 写入。如果多个
+agent 并行工作，可能导致竞态条件。当前通过 `write_if_changed()` 已有缓解
+（仅当内容不同时才写入）。
 
 ---
 
-## 测试状态
+## 测试状态（2026-06-07 原始快照）
 
 ```
 cargo test -p allthecodes-protocol
@@ -201,21 +212,57 @@ cargo check -p allthecodes-protocol  — 通过
 
 优先级排序：
 
-1. **🔴 高 — 补齐 ApiDispatcher 覆盖与迁移 tracker** — 当前 JSON-RPC dispatch 已覆盖 Health、Capabilities、Session、File JSON endpoints；其余 REST 路由仍未统一进入 dispatcher
-2. **🟡 中 — 继续 Processor 迁移** — HealthProcessor、SessionProcessor、FileProcessor 已完成；下一步扩展到 Agent/Skill/Chat
-3. **🟡 中 — 统一 ApiError** — 消除双重 ApiError 类型，迁移 `api_fallback_handler`
-4. **🟡 中 — 替换 SessionOwnership** — 完全移除旧的 `try_claim_owner()` / `release_owner()`，仅保留 `SerializationLayer`
-5. **🟢 低 — 添加 Experimental gating middleware**
-6. **🟢 低 — 清理 capabilities.rs 中的死代码**
+1. **🔴 高 — 让已提交 API 生成物可验证** — 同一提交生成并检查
+   `docs/api/{routes.md,schema.json,openapi.json}` 与 frontend 三件套。
+2. **🔴 高 — 补齐 ApiDispatcher 覆盖与迁移 tracker** — 当前 JSON-RPC dispatch 已覆盖 Health、Capabilities、Session、File JSON endpoints；其余 REST 路由仍未统一进入 dispatcher
+3. **🟡 中 — 继续 Processor 迁移** — HealthProcessor、SessionProcessor、FileProcessor 已完成；下一步扩展到 Agent/Skill/Chat
+4. **🟡 中 — 统一 ApiError** — 消除双重 ApiError 类型，迁移 `api_fallback_handler`
+5. **🟡 中 — 替换 SessionOwnership** — 完全移除旧的 `try_claim_owner()` / `release_owner()`，仅保留 `SerializationLayer`
+6. **🟢 低 — 添加 Experimental gating middleware**
+7. **🟡 中 — 让 streaming event 进入 codegen metadata** — 当前生成器只遍历
+   `API_METADATA` 引用的请求/响应类型；`Chat` 的 `Value` 响应不会自动带出
+   permission SSE event schema
 
 ---
 
-*附录: 受影响的文件清单*
+## 2026-07-16 跟进复核
+
+### 范围与计数
+
+- `development/api/` 上次提交更新为 `d5e16fde`；当前复核 HEAD 为
+  `6d426dc9`（冻结快照）。
+- 直接运行当前 `route-doc` 生成器得到 253 条 protocol operation。
+- 已提交 `docs/api/routes.md` 的 protocol-generated 主表只有 207 条；文件
+  末尾另有 2 条手写 daemon remote-control route，不参与 protocol 计数。
+- 因此当前确认的生成物漂移是 46 条 operation。它表示文档/CI 不新鲜，
+  不等于 46 个运行时 handler 都缺失。
+
+### 当前结论
+
+| 项目 | 当前状态 | 必要动作 |
+|---|---|---|
+| Protocol metadata | 253 条 operation 是当前 contract source | 继续以 `API_METADATA`/registry 为单一来源 |
+| Web handler registry | 可以按 operation 验证 registered/unregistered | 保留启动校验与 `/api/-/routes` 诊断 |
+| Frontend 生成物 | `codegen --check` 可检查 types/routes/schema | CI 必须在固定 sibling/output 目录运行，缺目录不可静默算通过 |
+| Backend `docs/api/*` | routes/schema/OpenAPI 导出器存在，但 committed files 无 freshness gate | 生成到临时文件、比较三件套并在 diff 时失败 |
+
+### 与产品 API 缺口的边界
+
+生成物新鲜度是跨域 P0 基础设施问题。实际产品缺口仍需逐项验证 handler
+是否连接真实 owner；本轮确认的 Security Web transport、Memory、Skills
+proposal、Jobs、Workflow、Web IPC Agent/Team、Group Chat、Backend Services 与
+Discovery 缺口见
+[最近功能 API 缺口审计](13-recent-feature-api-gap-audit.md)。具体生成与 CI
+验收见 [Generated API Artifact Freshness Plan](17-api-generated-artifact-freshness-plan.md)。
+
+---
+
+*附录: 原始架构实现受影响的文件清单*
 
 ```
 # 已创建的新文件
 crates/allthecodes-protocol/Cargo.toml
-crates/allthecodes-protocol/build.rs
+crates/allthecodes-protocol/build.rs                (历史文件；当前已移除)
 crates/allthecodes-protocol/src/lib.rs
 crates/allthecodes-protocol/src/macros.rs
 crates/allthecodes-protocol/src/request.rs
@@ -240,7 +287,9 @@ crates/allthecodes-web/src/processors.rs           (新增)
 crates/allthecodes-web/src/handlers/mod.rs         (添加重导、ApiError)
 
 # 已生成的文件
-allthecodes-web/src/lib/api-types.ts               (TS 类型，2692 行)
+allthecodes-web/src/lib/generated/api-types.ts     (TS 类型)
+allthecodes-web/src/lib/generated/api-routes.ts    (TS 路由元数据)
+allthecodes-web/src/lib/generated/api-schema.json  (前端 schema)
 docs/api/schema.json                               (JSON Schema，360KB)
 docs/api/routes.md                                 (路由文档，~200 行)
 docs/api/openapi.json                              (OpenAPI 3.0，237KB)

@@ -2,7 +2,12 @@
 
 > Based on analysis of `codex` (at `/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/codex`)
 > and current `allthecodes` API layouter (at `crates/allthecodes-web/src/mod.rs`).
-> Date: 2026-06-07
+> Original plan date: 2026-06-07
+>
+> Historical architecture plan: implementation status is tracked in
+> [the implementation review](10-api-architecture-implementation-review.md),
+> and current generated-artifact ownership/freshness requirements are in
+> [the freshness plan](17-api-generated-artifact-freshness-plan.md).
 
 ## Current Situation
 
@@ -517,7 +522,7 @@ between Rust and TypeScript.
    fn main() {
        let types = generate_typescript_types::<v1::Api>();
        std::fs::write(
-           "../../../allthecodes-web/src/lib/api-types.ts",
+           "../../../allthecodes-web/src/lib/generated/api-types.ts",
            types,
        ).unwrap();
    }
@@ -574,7 +579,7 @@ between Rust and TypeScript.
 
 Agents B-D can proceed in parallel after Agent A defines the shared protocol
 introspection API. One integrator must own generated files to avoid merge
-conflicts, especially `allthecodes-web/src/lib/api-types.ts` and route docs.
+conflicts, especially `allthecodes-web/src/lib/generated/api-types.ts` and route docs.
 
 ---
 
@@ -669,7 +674,7 @@ that identical `ClientRequest` values produce compatible behavior.
    ad-hoc `SessionOwnership` claims.
 
 5. **Generated TypeScript types.** Frontend imports from
-   `src/lib/api-types.ts` are auto-generated and verified in CI. PRs that change
+   `src/lib/generated/api-types.ts` are auto-generated and verified in CI. PRs that change
    Rust API types without regenerating TS types fail CI.
 
 6. **All existing tests continue to pass** at every phase. No regression in API

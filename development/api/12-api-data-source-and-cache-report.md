@@ -1,7 +1,11 @@
 # API 数据源分析与 `.allthecodes/` 缓存适配报告
 
-> **日期:** 2026-06-10
+> **原始快照日期:** 2026-06-10
 > **目的:** 全面分析 allthecodes 后端所有 API 端点的数据来源，识别哪些端点可以从 `.allthecodes/` 目录中的文件直接读取，哪些需要动态计算或外部调用。
+>
+> **2026-07-16 复核:** 原表中的 `memory/entries.json`、`web/jobs.json` 和
+> `web/job-runs.jsonl` 只是 Web handler 的旁路存储，不能再视为运行时真实
+> owner 或推荐前端直读源。当前增量及纠正见第 9 节。
 
 ---
 
@@ -23,26 +27,40 @@
 |------|------|------|
 | `settings.json` | JSON | 全局设置（用户级），项目级在 `{cwd}/.allthecodes/settings.json` |
 | `credentials.json` | JSON | 凭据 |
-| `sessions/{uuid}.json` | JSON | 会话数据 |
+| `state/state_5.sqlite` + `sessions/{uuid}.json` | SQLite/JSON | 会话主存储/索引优先使用 SQLite，JSON 是 legacy/故障回退；detail 还会优先 replay rollout |
 | `transcripts/{uuid}.ndjson` | NDJSON | 消息日志 |
-| `memory/entries.json` | JSON | 记忆条目 |
+| `memory/entries.json` | JSON | 旧 Web Memory API 旁路条目；不是 runtime memdir owner |
+| `memory/*.json`、`memory/MEMORY.md` | JSON/Markdown | 全局 runtime memdir 条目与索引 |
+| `{cwd}/.allthecodes/memory/` | JSON/Markdown | 项目 runtime memdir |
+| `projects/{cwd-key}/memory/team/` | JSON/Markdown | Team runtime memdir |
+| `auto_memory/` | JSON/Markdown | 自动记忆 scope |
+| `memory/dream/{date}.md` | Markdown | KAIROS dream memory |
+| `review_proposals/{id}.json` | JSON | background-review 待审批记录；当前 producer 只生成 `WorkflowWarning`，其余 kind 为保留 consumer shape |
+| `skill_proposals/{id}.json` | JSON | 用户级 native skill proposal |
+| `{cwd}/.allthecodes/skill_proposals/{id}.json` | JSON | 项目级 native skill proposal |
 | `people/*.json` | JSON（每人一个文件） | 人物定义 |
 | `plugins/` | 目录 | 插件包 |
 | `skills/` | 目录 | 技能包 |
 | `web/state.db` | SQLite | UI 状态（偏好、主题、提示词、布局） |
 | `web/workspaces.json` | JSON | 工作区元数据 |
 | `web/kanban.json` | JSON | 看板数据 |
-| `web/jobs.json` | JSON | 作业定义 |
-| `web/job-runs.jsonl` | JSONL | 作业运行记录 |
+| `web/jobs.json` | JSON | 旧 Web Jobs CRUD 旁路定义；不是 scheduler owner |
+| `web/job-runs.jsonl` | JSONL | 旧 Web Jobs 诊断运行记录；不是真实执行历史 |
+| `scheduled_tasks.json` | JSON/SQLite projection | `SchedulerStore` canonical scheduler state |
+| `scheduled_tasks/tasks.json` | JSON | `allthecodes-tasks` 的另一套 scheduled model，待统一 |
 | `web/group-chat.json` | JSON | 群聊房间数据 |
-| `web/backend-services.json` | JSON | 后端服务状态 |
+| `web/schema-version.json`、`web/backups/*.json` | JSON | Backend Services 的 schema 标记和备份列表；其余多数状态为合成/内存值 |
 | `web/skills.json` | JSON | 技能 UI 元数据（启用/置顶） |
 | `quick-prompts.json` | JSON | 快速提示词 |
 | `search-cookies.json` | JSON | 搜索 cookies |
 | `logs/YYYY/MM/YYYY-MM-DD.md` | Markdown | 守护进程日志 |
 | `gateway/runs/{run_id}/` | JSON/NDJSON | Gateway 运行数据 |
+| `runs/{session_id}/session-report.v1.json` | JSON | 脱敏且带完整性记录的 session verification report |
+| `tasks/`、`state/state_5.sqlite` | JSONL/SQLite | Task metadata 与增量 output events |
 | `daemon/` | JSON | 守护进程状态 |
 | `launchpad-snapshots/{id}.json` | JSON | Launchpad 快照 |
+| `{cwd}/.allthecodes/workflows/` | Markdown/YAML | File-workflow definitions (`.md`/`.yaml`/`.yml`) |
+| `{cwd}/.allthecodes/workflow-runs/` | JSON | File-workflow run records |
 
 ---
 
@@ -64,12 +82,12 @@
 |------|------|-----------|--------|:----:|------|
 | **核心系统** |
 | `/api/state` | GET | `chat.rs` | Engine 运行时状态：当前模型、会话 ID、工具列表、usage、settings_map、system_prompt | 🔴 | 不可缓存。状态随每次推理变化 |
-| `/api/capabilities` | GET | `capabilities.rs` | 编译内置的 `HashMap<String, bool>`，全为 `true` | 🔴 | 无对应文件。可在前端硬编码 |
+| `/api/capabilities` | GET | `capabilities.rs` | 编译内置 capability map；当前多项为 `true` | 🔴 | 不可前端硬编码；route presence 也不能替代 runtime readiness |
 | `/api/healthz` | GET | `health.rs` | WebUiStore SQLite 健康检查 | 🔴 | 无需缓存 |
 | `/api/-/routes` | GET | `handler_registry.rs` | 运行时注册表 | 🔴 | 调试用 |
 | **会话** |
-| `/api/sessions` | GET | `sessions.rs` | `{data_root}/sessions/{uuid}.json` | 🟡 | 需扫描会话目录，合并元数据 |
-| `/api/sessions/{id}` | GET | `sessions.rs` | `{data_root}/sessions/{id}.json` | ✅ | 可直接读取 `sessions/{id}.json` |
+| `/api/sessions` | GET | `sessions.rs` | Session storage abstraction：SQLite index + JSON fallback merge | 🟡 | 必须通过 storage API 排序、去重并排除 archived 记录 |
+| `/api/sessions/{id}` | GET | `sessions.rs` | `resume_session_detail` replay/rollout 优先，再回退到 SQLite-first/JSON storage | 🟡 | 不是单个 JSON 文件直出；需恢复 pending interactions、warnings 与 schema metadata |
 | **聊天/推理** |
 | `/api/chat` | POST | `chat.rs` | Engine submit_message（AI 推理） | 🔵 | N/A — 写操作 |
 | `/api/abort` | POST | `chat.rs` | Engine abort | 🔵 | N/A — 写操作 |
@@ -88,9 +106,9 @@
 | `/api/prompts` | GET | `prompts.rs` | `{data_root}/quick-prompts.json` | ✅ | **可直接读取** `quick-prompts.json` |
 | `/api/prompts/{id}` | GET | `prompts.rs` | 同上，按 id 过滤 | ✅ | 同上 |
 | **记忆** |
-| `/api/memory` | GET | `memory.rs` | `{data_root}/memory/entries.json` | ✅ | **可直接读取** `memory/entries.json` |
-| `/api/memory/{id}` | PATCH | `memory.rs` | 同上，按 id 更新 | ✅ | 同上 |
-| `/api/memory/config` | GET | `memory.rs` | Engine 设置 map + 文件系统 memory 统计 | 🟡 | 混合数据 |
+| `/api/memory` | GET | `memory.rs` | 旧 Web-only `{data_root}/memory/entries.json` | 🟡 | 不应直读；API 待迁移到 runtime memdir scopes |
+| `/api/memory/{id}` | PATCH | `memory.rs` | 同一旧 Web-only store | 🟡 | 不应继续把旁路文件作为 canonical mutation owner |
+| `/api/memory/config` | GET/PATCH | `settings_phase1.rs` | Engine 设置 map + 文件系统 memory 统计；PATCH 经 settings persistence | 🟡 | 混合数据与受控 mutation |
 | **MCP 服务器** |
 | `/api/mcp-servers` | GET | `mcp_servers.rs` | `{data_root}/settings.json` + `{cwd}/.allthecodes/settings.json` + 插件/IDE 作用域 | 🟡 | 需合并多源并按优先级排序 |
 | `/api/mcp-servers/marketplace` | GET | `mcp_servers.rs` | 编译内置空列表 | 🔴 | 直接空列表 |
@@ -101,20 +119,20 @@
 | **技能** |
 | `/api/skills` | GET | `skills.rs` | `{data_root}/skills/` + `{cwd}/.allthecodes/skills/` + 内置 + 插件，合并 `web/skills.json` 元数据 | 🟡 | 多源合并 + 文件扫描 |
 | `/api/skills/{id}` | GET | `skills.rs` | 同上，按 id 过滤 | 🟡 | 同上 |
-| `/api/skills/{id}/files` | GET | `skills.rb` | 技能目录文件系统 | 🟡 | 需枚举目录 |
+| `/api/skills/{id}/files` | GET | `skills.rs` | 技能目录文件系统 | 🟡 | 需枚举目录 |
 | **看板** |
 | `/api/kanban/boards` | GET | `kanban.rs` | `{data_root}/web/kanban.json` | ✅ | **可直接读取** `web/kanban.json` |
 | `/api/kanban/boards/{id}` | GET | `kanban.rs` | 同上，按 board id 过滤 | ✅ | 同上 |
 | `/api/kanban/tasks` (POST) | POST | `kanban.rs` | 写入看板存储 | ✅ | 写操作 |
 | **作业/Cron** |
-| `/api/jobs` | GET | `jobs.rs` | `{data_root}/web/jobs.json` | ✅ | **可直接读取** `web/jobs.json` |
-| `/api/jobs/{id}` | GET/PATCH/DELETE | `jobs.rs` | 同上，按 id 操作 | ✅ | 同上 |
-| `/api/cron/history` | GET | `jobs.rs` | `{data_root}/web/job-runs.jsonl` | ✅ | **可直接读取** `web/job-runs.jsonl` |
+| `/api/jobs` | GET | `jobs.rs` | 旧 Web-only `{data_root}/web/jobs.json` | 🟡 | 保留 API 路径，迁移到 `SchedulerStore` |
+| `/api/jobs/{id}` | PATCH/DELETE | `jobs.rs` | 同一旧 Web-only store；当前没有单项 GET route | 🟡 | mutation 必须通过 canonical scheduler owner |
+| `/api/cron/history` | GET | `jobs.rs` | 旧 Web diagnostic `web/job-runs.jsonl` | 🟡 | 改为真实 scheduler/task lifecycle history |
 | **群聊** |
 | `/api/group-chat/rooms` | GET | `group_chat.rs` | `{data_root}/web/group-chat.json` | ✅ | **可直接读取** `web/group-chat.json` |
 | `/api/group-chat/rooms/{id}` | GET | `group_chat.rs` | 同上，按 id 过滤 | ✅ | 同上 |
 | **工作区** |
-| `/api/workspaces` | GET | `workspaces.rs` | `{data_root}/web/workspaces.json` + 扫描 `{data_root}/sessions/` | 🟡 | metadata 可直接读，session 计数需扫描 |
+| `/api/workspaces` | GET | `workspaces.rs` | `{data_root}/web/workspaces.json` + session storage abstraction（SQLite index + JSON fallback） | 🟡 | metadata 与 storage list 多源合并，不能只扫描 JSON 目录 |
 | `/api/workspaces/{key}` | PATCH | `workspaces.rs` | 同上 | 🟡 | 写操作 |
 | **个人资料** |
 | `/api/profiles` | GET | `profiles.rs` | `{data_root}/settings.json` 的 `auth_profiles` 字段 | ✅ | **可直接读取** `settings.json` 的 `auth_profiles` |
@@ -136,8 +154,8 @@
 | `/api/backend-services` | GET | `backend_services.rs` | 大部分硬编码状态 + 文件系统备份列表 | 🟡 | 多数为合成状态 |
 | **日志/诊断** |
 | `/api/logs` | GET | `logs.rs` | `{data_root}/logs/YYYY/MM/` | ✅ | **可直接读取** log 目录 |
-| `/api/diagnostics/snapshot` | GET | - | 引擎 + OS 状态 | 🔴 | 不可缓存 |
-| `/api/diagnostics/traces` | GET | - | Engine tracing | 🔴 | 不可缓存 |
+| `/api/diagnostics/snapshot` | GET | `logs.rs` | 引擎 + OS 状态 | 🔴 | 不可缓存 |
+| `/api/diagnostics/traces` | GET | `logs.rs` | Engine tracing | 🔴 | 不可缓存 |
 | **文件操作** |
 | `/api/files/tree` | GET | `files.rs` | 文件系统（cwd） | 🟡 | 实时文件系统 |
 | `/api/files/read` | GET | `files.rs` | 文件系统（cwd） | 🟡 | 实时文件读取 |
@@ -163,29 +181,27 @@
 | `/api/usage` | GET | `usage.rs` | Engine usage | 🔴 | 运行时数据 |
 | **未实现 (501)** |
 | `/api/hooks/test` | POST | `hooks.rs` | N/A | ⚪ | 未实现 |
-| `/api/computer-use/test` | POST | - | N/A | ⚪ | 未实现 |
-| `/api/appshots/capture` | POST | - | N/A | ⚪ | 未实现 |
-| `/api/chrome-relay/launch` | POST | - | N/A | ⚪ | 未实现 |
+| `/api/computer-use/test` | POST | `computer_use.rs` | N/A | ⚪ | 未实现 |
+| `/api/appshots/capture` | POST | `appshots.rs` | N/A | ⚪ | 未实现 |
+| `/api/chrome-relay/launch` | POST | `chrome_relay.rs` | N/A | ⚪ | 未实现 |
 
 ---
 
 ## 3. 可以直接从 `.allthecodes/` 文件读取的端点
 
-以下端点的响应数据可以直接从文件系统读取，无需 API 调用。前端可以在本地读取这些文件来加速加载。
+以下表格保留 2026-06-10 对“文件映射简单度”的分析，但不表示浏览器应绕过
+API 直接访问后端数据目录。尤其 Memory、Jobs、Workflow、Task 等有 scope、
+并发、权限或状态机语义的域，必须由 API 调用 canonical owner。
 
 ### 3.1 一级候选 — 零后处理，文件内容直出
 
 | 端点 | 文件路径 | 注意事项 |
 |------|---------|----------|
 | `GET /api/prompts` | `{data_root}/quick-prompts.json` | 仅有按 name/id 排序 |
-| `GET /api/memory` | `{data_root}/memory/entries.json` | 仅有按 updated_at 倒序排序 |
 | `GET /api/kanban/boards` | `{data_root}/web/kanban.json` | 仅有列排序 + schema 版本迁移 |
-| `GET /api/jobs` | `{data_root}/web/jobs.json` | 仅有按 profile_id 过滤 + 排序 |
-| `GET /api/cron/history` | `{data_root}/web/job-runs.jsonl` | 仅有按 profile_id 过滤 + 排序 |
 | `GET /api/group-chat/rooms` | `{data_root}/web/group-chat.json` | 仅有过滤已归档 + 排序 |
 | `GET /api/people` | `{data_root}/people/*.json` | 每人一个 JSON，仅有按 name/id 排序 |
 | `GET /api/people/{id}` | `{data_root}/people/{id}.json` | 直接读取单个文件 |
-| `GET /api/sessions/{id}` | `{data_root}/sessions/{id}.json` | 直接读取单个文件 |
 | `GET /api/logs` | `{data_root}/logs/YYYY/MM/` | 直接列出日志目录 |
 
 ### 3.2 二级候选 — 简单后处理（过滤/提取字段）
@@ -194,7 +210,7 @@
 |------|---------|--------|
 | `GET /api/profiles` | `{data_root}/settings.json` → `auth_profiles` | 从 settings.json 提取 `auth_profiles` map |
 | `GET /api/hooks` | `{data_root}/settings.json` → `hooks` | 从 settings.json 提取 `hooks` 字段，标准化为 Array |
-| `GET /api/workspaces` | `{data_root}/web/workspaces.json` + `{data_root}/sessions/` | metadata 可直接读，session 计数需扫描目录 |
+| `GET /api/workspaces` | `{data_root}/web/workspaces.json` + session storage abstraction | metadata 与 SQLite-first/JSON-fallback session list 合并 |
 
 ### 3.3 三级候选 — 多源合并
 
@@ -208,7 +224,9 @@
 
 ### 3.4 特殊：Web UI 状态（SQLite）
 
-`/api/web/preferences`、`/api/web/themes`、`/api/web/prompts`、`/api/web/layouts` 这些端点目前写在 `{data_root}/web/state.db` SQLite 文件中。前端可以直接读取该 SQLite 数据库，但：
+`/api/web/preferences`、`/api/web/themes`、`/api/web/prompts`、`/api/web/layouts`
+这些端点目前写在 `{data_root}/web/state.db` SQLite 文件中。SQLite 应由后端
+handler 访问，浏览器不应直接打开该数据库。客户端侧可以缓存 API 投影，但：
 - 前端目前已有 `localStorage`（Zustand persist）作为本地缓存
 - `/api/web/preferences` 在每次页面加载时都会调用 `hydrateFromRemote()`
 - 建议：可以让前端在页面加载时直接从 `localStorage` 读取，仅当版本/时间戳不匹配时才调用 API
@@ -296,24 +314,27 @@
 
 ### 6.1 高优先级 — 直接文件读取
 
-以下端点的数据完全来自文件系统，前端可以直接读取 `.allthecodes/` 下的文件来替代 API 调用：
+以下是原始快照中数据映射较简单的端点。前端仍应通过 API 获取；“直接文件
+读取”应只作为服务端 handler 的实现策略，而不是浏览器绕过访问控制的方案：
 
 | 端点 | 文件路径 | 建议策略 |
 |------|---------|---------|
-| `/api/prompts` | `quick-prompts.json` | 前端直接读取文件 |
-| `/api/memory` | `memory/entries.json` | 前端直接读取文件 + 写入时同步 |
-| `/api/kanban/boards` | `web/kanban.json` | 前端直接读取文件 |
-| `/api/jobs` | `web/jobs.json` | 前端直接读取文件 |
-| `/api/group-chat/rooms` | `web/group-chat.json` | 前端直接读取文件 |
-| `/api/people` | `people/*.json` | 前端直接读取目录 |
-| `/api/hooks` | `settings.json` → `hooks` | 前端直接读取 settings.json |
-| `/api/profiles` | `settings.json` → `auth_profiles` | 前端直接读取 settings.json |
+| `/api/prompts` | `quick-prompts.json` | API handler 直接读取并校验文件 |
+| `/api/kanban/boards` | `web/kanban.json` | API handler 直接读取并迁移 schema |
+| `/api/group-chat/rooms` | `web/group-chat.json` | API handler 读取 durable state；运行态另接 supervisor |
+| `/api/people` | `people/*.json` | API handler 有界扫描目录 |
+| `/api/hooks` | `settings.json` → `hooks` | API handler 提取并规范化字段 |
+| `/api/profiles` | `settings.json` → `auth_profiles` | API handler 提取并脱敏字段 |
+
+Memory 与 Jobs 特意从本表移除：它们当前 Web 文件是旁路 store，不能通过
+“写入时同步”长期维持双写一致性。迁移后由 API 分别调用 memdir 与
+`SchedulerStore`。
 
 ### 6.2 中优先级 — 文件读取 + 轻量后处理
 
 | 端点 | 建议策略 |
 |------|---------|
-| `/api/workspaces` | 读取 `web/workspaces.json`，session 计数可做懒加载或估算 |
+| `/api/workspaces` | 读取 `web/workspaces.json` 并通过 session storage abstraction 计算 session 数；可做懒加载或估算 |
 | `/api/agents` | 读取 `{data_root}/agents/*.md` + `{cwd}/.allthecodes/agents/*.md`，按 source-rank 合并 |
 
 ### 6.3 低优先级 — 多源合并复杂
@@ -331,7 +352,9 @@
 
 ### 6.5 特殊建议
 
-1. **`/api/capabilities`**：该端点的响应完全静态（所有 capability = true）。建议在前端直接硬编码，完全跳过 API 调用
+1. **`/api/capabilities`**：不要因为当前多数 flag 为 `true` 就在前端硬编码。
+   capability 应反映实际可用行为；route 已注册但 owner 未接线时仍需报告 partial/
+   unavailable，而不是让客户端永久假定可用
 2. **`/api/web/preferences`**：前端已通过 Zustand persist 在 `localStorage` 缓存了 UI 偏好。建议在页面加载时优先使用 `localStorage`，仅在检测到版本/时间戳变更时再同步后端
 3. **`/api/state`**：这是被调用最频繁的动态端点之一。虽然不可缓存，但可以通过减少不必要的重调用（如 profile 切换后的重复调用）来优化
 
@@ -349,7 +372,7 @@
 │  │  - settingsStore (state, profiles, capabilities)   │  │
 │  │  - ...                                             │  │
 │  └────────────────────────────────────────────────────┘  │
-│            │ API 调用           │ 直接文件读取 (未来)     │
+│            │ API 调用           │ 客户端缓存 API 投影      │
 └────────────┼───────────────────┼────────────────────────┘
              │                   │
 ┌────────────┴───────────────────┴────────────────────────┐
@@ -358,10 +381,10 @@
 │  │ Engine (内存)    │   │ File System (.allthecodes/)│  │
 │  │  - app_state     │   │  settings.json            │  │
 │  │  - session_state │   │  people/*.json            │  │
-│  │  - usage         │   │  sessions/*.json          │  │
-│  │  - model         │   │  memory/entries.json      │  │
+│  │  - usage         │   │  session SQLite + JSON    │  │
+│  │  - model         │   │  memory scopes + indexes  │  │
 │  │  - ...           │   │  web/kanban.json          │  │
-│  └──────────────────┘   │  web/jobs.json            │  │
+│  └──────────────────┘   │  scheduled_tasks.json     │  │
 │         │               │  quick-prompts.json       │  │
 │         ▼               │  ...                      │  │
 │  ┌──────────────────────────────────────────────┐     │
@@ -380,20 +403,18 @@
 
 ## 8. 总结
 
-### 可以直接从文件读取（✅ 标记）
+### 服务端 handler 可以直接从文件投影（✅ 标记）
 
 1. **`GET /api/prompts`** → `quick-prompts.json`
-2. **`GET /api/memory`** → `memory/entries.json`
-3. **`GET /api/kanban/boards`** → `web/kanban.json`
-4. **`GET /api/jobs`** → `web/jobs.json`
-5. **`GET /api/cron/history`** → `web/job-runs.jsonl`
-6. **`GET /api/group-chat/rooms`** → `web/group-chat.json`
-7. **`GET /api/people`** → `people/*.json`
-8. **`GET /api/hooks`** → `settings.json` → `hooks`
-9. **`GET /api/profiles`** → `settings.json` → `auth_profiles`
-10. **`GET /api/sessions/{id}`** → `sessions/{id}.json`
-11. **`GET /api/logs`** → `logs/YYYY/MM/`
-12. **`GET /api/web/preferences`** → `web/state.db` (SQLite, 前端已有 localStorage)
+2. **`GET /api/kanban/boards`** → `web/kanban.json`
+3. **`GET /api/group-chat/rooms`** → `web/group-chat.json`
+4. **`GET /api/people`** → `people/*.json`
+5. **`GET /api/hooks`** → `settings.json` → `hooks`
+6. **`GET /api/profiles`** → `settings.json` → `auth_profiles`
+7. **`GET /api/logs`** → `logs/YYYY/MM/`
+8. **`GET /api/web/preferences`** → `web/state.db` (SQLite, 前端已有 localStorage)
+
+Memory 与 Jobs 不再属于此清单；它们必须通过 API 投影真实 runtime owner。
 
 ### 不可从文件读取（必须 API 调用）
 
@@ -405,3 +426,42 @@
 6. 文件操作 (`/api/files/*`, 实时文件系统)
 7. 模型选择 (`/api/models`, 依赖引擎状态)
 8. WebSocket 端点
+
+---
+
+## 9. 2026-07-16 数据源增量与纠正
+
+### 9.1 新增或此前漏记的数据域
+
+| 数据域 | 当前 owner / 持久化 | 分类 | API 结论 |
+|---|---|:---:|---|
+| Scoped memory | `allthecodes_session::memdir`；global/project/team/auto | 🟡 | `/api/memory` 应适配该 owner，不再维护独立 entry shape/store |
+| Dream memory | `{data_root}/memory/dream/{date}.md` | ✅/🟡 | 增加有界 list/detail；日期白名单、大小限制、稳定排序 |
+| Memory proposals | `{data_root}/review_proposals/{id}.json` + background-review service；当前 producer 仅 `WorkflowWarning`，`MemoryAdd`/`MemoryReplace` 为保留 consumer variants | 🟡 | list/detail/approve/reject 必须调用 service，不能由前端直接删文件，也不能声称当前自动生成 memory mutation proposals |
+| Skill proposals | `allthecodes-skills` 的 user/project proposal store；background-review 仅保留 `SkillCreate`/`SkillPatch` consumer variants，当前无对应 producer | 🟡 | Skills API 增加有界 list/detail/diff/approve/reject；活跃来源是 `/learn` native create，`WorkflowWarning` 由非 Skills owner 处理 |
+| Scheduler | `allthecodes_services::scheduler::SchedulerStore`，默认 `scheduled_tasks.json`，可用 SQLite；实际 enqueue 由 daemon 私有 command store 完成 | 🟡/🔴 | 现有 Jobs 路径迁移到该 owner，并通过显式 daemon RPC/注入 dispatcher 运行；run/history 反映真实生命周期 |
+| Legacy scheduled agents | `{data_root}/scheduled_tasks/tasks.json` | 🟡 | 是第三套模型，迁移时合并/淘汰，不能成为第四个 API store |
+| Workflow | `{cwd}/.allthecodes/workflows/` 与 `workflow-runs/` | 🟡 | definition 可有界读取；start/advance/cancel 必须通过状态机 API |
+| Tasks/output | task repository + `*.output.events.ndjson`/SQLite metadata | 🟡/🔴 | Shared handler 可按 sequence 有界读取，但 `/api/ipc/ws` command branch 尚未接线；见 [plan 18](18-web-ipc-agent-command-parity-plan.md) |
+| Session report | `{data_root}/runs/{session}/session-report.v1.json` | ✅/🟡 | 已有 `/api/sessions/{id}/report`；返回前验证 integrity，保持脱敏 |
+| Agent runtime | runtime history SQLite + live task state | 🟡/🔴 | 已有 dashboard；Backend Services 应复用真实数据，不生成 `unknown` 快照 |
+| Kairos | daemon state、scheduler、provider/model 外部状态 | 🔴/🔵 | 已有 status/config/start/stop/restart，不新增重复 API |
+
+### 9.2 读取与缓存边界
+
+- “文件存在”不代表适合前端直读。scope 解析、workspace isolation、权限、
+  redaction、schema migration、锁和原子写都属于服务端 API 责任。
+- Dream、workflow definition 和 session report 可采用服务端文件投影，但必须
+  做 path containment、大小/条数预算、稳定排序和损坏条目隔离。
+- Proposal approval、workflow mutation、job run、task cancel 等改变运行时状态的
+  操作不可通过文件写入或删除实现。
+- `memory/entries.json`、`web/jobs.json`、`web/job-runs.jsonl` 在迁移期只能作为
+  legacy import source；不要双写为长期一致性方案。
+
+### 9.3 协议生成物覆盖
+
+当前协议生成器输出 253 条 operation，而已提交 `docs/api/routes.md` 的协议主表
+只有 207 条，差 46 条。第 2 节仍是 2026-06-10 的人工快照，不再代表完整端点
+inventory；新增端点应以 protocol metadata 和 runtime handler registry 为准，并按
+[Generated API Artifact Freshness Plan](17-api-generated-artifact-freshness-plan.md)
+在 CI 中更新/校验 routes、schema、OpenAPI 与 TypeScript 产物。
