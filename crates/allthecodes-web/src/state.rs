@@ -475,11 +475,14 @@ impl ChatPermissionStore {
                 });
 
                 if binding_must_match && !binding_matches {
-                    let entry = entries
-                        .get_mut(&key)
-                        .expect("pending permission disappeared while locked");
-                    entry.binding_mismatches = entry.binding_mismatches.saturating_add(1);
-                    if entry.binding_mismatches >= MAX_CHAT_PERMISSION_BINDING_MISMATCHES {
+                    let should_deny = if let Some(entry) = entries.get_mut(&key) {
+                        entry.binding_mismatches = entry.binding_mismatches.saturating_add(1);
+                        entry.binding_mismatches >= MAX_CHAT_PERMISSION_BINDING_MISMATCHES
+                    } else {
+                        no_sender_error = ChatPermissionResolveError::Stale;
+                        false
+                    };
+                    if should_deny {
                         denied_sender = entries.remove(&key).map(|entry| entry.sender);
                     }
                     None
@@ -543,10 +546,7 @@ fn request_fingerprint(
         "operation": operation,
         "security": request.security,
     });
-    digest(
-        &serde_json::to_vec(&canonical)
-            .expect("permission request values are always JSON serializable"),
-    )
+    digest(canonical.to_string().as_bytes())
 }
 
 fn digest(value: &[u8]) -> [u8; 32] {

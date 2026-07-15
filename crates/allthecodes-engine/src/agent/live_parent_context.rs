@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use allthecodes_types::agent_types::LiveParentContextPaths;
 use anyhow::{Context, Result};
@@ -55,7 +55,7 @@ pub(super) fn create_channel(
         latest_diff: Some(latest_diff.display().to_string()),
         latest_seq: 1,
     };
-    ACTIVE_CHANNELS.lock().expect("live channel lock").insert(
+    active_channels().insert(
         fork_agent_id.to_string(),
         ActiveChannel {
             parent_session_id: parent_session_id.to_string(),
@@ -70,7 +70,7 @@ pub(crate) fn publish_parent_update(parent_session_id: &str, source: &str, text:
     if text.trim().is_empty() {
         return;
     }
-    let mut channels = ACTIVE_CHANNELS.lock().expect("live channel lock");
+    let mut channels = active_channels();
     for channel in channels
         .values_mut()
         .filter(|channel| channel.parent_session_id == parent_session_id)
@@ -82,11 +82,7 @@ pub(crate) fn publish_parent_update(parent_session_id: &str, source: &str, text:
 }
 
 pub(super) fn close_channel(fork_agent_id: &str, status: &str) {
-    let Some(mut channel) = ACTIVE_CHANNELS
-        .lock()
-        .expect("live channel lock")
-        .remove(fork_agent_id)
-    else {
+    let Some(mut channel) = active_channels().remove(fork_agent_id) else {
         return;
     };
     let _ = append_update(
@@ -98,6 +94,16 @@ pub(super) fn close_channel(fork_agent_id: &str, status: &str) {
     // crash recovery, and post-run inspection. Only the in-process publisher
     // registration is removed. A future retention policy may garbage-collect
     // old session run directories.
+}
+
+fn active_channels() -> MutexGuard<'static, HashMap<String, ActiveChannel>> {
+    match ACTIVE_CHANNELS.lock() {
+        Ok(channels) => channels,
+        Err(poisoned) => {
+            tracing::warn!("recovering poisoned live parent context registry");
+            poisoned.into_inner()
+        }
+    }
 }
 
 fn append_update(channel: &mut ActiveChannel, source: &str, text: &str) -> Result<()> {

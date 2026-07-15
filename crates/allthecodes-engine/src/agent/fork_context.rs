@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use allthecodes_types::agent_types::{
     ForkContextMode, ForkLaunchMetadata, FORK_ACTIVE_TOOL_PLACEHOLDER, FORK_BOILERPLATE_TAG,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use uuid::Uuid;
 
 use crate::types::config::ThinkingConfig;
@@ -76,7 +76,7 @@ pub(super) fn prepare_fork_launch(
         &metadata,
         requested_task,
         parent_runtime.query_source.as_deref(),
-    );
+    )?;
     Ok(PreparedForkLaunch {
         initial_messages,
         child_prompt,
@@ -227,7 +227,7 @@ fn build_fork_directive(
     metadata: &ForkLaunchMetadata,
     requested_task: &str,
     parent_query_source: Option<&str>,
-) -> String {
+) -> Result<String> {
     let inheritance = match metadata.context {
         ForkContextMode::FullSnapshot => {
             "You inherited a snapshot of the full parent conversation at spawn time.".to_string()
@@ -239,7 +239,7 @@ fn build_fork_directive(
             let paths = metadata
                 .live_channel
                 .as_ref()
-                .expect("live readonly metadata must include channel paths");
+                .ok_or_else(|| anyhow!("live readonly metadata is missing channel paths"))?;
             format!(
                 "You have a read-only live parent channel. Read snapshot `{}` and append-only updates `{}` when you need current parent state. Latest sequence at launch: {}.",
                 paths.snapshot, paths.updates, paths.latest_seq
@@ -250,10 +250,10 @@ fn build_fork_directive(
     let source = parent_query_source
         .map(|source| format!(" Parent query source at spawn: {source}."))
         .unwrap_or_default();
-    format!(
+    Ok(format!(
         "<{tag}>\nYou are an explicit fork worker. {inheritance}{source}\nComplete the requested task independently and return a concise result.\n\nRequested task:\n{requested_task}\n</{tag}>",
         tag = FORK_BOILERPLATE_TAG
-    )
+    ))
 }
 
 pub(super) fn render_parent_context(messages: &[Message]) -> String {
@@ -363,7 +363,8 @@ mod tests {
                 latest_seq: 7,
             }),
         };
-        let directive = build_fork_directive(&metadata, "inspect state", Some("interactive"));
+        let directive =
+            build_fork_directive(&metadata, "inspect state", Some("interactive")).unwrap();
         assert!(directive.contains("parent-context.md"));
         assert!(directive.contains("parent-updates.ndjson"));
         assert!(directive.contains("Latest sequence at launch: 7"));
