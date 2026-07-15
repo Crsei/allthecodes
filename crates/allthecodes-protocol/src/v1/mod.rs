@@ -1,6 +1,7 @@
 pub mod account_auth;
 pub mod agent_runtime;
 pub mod agents;
+pub mod backend_services;
 pub mod capabilities;
 pub mod channels;
 pub mod chat;

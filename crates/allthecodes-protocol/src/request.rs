@@ -1042,23 +1042,39 @@ crate::api_definitions! {
     },
 
     BackendServices => "GET /api/backend-services" {
-        response: Value,
+        params: v1::backend_services::BackendServicesQuery,
+        response: v1::backend_services::BackendServicesResponse,
+        errors: [BadRequest, Internal],
     },
     BackendServicesSessionsSync => "POST /api/backend-services/sessions/sync" {
-        response: Value,
+        params: v1::backend_services::BackendServicesSessionSyncRequest,
+        response: v1::backend_services::ServiceActionResponse,
+        errors: [BadRequest, Internal],
+        serialization: PerProcess,
     },
     BackendServicesContextCompressionRun => "POST /api/backend-services/context-compression/{id}/run" {
-        response: Value,
+        params: v1::backend_services::BackendServicesCompressionRunParams,
+        response: v1::backend_services::ServiceActionResponse,
+        errors: [BadRequest, NotFound, Conflict, Validation, ServiceUnavailable],
+        serialization: PerKey("id"),
     },
     BackendServicesAgentBridgeRetry => "POST /api/backend-services/agent-bridge/events/{id}/retry" {
-        response: Value,
+        params: v1::backend_services::BackendServicesAgentRetryParams,
+        response: v1::backend_services::ServiceActionResponse,
+        errors: [BadRequest, NotFound, Conflict, Validation, ServiceUnavailable],
+        serialization: PerKey("id"),
     },
     BackendServicesMigrationsRun => "POST /api/backend-services/migrations/run" {
-        response: Value,
+        params: v1::backend_services::BackendServicesMigrationRequest,
+        response: v1::backend_services::ServiceActionResponse,
+        errors: [ServiceUnavailable],
+        serialization: PerProcess,
     },
     BackendServicesBackups => "POST /api/backend-services/backups" {
-        params: Value,
-        response: Value,
+        params: v1::backend_services::BackendServicesBackupRequest,
+        response: v1::backend_services::ServiceActionResponse,
+        errors: [ServiceUnavailable],
+        serialization: PerProcess,
     },
 
     // ── Queue ────────────────────────────────────────────────────────────

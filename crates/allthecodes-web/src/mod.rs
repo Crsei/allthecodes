@@ -162,6 +162,18 @@ fn requires_privileged_capability(method: &Method, path: &str) -> bool {
     if method == Method::POST
         && (matches!(
             path,
+            "backend-services/sessions/sync"
+                | "backend-services/migrations/run"
+                | "backend-services/backups"
+        ) || has_single_parameter(path, "backend-services/context-compression/", "/run")
+            || has_single_parameter(path, "backend-services/agent-bridge/events/", "/retry"))
+    {
+        return true;
+    }
+
+    if method == Method::POST
+        && (matches!(
+            path,
             "plugins/install"
                 | "plugins/update"
                 | "plugins/uninstall"
@@ -829,6 +841,23 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.get("proposals").is_some(), "unexpected body: {body}");
+    }
+
+    #[test]
+    fn backend_service_mutations_require_privileged_capability_but_dashboard_does_not() {
+        assert!(!requires_privileged_capability(
+            &Method::GET,
+            "/api/backend-services"
+        ));
+        for path in [
+            "/api/backend-services/sessions/sync",
+            "/api/backend-services/context-compression/task-1/run",
+            "/api/backend-services/agent-bridge/events/event-1/retry",
+            "/api/backend-services/migrations/run",
+            "/api/backend-services/backups",
+        ] {
+            assert!(requires_privileged_capability(&Method::POST, path));
+        }
     }
 
     async fn privileged_route_statuses(

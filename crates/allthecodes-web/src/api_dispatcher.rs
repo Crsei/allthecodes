@@ -286,12 +286,12 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::GroupChatMessage - legacy REST handler, GroupChatProcessor target.
 // ClientRequest::GroupChatCompression - legacy REST handler, GroupChatProcessor target.
 // ClientRequest::GroupChatStream - SSE group-chat transport, excluded from JSON dispatcher.
-// ClientRequest::BackendServices - legacy REST handler, BackendServicesProcessor target.
-// ClientRequest::BackendServicesSessionsSync - legacy REST handler, BackendServicesProcessor target.
-// ClientRequest::BackendServicesContextCompressionRun - legacy REST handler, BackendServicesProcessor target.
-// ClientRequest::BackendServicesAgentBridgeRetry - legacy REST handler, BackendServicesProcessor target.
-// ClientRequest::BackendServicesMigrationsRun - legacy REST handler, BackendServicesProcessor target.
-// ClientRequest::BackendServicesBackups - legacy REST handler, BackendServicesProcessor target.
+// ClientRequest::BackendServices - dispatched.
+// ClientRequest::BackendServicesSessionsSync - dispatched.
+// ClientRequest::BackendServicesContextCompressionRun - dispatched.
+// ClientRequest::BackendServicesAgentBridgeRetry - dispatched.
+// ClientRequest::BackendServicesMigrationsRun - dispatched.
+// ClientRequest::BackendServicesBackups - dispatched.
 pub(crate) fn dispatcher_migration_state(operation: ApiMethod) -> ApiDispatcherMigrationState {
     crate::api_operation_registry::api_operation_registry().migration_state(operation)
 }
@@ -955,6 +955,70 @@ pub async fn dispatch(
             .await?;
             Ok(ClientResponse::ModelsList(response))
         }
+        ClientRequest::BackendServices(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::backend_services::BackendServicesProcessor,
+            >(state, context, ApiMethod::BackendServices, params)
+            .await?;
+            Ok(ClientResponse::BackendServices(response))
+        }
+        ClientRequest::BackendServicesSessionsSync(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::backend_services::BackendServicesSessionSyncProcessor,
+            >(
+                state,
+                context,
+                ApiMethod::BackendServicesSessionsSync,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::BackendServicesSessionsSync(response))
+        }
+        ClientRequest::BackendServicesContextCompressionRun(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::backend_services::BackendServicesCompressionRunProcessor,
+            >(
+                state,
+                context,
+                ApiMethod::BackendServicesContextCompressionRun,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::BackendServicesContextCompressionRun(
+                response,
+            ))
+        }
+        ClientRequest::BackendServicesAgentBridgeRetry(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::backend_services::BackendServicesAgentRetryProcessor,
+            >(
+                state,
+                context,
+                ApiMethod::BackendServicesAgentBridgeRetry,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::BackendServicesAgentBridgeRetry(response))
+        }
+        ClientRequest::BackendServicesMigrationsRun(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::backend_services::BackendServicesMigrationProcessor,
+            >(
+                state,
+                context,
+                ApiMethod::BackendServicesMigrationsRun,
+                params,
+            )
+            .await?;
+            Ok(ClientResponse::BackendServicesMigrationsRun(response))
+        }
+        ClientRequest::BackendServicesBackups(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::backend_services::BackendServicesBackupProcessor,
+            >(state, context, ApiMethod::BackendServicesBackups, params)
+            .await?;
+            Ok(ClientResponse::BackendServicesBackups(response))
+        }
         ClientRequest::AgentRuntimeDashboard(params) => {
             let response = dispatch_tracked_processor::<handlers::AgentRuntimeDashboardProcessor>(
                 state,
@@ -1382,7 +1446,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 66);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 72);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(
