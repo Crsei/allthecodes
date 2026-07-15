@@ -19,7 +19,7 @@ pub enum JsonRpcFrame {
     Request {
         jsonrpc: JsonRpcVersion,
         id: TransportRequestId,
-        request: ClientRequest,
+        request: Box<ClientRequest>,
     },
     Response {
         jsonrpc: JsonRpcVersion,
@@ -33,7 +33,7 @@ pub enum JsonRpcFrame {
     },
     Notification {
         jsonrpc: JsonRpcVersion,
-        notification: ServerNotification,
+        notification: Box<ServerNotification>,
     },
 }
 
@@ -50,7 +50,7 @@ impl JsonRpcFrame {
         Self::Request {
             jsonrpc: JsonRpcVersion::V2,
             id,
-            request,
+            request: Box::new(request),
         }
     }
 
@@ -73,7 +73,7 @@ impl JsonRpcFrame {
     pub fn notification(notification: ServerNotification) -> Self {
         Self::Notification {
             jsonrpc: JsonRpcVersion::V2,
-            notification,
+            notification: Box::new(notification),
         }
     }
 }

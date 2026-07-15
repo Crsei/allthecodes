@@ -222,7 +222,7 @@ async fn handle_api_rpc_text(
 ) -> JsonRpcFrame {
     match serde_json::from_str::<JsonRpcFrame>(text) {
         Ok(JsonRpcFrame::Request { id, request, .. }) => {
-            match dispatcher.dispatch(context.clone(), request).await {
+            match dispatcher.dispatch(context.clone(), *request).await {
                 Ok(response) => JsonRpcFrame::response(id, response),
                 Err(error) => JsonRpcFrame::error(id, error),
             }
