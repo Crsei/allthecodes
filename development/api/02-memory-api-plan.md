@@ -1,8 +1,28 @@
 # Memory API Backend Plan
 
-> Status reviewed: 2026-07-16
-> Current result: routes exist, but the entry API is connected to a Web-only
-> store instead of the runtime memory service.
+> Status: Implemented on 2026-07-16
+> Current result: the entry API now uses canonical runtime memory, with bounded
+> dream-memory reads and typed background-review proposal operations.
+
+## Implementation Result (2026-07-16)
+
+Implemented in `f7b5b7dc` and reflected in the backend API artifacts refreshed
+by `f9dc6d76`:
+
+- ordinary reads and updates use `allthecodes_session::memdir` across the
+  `global`, `project`, `team`, and `auto` scopes;
+- `profile_id` is retained only as a compatibility echo and does not select a
+  storage partition;
+- the legacy Web entry file is migrated once with conflict preflight and is no
+  longer an active read/write owner;
+- dream list/detail operations are bounded and read-only; and
+- Memory proposal list/detail/approve/reject operations adapt the canonical
+  background-review queue with single-consumption decisions.
+
+The production producer boundary remains explicit: `WorkflowWarning` is the
+only background-review kind currently produced automatically. `MemoryAdd` and
+`MemoryReplace` remain supported consumer/fixture types and are not advertised
+as active suggestions.
 
 ## Scope
 
@@ -35,7 +55,7 @@ POST /api/memory/proposals/:id/reject
 Dream routes are read-only. Running dream distillation remains a daemon or
 command operation; this plan does not create a second scheduler endpoint.
 
-## Current Implementation
+## Audit Snapshot Before Implementation
 
 The base routes are registered and `capabilities.memory` is `true`, but their
 data source is obsolete:

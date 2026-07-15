@@ -1,10 +1,31 @@
 # Security Approval API Transport Parity Plan
 
-> Status: planned transport fix; engine enforcement is already implemented
+> Status: Implemented on 2026-07-16; complete Web transport E2E remains pending
 > Priority: P0
 > Scope: Web chat permission events/responses and Web IPC permission projection
 
-## Current Boundary
+## Implementation Result (2026-07-16)
+
+Implemented in `090e346d` and described by the backend artifacts refreshed in
+`f9dc6d76`:
+
+- Web chat SSE and Web IPC preserve the normalized operation and display-safe
+  `SecurityDecisionDisplay` supplied by the engine;
+- exact `allow` requires a matching single-use response binding, while binding
+  mismatch, replay, cross-session resolution, and exact `always_allow` fail
+  closed;
+- exact `deny` remains available without turning the request into a reusable
+  rule; and
+- the dynamic permission-response route requires the privileged capability
+  before pending state can be consumed.
+
+Protocol, runtime, handler, and Web-state regression tests cover the typed
+payload and one-shot response rules. The plan-specific full Web E2E that
+observes the SSE event, submits the bound response, and proves modified/replayed
+approval cannot execute the request has not yet been added; do not treat the
+unit/integration coverage as that end-to-end evidence.
+
+## Audit Snapshot Before Implementation
 
 Exact workflow-injection approval is not an engine gap. The engine already:
 

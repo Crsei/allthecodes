@@ -1,8 +1,33 @@
 # Backend Services API Plan
 
-> Status reviewed: 2026-07-16
-> Current result: route and response shapes exist, but most dashboard sections
-> are synthetic or permanently unavailable.
+> Status: Partial on 2026-07-16
+> Current result: session reconciliation and agent/task projections use
+> canonical owners; compression, durable retry, aggregate migrations, and
+> consistent backups still lack canonical action services and fail closed.
+
+## Implementation Result (2026-07-16)
+
+Commit `6bc36588` replaced synthetic success with truthful typed projections and
+failure semantics; its contracts are included in `f9dc6d76`:
+
+- dashboard/session sync queries canonical persisted sessions plus the current
+  Web runtime inventory, supports dry-run, and reports partial inventory
+  coverage explicitly;
+- agent and event rows project `agent_runtime_history` and canonical
+  `TaskStore` state;
+- a valid compression target returns `503 compaction_service_unavailable`
+  while an unknown target remains `404`;
+- a known agent event without a durable replay descriptor returns `409`, while
+  an unknown event remains `404`; and
+- migrations and backups return typed `503` responses because no aggregate
+  registry or consistent snapshot service exists, and no Web-local marker or
+  backup envelope is created.
+
+This is intentionally Partial. The dashboard can report canonical session,
+task, and runtime-history evidence, but it does not yet provide real compaction
+lifecycle, replayable agent requests, aggregate database migration coverage, or
+consistent backups. The Backend Services focused suite passes 6/6; those
+unavailable owners remain the unmet acceptance boundary below.
 
 ## Scope
 
@@ -22,7 +47,7 @@ No additional backend-services namespace is required. Each section must adapt
 an existing canonical owner or remain explicitly unavailable until such an
 owner exists.
 
-## Current Implementation
+## Audit Snapshot Before Implementation
 
 The routes are registered and `capabilities.backend_services` is `true`.
 `crates/allthecodes-web/src/handlers/backend_services.rs` returns the expected

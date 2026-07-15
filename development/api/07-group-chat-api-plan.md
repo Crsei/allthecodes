@@ -1,8 +1,29 @@
 # Group Chat API Backend Plan
 
-> Status reviewed: 2026-07-16
-> Current result: room CRUD and a snapshot-shaped SSE response exist; invite GET
-> mutates state, stream metadata is opaque, and agent lifecycle is not wired.
+> Status: Implemented on 2026-07-16
+> Current result: invites have a safe read/write split, messages launch
+> canonical delegated work, and typed long-lived SSE exposes bounded lifecycle
+> events with replay/reset support.
+
+## Implementation Result (2026-07-16)
+
+Implemented in `9e7e48b8`, with SSE OpenAPI output included in `f9dc6d76`:
+
+- invite GET is pure; privileged POST owns revisioned, request-idempotent
+  create/rotation;
+- message dispatch validates the complete target set and launches one canonical
+  delegated task/child session per enabled target, preserving partial success;
+- task, child-session, output, completion, failure, and cancellation state are
+  observed from the delegated-agent runtime rather than editable room fields;
+- the per-room stream remains open, sends heartbeats, maintains bounded durable
+  replay, and emits a reset/snapshot for stale cursors; and
+- protocol/OpenAPI metadata uses the tagged `GroupChatStreamEnvelope` with
+  `text/event-stream`, not an opaque JSON response.
+
+The focused Group Chat Web suite passes 7/7. Context compression intentionally
+remains the existing room-local summary and is not presented as canonical model
+compaction. External invite join/expiry and a second cancellation endpoint were
+not added; cancellation continues through the shared IPC agent command path.
 
 ## Scope
 
@@ -29,7 +50,7 @@ Do not add a second message or agent-control namespace. Extend the existing
 message response and SSE contract with task/run lifecycle identifiers and
 events.
 
-## Current Implementation
+## Audit Snapshot Before Implementation
 
 The routes are registered and `capabilities.group_chat` is `true`.
 `crates/allthecodes-web/src/handlers/group_chat.rs` currently provides:
@@ -151,11 +172,10 @@ resume/ownership design and must not be inferred from a display-only agent id.
 
 Cancellation continues through the canonical agent cancellation path:
 `AgentCommand::AbortAgent` dispatched by the shared IPC agent handler. There is
-no generic `TaskStop` protocol operation to duplicate. The existing Web IPC
-command branch still needs the wiring in
-[plan 18](18-web-ipc-agent-command-parity-plan.md); Group Chat should observe
-and stream that canonical transition rather than add a second cancellation
-owner.
+no generic `TaskStop` protocol operation to duplicate. The Web IPC wiring is
+now implemented by [plan 18](18-web-ipc-agent-command-parity-plan.md); Group
+Chat observes and streams that canonical transition rather than adding a
+second cancellation owner.
 
 ## Live SSE Contract
 

@@ -1,10 +1,31 @@
 # API Generated Artifact Freshness Plan
 
-> Status: Draft
+> Status: Partial on 2026-07-16
 > Audit date: 2026-07-16
 > Audit HEAD: `6d426dc9` (frozen snapshot)
 
-## Current Finding
+## Implementation Result (2026-07-16)
+
+Backend freshness enforcement is implemented in `e931f35f`, and the current
+backend artifacts were regenerated and checked in `f9dc6d76`:
+
+- one six-artifact manifest drives shared write/check paths;
+- the CLI supports explicit `backend-docs`, `frontend`, and `all` targets plus
+  an explicit frontend directory;
+- generation stages writes atomically, reports every stale/missing owned path,
+  and embeds one protocol digest across backend/frontend output;
+- backend CI executes the `backend-docs` check and verifies both tracked and
+  untracked `docs/api` state; and
+- stream metadata reaches schema/OpenAPI output, with streaming operations
+  documented as `text/event-stream`.
+
+The final backend protocol and `docs/api/routes.md` now both contain 273
+operations, closing the backend drift observed below. This plan remains
+Partial: the paired frontend artifacts/CI have not been updated in their owning
+repository, and explicit invariance tests across timezone, locale, current
+directory, and checkout path are still absent.
+
+## Audit Snapshot Before Implementation
 
 `crates/allthecodes-protocol/src/request.rs` currently declares 253 protocol
 operations. The generated operation table in `docs/api/routes.md` contains 207
@@ -223,8 +244,8 @@ cargo run -p allthecodes-protocol --features codegen \
 
 ## Acceptance
 
-- Regenerating the current protocol produces 253 generated operation rows in
-  `docs/api/routes.md`, closing the observed 46-row drift.
+- Regenerating the current protocol produces 273 generated operation rows in
+  `docs/api/routes.md`, closing the backend drift from the audit snapshot.
 - A protocol or DTO change without regenerated backend artifacts fails backend
   CI with a precise file list and command.
 - A paired frontend change with stale TypeScript artifacts fails frontend CI.

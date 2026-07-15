@@ -1,9 +1,30 @@
 # Skills API Backend Status and Proposal Parity Plan
 
-> Status reviewed: 2026-07-16
-> Current result: Partial. Skill discovery, detail, file reads, and
-> enabled/pinned updates are implemented; staged skill proposals are available
-> only through commands and have no typed Web API.
+> Status: Implemented on 2026-07-16; extended failure-injection validation remains pending
+> Current result: existing Skills operations and five typed proposal operations
+> now share the canonical native/background-review proposal services.
+
+## Implementation Result (2026-07-16)
+
+Implemented in `6e3938cd` and included in the backend artifacts refreshed by
+`f9dc6d76`:
+
+- list/detail/diff/approve/reject are registered as typed REST and API-RPC
+  operations;
+- native user/project proposals and reserved background `SkillCreate`/
+  `SkillPatch` records are adapted without creating a third proposal store;
+- proposal IDs are namespace-qualified, mutations are workspace/scope-bound,
+  digest-checked, idempotent, and single-consumption; and
+- `WorkflowWarning` and Memory proposal kinds remain invisible to the Skills
+  API.
+
+Active production remains narrower than the consumer contract: `/learn`
+currently stages native project-scoped `create` proposals. Native `patch` and
+background skill records are supported when present but have no current
+built-in producer. The narrow package tests pass; the replacement-failure and
+replaced-symlink race cases listed later in this plan do not yet have separate
+failure-injection evidence and should not be reported as independently
+verified.
 
 ## Scope
 
@@ -33,7 +54,7 @@ phase exposes review and disposition for native proposals plus those reserved
 records when present; it does not add an unaudited endpoint that accepts
 arbitrary skill Markdown.
 
-## Current Status
+## Audit Snapshot Before Implementation
 
 The existing route set is implemented:
 

@@ -1,8 +1,26 @@
 # Unified Discovery Search API Plan
 
-> Status: Draft
+> Status: Implemented on 2026-07-16
 > Audit date: 2026-07-16
 > Runtime source: `crates/allthecodes-tools/src/discovery_search.rs`
+
+## Implementation Result (2026-07-16)
+
+Implemented in `53254712` and included in the backend artifacts refreshed by
+`f9dc6d76`:
+
+- one typed, read-only operation reuses the MCP/plugin discovery providers and
+  existing scorer rather than maintaining a Web index;
+- the trusted workspace comes from the bound engine, not request parameters;
+- provider failure, panic, timeout, and budget truncation produce stable typed
+  partial results without hiding successful providers;
+- default projection removes contribution detail, tool schemas, credentials,
+  host paths, remote URLs, and unsafe follow-up actions; and
+- the endpoint performs no mutation and does not replace mention autocomplete.
+
+Targeted protocol, tools, and Web discovery tests pass, including Web discovery
+7/7 and plugin search 2/2. Mention autocomplete remains unchanged; no claim is
+made that this change added a separate autocomplete regression suite.
 
 ## Goal
 

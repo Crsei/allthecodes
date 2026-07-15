@@ -1,12 +1,32 @@
 # Web IPC Agent and Team Command Parity Plan
 
-> Status: Draft
+> Status: Implemented on 2026-07-16; final PTY integration gate remains pending
 > Priority: P1
 > Audit date: 2026-07-16
 > Audit HEAD: `6d426dc9` (frozen snapshot)
 > Related runtime updates: `f4b234c9`, `2514ceaa`, `ca4b95db`
 
-## Current Finding
+## Implementation Result (2026-07-16)
+
+Implemented in `f6e1b143` without adding duplicate REST task/agent/team
+operations:
+
+- `/api/ipc/ws` dispatches the existing Agent and Team commands through the
+  shared authorized handler instead of returning debug `SystemInfo` text;
+- the server-resolved session/workspace binds every command, and unknown or
+  cross-scope targets fail closed;
+- read results and failures use a requester-only direct lane that is not
+  broadcast, persisted, replayed, or filtered by the hub replay high-watermark;
+- successful mutations publish only after a real authorized state change; and
+- agent output, tree/team projections, and team message input are bounded and
+  display-redacted.
+
+Shared dispatcher and Web delivery tests cover scope checks, one-shot mutation,
+direct delivery, replay isolation, bounds, and redaction. A fresh final result
+for the repository's PTY `commands` integration gate is still required before
+claiming that specific end-to-end verification.
+
+## Audit Snapshot Before Implementation
 
 The delegated-agent updates already added a typed IPC command and event
 contract plus working runtime handlers. The missing API work is confined to the

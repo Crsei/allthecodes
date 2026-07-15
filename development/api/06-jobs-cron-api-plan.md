@@ -1,8 +1,31 @@
 # Jobs and Cron API Backend Plan
 
-> Status reviewed: 2026-07-16
-> Current result: all advertised routes exist, but they do not control the
-> scheduler used by the daemon.
+> Status: Implemented on 2026-07-16
+> Current result: Jobs/Cron definitions, runs, history, and `/api/tasks`
+> projections now use the canonical scheduler domain and daemon dispatcher.
+
+## Implementation Result (2026-07-16)
+
+The scheduler integration is complete in `5362564d` and is represented in the
+backend artifacts refreshed by `f9dc6d76`:
+
+- `SchedulerStore`/the shared scheduler service own definitions, revisions,
+  JSON/SQLite persistence, migrations, and durable run history;
+- Web-created and daemon-created definitions share the same store, and
+  `/api/tasks` projects that canonical state instead of a third task file;
+- due and manual triggers use the same daemon-owned
+  `SchedulerCommandDispatcher` boundary;
+- the Web/All production composition root injects
+  `DaemonSchedulerDispatcher`, so accepted manual runs return `202` only after
+  durable enqueue; and
+- run lifecycle transitions cover `enqueueing`, `queued`, `running`, and
+  terminal completion/failure, while a missing dispatcher fails truthfully
+  with `503`.
+
+Unsupported legacy raw-command records are quarantined rather than enabled.
+Targeted evidence is green: protocol Jobs 3/3, scheduler service 42/42, daemon
+scheduler 7/7, Web Jobs 5/5, Web Tasks 4/4, API dispatcher 15/15, and the Jobs
+privileged-route check 1/1.
 
 ## Scope
 
@@ -23,7 +46,7 @@ GET    /api/cron/history
 This is a service-wiring and contract-hardening task, not a request for another
 parallel set of scheduling routes.
 
-## Current Implementation
+## Audit Snapshot Before Implementation
 
 The routes are registered and `capabilities.jobs` is `true`. CRUD,
 pause/resume, optimistic revision checks, and a run-history shape are present

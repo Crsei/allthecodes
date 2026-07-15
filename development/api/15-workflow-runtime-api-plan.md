@@ -1,11 +1,34 @@
 # File Workflow Runtime API Plan
 
-> Status: planned typed protocol and Web adapter; FileWorkflow runtime exists,
-> while remote mutations remain fail-closed until an approval channel exists
+> Status: Implemented to the planned fail-closed boundary on 2026-07-16
+> Current result: typed reads are available; production mutations remain
+> unavailable because the shared workflow policy returns `Ask`, which maps to
+> `409 interactive_approval_required` without mutation.
 > Priority: P1
 > Scope: project-local file workflow definitions and runs
 
-## Current Boundary
+## Implementation Result (2026-07-16)
+
+Implemented in `311a7bca` and hardened in `e36205f0`; the seven operations are
+included in the backend artifacts refreshed by `f9dc6d76`:
+
+- definition list/detail and run list/status read the canonical project-local
+  FileWorkflow owner through typed REST/API-RPC adapters;
+- strict identifiers, workspace containment, symlink rejection, bounded
+  pagination, revision checks, cross-process locking, atomic writes, and
+  request idempotency protect the shared service;
+- status reads are pure and task state remains a derived projection; and
+- start/advance/cancel are typed and privileged, but production authorization
+  returns `Ask`; without a challenge/resume channel they return
+  `409 interactive_approval_required` and perform no write.
+
+Successful mutation paths are exercised only with an explicit test `Allow`
+policy; that fixture is not production readiness. Workflow tests pass 52/52.
+The atomic-write/task-projection failure-injection cases listed later are not
+separately evidenced. Generic Agent output and abort remain on the existing IPC
+contract, whose Web dispatch is now implemented by plan 18.
+
+## Audit Snapshot Before Implementation
 
 The workflow lifecycle is already implemented in
 `crates/allthecodes-tools/src/workflow/file_workflow.rs` and wired through
@@ -64,10 +87,10 @@ not create a Web-only workflow model or store.
   the normal tool pipeline and security checks.
 - Do not add generic `TaskOutput` or `TaskStop` operations. The existing
   `AgentCommand::QueryAgentOutput` and `AgentCommand::AbortAgent` DTOs remain
-  the intended contract. Headless ingress dispatches them through
-  `crates/allthecodes-ipc/src/agent_handlers.rs`; the current WebSocket branch
-  only emits a debug `SystemInfo` response, so Web dispatch is a real but
-  separate gap tracked by [plan 18](18-web-ipc-agent-command-parity-plan.md).
+  the intended contract. At the audit snapshot, headless ingress dispatched
+  them while the WebSocket branch emitted a debug `SystemInfo` response; that
+  separate Web gap is now implemented by
+  [plan 18](18-web-ipc-agent-command-parity-plan.md).
 
 ## Domain Ownership
 
@@ -442,5 +465,5 @@ allthecodes-web/src/lib/generated/api-schema.json
 - Mutations are permission-aware, taint-safe, atomic, idempotent, and safe
   under concurrent callers.
 - Generic agent output and abort remain on the existing IPC contract, are not
-  duplicated as workflow/task endpoints, and their missing Web dispatch remains
-  explicitly owned by plan 18.
+  duplicated as workflow/task endpoints, and their Web dispatch is provided by
+  plan 18.
