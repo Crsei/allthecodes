@@ -1014,6 +1014,7 @@ mod tests {
             .oneshot(
                 request_builder(Method::GET, "/api/healthz")
                     .header(header::ORIGIN, "https://evil.example")
+                    .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1029,6 +1030,7 @@ mod tests {
             .oneshot(
                 request_builder(Method::GET, "/api/terminal/sessions/missing/ws")
                     .header(header::ORIGIN, "https://evil.example")
+                    .header(&auth::CONTROL_TOKEN_HEADER, TEST_CONTROL_TOKEN)
                     .header(header::CONNECTION, "upgrade")
                     .header(header::UPGRADE, "websocket")
                     .header("sec-websocket-version", "13")

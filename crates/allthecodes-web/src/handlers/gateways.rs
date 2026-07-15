@@ -479,13 +479,19 @@ mod tests {
     #[serial_test::serial]
     async fn gateway_start_route_does_not_fall_through() {
         let (_home, _guard) = temp_home();
-        let app = crate::build_router(make_web_state());
+        let app = crate::build_router(
+            make_web_state()
+                .with_control_token("test-control-token")
+                .with_listener_authority("127.0.0.1:17322"),
+        );
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
                     .uri("/api/gateways/local-daemon/start")
+                    .header("host", "127.0.0.1:17322")
+                    .header(crate::auth::CONTROL_TOKEN_HEADER, "test-control-token")
                     .header("content-type", "application/json")
                     .body(Body::from("{}"))
                     .expect("request"),
@@ -503,13 +509,19 @@ mod tests {
     #[serial_test::serial]
     async fn gateway_stop_route_rejects_unknown_id() {
         let (_home, _guard) = temp_home();
-        let app = crate::build_router(make_web_state());
+        let app = crate::build_router(
+            make_web_state()
+                .with_control_token("test-control-token")
+                .with_listener_authority("127.0.0.1:17322"),
+        );
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
                     .uri("/api/gateways/remote/stop")
+                    .header("host", "127.0.0.1:17322")
+                    .header(crate::auth::CONTROL_TOKEN_HEADER, "test-control-token")
                     .header("content-type", "application/json")
                     .body(Body::from("{}"))
                     .expect("request"),
@@ -543,12 +555,18 @@ mod tests {
                 StatusCode::NOT_FOUND,
             ),
         ] {
-            let app = crate::build_router(make_web_state());
+            let app = crate::build_router(
+                make_web_state()
+                    .with_control_token("test-control-token")
+                    .with_listener_authority("127.0.0.1:17322"),
+            );
             let response = app
                 .oneshot(
                     Request::builder()
                         .method(method.clone())
                         .uri(uri)
+                        .header("host", "127.0.0.1:17322")
+                        .header(crate::auth::CONTROL_TOKEN_HEADER, "test-control-token")
                         .header("content-type", "application/json")
                         .body(Body::from("{}"))
                         .expect("request"),
