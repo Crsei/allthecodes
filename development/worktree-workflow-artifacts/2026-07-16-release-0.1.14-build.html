@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>allthecodes 0.1.14 release build</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 52rem; padding: 0 1rem; color: #1f2937; }
+      h1, h2 { color: #111827; }
+      code { background: #f3f4f6; border-radius: .2rem; padding: .1rem .25rem; }
+    </style>
+  </head>
+  <body>
+    <h1>allthecodes 0.1.14 release build</h1>
+
+    <h2>Goal</h2>
+    <p>Synchronize release metadata to <code>0.1.14</code> and verify a locked, optimized workspace build without publishing a package, tag, or GitHub release.</p>
+
+    <h2>Workflow</h2>
+    <ol>
+      <li>Commit the plan on <code>allthecodes</code>: <code>48d80790 docs(workflow): plan 0.1.14 release build</code>.</li>
+      <li>Create worktree <code>worktree/release-0.1.14-build</code> from that commit.</li>
+      <li>Apply the scoped version and release-record changes, validate, and commit them.</li>
+      <li>Fast-forward the worktree into <code>allthecodes</code>, push the branch, then remove the worktree.</li>
+    </ol>
+
+    <h2>Changes</h2>
+    <ul>
+      <li><code>crates/allthecodes/Cargo.toml</code> and <code>Cargo.lock</code>: CLI version <code>0.1.14</code>.</li>
+      <li><code>package.json</code>: wrapper version and all six platform aliases <code>0.1.14</code>.</li>
+      <li><code>development/release-doc/0.1.14.md</code>: release preparation and verification record.</li>
+    </ul>
+
+    <h2>Plan and commits</h2>
+    <p>Plan: <code>development/workflow/2026-07-16-release-0.1.14-build-plan.md</code>.</p>
+    <ul>
+      <li><code>48d80790 docs(workflow): plan 0.1.14 release build</code></li>
+      <li><code>chore(release): prepare 0.1.14</code> (worktree changes and this artifact)</li>
+    </ul>
+
+    <h2>Validation</h2>
+    <ul>
+      <li><code>cargo build --workspace --release --locked</code>: passed in 3m 37s.</li>
+      <li><code>.../release/allthecodes --version</code>: <code>allthecodes 0.1.14</code>.</li>
+      <li><code>npm pack --dry-run --ignore-scripts --json</code>: <code>allthecodes@0.1.14</code>, filename <code>allthecodes-0.1.14.tgz</code>.</li>
+    </ul>
+  </body>
+</html>
