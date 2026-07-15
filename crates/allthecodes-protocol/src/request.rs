@@ -902,6 +902,45 @@ crate::api_definitions! {
         serialization: PerProcess,
     },
 
+    WorkflowDefinitionsList => "GET /api/workflows" {
+        params: v1::workflows::WorkflowDefinitionsQuery,
+        response: v1::workflows::WorkflowDefinitionsResponse,
+        errors: [BadRequest, Forbidden, PayloadTooLarge, ServiceUnavailable],
+    },
+    WorkflowDefinitionDetail => "GET /api/workflows/{workflow}" {
+        params: v1::workflows::WorkflowDefinitionParams,
+        response: v1::workflows::WorkflowDefinitionDetail,
+        errors: [BadRequest, Forbidden, NotFound, PayloadTooLarge, ServiceUnavailable],
+    },
+    WorkflowRunsList => "GET /api/workflow-runs" {
+        params: v1::workflows::WorkflowRunListQuery,
+        response: v1::workflows::WorkflowRunPage,
+        errors: [BadRequest, Forbidden, PayloadTooLarge, ServiceUnavailable],
+    },
+    WorkflowRunStart => "POST /api/workflows/{workflow}/runs" {
+        params: v1::workflows::WorkflowRunStartParams,
+        response: v1::workflows::WorkflowRunResponse,
+        errors: [BadRequest, Forbidden, NotFound, Conflict, PayloadTooLarge, ServiceUnavailable],
+        serialization: PerKey("workflow"),
+    },
+    WorkflowRunStatus => "GET /api/workflow-runs/{run_id}" {
+        params: v1::workflows::WorkflowRunParams,
+        response: v1::workflows::WorkflowRunResponse,
+        errors: [BadRequest, Forbidden, NotFound, PayloadTooLarge, ServiceUnavailable],
+    },
+    WorkflowRunAdvance => "POST /api/workflow-runs/{run_id}/advance" {
+        params: v1::workflows::WorkflowRunAdvanceParams,
+        response: v1::workflows::WorkflowRunResponse,
+        errors: [BadRequest, Forbidden, NotFound, Conflict, PayloadTooLarge, ServiceUnavailable],
+        serialization: PerKey("run_id"),
+    },
+    WorkflowRunCancel => "POST /api/workflow-runs/{run_id}/cancel" {
+        params: v1::workflows::WorkflowRunCancelParams,
+        response: v1::workflows::WorkflowRunResponse,
+        errors: [BadRequest, Forbidden, NotFound, Conflict, PayloadTooLarge, ServiceUnavailable],
+        serialization: PerKey("run_id"),
+    },
+
     JobsList => "GET /api/jobs" {
         response: Value,
     },

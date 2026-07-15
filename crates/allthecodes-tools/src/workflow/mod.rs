@@ -614,42 +614,54 @@ impl Tool for WorkflowTool {
 
     async fn check_permissions(&self, input: &Value, _ctx: &ToolUseContext) -> PermissionResult {
         if is_file_workflow_input(input) {
-            return match file_workflow::file_workflow_action(input) {
-                Ok("list" | "status") => PermissionResult::Allow {
+            let action = match file_workflow::file_workflow_action(input) {
+                Ok(action) => action,
+                Err(err) => {
+                    return PermissionResult::Deny {
+                        message: err.to_string(),
+                    }
+                }
+            };
+            return match file_workflow::classify_workflow_action(action) {
+                file_workflow::WorkflowAuthorizationDecision::Allow => PermissionResult::Allow {
                     updated_input: input.clone(),
                 },
-                Ok("start") => PermissionResult::Ask {
-                    message: format!(
-                        "Allow Workflow start for script '{}'{}?",
-                        string_param(input, "workflow").unwrap_or("<missing workflow>"),
-                        if input.get("args").is_some() {
-                            " with args"
-                        } else {
-                            ""
-                        }
-                    ),
-                },
-                Ok("advance") => PermissionResult::Ask {
-                    message: format!(
-                        "Allow Workflow advance for run {} to {}?",
-                        string_param(input, "run_id").unwrap_or("<missing run_id>"),
-                        string_param(input, "applied_status")
-                            .or_else(|| string_param(input, "step_status"))
-                            .or_else(|| string_param(input, "status"))
-                            .unwrap_or("completed")
-                    ),
-                },
-                Ok("cancel") => PermissionResult::Ask {
-                    message: format!(
-                        "Allow Workflow cancel for run {}?",
-                        string_param(input, "run_id").unwrap_or("<missing run_id>")
-                    ),
-                },
-                Ok(other) => PermissionResult::Deny {
-                    message: format!("unsupported workflow action: {other}"),
-                },
-                Err(err) => PermissionResult::Deny {
-                    message: err.to_string(),
+                file_workflow::WorkflowAuthorizationDecision::Ask if action == "start" => {
+                    PermissionResult::Ask {
+                        message: format!(
+                            "Allow Workflow start for script '{}'{}?",
+                            string_param(input, "workflow").unwrap_or("<missing workflow>"),
+                            if input.get("args").is_some() {
+                                " with args"
+                            } else {
+                                ""
+                            }
+                        ),
+                    }
+                }
+                file_workflow::WorkflowAuthorizationDecision::Ask if action == "advance" => {
+                    PermissionResult::Ask {
+                        message: format!(
+                            "Allow Workflow advance for run {} to {}?",
+                            string_param(input, "run_id").unwrap_or("<missing run_id>"),
+                            string_param(input, "applied_status")
+                                .or_else(|| string_param(input, "step_status"))
+                                .or_else(|| string_param(input, "status"))
+                                .unwrap_or("completed")
+                        ),
+                    }
+                }
+                file_workflow::WorkflowAuthorizationDecision::Ask if action == "cancel" => {
+                    PermissionResult::Ask {
+                        message: format!(
+                            "Allow Workflow cancel for run {}?",
+                            string_param(input, "run_id").unwrap_or("<missing run_id>")
+                        ),
+                    }
+                }
+                file_workflow::WorkflowAuthorizationDecision::Ask
+                | file_workflow::WorkflowAuthorizationDecision::Deny => PermissionResult::Deny {
+                    message: format!("unsupported workflow action: {action}"),
                 },
             };
         }

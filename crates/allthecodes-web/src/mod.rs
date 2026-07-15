@@ -145,6 +145,14 @@ fn requires_privileged_capability(method: &Method, path: &str) -> bool {
     }
 
     if method == Method::POST
+        && (has_single_parameter(path, "workflows/", "/runs")
+            || has_single_parameter(path, "workflow-runs/", "/advance")
+            || has_single_parameter(path, "workflow-runs/", "/cancel"))
+    {
+        return true;
+    }
+
+    if method == Method::POST
         && (matches!(
             path,
             "plugins/install"
@@ -769,6 +777,25 @@ mod tests {
             &Method::POST,
             "/api/memory/proposals/proposal-1/reject"
         ));
+    }
+
+    #[test]
+    fn workflow_mutations_require_privileged_capability_but_reads_do_not() {
+        for path in [
+            "/api/workflows",
+            "/api/workflows/release",
+            "/api/workflow-runs",
+            "/api/workflow-runs/workflow-run-1",
+        ] {
+            assert!(!requires_privileged_capability(&Method::GET, path));
+        }
+        for path in [
+            "/api/workflows/release/runs",
+            "/api/workflow-runs/workflow-run-1/advance",
+            "/api/workflow-runs/workflow-run-1/cancel",
+        ] {
+            assert!(requires_privileged_capability(&Method::POST, path));
+        }
     }
 
     async fn privileged_route_statuses(

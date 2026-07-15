@@ -253,6 +253,13 @@ pub(crate) enum ApiDispatcherMigrationState {
 // ClientRequest::KanbanTaskCreate - dispatched.
 // ClientRequest::KanbanTaskUpdate - legacy REST handler, KanbanProcessor target.
 // ClientRequest::KanbanTaskComment - legacy REST handler, KanbanProcessor target.
+// ClientRequest::WorkflowDefinitionsList - dispatched.
+// ClientRequest::WorkflowDefinitionDetail - dispatched.
+// ClientRequest::WorkflowRunsList - dispatched.
+// ClientRequest::WorkflowRunStart - dispatched; production policy remains fail-closed on Ask.
+// ClientRequest::WorkflowRunStatus - dispatched.
+// ClientRequest::WorkflowRunAdvance - dispatched; production policy remains fail-closed on Ask.
+// ClientRequest::WorkflowRunCancel - dispatched; production policy remains fail-closed on Ask.
 // ClientRequest::JobsList - legacy REST handler, JobsProcessor target.
 // ClientRequest::JobsCreate - legacy REST handler, JobsProcessor target.
 // ClientRequest::JobsUpdate - legacy REST handler, JobsProcessor target.
@@ -725,6 +732,57 @@ pub async fn dispatch(
             .await?;
             Ok(ClientResponse::KanbanTaskCreate(response))
         }
+        ClientRequest::WorkflowDefinitionsList(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::workflows::WorkflowDefinitionsListProcessor,
+            >(state, context, ApiMethod::WorkflowDefinitionsList, params)
+            .await?;
+            Ok(ClientResponse::WorkflowDefinitionsList(response))
+        }
+        ClientRequest::WorkflowDefinitionDetail(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::workflows::WorkflowDefinitionDetailProcessor,
+            >(
+                state, context, ApiMethod::WorkflowDefinitionDetail, params
+            )
+            .await?;
+            Ok(ClientResponse::WorkflowDefinitionDetail(response))
+        }
+        ClientRequest::WorkflowRunsList(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::workflows::WorkflowRunsListProcessor,
+            >(state, context, ApiMethod::WorkflowRunsList, params)
+            .await?;
+            Ok(ClientResponse::WorkflowRunsList(response))
+        }
+        ClientRequest::WorkflowRunStart(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::workflows::WorkflowRunStartProcessor,
+            >(state, context, ApiMethod::WorkflowRunStart, params)
+            .await?;
+            Ok(ClientResponse::WorkflowRunStart(response))
+        }
+        ClientRequest::WorkflowRunStatus(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::workflows::WorkflowRunStatusProcessor,
+            >(state, context, ApiMethod::WorkflowRunStatus, params)
+            .await?;
+            Ok(ClientResponse::WorkflowRunStatus(response))
+        }
+        ClientRequest::WorkflowRunAdvance(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::workflows::WorkflowRunAdvanceProcessor,
+            >(state, context, ApiMethod::WorkflowRunAdvance, params)
+            .await?;
+            Ok(ClientResponse::WorkflowRunAdvance(response))
+        }
+        ClientRequest::WorkflowRunCancel(params) => {
+            let response = dispatch_tracked_processor::<
+                handlers::workflows::WorkflowRunCancelProcessor,
+            >(state, context, ApiMethod::WorkflowRunCancel, params)
+            .await?;
+            Ok(ClientResponse::WorkflowRunCancel(response))
+        }
         ClientRequest::PluginsList(NoParams {}) => {
             let response = dispatch_tracked_processor::<handlers::PluginsListProcessor>(
                 state,
@@ -1142,6 +1200,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_routes_workflow_reads_and_fails_closed_mutations() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let definitions = workspace.path().join(".allthecodes/workflows");
+        std::fs::create_dir_all(&definitions).expect("workflow directory");
+        std::fs::write(
+            definitions.join("release.md"),
+            "- Plan release\n- Ship release\n",
+        )
+        .expect("workflow definition");
+        let state = make_web_state_with_cwd(workspace.path());
+
+        let response = dispatch(
+            state.clone(),
+            ApiRequestContext::direct(),
+            ClientRequest::WorkflowDefinitionsList(v1::workflows::WorkflowDefinitionsQuery {}),
+        )
+        .await
+        .expect("workflow definitions should dispatch");
+        match response {
+            ClientResponse::WorkflowDefinitionsList(body) => {
+                assert_eq!(body.definitions.len(), 1);
+                assert_eq!(body.definitions[0].workflow, "release");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let error = dispatch(
+            state,
+            ApiRequestContext::direct(),
+            ClientRequest::WorkflowRunStart(v1::workflows::WorkflowRunStartParams {
+                workflow: "release".to_string(),
+                request_id: "request-1".to_string(),
+                args: Some(serde_json::json!({"version": "1.0.0"})),
+            }),
+        )
+        .await
+        .expect_err("production workflow mutation policy must fail closed");
+        assert!(matches!(error, ApiError::Conflict { .. }));
+        assert!(!workspace.path().join(".allthecodes/workflow-runs").exists());
+    }
+
+    #[tokio::test]
     #[serial_test::serial]
     async fn dispatcher_handles_plugin_disable_request() {
         let (_home, _guard) = temp_home();
@@ -1194,7 +1294,7 @@ mod tests {
 
     #[test]
     fn migration_tracker_marks_dispatched_operations() {
-        assert_eq!(DISPATCHED_OPERATIONS.len(), 53);
+        assert_eq!(DISPATCHED_OPERATIONS.len(), 60);
 
         for operation in DISPATCHED_OPERATIONS {
             assert_eq!(

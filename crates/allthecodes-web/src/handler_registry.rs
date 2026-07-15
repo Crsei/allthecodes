@@ -136,6 +136,7 @@ pub fn all_api_handlers() -> HandlerRegistry {
         .extend(file_handlers())
         .extend(skill_handlers())
         .extend(kanban_handlers())
+        .extend(handlers::workflows::handlers())
         .extend(job_handlers())
         .extend(group_chat_handlers())
         .extend(backend_service_handlers())

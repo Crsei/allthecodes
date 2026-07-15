@@ -53,6 +53,7 @@ pub mod skills;
 pub mod tasks;
 pub mod usage;
 pub mod voice;
+pub mod workflows;
 pub mod workspaces;
 pub mod worktree_sessions;
 
