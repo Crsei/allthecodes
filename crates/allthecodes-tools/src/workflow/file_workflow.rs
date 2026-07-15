@@ -624,14 +624,17 @@ impl FileWorkflowService {
         let has_more = end < runs.len();
         let page_runs = runs[start..end].to_vec();
         let next_cursor = if has_more {
-            page_runs.last().map(|record| {
-                encode_run_cursor(&WorkflowRunCursor {
-                    workspace_id: self.workspace_id.clone(),
-                    status: options.status,
-                    updated_at: record.updated_at.clone(),
-                    run_id: record.run_id.clone(),
+            page_runs
+                .last()
+                .map(|record| {
+                    encode_run_cursor(&WorkflowRunCursor {
+                        workspace_id: self.workspace_id.clone(),
+                        status: options.status,
+                        updated_at: record.updated_at.clone(),
+                        run_id: record.run_id.clone(),
+                    })
                 })
-            })
+                .transpose()?
         } else {
             None
         };
@@ -814,7 +817,7 @@ impl FileWorkflowService {
             "args": &options.args,
         }))?;
         let runs_dir = secure_project_subdir(&self.workspace, "workflow-runs", true)?
-            .expect("created workflow run directory");
+            .ok_or_else(|| WorkflowServiceError::store("workflow run directory was not created"))?;
         let _lock = WorkflowFileLock::acquire(
             &runs_dir,
             &format!(
@@ -1018,7 +1021,7 @@ impl FileWorkflowService {
     ) -> WorkflowServiceResult<FileWorkflowRunRecord> {
         let record = self.load_run(run_id)?;
         let path = secure_project_subdir(&self.workspace, "workflow-runs", false)?
-            .expect("run directory exists after successful load")
+            .ok_or_else(|| WorkflowServiceError::not_found("workflow run", run_id))?
             .join(format!("{run_id}.json"));
         sync_file_workflow_task(&record, &path).map_err(|error| {
             WorkflowServiceError::store(format!("failed to reconcile task projection: {error}"))
@@ -1448,8 +1451,11 @@ fn workflow_timestamp(value: &str) -> Option<chrono::DateTime<chrono::FixedOffse
     chrono::DateTime::parse_from_rfc3339(value).ok()
 }
 
-fn encode_run_cursor(cursor: &WorkflowRunCursor) -> String {
-    URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor).expect("workflow cursor serializes"))
+fn encode_run_cursor(cursor: &WorkflowRunCursor) -> WorkflowServiceResult<String> {
+    let bytes = serde_json::to_vec(cursor).map_err(|error| {
+        WorkflowServiceError::store(format!("failed to encode workflow run cursor: {error}"))
+    })?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
 fn decode_run_cursor(cursor: &str) -> WorkflowServiceResult<WorkflowRunCursor> {
