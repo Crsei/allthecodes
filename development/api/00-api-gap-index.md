@@ -9,7 +9,32 @@
 > covering the full commit range `d5e16fde..6d426dc9`. See
 > [Recent Feature API Gap Audit](13-recent-feature-api-gap-audit.md).
 
-## Current Result
+## Remediation Result (2026-07-16)
+
+The audited Security Approval, Memory, Workflow, Jobs/Cron, Skills proposal,
+Web IPC Agent/Team, Group Chat, and Discovery gaps are implemented in the
+`api-gap-remediation` worktree. Backend protocol metadata and the three owned
+`docs/api` artifacts now agree on 273 operations, and the canonical freshness
+check passes.
+
+Two boundaries remain intentionally visible instead of being represented as
+synthetic success:
+
+- Backend Services is Partial: session/runtime/task projections are canonical,
+  while compaction, durable retry, aggregate migration, and consistent backup
+  action owners are still unavailable and return typed `409`/`503` responses.
+- Generated-artifact freshness is Partial across repositories: backend
+  generation and CI are enforced, but the paired frontend artifacts/CI and
+  explicit environment-invariance tests remain outstanding.
+
+Workflow mutation transport is complete only to its planned fail-closed
+boundary. Production policy returns `Ask`, so start/advance/cancel return
+`409 interactive_approval_required` without mutation until a challenge/resume
+transport exists. Security Approval still lacks the plan-specific full Web
+SSE-to-execution E2E, and Web IPC still awaits a fresh PTY integration result;
+their existing protocol/runtime/handler tests are recorded in their plans.
+
+## Audit Snapshot Before Remediation
 
 The original page-level routes below are implemented, but route availability is
 not the same as real runtime integration. The 2026-07-16 audit found newer
@@ -83,27 +108,27 @@ traceability; incomplete rows still need backend routes or service wiring.
 | Priority | Plan | Capability status | Main user-visible risk |
 |---|---|---|---|
 | Done | [Usage API](01-usage-api-plan.md) | `usage=true` | Implemented as a zeroed/partial dashboard until runtime usage accumulation exists. |
-| Partial | [Memory API](02-memory-api-plan.md) | `memory=true` | Routes exist, but they use a disconnected Web-only store and omit memdir, dream memory, and review proposals. |
+| Done | [Memory API](02-memory-api-plan.md) | `memory=true` | Canonical memdir, bounded dream reads, and typed review proposals are exposed. |
 | Done | [Files API](04-files-api-plan.md) | `files=true` | Implemented with workspace tree/stat/read/write/upload/download/mutation routes. |
-| Partial | [Skills API](03-skills-api-plan.md) | `skills=true` | List/detail/files and enabled/pinned updates work; active native proposals and reserved background skill records have no typed Web lifecycle. |
-| Partial | [Backend Services API](08-backend-services-api-plan.md) | `backend_services=true` | Route shapes exist; session sync, compression, and agent-event retry still use no-op/synthetic sources. |
-| Partial | [Jobs and Cron API](06-jobs-cron-api-plan.md) | `jobs=true` | CRUD is Web-local and manual execution remains fixed-failure instead of using the scheduler. |
+| Done | [Skills API](03-skills-api-plan.md) | `skills=true` | Native and reserved background skill proposals share a typed, bounded lifecycle. |
+| Partial | [Backend Services API](08-backend-services-api-plan.md) | `backend_services=true` | Canonical projections are live; action owners that do not exist fail closed. |
+| Done | [Jobs and Cron API](06-jobs-cron-api-plan.md) | `jobs=true` | Definitions, history, manual/due dispatch, and task projection share the canonical scheduler. |
 | Done | [Kanban API](05-kanban-api-plan.md) | `kanban=true` | Implemented with local board/task/comment persistence. |
-| Partial | [Group Chat API](07-group-chat-api-plan.md) | `group_chat=true` | Durable CRUD/SSE snapshot exists; invite GET mutates state, SSE metadata is opaque, and message execution is not connected to the delegated-agent runtime. |
+| Done | [Group Chat API](07-group-chat-api-plan.md) | `group_chat=true` | Pure invite reads, privileged mutations, delegated execution, and typed replayable SSE are connected. |
 
-## Gaps Found After the Original Index
+## Audited Gap Outcomes
 
-| Priority | Plan | Current exposure | Required outcome |
+| Result | Plan | 2026-07-16 outcome | Remaining boundary |
 |---|---|---|---|
-| P0 | [Security Approval API Parity](14-security-approval-api-parity-plan.md) | Standard IPC callbacks preserve `security`; Web chat drops it, Web IPC runtime omits it, and the chat response route lacks privileged classification | Preserve redacted exact-approval metadata on both Web transports, require privileged response authorization, and enforce one-shot response semantics. |
-| P0 | [Memory API](02-memory-api-plan.md) | Web-only entries store; runtime memdir/dream/proposals elsewhere | Make the API a projection of runtime memory and add bounded dream/proposal contracts. |
-| P1 | [Jobs and Cron API](06-jobs-cron-api-plan.md) | Web-local CRUD; fixed-failure run | Adapt the existing routes to the scheduled-task/scheduler owner and real run history. |
-| P1 | [Workflow Runtime API](15-workflow-runtime-api-plan.md) | Tool lifecycle + definition-list-only command | Expose workflow definitions plus discoverable persisted runs and their lifecycle through the protocol registry. |
-| P1 | [Web IPC Agent Command Parity](18-web-ipc-agent-command-parity-plan.md) | Typed Agent/Team commands are accepted but only echoed | Wire output/status/cancel/team commands to the shared runtime handlers with Web authorization. |
-| P1 | [Skills API](03-skills-api-plan.md) | `/skills pending/diff/approve/reject` only | Add bounded proposal list/detail/diff/approve/reject operations for active native proposals and reserved background skill records. |
-| P1 | [Group Chat API](07-group-chat-api-plan.md) | Mutating invite GET, store-only messages, opaque snapshot SSE | Split pure invite read from privileged/idempotent create-rotate, reuse the delegated-agent supervisor, and publish typed lifecycle events. |
-| P1 | [Backend Services API](08-backend-services-api-plan.md) | MVP/synthetic service state | Replace no-op and fixed-error actions with real session/task/runtime sources. |
-| P2 | [Discovery Search API](16-discovery-search-api-plan.md) | Internal MCP/plugin search tools | Expose one bounded, typed search endpoint that reuses the existing scorer/providers. |
+| Implemented; Web E2E pending | [Security Approval API Parity](14-security-approval-api-parity-plan.md) | Both Web transports preserve display-safe exact-approval context and privileged one-shot response binding. | Add the plan-specific full SSE/bound-response/execution E2E. |
+| Implemented | [Memory API](02-memory-api-plan.md) | Runtime memdir, dream reads, and Memory proposal decisions are exposed. | Active automatic producer remains `WorkflowWarning`; reserved consumer kinds are not advertised as active. |
+| Implemented | [Jobs and Cron API](06-jobs-cron-api-plan.md) | Canonical scheduler definitions, durable history, and daemon dispatch replace Web-local simulation. | No known scoped code gap. |
+| Fail-closed contract implemented | [Workflow Runtime API](15-workflow-runtime-api-plan.md) | Seven typed operations adapt the canonical FileWorkflow owner. | Production `Ask` cannot resume remotely and returns `409` without mutation. |
+| Implemented; PTY gate pending | [Web IPC Agent Command Parity](18-web-ipc-agent-command-parity-plan.md) | Agent/Team commands use the shared authorized dispatcher and requester-only result lane. | Capture a fresh PTY command-integration result. |
+| Implemented | [Skills API](03-skills-api-plan.md) | Native/reserved proposals have typed list/detail/diff/approve/reject operations. | Extended symlink/failure-injection evidence remains incomplete. |
+| Implemented | [Group Chat API](07-group-chat-api-plan.md) | Delegated execution and typed replayable SSE replace store-only messages. | Compression remains an explicitly local room summary. |
+| Partial | [Backend Services API](08-backend-services-api-plan.md) | Session, task, and runtime-history projections are canonical and unavailable actions fail closed. | Add real compaction, durable retry, aggregate migration, and consistent backup owners. |
+| Implemented | [Discovery Search API](16-discovery-search-api-plan.md) | One bounded read-only endpoint reuses existing providers and scorer. | No known scoped code gap. |
 
 ## Cross-cutting Plans
 
@@ -111,7 +136,7 @@ traceability; incomplete rows still need backend routes or service wiring.
 |---|---|---|---|
 | Draft | [API Architecture Upgrade Plan](09-api-architecture-upgrade-plan.md) | N/A — infra change | No immediate user risk; all phases are additive with backward compatibility. |
 | Draft | [API File Consolidation Plan](11-api-file-consolidation-plan.md) | N/A — cleanup/refactor | Keeps upgraded API features grouped by domain after the architecture migration. |
-| P0 | [Generated API Artifact Freshness](17-api-generated-artifact-freshness-plan.md) | N/A — docs/CI | Make route, schema, OpenAPI, and TypeScript drift fail verification. |
+| Partial | [Generated API Artifact Freshness](17-api-generated-artifact-freshness-plan.md) | N/A — docs/CI | Backend 273-operation artifacts and CI are current; paired frontend artifacts/CI remain. |
 | Audit | [Recent Feature API Gap Audit](13-recent-feature-api-gap-audit.md) | N/A — evidence | Records the commit boundary, covered features, necessary gaps, and exclusions. |
 
 ## Shared Implementation Rules
