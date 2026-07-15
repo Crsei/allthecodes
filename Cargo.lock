@@ -377,6 +377,7 @@ dependencies = [
  "allthecodes-db",
  "allthecodes-engine",
  "allthecodes-gateway",
+ "allthecodes-protocol",
  "allthecodes-server",
  "allthecodes-services",
  "allthecodes-session",

@@ -41,6 +41,9 @@ impl SettingsRuntimeBuilder {
             );
         }
         settings::refresh_process_env_overrides(&mut loaded_settings);
+        allthecodes_config::features::set_settings_baseline(
+            allthecodes_config::features::FeatureFlags::from_settings(&loaded_settings.effective),
+        );
         let merged_config = loaded_settings.effective.clone();
         debug!(
             model = ?merged_config.model,

@@ -43,6 +43,35 @@ crate::api_definitions! {
         response: v1::health::HealthResponse,
     },
 
+    /// Fetch the effective KAIROS configuration and runtime lifecycle.
+    KairosStatus => "GET /api/kairos" {
+        response: v1::kairos::KairosResponse,
+    },
+    /// Persist a partial KAIROS profile and optionally reconcile the runtime.
+    KairosConfigUpdate => "PUT /api/kairos/config" {
+        params: v1::kairos::KairosConfigUpdateRequest,
+        response: v1::kairos::KairosResponse,
+        serialization: PerProcess,
+    },
+    /// Start KAIROS and wait for readiness.
+    KairosStart => "POST /api/kairos/start" {
+        params: v1::kairos::KairosControlParameters,
+        response: v1::kairos::KairosResponse,
+        serialization: PerProcess,
+    },
+    /// Stop KAIROS.
+    KairosStop => "POST /api/kairos/stop" {
+        params: v1::kairos::KairosControlParameters,
+        response: v1::kairos::KairosResponse,
+        serialization: PerProcess,
+    },
+    /// Restart KAIROS and wait for readiness.
+    KairosRestart => "POST /api/kairos/restart" {
+        params: v1::kairos::KairosControlParameters,
+        response: v1::kairos::KairosResponse,
+        serialization: PerProcess,
+    },
+
     /// Send a chat message.
     Chat => "POST /api/chat" {
         params: v1::chat::ChatRequest,

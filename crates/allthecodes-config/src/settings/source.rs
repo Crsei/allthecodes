@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use allthecodes_types::kairos::KairosValueSource;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,22 @@ impl SettingsSource {
             SettingsSource::Env => "env",
             SettingsSource::Cli => "cli",
             SettingsSource::Runtime => "runtime",
+        }
+    }
+}
+
+impl From<SettingsSource> for KairosValueSource {
+    fn from(source: SettingsSource) -> Self {
+        match source {
+            SettingsSource::Default => Self::Default,
+            SettingsSource::Managed => Self::Managed,
+            SettingsSource::User => Self::User,
+            SettingsSource::UserProfile => Self::UserProfile,
+            SettingsSource::Project => Self::Project,
+            SettingsSource::Local => Self::Local,
+            SettingsSource::Env => Self::Environment,
+            SettingsSource::Cli => Self::Cli,
+            SettingsSource::Runtime => Self::Runtime,
         }
     }
 }

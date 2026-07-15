@@ -200,7 +200,7 @@ mod tests {
             model_capabilities: Some(allthecodes_config::settings::codex_model_capabilities()),
             ..Default::default()
         };
-        profile.model = Some("gpt-5.5".to_string());
+        profile.model = Some("gpt-5.6-sol".to_string());
         ctx.app_state.settings.active_auth_profile = Some("codex".to_string());
         ctx.app_state
             .settings
@@ -215,7 +215,7 @@ mod tests {
     fn test_model_supports_fast() {
         let mut ctx = test_ctx();
         add_codex_capabilities(&mut ctx);
-        assert!(model_supports_fast(&ctx, "gpt-5.5"));
+        assert!(model_supports_fast(&ctx, "gpt-5.6-sol"));
         assert!(!model_supports_fast(&ctx, "gpt-5.4-mini"));
         assert!(!model_supports_fast(&ctx, "claude-haiku-4-5"));
     }
@@ -260,11 +260,11 @@ mod tests {
 
         let result = handler.execute("on", &mut ctx).await.unwrap();
         assert!(ctx.app_state.fast_mode);
-        assert_eq!(ctx.app_state.main_loop_model, "gpt-5.5");
+        assert_eq!(ctx.app_state.main_loop_model, "gpt-5.6-sol");
         match result {
             CommandResult::Output(text) => {
                 assert!(text.contains("switched"));
-                assert!(text.contains("gpt-5.5"));
+                assert!(text.contains("gpt-5.6-sol"));
             }
             _ => panic!("Expected Output"),
         }

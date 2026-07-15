@@ -35,6 +35,8 @@ mod commands;
 mod engine_events;
 #[path = "tui/export.rs"]
 mod export;
+#[path = "tui/kairos.rs"]
+mod kairos;
 #[path = "tui/proactive.rs"]
 mod proactive;
 #[path = "tui/subsystem_events.rs"]
@@ -56,7 +58,8 @@ use engine_events::{
 };
 use export::{export_to_editor, open_reference_in_editor};
 use subsystem_events::{
-    add_system_error, add_system_info, handle_lsp_recommendation_response, handle_subsystem_event,
+    add_system_error, add_system_info, add_system_warning, handle_lsp_recommendation_response,
+    handle_subsystem_event,
 };
 use terminal_guard::TerminalGuard;
 
@@ -228,6 +231,7 @@ fn handle_agent_backend_messages(app: &mut App, messages: Vec<BackendMessage>) {
         match message {
             BackendMessage::SystemInfo { text, level } => match level.as_str() {
                 "error" => add_system_error(app, &text),
+                "warning" => add_system_warning(app, &text),
                 _ => add_system_info(app, &text),
             },
             BackendMessage::BriefMessage {
@@ -403,6 +407,8 @@ pub async fn run_tui(
     let mut pending_permission_response: Option<oneshot::Sender<PermissionResponsePayload>> = None;
     let mut pending_question_response: Option<oneshot::Sender<String>> = None;
     let mut streaming_state = StreamingState::new();
+    let (kairos_tx, mut kairos_rx) = mpsc::unbounded_channel::<kairos::KairosPollUpdate>();
+    kairos::spawn_poller(std::path::PathBuf::from(engine.cwd()), kairos_tx);
 
     let subsystem_bus = SubsystemEventBus::new();
     let mut subsystem_rx = subsystem_bus.subscribe();
@@ -811,6 +817,10 @@ pub async fn run_tui(
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                 }
+            }
+
+            Some(update) = kairos_rx.recv() => {
+                app.set_kairos_status(Some(update.status));
             }
 
             _ = proactive_interval.tick() => {

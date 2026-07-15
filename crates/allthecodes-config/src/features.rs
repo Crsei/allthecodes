@@ -13,7 +13,14 @@
 //! A global singleton [`FLAGS`] is lazily initialised from real env vars.
 //! Use [`enabled`] for quick queries from anywhere in the crate.
 
+use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
+
+use allthecodes_types::kairos::{
+    KairosFeatureProfile, KairosProfileResolution, KairosProfileSources, KairosValueSource,
+};
+
+use crate::settings::{EffectiveSettings, LoadedSettings};
 
 // ---------------------------------------------------------------------------
 // Feature enum
@@ -190,13 +197,40 @@ impl FeatureFlags {
         Self::from_env_iter(std::env::vars())
     }
 
+    /// Resolve feature flags from typed settings, preserving environment
+    /// variables as the higher-priority compatibility override.
+    pub fn from_settings(settings: &EffectiveSettings) -> Self {
+        Self::from_profile_and_env_iter(&settings.kairos, std::env::vars())
+    }
+
+    pub fn from_profile_and_env_iter(
+        profile: &KairosFeatureProfile,
+        iter: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        let mut env: HashMap<String, String> = iter.into_iter().collect();
+        for (key, value) in [
+            ("FEATURE_KAIROS", profile.enabled),
+            ("FEATURE_KAIROS_BRIEF", profile.brief),
+            ("FEATURE_KAIROS_CHANNELS", profile.channels),
+            (
+                "FEATURE_KAIROS_PUSH_NOTIFICATION",
+                profile.push_notifications,
+            ),
+            ("FEATURE_KAIROS_GITHUB_WEBHOOKS", profile.github_webhooks),
+            ("FEATURE_PROACTIVE", profile.proactive),
+        ] {
+            env.entry(key.to_string())
+                .or_insert_with(|| if value { "1" } else { "0" }.to_string());
+        }
+        Self::from_env_iter(env)
+    }
+
     /// Build flags from an iterator of `(key, value)` pairs.
     ///
     /// A variable is considered *enabled* when its value, after trimming and
     /// lowercasing, is `"1"` or `"true"`.  Anything else (including absence)
     /// is treated as disabled.
     pub fn from_env_iter(iter: impl IntoIterator<Item = (String, String)>) -> Self {
-        use std::collections::HashMap;
         let env: HashMap<String, String> = iter.into_iter().collect();
 
         let read = |key: &str| -> bool {
@@ -349,12 +383,73 @@ impl FeatureFlags {
     }
 }
 
+/// Resolve the KAIROS-specific desired/effective profile and provenance.
+pub fn resolve_kairos_profile(
+    desired: &KairosFeatureProfile,
+    mut sources: KairosProfileSources,
+    iter: impl IntoIterator<Item = (String, String)>,
+) -> KairosProfileResolution {
+    let env: HashMap<String, String> = iter.into_iter().collect();
+    let mut effective = desired.clone();
+    let parse = |key: &str| {
+        env.get(key).map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+    };
+
+    if let Some(value) = parse("FEATURE_KAIROS") {
+        effective.enabled = value;
+        sources.enabled = KairosValueSource::Environment;
+    }
+    if let Some(value) = parse("FEATURE_KAIROS_BRIEF") {
+        effective.brief = value;
+        sources.brief = KairosValueSource::Environment;
+    }
+    if let Some(value) = parse("FEATURE_KAIROS_CHANNELS") {
+        effective.channels = value;
+        sources.channels = KairosValueSource::Environment;
+    }
+    if let Some(value) = parse("FEATURE_KAIROS_PUSH_NOTIFICATION") {
+        effective.push_notifications = value;
+        sources.push_notifications = KairosValueSource::Environment;
+    }
+    if let Some(value) = parse("FEATURE_KAIROS_GITHUB_WEBHOOKS") {
+        effective.github_webhooks = value;
+        sources.github_webhooks = KairosValueSource::Environment;
+    }
+    if let Some(value) = parse("FEATURE_PROACTIVE") {
+        effective.proactive = value;
+        sources.proactive = KairosValueSource::Environment;
+    }
+
+    let (effective, diagnostics) = effective.normalized();
+    KairosProfileResolution {
+        desired: desired.clone(),
+        effective,
+        sources,
+        diagnostics,
+    }
+}
+
+pub fn resolve_loaded_kairos(settings: &LoadedSettings) -> KairosProfileResolution {
+    resolve_kairos_profile(
+        &settings.effective.kairos,
+        settings.kairos_sources(),
+        std::env::vars(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Global singleton
 // ---------------------------------------------------------------------------
 
 /// Global feature flags initialised once from environment variables.
 pub static FLAGS: LazyLock<FeatureFlags> = LazyLock::new(FeatureFlags::from_env);
+static SETTINGS_BASELINE: LazyLock<RwLock<Option<FeatureFlags>>> =
+    LazyLock::new(|| RwLock::new(None));
 static RUNTIME_OVERRIDE: LazyLock<RwLock<Option<FeatureFlags>>> =
     LazyLock::new(|| RwLock::new(None));
 
@@ -365,7 +460,29 @@ pub fn enabled(feature: Feature) -> bool {
 
 /// Effective flags after applying any session-local runtime override.
 pub fn current() -> FeatureFlags {
-    runtime_override().unwrap_or_else(|| FLAGS.clone())
+    runtime_override()
+        .or_else(settings_baseline)
+        .unwrap_or_else(|| FLAGS.clone())
+}
+
+pub fn settings_baseline() -> Option<FeatureFlags> {
+    SETTINGS_BASELINE
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+pub fn set_settings_baseline(flags: FeatureFlags) {
+    if let Ok(mut guard) = SETTINGS_BASELINE.write() {
+        *guard = Some(flags);
+    }
+}
+
+#[cfg(test)]
+fn clear_settings_baseline() {
+    if let Ok(mut guard) = SETTINGS_BASELINE.write() {
+        *guard = None;
+    }
 }
 
 /// Session-local runtime override used by `/experimental`.
@@ -738,5 +855,66 @@ mod tests {
         let f = flags(&[("FEATURE_SUBAGENT_DASHBOARD", "1")]);
         assert!(f.subagent_dashboard);
         assert!(!f.kairos);
+    }
+
+    #[test]
+    fn typed_profile_seeds_flags_and_environment_can_override_it() {
+        let profile = KairosFeatureProfile {
+            enabled: true,
+            brief: true,
+            channels: true,
+            ..KairosFeatureProfile::default()
+        };
+        let flags = FeatureFlags::from_profile_and_env_iter(
+            &profile,
+            [("FEATURE_KAIROS_BRIEF".to_string(), "0".to_string())],
+        );
+
+        assert!(flags.kairos);
+        assert!(!flags.kairos_brief);
+        assert!(flags.kairos_channels);
+        assert!(flags.proactive);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn runtime_override_wins_over_settings_baseline() {
+        clear_settings_baseline();
+        clear_runtime_override();
+        let mut baseline = FeatureFlags::all_disabled();
+        baseline.kairos = true;
+        set_settings_baseline(baseline);
+        assert!(current().kairos);
+
+        set_runtime_override(FeatureFlags::all_disabled());
+        assert!(!current().kairos);
+
+        clear_runtime_override();
+        clear_settings_baseline();
+    }
+
+    #[test]
+    fn kairos_resolution_reports_environment_provenance_and_dependencies() {
+        let desired = KairosFeatureProfile {
+            enabled: true,
+            brief: true,
+            ..KairosFeatureProfile::default()
+        };
+        let resolution = resolve_kairos_profile(
+            &desired,
+            KairosProfileSources {
+                enabled: KairosValueSource::Local,
+                brief: KairosValueSource::Local,
+                ..KairosProfileSources::default()
+            },
+            [("FEATURE_KAIROS".to_string(), "false".to_string())],
+        );
+
+        assert!(resolution.desired.enabled);
+        assert!(!resolution.effective.enabled);
+        assert!(!resolution.effective.brief);
+        assert_eq!(resolution.sources.enabled, KairosValueSource::Environment);
+        assert_eq!(resolution.sources.brief, KairosValueSource::Local);
+        assert_eq!(resolution.diagnostics.len(), 1);
     }
 }

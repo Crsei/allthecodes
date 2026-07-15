@@ -4,6 +4,7 @@
 //! process publish daemon status under `~/.allthecodes/daemon/` and another process
 //! inspect or request shutdown without sharing memory with the daemon runtime.
 
+mod controller;
 mod management;
 mod paths;
 mod platform;
@@ -15,11 +16,17 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use allthecodes_types::kairos::{
+    KairosControlRequest, KairosControlResult, KairosRuntimeSnapshot,
+};
+pub use controller::{
+    configure_kairos, kairos_snapshot, spawn_control_helper, LocalKairosController,
+};
 pub use management::try_run_management_command;
 pub use paths::{
-    bridge_session_inbox_path, bridge_session_state_path, control_token_path, daemon_dir, logs_dir,
-    proactive_state_path, shutdown_request_path, sleep_state_path, state_path,
-    terminal_focus_state_path, worker_log_path, worker_state_path, workers_dir,
+    bridge_session_inbox_path, bridge_session_state_path, control_token_path, daemon_dir,
+    kairos_lifecycle_path, logs_dir, proactive_state_path, shutdown_request_path, sleep_state_path,
+    state_path, terminal_focus_state_path, worker_log_path, worker_state_path, workers_dir,
 };
 pub(crate) use paths::{daily_log_path, team_memory_dir};
 pub(crate) use platform::{

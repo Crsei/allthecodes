@@ -34,7 +34,7 @@ pub fn settings_schema() -> Value {
                         "availableModels": { "type": "array", "items": { "type": "string" } },
                         "modelReasoningEffort": {
                             "type": "string",
-                            "enum": ["none", "minimal", "low", "medium", "high", "xhigh"]
+                            "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                         },
                         "modelCapabilities": {
                             "type": "object",
@@ -147,6 +147,19 @@ pub fn settings_schema() -> Value {
                             "socksProxyPort": { "type": "integer", "minimum": 0, "maximum": 65535 }
                         }
                     }
+                }
+            },
+            "kairos": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Persistent KAIROS desired feature profile. Environment variables remain higher-priority compatibility overrides.",
+                "properties": {
+                    "enabled": { "type": "boolean" },
+                    "brief": { "type": "boolean" },
+                    "channels": { "type": "boolean" },
+                    "pushNotifications": { "type": "boolean" },
+                    "githubWebhooks": { "type": "boolean" },
+                    "proactive": { "type": "boolean" }
                 }
             },
             "hooks": { "type": "object", "additionalProperties": true },
@@ -304,7 +317,7 @@ pub fn settings_schema() -> Value {
             },
             "model_reasoning_effort": {
                 "type": "string",
-                "enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
+                "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
                 "description": "Codex/OpenAI Responses reasoning effort. Directly maps to reasoning.effort for openai-codex requests."
             },
             "fastMode": { "type": "boolean" },

@@ -680,6 +680,7 @@ fn build_effort_picker(state: &AppState) -> SelectionSurface {
             "medium" => "Medium".to_string(),
             "high" => "High".to_string(),
             "xhigh" => "Extra high".to_string(),
+            "max" => "Maximum".to_string(),
             other => other.to_string(),
         };
         let description = if capability.default_reasoning_level.as_deref() == Some(level.as_str()) {

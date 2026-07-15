@@ -42,6 +42,10 @@ pub fn state_path() -> PathBuf {
     daemon_dir().join("supervisor.json")
 }
 
+pub fn kairos_lifecycle_path() -> PathBuf {
+    daemon_dir().join("kairos-lifecycle.json")
+}
+
 pub fn shutdown_request_path() -> PathBuf {
     daemon_dir().join("shutdown-request.json")
 }

@@ -15,6 +15,8 @@ mod transcript_mode;
 mod voice;
 mod workspace_trust;
 
+pub(crate) use domain::KairosUiStatus;
+
 use agent_navigation::{AgentThreadEntry, AgentThreadStatus};
 use agent_tree_dialog::AgentTreeDialog;
 use allthecodes_config::settings::{SpinnerTipsSettings, StatusLineSettings};
@@ -1127,6 +1129,21 @@ impl App {
     ) {
         self.runtime_view.context_layer_mut().upsert(item);
         self.dirty = true;
+    }
+
+    /// Read-only access to a single sticky context-layer item, by key. Used
+    /// by tests (and potentially other `crate::ui` modules) to assert what
+    /// has been routed into the sticky layer without driving a full render.
+    #[cfg(test)]
+    pub(in crate::ui) fn context_layer_item(
+        &self,
+        key: &crate::ui::context_layer::ContextLayerKey,
+    ) -> Option<crate::ui::context_layer::ContextLayerItem> {
+        self.runtime_view
+            .context_layer()
+            .items()
+            .into_iter()
+            .find(|item| &item.key == key)
     }
 
     fn record_latest_error(&mut self, error_text: &str) {

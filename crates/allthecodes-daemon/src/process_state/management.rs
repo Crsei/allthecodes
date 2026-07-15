@@ -1,50 +1,40 @@
-use std::fs;
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
-use std::time::{Duration, Instant};
+use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
 use crate::{operation_lock, protocol, readiness};
 
-use super::paths::{daemon_dir, health_url, state_path, worker_log_path};
-use super::platform::{configure_detached, process_matches_record, process_start_key};
+use super::paths::{daemon_dir, state_path, worker_log_path};
+use super::platform::process_matches_record;
 use super::storage::{
-    cleanup_stale_state_before_start, clear_sleep_state, ensure_daemon_dir,
-    list_bridge_session_states, read_bridge_session_state, read_control_token, read_worker_state,
-    request_shutdown, status_snapshot, tail_log, write_sleep_state, write_stopped,
+    clear_sleep_state, list_bridge_session_states, read_bridge_session_state, read_control_token,
+    read_worker_state, status_snapshot, tail_log, write_sleep_state,
 };
-use super::types::{
-    DaemonBridgeSessionState, DaemonProcessState, DaemonStatusSnapshot, StaleStateCleanupReport,
-};
-
-const SHUTDOWN_REQUEST_GRACE_PERIOD: Duration = Duration::from_secs(60);
-const TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(5);
-const FINAL_EXIT_GRACE_PERIOD: Duration = Duration::from_secs(10);
+use super::types::{DaemonBridgeSessionState, DaemonProcessState, DaemonStatusSnapshot};
 
 pub fn try_run_management_command(args: &[String], cwd: &Path, port: u16) -> Option<ExitCode> {
     if args.first().map(String::as_str) != Some("daemon") {
         return None;
     }
 
+    if let Ok(delay_ms) = std::env::var("ALLTHECODES_DAEMON_CONTROL_DELAY_MS") {
+        if let Ok(delay_ms) = delay_ms.parse::<u64>() {
+            std::thread::sleep(Duration::from_millis(delay_ms.min(5_000)));
+        }
+    }
+
     let subcommand = args.get(1).map(String::as_str).unwrap_or("status");
     let code = match subcommand {
-        "start" => print_result(operation_lock::with_operation_lock("start", cwd, || {
-            start_daemon(args, cwd, port)
-        })),
+        "start" => print_result(start_daemon(args, cwd, port)),
         "status" => print_result(operation_lock::with_operation_lock(
             "status",
             cwd,
             print_status,
         )),
-        "stop" => print_result(operation_lock::with_operation_lock(
-            "stop",
-            cwd,
-            stop_daemon,
-        )),
-        "restart" => print_result(operation_lock::with_operation_lock("restart", cwd, || {
-            restart_daemon(args, cwd, port)
-        })),
+        "stop" => print_result(stop_daemon()),
+        "restart" => print_result(restart_daemon(args, cwd, port)),
         "logs" => print_result(print_logs(args)),
         "submit" => print_result(submit_worker_command(args)),
         "abort" => print_result(abort_worker_command()),
@@ -72,141 +62,36 @@ pub fn try_run_management_command(args: &[String], cwd: &Path, port: u16) -> Opt
 }
 
 fn start_daemon(args: &[String], cwd: &Path, fallback_port: u16) -> Result<()> {
-    let cleanup = cleanup_stale_state_before_start()?;
-    print_stale_cleanup_report(&cleanup);
-
-    match status_snapshot()? {
-        DaemonStatusSnapshot::Running(state) => {
-            println!(
-                "daemon already running: pid={} health={}",
-                state.pid, state.health_url
-            );
-            return Ok(());
-        }
-        DaemonStatusSnapshot::Stale(state) => anyhow::bail!(
-            "daemon state is stale for pid={} and could not be cleaned",
-            state.pid
-        ),
-        DaemonStatusSnapshot::Stopped => {}
-    }
-
-    if !daemon_start_feature_enabled() {
-        anyhow::bail!("daemon start requires FEATURE_KAIROS=1 or FEATURE_PROACTIVE=1");
-    }
-
-    ensure_daemon_dir()?;
     let port = parse_port(args).unwrap_or(fallback_port);
-    let exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let log_path = daemon_dir().join("supervisor.log");
-    let log_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("failed to open daemon log {}", log_path.display()))?;
-    let log_file_err = log_file
-        .try_clone()
-        .with_context(|| format!("failed to clone daemon log {}", log_path.display()))?;
-
-    let mut cmd = Command::new(exe);
-    cmd.arg("--daemon")
-        .arg("--port")
-        .arg(port.to_string())
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file_err));
-
-    configure_detached(&mut cmd);
-    let mut child = cmd.spawn().context("failed to spawn daemon supervisor")?;
-    let ready_url = readiness::ready_url(port);
-    let readiness = match readiness::wait_for_ready(port) {
-        Ok(readiness) => readiness,
-        Err(err) => {
-            let pid = child.id();
-            let start_key = process_start_key(pid);
-            let _ = super::platform::terminate_process_tree(pid, start_key.as_deref());
-            let wait_result = child.wait();
-            return Err(err).with_context(|| {
-                format!(
-                    "daemon start failed readiness check: pid={pid} ready={} log={} spawned daemon terminated={} ",
-                    ready_url,
-                    log_path.display(),
-                    wait_result.is_ok()
-                )
-            });
-        }
-    };
-    println!(
-        "daemon started: pid={} health={} ready={} attempts={} elapsed_ms={} log={}",
-        child.id(),
-        health_url(port),
-        ready_url,
-        readiness.attempts,
-        readiness.elapsed.as_millis(),
-        log_path.display()
-    );
+    let result = super::controller::LocalKairosController.control(
+        allthecodes_types::kairos::KairosControlRequest {
+            action: allthecodes_types::kairos::KairosControlAction::Start,
+            cwd: Some(cwd.display().to_string()),
+            port: Some(port),
+            readiness_timeout_ms: None,
+        },
+    )?;
+    print_control_result(&result);
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn daemon_start_feature_enabled() -> bool {
     allthecodes_config::features::enabled(allthecodes_config::features::Feature::Kairos)
         || allthecodes_config::features::enabled(allthecodes_config::features::Feature::Proactive)
 }
 
 fn stop_daemon() -> Result<()> {
-    let snapshot = status_snapshot()?;
-    let DaemonStatusSnapshot::Running(state) = snapshot else {
-        println!("daemon is not running");
-        return Ok(());
-    };
-
-    request_shutdown("daemon stop command")?;
-    if wait_until_not_matching(&state, SHUTDOWN_REQUEST_GRACE_PERIOD)? {
-        println!("daemon stopped: pid={}", state.pid);
-        return Ok(());
-    }
-
-    super::platform::send_soft_terminate(state.pid, state.process_start_key.as_deref())?;
-    if wait_until_not_matching(&state, TERMINATE_GRACE_PERIOD)? {
-        println!("daemon stopped after terminate: pid={}", state.pid);
-        return Ok(());
-    }
-
-    super::platform::send_force_kill(state.pid, state.process_start_key.as_deref())?;
-    if wait_until_not_matching(&state, FINAL_EXIT_GRACE_PERIOD)? {
-        println!("daemon killed after timeout: pid={}", state.pid);
-        return Ok(());
-    }
-
-    anyhow::bail!(
-        "daemon pid={} still appears alive after force kill; {}",
-        state.pid,
-        process_matches_record(state.pid, state.process_start_key.as_deref()).as_diagnostic()
-    )
-}
-
-fn wait_until_not_matching(state: &DaemonProcessState, timeout: Duration) -> Result<bool> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        let identity = process_matches_record(state.pid, state.process_start_key.as_deref());
-        if !identity.is_current_process_record() {
-            match identity {
-                super::types::ProcessIdentityStatus::Dead => {
-                    write_stopped(state.port, &state.cwd)?;
-                }
-                super::types::ProcessIdentityStatus::Mismatched { .. } => {
-                    let mut stale = state.clone();
-                    stale.status = super::types::DaemonRunStatus::Stale;
-                    stale.updated_at = chrono::Utc::now();
-                    super::storage::write_state(&stale)?;
-                }
-                _ => {}
-            }
-            return Ok(true);
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    Ok(false)
+    let cwd = std::env::current_dir()?;
+    let result = super::controller::LocalKairosController.control(
+        allthecodes_types::kairos::KairosControlRequest {
+            action: allthecodes_types::kairos::KairosControlAction::Stop,
+            cwd: Some(cwd.display().to_string()),
+            ..Default::default()
+        },
+    )?;
+    print_control_result(&result);
+    Ok(())
 }
 
 fn restart_daemon(args: &[String], cwd: &Path, port: u16) -> Result<()> {
@@ -246,8 +131,49 @@ fn restart_daemon(args: &[String], cwd: &Path, port: u16) -> Result<()> {
             );
         }
     }
-    stop_daemon()?;
-    start_daemon(args, cwd, port)
+    let result = super::controller::LocalKairosController.control(
+        allthecodes_types::kairos::KairosControlRequest {
+            action: allthecodes_types::kairos::KairosControlAction::Restart,
+            cwd: Some(cwd.display().to_string()),
+            port: Some(parse_port(args).unwrap_or(port)),
+            readiness_timeout_ms: None,
+        },
+    )?;
+    print_control_result(&result);
+    Ok(())
+}
+
+fn print_control_result(result: &allthecodes_types::kairos::KairosControlResult) {
+    let snapshot = &result.snapshot;
+    let action_label = match result.action {
+        allthecodes_types::kairos::KairosControlAction::Start => "started",
+        allthecodes_types::kairos::KairosControlAction::Stop => "stopped",
+        allthecodes_types::kairos::KairosControlAction::Restart => "restarted",
+        allthecodes_types::kairos::KairosControlAction::Reconcile => "reconciled",
+    };
+    if let Some(supervisor) = &snapshot.supervisor {
+        println!(
+            "daemon {action_label}: pid={} health={}",
+            supervisor.pid, supervisor.health_url
+        );
+    } else {
+        println!("daemon {action_label}: lifecycle={:?}", snapshot.lifecycle);
+    }
+    println!(
+        "daemon action={} changed={} lifecycle={:?} restart_required={}",
+        match result.action {
+            allthecodes_types::kairos::KairosControlAction::Start => "start",
+            allthecodes_types::kairos::KairosControlAction::Stop => "stop",
+            allthecodes_types::kairos::KairosControlAction::Restart => "restart",
+            allthecodes_types::kairos::KairosControlAction::Reconcile => "reconcile",
+        },
+        result.changed,
+        snapshot.lifecycle,
+        snapshot.restart_required,
+    );
+    if let Some(supervisor) = &snapshot.supervisor {
+        println!("  pid={} health={}", supervisor.pid, supervisor.health_url);
+    }
 }
 
 fn print_logs(args: &[String]) -> Result<()> {
@@ -563,36 +489,6 @@ fn optional_bridge_value(value: Option<&str>) -> &str {
 
 fn bridge_management_lease_owner() -> String {
     format!("daemon-cli-pid-{}", std::process::id())
-}
-
-fn print_stale_cleanup_report(report: &StaleStateCleanupReport) {
-    if let Some(pid) = report.supervisor_pid {
-        if report.supervisor_state_removed {
-            eprintln!("cleaned stale daemon supervisor state for pid={pid}");
-        }
-    }
-    if report.control_token_removed {
-        eprintln!("removed stale daemon control token");
-    }
-    if report.shutdown_request_removed {
-        eprintln!("removed stale daemon shutdown request");
-    }
-    if report.expired_sleep_state_removed {
-        eprintln!("removed expired daemon sleep state");
-    }
-    for path in &report.worker_states_removed {
-        eprintln!("removed stale daemon worker state {}", path.display());
-    }
-    for worker in &report.live_worker_states_retained {
-        let pid = worker
-            .pid
-            .map(|pid| pid.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        eprintln!(
-            "retained live daemon worker state worker={} pid={} status={}",
-            worker.worker_id, pid, worker.status
-        );
-    }
 }
 
 fn require_running_daemon() -> Result<DaemonProcessState> {

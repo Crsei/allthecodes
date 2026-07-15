@@ -70,12 +70,15 @@ fn test_build_openai_request_strips_anthropic_cache_fields() {
 
 #[test]
 fn test_build_openai_request_codex_compatible_shape() {
-    let mut req = base_request("gpt-5.4", vec![json!({"role": "user", "content": "Hello"})]);
+    let mut req = base_request(
+        "gpt-5.6-sol",
+        vec![json!({"role": "user", "content": "Hello"})],
+    );
     req.max_tokens = 4096;
-    req.reasoning_effort = Some("high".to_string());
+    req.reasoning_effort = Some("max".to_string());
 
     let body = build_openai_request(&req, OPENAI_CODEX_PROVIDER_NAME);
-    assert_eq!(body["model"], "gpt-5.4");
+    assert_eq!(body["model"], "gpt-5.6-sol");
     assert_eq!(body["instructions"], "");
     assert_eq!(body["stream"], true);
     assert_eq!(body["store"], false);
@@ -84,7 +87,7 @@ fn test_build_openai_request_codex_compatible_shape() {
     assert!(body.get("messages").is_none());
     assert!(body.get("max_tokens").is_none());
     assert!(body.get("max_completion_tokens").is_none());
-    assert_eq!(body["reasoning"], json!({"effort": "high"}));
+    assert_eq!(body["reasoning"], json!({"effort": "max"}));
     assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     assert_eq!(body["input"][0]["type"], "message");
     assert_eq!(body["input"][0]["role"], "user");

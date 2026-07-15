@@ -42,6 +42,7 @@ pub mod hooks_cmd;
 pub mod ide_cmd;
 pub mod init;
 pub mod insights;
+pub mod kairos_cmd;
 pub mod keybindings_cmd;
 pub mod learn;
 pub mod login;
@@ -1057,11 +1058,12 @@ pub fn get_all_commands() -> Vec<Command> {
             "Toggle proactive autonomous mode",
             proactive_cmd::ProactiveCmdHandler,
         ),
+        command("assistant", &[], "View assistant mode status", assistant::AssistantHandler),
         command(
-            "assistant",
-            &["kairos"],
-            "View assistant mode status",
-            assistant::AssistantHandler,
+            "kairos",
+            &[],
+            "Configure, start, and inspect KAIROS",
+            kairos_cmd::KairosCmdHandler,
         ),
         command(
             "brief",

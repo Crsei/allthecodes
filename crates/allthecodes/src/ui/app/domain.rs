@@ -23,6 +23,18 @@ impl ProactiveUiStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KairosUiStatus {
+    pub label: String,
+    pub includes_proactive: bool,
+}
+
+impl KairosUiStatus {
+    pub fn render_inline(&self) -> &str {
+        &self.label
+    }
+}
+
 pub(super) struct ConversationStore {
     messages: Vec<Message>,
     selected_message: Option<usize>,
@@ -181,6 +193,7 @@ pub(super) struct SessionUiStore {
     pub(super) cwd: String,
     pub(super) output_style: Option<String>,
     pub(super) proactive_status: Option<ProactiveUiStatus>,
+    pub(super) kairos_status: Option<KairosUiStatus>,
     pub(super) verification: Option<VerificationUiSummary>,
     pub(super) history: Vec<HistorySearchEntry>,
 }

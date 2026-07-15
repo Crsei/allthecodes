@@ -39,7 +39,7 @@ impl ModelRuntimeBuilder {
                      Set:\n  \
                      - OPENAI_CODEX_AUTH_TOKEN (required)\n  \
                      - OPENAI_CODEX_BASE_URL (optional, default: https://chatgpt.com/backend-api)\n  \
-                     - OPENAI_CODEX_MODEL (optional, default: gpt-5.5)"
+                     - OPENAI_CODEX_MODEL (optional, default: gpt-5.6-sol)"
                 );
             } else {
                 warn!(

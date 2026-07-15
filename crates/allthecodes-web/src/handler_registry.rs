@@ -107,6 +107,7 @@ pub enum RegistryValidationError {
 pub fn all_api_handlers() -> HandlerRegistry {
     HandlerRegistry::new()
         .extend(handlers::health::handlers())
+        .extend(kairos_handlers())
         .extend(chat_handlers())
         .extend(launchpad_handlers())
         .extend(handlers::sessions::handlers())
@@ -146,6 +147,18 @@ pub fn all_api_handlers() -> HandlerRegistry {
         .extend(handlers::image_generate::handlers())
         .extend(handlers::voice::handlers())
         .extend(handlers::worktree_sessions::handlers())
+}
+
+pub fn kairos_handlers() -> HandlerRegistry {
+    HandlerRegistry::new()
+        .handle(ApiMethod::KairosStatus, get(handlers::kairos::status))
+        .handle(
+            ApiMethod::KairosConfigUpdate,
+            put(handlers::kairos::configure),
+        )
+        .handle(ApiMethod::KairosStart, post(handlers::kairos::start))
+        .handle(ApiMethod::KairosStop, post(handlers::kairos::stop))
+        .handle(ApiMethod::KairosRestart, post(handlers::kairos::restart))
 }
 
 pub fn chat_handlers() -> HandlerRegistry {

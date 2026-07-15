@@ -1,6 +1,6 @@
 pub const NATIVE_BACKEND_NAME: &str = "native";
 pub const CODEX_BACKEND_NAME: &str = "codex";
-pub const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
+pub const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
 
 pub fn normalize_backend(value: Option<&str>) -> String {
     let raw = value.unwrap_or(NATIVE_BACKEND_NAME).trim();

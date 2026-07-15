@@ -96,6 +96,63 @@ impl DaemonState {
         }
     }
 
+    /// Publish durable KAIROS lifecycle transitions into the existing bounded
+    /// SSE event log. The controller persists first; this watcher only mirrors
+    /// a new operation/transition and never blocks the controller.
+    pub fn spawn_kairos_lifecycle_publisher(&self) {
+        let state = self.clone();
+        let cwd = std::path::PathBuf::from(self.engine.cwd());
+        tokio::spawn(async move {
+            let mut last_transition_key: Option<(String, String)> = None;
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let poll_cwd = cwd.clone();
+                let snapshot = match tokio::task::spawn_blocking(move || {
+                    crate::process_state::kairos_snapshot(&poll_cwd)
+                })
+                .await
+                {
+                    Ok(Ok(snapshot)) => snapshot,
+                    Ok(Err(error)) => {
+                        tracing::debug!(error = %error, "KAIROS lifecycle snapshot unavailable");
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::debug!(error = %error, "KAIROS lifecycle poll task failed");
+                        continue;
+                    }
+                };
+                let Some(transition) = snapshot.last_transition.clone() else {
+                    continue;
+                };
+                let key = (
+                    transition.operation_id.clone(),
+                    transition.timestamp.clone(),
+                );
+                if last_transition_key.as_ref() == Some(&key) {
+                    continue;
+                }
+                last_transition_key = Some(key);
+                state.broadcast(SseEvent {
+                    id: String::new(),
+                    event_type: "kairos_lifecycle".to_string(),
+                    data: serde_json::json!({
+                        "operation_id": transition.operation_id,
+                        "action": transition.action,
+                        "from": transition.from,
+                        "to": transition.to,
+                        "restart_required": snapshot.restart_required,
+                        "timestamp": transition.timestamp,
+                        "error_code": transition.error_code,
+                        "message": transition.message,
+                    }),
+                });
+            }
+        });
+    }
+
     /// Broadcast an event to all connected SSE clients and buffer it for
     /// re-attach.
     ///

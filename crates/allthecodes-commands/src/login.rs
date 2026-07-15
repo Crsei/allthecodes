@@ -1378,9 +1378,9 @@ mod tests {
         .expect("message");
 
         assert!(msg.contains("apiProvider=openai-codex"));
-        assert!(msg.contains("model=gpt-5.4"));
+        assert!(msg.contains("model=gpt-5.6-sol"));
         assert_eq!(ctx.app_state.main_loop_backend, "codex");
-        assert_eq!(ctx.app_state.main_loop_model, "gpt-5.4");
+        assert_eq!(ctx.app_state.main_loop_model, "gpt-5.6-sol");
         assert!(!ctx
             .app_state
             .settings
@@ -1390,12 +1390,12 @@ mod tests {
             .app_state
             .settings
             .available_models
-            .contains(&"gpt-5.4-mini".to_string()));
+            .contains(&"gpt-5.6-terra".to_string()));
         assert!(ctx
             .app_state
             .settings
             .model_capabilities
-            .contains_key("gpt-5.4"));
+            .contains_key("gpt-5.6-sol"));
 
         let raw: RawSettings = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("settings.json")).unwrap(),
@@ -1407,7 +1407,7 @@ mod tests {
             .as_ref()
             .and_then(|profiles| profiles.get("codex"))
             .expect("codex profile persisted");
-        assert_eq!(codex.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(codex.model.as_deref(), Some("gpt-5.6-sol"));
         assert!(!codex
             .available_models
             .as_ref()
@@ -1417,6 +1417,6 @@ mod tests {
             .model_capabilities
             .as_ref()
             .expect("modelCapabilities persisted")
-            .contains_key("gpt-5.4"));
+            .contains_key("gpt-5.6-sol"));
     }
 }

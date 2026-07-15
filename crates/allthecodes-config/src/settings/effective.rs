@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use allthecodes_types::kairos::{KairosFeatureProfile, KairosProfileSources};
 use allthecodes_types::mcp::McpBinding;
 use serde_json::Value;
 
@@ -46,6 +47,7 @@ pub struct EffectiveSettings {
     // -- New typed fields ----------------------------------------------
     pub permissions: PermissionsSettings,
     pub sandbox: SandboxSettings,
+    pub kairos: KairosFeatureProfile,
     pub status_line: StatusLineSettings,
     pub spinner_tips: SpinnerTipsSettings,
     pub output_style: Option<String>,
@@ -169,6 +171,7 @@ impl EffectiveSettings {
             extra: raw.extra,
             permissions: perms,
             sandbox: raw.sandbox.unwrap_or_default(),
+            kairos: raw.kairos.unwrap_or_default().materialize(),
             status_line: raw.status_line.unwrap_or_default(),
             spinner_tips: raw.spinner_tips.unwrap_or_default(),
             output_style: raw.output_style,
@@ -294,5 +297,16 @@ impl LoadedSettings {
             .get(key)
             .copied()
             .unwrap_or(SettingsSource::Default)
+    }
+
+    pub fn kairos_sources(&self) -> KairosProfileSources {
+        KairosProfileSources {
+            enabled: self.source_of("kairos.enabled").into(),
+            brief: self.source_of("kairos.brief").into(),
+            channels: self.source_of("kairos.channels").into(),
+            push_notifications: self.source_of("kairos.pushNotifications").into(),
+            github_webhooks: self.source_of("kairos.githubWebhooks").into(),
+            proactive: self.source_of("kairos.proactive").into(),
+        }
     }
 }

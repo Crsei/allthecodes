@@ -11,7 +11,8 @@ use allthecodes_engine::types::app_state::AppState;
 use allthecodes_server::RootProbeResponse;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::HeaderMap;
-use axum::routing::{get, post};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -19,6 +20,9 @@ use tracing::{info, warn};
 
 use crate::automation_state::{AutomationState, AutomationStatus};
 use crate::protocol::{DaemonCommandKind, DaemonEvent, DaemonEventKind};
+use allthecodes_types::kairos::{
+    KairosControlAction, KairosControlRequest, KairosControlResult, KairosLifecycleState,
+};
 use allthecodes_types::message::CompactMetadata;
 use allthecodes_types::plan_workflow::PlanWorkflowRecord;
 use allthecodes_types::sdk::SdkMessage;
@@ -90,6 +94,7 @@ pub struct ResizeRequest {
 
 #[derive(Debug, Serialize)]
 pub struct StatusResponse {
+    pub kairos: allthecodes_types::kairos::KairosRuntimeSnapshot,
     pub kairos_active: bool,
     pub proactive: bool,
     pub query_running: bool,
@@ -258,6 +263,11 @@ pub fn api_routes() -> Router<DaemonState> {
         .route("/api/command", post(command))
         .route("/api/permission", post(permission))
         .route("/api/status", get(status))
+        .route("/api/kairos", get(kairos_status))
+        .route("/api/kairos/config", put(kairos_configure))
+        .route("/api/kairos/start", post(kairos_start))
+        .route("/api/kairos/stop", post(kairos_stop))
+        .route("/api/kairos/restart", post(kairos_restart))
         .route("/api/attach", post(attach))
         .route("/api/detach", post(detach))
         .route("/api/resize", post(resize))
@@ -688,6 +698,251 @@ async fn permission(
     Json(json!({ "status": "queued", "command_id": command.command_id }))
 }
 
+async fn kairos_status(State(state): State<DaemonState>) -> Response {
+    let cwd = std::path::PathBuf::from(state.engine.cwd());
+    match tokio::task::spawn_blocking(move || process_state::kairos_snapshot(&cwd)).await {
+        Ok(Ok(snapshot)) => Json(allthecodes_protocol::v1::kairos::KairosResponse {
+            snapshot,
+            operation: None,
+        })
+        .into_response(),
+        Ok(Err(error)) => kairos_error_response(&error),
+        Err(error) => kairos_internal_error(format!("KAIROS status task failed: {error}")),
+    }
+}
+
+async fn kairos_configure(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<allthecodes_protocol::v1::kairos::KairosConfigUpdateRequest>,
+) -> Response {
+    if let Err(response) = require_control_token(&headers) {
+        return response.into_response();
+    }
+    if request.profile.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "KAIROS profile patch must contain at least one field",
+                "code": "kairos_invalid_profile",
+                "retryable": false,
+            })),
+        )
+            .into_response();
+    }
+    let cwd = std::path::PathBuf::from(state.engine.cwd());
+    let apply = request.apply;
+    let result = tokio::task::spawn_blocking({
+        let cwd = cwd.clone();
+        move || process_state::configure_kairos(&cwd, request.scope, &request.profile)
+    })
+    .await;
+    let snapshot = match result {
+        Ok(Ok(snapshot)) => snapshot,
+        Ok(Err(error)) => return kairos_error_response(&error),
+        Err(error) => {
+            return kairos_internal_error(format!("KAIROS config task failed: {error}"));
+        }
+    };
+    if apply == allthecodes_protocol::v1::kairos::KairosApplyMode::None {
+        return Json(allthecodes_protocol::v1::kairos::KairosResponse {
+            snapshot,
+            operation: None,
+        })
+        .into_response();
+    }
+    let action = if snapshot.supervisor.is_some() && snapshot.restart_required {
+        KairosControlAction::Restart
+    } else if snapshot.supervisor.is_none() {
+        KairosControlAction::Start
+    } else {
+        return Json(allthecodes_protocol::v1::kairos::KairosResponse {
+            snapshot,
+            operation: None,
+        })
+        .into_response();
+    };
+    schedule_loopback_control(&state, action, cwd, Some(state.port), snapshot)
+}
+
+async fn kairos_start(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<allthecodes_protocol::v1::kairos::KairosControlParameters>,
+) -> Response {
+    if let Err(response) = require_control_token(&headers) {
+        return response.into_response();
+    }
+    let cwd = request
+        .cwd
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(state.engine.cwd()));
+    let result = tokio::task::spawn_blocking(move || {
+        process_state::LocalKairosController.control(KairosControlRequest {
+            action: KairosControlAction::Start,
+            cwd: Some(cwd.display().to_string()),
+            port: request.port,
+            readiness_timeout_ms: request.readiness_timeout_ms,
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(operation)) => Json(allthecodes_protocol::v1::kairos::KairosResponse {
+            snapshot: operation.snapshot.clone(),
+            operation: Some(operation),
+        })
+        .into_response(),
+        Ok(Err(error)) => kairos_error_response(&error),
+        Err(error) => kairos_internal_error(format!("KAIROS start task failed: {error}")),
+    }
+}
+
+async fn kairos_stop(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<allthecodes_protocol::v1::kairos::KairosControlParameters>,
+) -> Response {
+    loopback_control(state, headers, request, KairosControlAction::Stop).await
+}
+
+async fn kairos_restart(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<allthecodes_protocol::v1::kairos::KairosControlParameters>,
+) -> Response {
+    loopback_control(state, headers, request, KairosControlAction::Restart).await
+}
+
+async fn loopback_control(
+    state: DaemonState,
+    headers: HeaderMap,
+    request: allthecodes_protocol::v1::kairos::KairosControlParameters,
+    action: KairosControlAction,
+) -> Response {
+    if let Err(response) = require_control_token(&headers) {
+        return response.into_response();
+    }
+    let cwd = request
+        .cwd
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(state.engine.cwd()));
+    let snapshot = match process_state::kairos_snapshot(&cwd) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return kairos_error_response(&error),
+    };
+    schedule_loopback_control(
+        &state,
+        action,
+        cwd,
+        request.port.or(Some(state.port)),
+        snapshot,
+    )
+}
+
+fn schedule_loopback_control(
+    state: &DaemonState,
+    action: KairosControlAction,
+    cwd: std::path::PathBuf,
+    port: Option<u16>,
+    snapshot: allthecodes_types::kairos::KairosRuntimeSnapshot,
+) -> Response {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    match process_state::spawn_control_helper(action, &cwd, port, Some(&operation_id)) {
+        Ok(helper_pid) => {
+            state.broadcast(SseEvent {
+                id: String::new(),
+                event_type: "kairos_lifecycle".to_string(),
+                data: json!({
+                    "operation_id": operation_id,
+                    "action": action,
+                    "from": snapshot.lifecycle,
+                    "to": match action {
+                        KairosControlAction::Start | KairosControlAction::Reconcile => "starting",
+                        KairosControlAction::Stop => "stopping",
+                        KairosControlAction::Restart => "restarting",
+                    },
+                    "restart_required": snapshot.restart_required,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "helper_pid": helper_pid,
+                }),
+            });
+            let operation = KairosControlResult {
+                action,
+                changed: true,
+                operation_id: Some(operation_id),
+                snapshot: snapshot.clone(),
+            };
+            (
+                axum::http::StatusCode::ACCEPTED,
+                Json(allthecodes_protocol::v1::kairos::KairosResponse {
+                    snapshot,
+                    operation: Some(operation),
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => kairos_error_response(&error),
+    }
+}
+
+fn kairos_failed_snapshot(
+    error: anyhow::Error,
+) -> allthecodes_types::kairos::KairosRuntimeSnapshot {
+    allthecodes_types::kairos::KairosRuntimeSnapshot {
+        lifecycle: KairosLifecycleState::Failed,
+        diagnostics: vec![allthecodes_types::kairos::KairosDiagnostic {
+            code: "kairos_snapshot_failed".to_string(),
+            feature: None,
+            message: error.to_string(),
+        }],
+        ..Default::default()
+    }
+}
+
+fn kairos_error_response(error: &anyhow::Error) -> Response {
+    let message = error.to_string();
+    let (status, code, retryable) = if message.contains("disabled") {
+        (axum::http::StatusCode::CONFLICT, "kairos_disabled", false)
+    } else if message.contains("readiness") || message.contains("ready") {
+        (
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            "kairos_readiness_timeout",
+            true,
+        )
+    } else if message.contains("spawn") {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "kairos_spawn_failed",
+            true,
+        )
+    } else {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "kairos_operation_failed",
+            true,
+        )
+    };
+    (
+        status,
+        Json(json!({ "error": message, "code": code, "retryable": retryable })),
+    )
+        .into_response()
+}
+
+fn kairos_internal_error(message: String) -> Response {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "error": message,
+            "code": "kairos_operation_failed",
+            "retryable": true,
+        })),
+    )
+        .into_response()
+}
+
 /// `GET /api/status` -- return daemon status.
 async fn status(State(state): State<DaemonState>) -> Json<StatusResponse> {
     let app_state = state.engine.app_state();
@@ -709,7 +964,10 @@ async fn status(State(state): State<DaemonState>) -> Json<StatusResponse> {
             Ok(DaemonStatusSnapshot::Stopped) => ("stopped".to_string(), None, None, Vec::new()),
             Err(err) => (format!("error: {err}"), None, None, Vec::new()),
         };
+    let kairos = process_state::kairos_snapshot(std::path::Path::new(state.engine.cwd()))
+        .unwrap_or_else(kairos_failed_snapshot);
     Json(StatusResponse {
+        kairos,
         kairos_active: state.features.kairos,
         proactive: automation_state.proactive_active,
         query_running: automation_state.query_running,

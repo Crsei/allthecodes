@@ -2,7 +2,6 @@ use super::engine_events::now_ts;
 use crate::ui::app::App;
 use crate::ui::command_surface::CommandSurface;
 use crate::ui::context_layer::{ContextLayerItem, ContextLayerKey, ContextTone};
-use crate::ui::notifications::in_app::{InAppNotification, NotificationPriority, NotificationTone};
 use allthecodes_ipc_protocol::subsystem_events::{LspCommand, LspEvent, SubsystemEvent};
 use allthecodes_ipc_protocol::BackendMessage;
 use allthecodes_types::message::{InfoLevel, Message, SystemMessage, SystemSubtype};
@@ -56,10 +55,30 @@ pub(super) fn add_system_info(app: &mut App, text: &str) {
     add_system_message(app, text, InfoLevel::Info);
 }
 
+/// Add a warning system message to the app.
+pub(super) fn add_system_warning(app: &mut App, text: &str) {
+    add_system_message(app, text, InfoLevel::Warning);
+}
+
 fn add_system_message(app: &mut App, text: &str, level: InfoLevel) {
-    if matches!(level, InfoLevel::Info) && route_current_state_info(app, text) {
+    // State-prefix notices (branch / repo / cwd / model / context usage) ride
+    // the well-known sticky slots; they are not duplicated into the Notices
+    // catch-all slot, nor into the transcript, nor surfaced as a transient
+    // In-App Notification.
+    if let Some((key, label, value)) = parse_current_state_info(text) {
+        app.upsert_context_layer_item(ContextLayerItem::keyed(
+            key,
+            tone_for_level(&level),
+            label,
+            value,
+        ));
         return;
     }
+
+    // Everything else: keep the rolling transcript entry (so the user can
+    // scroll back to read it) and also surface it as a sticky context-layer
+    // notice. Routes both paths regardless of level — no transient
+    // In-App Notification is emitted.
     app.add_message(Message::System(SystemMessage {
         uuid: uuid::Uuid::new_v4(),
         timestamp: now_ts(),
@@ -68,7 +87,15 @@ fn add_system_message(app: &mut App, text: &str, level: InfoLevel) {
         },
         content: text.to_string(),
     }));
-    app.add_notification(system_notice_notification(text, level));
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        app.upsert_context_layer_item(ContextLayerItem::keyed(
+            ContextLayerKey::Notices,
+            tone_for_level(&level),
+            label_for_level(&level),
+            trimmed,
+        ));
+    }
 }
 
 /// Add an error system message to the app.
@@ -76,35 +103,20 @@ pub(super) fn add_system_error(app: &mut App, text: &str) {
     add_system_message(app, text, InfoLevel::Error);
 }
 
-fn system_notice_notification(text: &str, level: InfoLevel) -> InAppNotification {
-    let trimmed = text.trim();
-    let message = if trimmed.is_empty() {
-        "System notice"
-    } else {
-        trimmed
-    };
-    let (priority, tone, timeout_ms) = match level {
-        InfoLevel::Error => (NotificationPriority::High, NotificationTone::Error, 8000),
-        InfoLevel::Warning => (NotificationPriority::High, NotificationTone::Warning, 6500),
-        InfoLevel::Info => (NotificationPriority::Medium, NotificationTone::Info, 4500),
-    };
-    InAppNotification::new("system-notice", priority, message)
-        .with_tone(tone)
-        .with_timeout_ms(timeout_ms)
-        .with_fold(true)
+fn tone_for_level(level: &InfoLevel) -> ContextTone {
+    match level {
+        InfoLevel::Info => ContextTone::Info,
+        InfoLevel::Warning => ContextTone::Warning,
+        InfoLevel::Error => ContextTone::Error,
+    }
 }
 
-fn route_current_state_info(app: &mut App, text: &str) -> bool {
-    let Some((key, label, value)) = parse_current_state_info(text) else {
-        return false;
-    };
-    app.upsert_context_layer_item(ContextLayerItem::keyed(
-        key,
-        ContextTone::Info,
-        label,
-        value,
-    ));
-    true
+fn label_for_level(level: &InfoLevel) -> &'static str {
+    match level {
+        InfoLevel::Info => "notice",
+        InfoLevel::Warning => "warning",
+        InfoLevel::Error => "error",
+    }
 }
 
 fn parse_current_state_info(text: &str) -> Option<(ContextLayerKey, &'static str, String)> {
@@ -136,7 +148,10 @@ fn parse_current_state_info(text: &str) -> Option<(ContextLayerKey, &'static str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::context_layer::ContextLayerKey;
+    use crate::ui::theme::Theme;
     use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Style};
     use ratatui::Terminal;
 
     #[test]
@@ -172,14 +187,88 @@ mod tests {
     }
 
     #[test]
-    fn plain_context_prefix_stays_a_transient_info_notification() {
+    fn plain_context_prefix_routes_to_sticky_context_without_notification() {
         let mut app = App::new();
 
         add_system_info(&mut app, "context: ordinary note");
+        let item = app
+            .context_layer_item(&ContextLayerKey::Notices)
+            .expect("sticky context item");
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("draw");
 
-        let notification = app.current_notification().expect("notification");
-        assert_eq!(notification.tone, NotificationTone::Info);
-        assert_eq!(notification.text, "context: ordinary note");
+        assert!(app.current_notification().is_none());
+        assert_eq!(item.tone, ContextTone::Info);
+        assert_eq!(item.label, "notice");
+        assert_eq!(item.value, "context: ordinary note");
+        let rendered = buffer_to_lines(terminal.backend().buffer(), 100, 16).join("\n");
+        assert!(rendered.contains("notice: context: ordinary note"));
+    }
+
+    #[test]
+    fn warning_notice_routes_to_sticky_context_with_warning_tone() {
+        let mut app = App::new();
+
+        add_system_warning(&mut app, "disk space low");
+
+        assert!(app.current_notification().is_none());
+
+        let notice = app
+            .context_layer_item(&ContextLayerKey::Notices)
+            .expect("warning should sit in the Notices slot");
+        assert_eq!(notice.tone, ContextTone::Warning);
+        assert_eq!(notice.label, "warning");
+        assert_eq!(notice.value, "disk space low");
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("draw");
+        let rendered = buffer_to_lines(terminal.backend().buffer(), 100, 16).join("\n");
+        assert!(
+            rendered.contains("warning: disk space low"),
+            "rendered frame should include the sticky warning notice\n{rendered}"
+        );
+        let expected_fg = Theme::default().context_warning.fg;
+        assert_style_fg_contains(
+            terminal.backend().buffer(),
+            100,
+            16,
+            "warning: disk space low",
+            expected_fg,
+            "warning notice should be rendered with the yellow context_warning color",
+        );
+    }
+
+    #[test]
+    fn error_notice_routes_to_sticky_context_with_error_tone() {
+        let mut app = App::new();
+
+        add_system_error(&mut app, "command failed");
+
+        assert!(app.current_notification().is_none());
+
+        let notice = app
+            .context_layer_item(&ContextLayerKey::Notices)
+            .expect("error should sit in the Notices slot");
+        assert_eq!(notice.tone, ContextTone::Error);
+        assert_eq!(notice.label, "error");
+        assert_eq!(notice.value, "command failed");
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("draw");
+        let rendered = buffer_to_lines(terminal.backend().buffer(), 100, 16).join("\n");
+        assert!(
+            rendered.contains("error: command failed"),
+            "rendered frame should include the sticky error notice\n{rendered}"
+        );
+        let expected_fg = Theme::default().context_error.fg;
+        assert_style_fg_contains(
+            terminal.backend().buffer(),
+            100,
+            16,
+            "error: command failed",
+            expected_fg,
+            "error notice should be rendered with the red context_error color",
+        );
     }
 
     fn buffer_to_lines(buf: &ratatui::buffer::Buffer, width: u16, height: u16) -> Vec<String> {
@@ -192,5 +281,43 @@ mod tests {
             lines.push(line);
         }
         lines
+    }
+
+    /// Find the row containing `needle`, then sample the ratatui `Style` of
+    /// the cell that renders the needle's first character, asserting its
+    /// foreground color matches `expected_fg`.
+    fn assert_style_fg_contains(
+        buf: &ratatui::buffer::Buffer,
+        width: u16,
+        height: u16,
+        needle: &str,
+        expected_fg: Option<Color>,
+        message: &str,
+    ) {
+        for y in 0..height {
+            let mut row = String::new();
+            for x in 0..width {
+                row.push_str(buf[(x, y)].symbol());
+            }
+            if let Some(start) = row.find(needle) {
+                // Map needle char offset back to cell x. Walk forward from
+                // the row start accumulating each cell's symbol char count
+                // until we cover the needle's start offset.
+                let mut consumed = 0usize;
+                let mut style: Option<Style> = None;
+                for x in 0..width {
+                    let cell = &buf[(x, y)];
+                    let w = cell.symbol().chars().count();
+                    if style.is_none() && consumed + w > start {
+                        style = Some(cell.style());
+                    }
+                    consumed += w;
+                }
+                let style = style.unwrap_or_else(|| panic!("needle `{needle}` cell not found"));
+                assert_eq!(style.fg, expected_fg, "{message}");
+                return;
+            }
+        }
+        panic!("needle `{needle}` not found in buffer");
     }
 }

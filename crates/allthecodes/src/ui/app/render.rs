@@ -33,6 +33,13 @@ const STATUS_LINE_MAX_LINES: usize = 3;
 const MESSAGE_BOTTOM_GAP_HEIGHT: u16 = 1;
 
 impl App {
+    pub fn set_kairos_status(&mut self, status: Option<super::domain::KairosUiStatus>) {
+        if self.session_ui.kairos_status != status {
+            self.session_ui.kairos_status = status;
+            self.mark_dirty();
+        }
+    }
+
     pub fn set_proactive_status(&mut self, status: Option<ProactiveUiStatus>) {
         if self.session_ui.proactive_status != status {
             self.session_ui.proactive_status = status;
@@ -586,8 +593,18 @@ impl App {
                 goal.tokens_used
             ));
         }
-        if let Some(status) = &self.session_ui.proactive_status {
-            parts.push(status.render_inline());
+        let kairos_includes_proactive = self
+            .session_ui
+            .kairos_status
+            .as_ref()
+            .is_some_and(|status| status.includes_proactive);
+        if let Some(status) = &self.session_ui.kairos_status {
+            parts.push(status.render_inline().to_string());
+        }
+        if !kairos_includes_proactive {
+            if let Some(status) = &self.session_ui.proactive_status {
+                parts.push(status.render_inline());
+            }
         }
         if let Some(verification) = &self.session_ui.verification {
             parts.push(verification.render_inline());

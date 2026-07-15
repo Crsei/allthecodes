@@ -260,7 +260,7 @@ fn default_codex_model() -> String {
     codex_model_ids()
         .into_iter()
         .next()
-        .unwrap_or_else(|| "gpt-5.5".to_string())
+        .unwrap_or_else(|| "gpt-5.6-sol".to_string())
 }
 
 fn is_command_on_path(command: &str) -> bool {

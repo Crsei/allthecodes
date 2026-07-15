@@ -31,7 +31,9 @@ expression: "rendered.join(\"\\n\\n\")"
 │   Language                                 gpt-5.4 (gpt-5.4) - ctx=272k; default effort=medium; fast; search; parallel tools             │
 │   Thinking                                 GPT-5.4-Mini (gpt-5.4-mini) - ctx=272k; default effort=medium; search; parallel tools         │
 │   Safety                                 > GPT-5.5 (gpt-5.5) - current; ctx=272k; default effort=medium; fast; search; parallel tools    │
-│   Config                                                                                                                                 │
+│   Config                                   GPT-5.6-Luna (gpt-5.6-luna) - ctx=272k; default effort=medium; fast; search; parallel tools   │
+│                                            GPT-5.6-Sol (gpt-5.6-sol) - ctx=272k; default effort=low; fast; search; parallel tools        │
+│                                            GPT-5.6-Terra (gpt-5.6-terra) - ctx=272k; default effort=medium; fast; search; parallel tools │
 │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
 │ Type filter | Up/Down navigate | Enter select | Left/Right section | Esc close                                                           │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

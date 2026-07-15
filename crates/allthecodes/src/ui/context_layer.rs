@@ -24,6 +24,11 @@ pub enum ContextLayerKey {
     ContextUsage,
     PendingPermission,
     LastError,
+    /// Catch-all sticky slot for transient system notices (info / warning /
+    /// error) that do not match one of the well-known state prefixes above.
+    /// Holds only the most recent such notice; a new notice replaces the
+    /// previous one.
+    Notices,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,8 +123,12 @@ fn style_for_label(tone: ContextTone, theme: &Theme) -> Style {
     }
 }
 
-fn style_for_body(_tone: ContextTone, theme: &Theme) -> Style {
-    theme.context_info_text
+fn style_for_body(tone: ContextTone, theme: &Theme) -> Style {
+    match tone {
+        ContextTone::Info => theme.context_info_text,
+        ContextTone::Warning => theme.context_warning,
+        ContextTone::Error => theme.context_error,
+    }
 }
 
 fn truncate_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {

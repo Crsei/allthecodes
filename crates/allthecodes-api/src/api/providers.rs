@@ -278,7 +278,7 @@ pub static PROVIDERS: &[ProviderInfo] = &[
         name: "openai-codex",
         env_key: "OPENAI_CODEX_AUTH_TOKEN",
         base_url: "https://chatgpt.com/backend-api",
-        default_model: "gpt-5.4",
+        default_model: "gpt-5.6-sol",
         label: "OpenAI Codex (ChatGPT OAuth)",
         protocol: ProviderProtocol::OpenAiCompat,
     },

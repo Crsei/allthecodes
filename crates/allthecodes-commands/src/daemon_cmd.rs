@@ -5,10 +5,16 @@
 //! - `stop`: request daemon shutdown
 //! - `bridge`: list, resume, create, or release bridge sessions
 
+use allthecodes_types::kairos::{
+    KairosConfigScope, KairosControlAction, KairosControlRequest, KairosControlResult,
+    KairosFeatureProfilePatch, KairosRuntimeSnapshot,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{OnceLock, RwLock};
 
 use crate::{CommandContext, CommandHandler, CommandResult};
@@ -61,7 +67,14 @@ pub struct DaemonCommandRuntime {
     pub resume_bridge_session: fn(&str) -> Result<DaemonBridgeSessionSummary>,
     pub new_bridge_session: fn(&Path) -> Result<DaemonBridgeSessionSummary>,
     pub release_bridge_session: fn(&str) -> Result<Option<DaemonBridgeSessionSummary>>,
+    pub kairos_snapshot: fn(&Path) -> Result<KairosRuntimeSnapshot>,
+    pub configure_kairos:
+        fn(&Path, KairosConfigScope, &KairosFeatureProfilePatch) -> Result<KairosRuntimeSnapshot>,
+    pub control_kairos: fn(KairosControlRequest) -> KairosControlFuture,
 }
+
+pub type KairosControlFuture =
+    Pin<Box<dyn Future<Output = Result<KairosControlResult>> + Send + 'static>>;
 
 static DAEMON_RUNTIME: OnceLock<RwLock<Option<DaemonCommandRuntime>>> = OnceLock::new();
 
@@ -97,18 +110,24 @@ impl CommandHandler for DaemonCmdHandler {
         match parts.as_slice() {
             [] => show_status(ctx),
             [cmd] if cmd.eq_ignore_ascii_case("status") => show_status(ctx),
-            [cmd] if cmd.eq_ignore_ascii_case("stop") => request_stop(ctx),
-            [cmd] if cmd.eq_ignore_ascii_case("start") || cmd.eq_ignore_ascii_case("restart") => {
-                Ok(CommandResult::Output(
-                    "Use the shell command `allthecodes daemon start` or `allthecodes daemon restart`."
-                        .into(),
-                ))
+            [cmd] if cmd.eq_ignore_ascii_case("stop") => {
+                request_control(KairosControlAction::Stop, ctx).await
+            }
+            [cmd] if cmd.eq_ignore_ascii_case("start") => {
+                request_control(KairosControlAction::Start, ctx).await
+            }
+            [cmd] if cmd.eq_ignore_ascii_case("restart") => {
+                request_control(KairosControlAction::Restart, ctx).await
             }
             [cmd] if cmd.eq_ignore_ascii_case("bridge") => bridge_sessions(),
-            [cmd, sub] if cmd.eq_ignore_ascii_case("bridge") && sub.eq_ignore_ascii_case("sessions") => {
+            [cmd, sub]
+                if cmd.eq_ignore_ascii_case("bridge") && sub.eq_ignore_ascii_case("sessions") =>
+            {
                 bridge_sessions()
             }
-            [cmd, sub] if cmd.eq_ignore_ascii_case("bridge") && sub.eq_ignore_ascii_case("status") => {
+            [cmd, sub]
+                if cmd.eq_ignore_ascii_case("bridge") && sub.eq_ignore_ascii_case("status") =>
+            {
                 bridge_sessions()
             }
             [cmd, sub, session_id]
@@ -190,25 +209,110 @@ fn show_status(_ctx: &CommandContext) -> Result<CommandResult> {
     Ok(CommandResult::Output(output))
 }
 
-/// Request daemon to stop.
-fn request_stop(_ctx: &CommandContext) -> Result<CommandResult> {
+async fn request_control(
+    action: KairosControlAction,
+    ctx: &CommandContext,
+) -> Result<CommandResult> {
     let runtime = daemon_runtime()?;
-    match (runtime.status_snapshot)()? {
-        DaemonStatusSnapshot::Running(state) => {
-            (runtime.request_shutdown)("slash command /daemon stop")?;
-            Ok(CommandResult::Output(format!(
-                "Daemon stop requested for PID {}.",
-                state.pid
-            )))
-        }
-        DaemonStatusSnapshot::Stale(state) => Ok(CommandResult::Output(format!(
-            "Daemon state is stale for PID {}. Run `claude daemon status` from the shell to refresh.",
-            state.pid
-        ))),
-        DaemonStatusSnapshot::Stopped => Ok(CommandResult::Output(
-            "Daemon is not currently running.".into(),
-        )),
+    let result = (runtime.control_kairos)(KairosControlRequest {
+        action,
+        cwd: Some(ctx.cwd.display().to_string()),
+        ..KairosControlRequest::default()
+    })
+    .await?;
+    Ok(CommandResult::Output(format_control_result(&result)))
+}
+
+pub fn kairos_snapshot(cwd: &Path) -> Result<KairosRuntimeSnapshot> {
+    let runtime = daemon_runtime()?;
+    (runtime.kairos_snapshot)(cwd)
+}
+
+pub fn configure_kairos(
+    cwd: &Path,
+    scope: KairosConfigScope,
+    patch: &KairosFeatureProfilePatch,
+) -> Result<KairosRuntimeSnapshot> {
+    let runtime = daemon_runtime()?;
+    (runtime.configure_kairos)(cwd, scope, patch)
+}
+
+pub async fn control_kairos(request: KairosControlRequest) -> Result<KairosControlResult> {
+    let runtime = daemon_runtime()?;
+    (runtime.control_kairos)(request).await
+}
+
+pub fn format_kairos_snapshot(snapshot: &KairosRuntimeSnapshot) -> String {
+    let mut lines = vec![
+        "=== KAIROS Status ===".to_string(),
+        format!("Lifecycle:       {:?}", snapshot.lifecycle),
+        format!("Desired:         {}", profile_summary(&snapshot.desired)),
+        format!("Effective:       {}", profile_summary(&snapshot.effective)),
+        format!(
+            "Running:         {}",
+            snapshot
+                .running
+                .as_ref()
+                .map(profile_summary)
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        format!("Restart needed:  {}", snapshot.restart_required),
+        format!("Workers:         {}", snapshot.workers.len()),
+        format!(
+            "Sources:         enabled={:?} brief={:?} channels={:?} push={:?} github={:?} proactive={:?}",
+            snapshot.sources.enabled,
+            snapshot.sources.brief,
+            snapshot.sources.channels,
+            snapshot.sources.push_notifications,
+            snapshot.sources.github_webhooks,
+            snapshot.sources.proactive
+        ),
+    ];
+    if let Some(supervisor) = &snapshot.supervisor {
+        lines.push(format!("Supervisor:      pid={}", supervisor.pid));
+        lines.push(format!("Health:          {}", supervisor.health_url));
     }
+    if let Some(transition) = &snapshot.last_transition {
+        lines.push(format!(
+            "Last transition: {:?}->{:?}",
+            transition.from, transition.to
+        ));
+        if let Some(message) = &transition.message {
+            lines.push(format!("Message:         {message}"));
+        }
+    }
+    for diagnostic in &snapshot.diagnostics {
+        lines.push(format!(
+            "Diagnostic:      {}: {}",
+            diagnostic.code, diagnostic.message
+        ));
+    }
+    lines.join("\n")
+}
+
+fn format_control_result(result: &KairosControlResult) -> String {
+    format!(
+        "KAIROS {:?}: {}\n{}",
+        result.action,
+        if result.changed {
+            "changed"
+        } else {
+            "unchanged"
+        },
+        format_kairos_snapshot(&result.snapshot)
+    )
+}
+
+fn profile_summary(profile: &allthecodes_types::kairos::KairosFeatureProfile) -> String {
+    format!(
+        "enabled={} brief={} channels={} push={} github={} proactive={}",
+        profile.enabled,
+        profile.brief,
+        profile.channels,
+        profile.push_notifications,
+        profile.github_webhooks,
+        profile.proactive
+    )
 }
 
 fn bridge_sessions() -> Result<CommandResult> {
@@ -328,9 +432,9 @@ fn daemon_usage() -> &'static str {
     "Usage:\n  \
        /daemon                         -- show daemon status\n  \
        /daemon status                  -- show daemon status\n  \
-       /daemon stop                    -- request daemon shutdown\n  \
-       /daemon start                   -- show shell command hint\n  \
-       /daemon restart                 -- show shell command hint\n  \
+       /daemon stop                    -- stop the daemon\n  \
+       /daemon start                   -- start the daemon and wait for readiness\n  \
+       /daemon restart                 -- restart the daemon and wait for readiness\n  \
        /daemon bridge sessions         -- list bridge sessions\n  \
        /daemon bridge status [id]      -- show bridge session status\n  \
        /daemon bridge resume <id>      -- refresh a bridge session lease\n  \
@@ -381,7 +485,36 @@ mod tests {
             resume_bridge_session: test_resume_bridge_session,
             new_bridge_session: test_new_bridge_session,
             release_bridge_session: test_release_bridge_session,
+            kairos_snapshot: |_| Ok(test_kairos_snapshot()),
+            configure_kairos: |_, _, _| Ok(test_kairos_snapshot()),
+            control_kairos: |request| {
+                Box::pin(async move {
+                    Ok(KairosControlResult {
+                        action: request.action,
+                        changed: true,
+                        operation_id: Some("test-operation".to_string()),
+                        snapshot: test_kairos_snapshot(),
+                    })
+                })
+            },
         });
+    }
+
+    fn test_kairos_snapshot() -> KairosRuntimeSnapshot {
+        KairosRuntimeSnapshot {
+            lifecycle: allthecodes_types::kairos::KairosLifecycleState::Ready,
+            desired: allthecodes_types::kairos::KairosFeatureProfile {
+                enabled: true,
+                proactive: true,
+                ..Default::default()
+            },
+            effective: allthecodes_types::kairos::KairosFeatureProfile {
+                enabled: true,
+                proactive: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 
     fn test_bridge_summary(session_id: &str, cwd: PathBuf) -> DaemonBridgeSessionSummary {
@@ -453,7 +586,7 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn test_start_and_restart_show_shell_hint() {
+    async fn test_start_and_restart_use_typed_controller() {
         let temp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set("ALLTHECODES_HOME", temp.path());
         install_test_runtime();
@@ -463,11 +596,13 @@ mod tests {
         for input in &["start", "restart"] {
             let result = handler.execute(input, &mut ctx).await.unwrap();
             match result {
-                CommandResult::Output(text) => assert!(
-                    text.contains("allthecodes daemon"),
-                    "expected shell hint for input '{}'",
-                    input
-                ),
+                CommandResult::Output(text) => {
+                    assert!(
+                        text.contains("KAIROS"),
+                        "missing control result for {input}"
+                    );
+                    assert!(text.contains("Lifecycle:       Ready"));
+                }
                 _ => panic!("Expected Output for input '{}'", input),
             }
         }

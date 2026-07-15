@@ -24,6 +24,7 @@ impl CommandHandler for ExperimentalHandler {
                 features::set_runtime_override(FeatureFlags::all_enabled());
                 Ok(CommandResult::Output(format!(
                     "Experimental features enabled for this TUI session.\n\
+                     This does not persist KAIROS settings or start the KAIROS daemon; use /kairos enable --start for that.\n\
                      Startup-only background processes may still require a restart.\n\n{}",
                     list_text()
                 )))
@@ -59,7 +60,9 @@ fn usage_text() -> &'static str {
        /experimental list     Show every known experimental gate\n\
        /experimental on       Enable every known experimental gate for this TUI session\n\
        /experimental off      Disable every known experimental gate for this TUI session\n\
-       /experimental reset    Return to startup environment flags"
+       /experimental reset    Return to startup environment flags\n\
+     \n\
+     These overrides affect only this process and do not start the KAIROS daemon."
 }
 
 fn status_text() -> String {

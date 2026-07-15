@@ -12,9 +12,9 @@ pub const DEFAULT_MODEL_ALIAS: &str = "MOTA";
 pub const DEFAULT_FALLBACK_MODEL_ALIAS: &str = "MOTA";
 pub const DEFAULT_FAST_MODEL_ALIAS: &str = "MOTA";
 
-pub const SOTA_MODEL_ID: &str = "gpt-5.5";
-pub const MOTA_MODEL_ID: &str = "gpt-5.4-mini";
-pub const FOTA_MODEL_ID: &str = "gpt-5.3-codex-spark";
+pub const SOTA_MODEL_ID: &str = "gpt-5.6-sol";
+pub const MOTA_MODEL_ID: &str = "gpt-5.6-terra";
+pub const FOTA_MODEL_ID: &str = "gpt-5.6-luna";
 
 pub const MODEL_ALIASES: &[ModelAlias] = &[
     ModelAlias {

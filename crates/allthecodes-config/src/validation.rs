@@ -49,7 +49,7 @@ fn effort_label_is_known(effort: &str) -> bool {
 fn model_reasoning_effort_is_known(effort: &str) -> bool {
     matches!(
         effort.trim().to_ascii_lowercase().as_str(),
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
     )
 }
 
@@ -556,7 +556,7 @@ pub fn validate_settings(settings: &SettingsJson) -> Vec<ValidationWarning> {
             warnings.push(ValidationWarning {
                 field: "model_reasoning_effort".to_string(),
                 message: format!(
-                    "Unknown Codex reasoning effort '{}'. Expected none/minimal/low/medium/high/xhigh.",
+                    "Unknown Codex reasoning effort '{}'. Expected none/minimal/low/medium/high/xhigh/max.",
                     trimmed
                 ),
                 severity: WarningSeverity::Warning,

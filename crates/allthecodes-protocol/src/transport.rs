@@ -191,9 +191,9 @@ mod tests {
 
         async fn process_notification(
             &self,
-            notification: ServerNotification,
+            _notification: ServerNotification,
         ) -> Result<(), ApiError> {
-            match notification {}
+            Ok(())
         }
     }
 

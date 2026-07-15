@@ -109,6 +109,10 @@ pub(super) fn command_meta(name: &str, cwd: &Path) -> CommandMeta {
             &["/ide status"],
         ),
         "init" => simple_meta("/init", &["/init"]),
+        "kairos" => simple_meta(
+            "/kairos [status|enable|disable|start|stop|restart|feature|bridge]",
+            &["/kairos", "/kairos enable --start", "/kairos status"],
+        ),
         "insights" => simple_meta("/insights [fast|full]", &["/insights"]),
         "login" => simple_meta(
             "/login [claude-code|claude-ai|console|codex|codex-oauth|codex-cli|custom|openai-api|bedrock|vertex]",

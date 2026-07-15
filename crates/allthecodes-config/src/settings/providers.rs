@@ -146,6 +146,9 @@ pub(crate) fn merge_provider_profile(
 
 pub fn codex_model_ids() -> Vec<String> {
     [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -174,6 +177,7 @@ struct CodexCapabilitySpec<'a> {
     supports_fast_mode: bool,
     supports_image_detail_original: bool,
     supported_in_api: bool,
+    supported_reasoning_levels: &'a [&'a str],
     input_modalities: &'a [&'a str],
 }
 
@@ -183,8 +187,10 @@ fn common_codex_capability(spec: CodexCapabilitySpec<'_>) -> ModelCapabilitySett
         description: Some(spec.description.to_string()),
         default_reasoning_level: Some(spec.default_reasoning_level.to_string()),
         provider_options: None,
-        supported_reasoning_levels: ["low", "medium", "high", "xhigh"]
-            .into_iter()
+        supported_reasoning_levels: spec
+            .supported_reasoning_levels
+            .iter()
+            .copied()
             .map(ToOwned::to_owned)
             .collect(),
         context_window: Some(spec.context_window),
@@ -217,6 +223,51 @@ fn common_codex_capability(spec: CodexCapabilitySpec<'_>) -> ModelCapabilitySett
 fn codex_capability_entries() -> Vec<(&'static str, ModelCapabilitySettings)> {
     vec![
         (
+            "gpt-5.6-sol",
+            common_codex_capability(CodexCapabilitySpec {
+                display_name: "GPT-5.6-Sol",
+                description: "Latest frontier agentic coding model.",
+                default_reasoning_level: "low",
+                context_window: 272_000,
+                max_context_window: 272_000,
+                supports_fast_mode: true,
+                supports_image_detail_original: true,
+                supported_in_api: true,
+                supported_reasoning_levels: &["low", "medium", "high", "xhigh", "max"],
+                input_modalities: &["text", "image"],
+            }),
+        ),
+        (
+            "gpt-5.6-terra",
+            common_codex_capability(CodexCapabilitySpec {
+                display_name: "GPT-5.6-Terra",
+                description: "Balanced agentic coding model for everyday work.",
+                default_reasoning_level: "medium",
+                context_window: 272_000,
+                max_context_window: 272_000,
+                supports_fast_mode: true,
+                supports_image_detail_original: true,
+                supported_in_api: true,
+                supported_reasoning_levels: &["low", "medium", "high", "xhigh", "max"],
+                input_modalities: &["text", "image"],
+            }),
+        ),
+        (
+            "gpt-5.6-luna",
+            common_codex_capability(CodexCapabilitySpec {
+                display_name: "GPT-5.6-Luna",
+                description: "Fast and affordable agentic coding model.",
+                default_reasoning_level: "medium",
+                context_window: 272_000,
+                max_context_window: 272_000,
+                supports_fast_mode: true,
+                supports_image_detail_original: true,
+                supported_in_api: true,
+                supported_reasoning_levels: &["low", "medium", "high", "xhigh", "max"],
+                input_modalities: &["text", "image"],
+            }),
+        ),
+        (
             "gpt-5.5",
             common_codex_capability(CodexCapabilitySpec {
                 display_name: "GPT-5.5",
@@ -227,6 +278,7 @@ fn codex_capability_entries() -> Vec<(&'static str, ModelCapabilitySettings)> {
                 supports_fast_mode: true,
                 supports_image_detail_original: true,
                 supported_in_api: true,
+                supported_reasoning_levels: &["low", "medium", "high", "xhigh"],
                 input_modalities: &["text", "image"],
             }),
         ),
@@ -241,6 +293,7 @@ fn codex_capability_entries() -> Vec<(&'static str, ModelCapabilitySettings)> {
                 supports_fast_mode: true,
                 supports_image_detail_original: true,
                 supported_in_api: true,
+                supported_reasoning_levels: &["low", "medium", "high", "xhigh"],
                 input_modalities: &["text", "image"],
             }),
         ),
@@ -255,6 +308,7 @@ fn codex_capability_entries() -> Vec<(&'static str, ModelCapabilitySettings)> {
                 supports_fast_mode: false,
                 supports_image_detail_original: true,
                 supported_in_api: true,
+                supported_reasoning_levels: &["low", "medium", "high", "xhigh"],
                 input_modalities: &["text", "image"],
             }),
         ),
@@ -269,6 +323,7 @@ fn codex_capability_entries() -> Vec<(&'static str, ModelCapabilitySettings)> {
                 supports_fast_mode: false,
                 supports_image_detail_original: true,
                 supported_in_api: true,
+                supported_reasoning_levels: &["low", "medium", "high", "xhigh"],
                 input_modalities: &["text", "image"],
             }),
         ),
@@ -283,6 +338,7 @@ fn codex_capability_entries() -> Vec<(&'static str, ModelCapabilitySettings)> {
                 supports_fast_mode: false,
                 supports_image_detail_original: false,
                 supported_in_api: false,
+                supported_reasoning_levels: &["low", "medium", "high", "xhigh"],
                 input_modalities: &["text"],
             }),
         ),
@@ -297,6 +353,7 @@ fn codex_capability_entries() -> Vec<(&'static str, ModelCapabilitySettings)> {
                 supports_fast_mode: false,
                 supports_image_detail_original: false,
                 supported_in_api: true,
+                supported_reasoning_levels: &["low", "medium", "high", "xhigh"],
                 input_modalities: &["text", "image"],
             }),
         ),
@@ -355,5 +412,38 @@ pub fn display_auth_profile_name(profile_name: &str) -> &str {
         AUTH_PROFILE_CLAUDE_CODE
     } else {
         profile_name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_catalog_starts_with_gpt_5_6_family() {
+        let models = codex_model_ids();
+        assert_eq!(
+            &models[..3],
+            &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        );
+    }
+
+    #[test]
+    fn gpt_5_6_capabilities_include_max_reasoning() {
+        let capabilities = codex_model_capabilities();
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let capability = capabilities.get(model).expect("GPT-5.6 capability");
+            assert!(capability
+                .supported_reasoning_levels
+                .contains(&"max".to_string()));
+            assert!(capability.supports_image_detail_original);
+            assert!(capability.supports_fast_mode);
+        }
+        assert_eq!(
+            capabilities["gpt-5.6-sol"]
+                .default_reasoning_level
+                .as_deref(),
+            Some("low")
+        );
     }
 }

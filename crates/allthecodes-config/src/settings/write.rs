@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
+use allthecodes_types::kairos::{KairosConfigScope, KairosFeatureProfilePatch};
 use anyhow::{Context, Result};
 
 use super::paths::{local_settings_path, project_settings_path, user_settings_path};
 use super::raw::RawSettings;
+use super::types::KairosSettings;
 
 // ---------------------------------------------------------------------------
 // Write + backup
@@ -76,6 +78,34 @@ pub fn write_local_settings(cwd: &Path, raw: &RawSettings) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Update only the KAIROS subtree in the requested settings layer.
+///
+/// Existing typed fields and unknown forward-compatible keys are retained.
+pub fn update_kairos_settings(
+    cwd: &Path,
+    scope: KairosConfigScope,
+    patch: &KairosFeatureProfilePatch,
+) -> Result<PathBuf> {
+    let path = match scope {
+        KairosConfigScope::User => user_settings_path(),
+        KairosConfigScope::Project => project_settings_path(cwd),
+        KairosConfigScope::Local => local_settings_path(cwd),
+    };
+    let mut raw = if path.exists() {
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        serde_json::from_str::<RawSettings>(&contents)
+            .with_context(|| format!("Failed to parse {}", path.display()))?
+    } else {
+        RawSettings::default()
+    };
+    let mut kairos = raw.kairos.take().unwrap_or_else(KairosSettings::default);
+    kairos.apply_patch(patch);
+    raw.kairos = Some(kairos);
+    write_settings_file(&path, &raw)?;
+    Ok(path)
+}
+
 fn prune_backups(path: &Path, keep: usize) {
     let Some(parent) = path.parent() else { return };
     let Some(stem) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
@@ -97,5 +127,53 @@ fn prune_backups(path: &Path, keep: usize) {
     backups.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
     for old in backups.into_iter().skip(keep) {
         let _ = std::fs::remove_file(old);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn kairos_update_preserves_existing_and_unknown_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("workspace");
+        std::fs::create_dir_all(cwd.join(".allthecodes")).unwrap();
+        let path = local_settings_path(&cwd);
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({
+                "model": "existing-model",
+                "futureSetting": { "enabled": true },
+                "kairos": {
+                    "enabled": true,
+                    "brief": true,
+                    "futureGate": "keep"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        update_kairos_settings(
+            &cwd,
+            KairosConfigScope::Local,
+            &KairosFeatureProfilePatch {
+                brief: Some(false),
+                channels: Some(true),
+                ..KairosFeatureProfilePatch::default()
+            },
+        )
+        .unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(value["model"], "existing-model");
+        assert_eq!(value["futureSetting"]["enabled"], true);
+        assert_eq!(value["kairos"]["enabled"], true);
+        assert_eq!(value["kairos"]["brief"], false);
+        assert_eq!(value["kairos"]["channels"], true);
+        assert_eq!(value["kairos"]["futureGate"], "keep");
     }
 }

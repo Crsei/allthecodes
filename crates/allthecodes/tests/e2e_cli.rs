@@ -220,6 +220,10 @@ fn kairos_daemon_start_status_submit_sleep_and_stop_smoke() {
             && expected_worker_ids().is_subset(&worker_ids(status))
     });
     assert_eq!(status["kairos_active"], true);
+    assert_eq!(status["kairos"]["lifecycle"], "ready");
+    assert_eq!(status["kairos"]["effective"]["enabled"], true);
+    assert_eq!(status["kairos"]["restart_required"], false);
+    assert!(status["kairos"]["supervisor"]["pid"].is_number());
     assert_eq!(status["proactive"], true);
     assert_eq!(status["automation_state"]["status"], "standby");
     assert_eq!(status["automation_state"]["query_running"], false);

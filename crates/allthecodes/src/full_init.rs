@@ -110,6 +110,7 @@ pub(crate) async fn run_server_mode(
             features,
             daemon_addr.port(),
         );
+        ds.spawn_kairos_lifecycle_publisher();
         let dr = allthecodes_daemon::build_router(ds.clone());
         (Some(dr), Some(ds))
     } else {

@@ -117,7 +117,11 @@ fn requires_privileged_capability(method: &Method, path: &str) -> bool {
 
     if matches!(
         (method, path),
-        (&Method::PUT, "files/write")
+        (&Method::PUT, "kairos/config")
+            | (&Method::POST, "kairos/start")
+            | (&Method::POST, "kairos/stop")
+            | (&Method::POST, "kairos/restart")
+            | (&Method::PUT, "files/write")
             | (&Method::POST, "files/upload")
             | (&Method::POST, "files/mkdir")
             | (&Method::POST, "files/rename")
@@ -713,6 +717,22 @@ mod tests {
         assert!(both_tokens_statuses
             .iter()
             .all(|status| !matches!(*status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)));
+    }
+
+    #[test]
+    fn kairos_mutations_require_privileged_capability_but_status_does_not() {
+        assert!(!requires_privileged_capability(&Method::GET, "/api/kairos"));
+        assert!(requires_privileged_capability(
+            &Method::PUT,
+            "/api/kairos/config"
+        ));
+        for path in [
+            "/api/kairos/start",
+            "/api/kairos/stop",
+            "/api/kairos/restart",
+        ] {
+            assert!(requires_privileged_capability(&Method::POST, path));
+        }
     }
 
     async fn privileged_route_statuses(

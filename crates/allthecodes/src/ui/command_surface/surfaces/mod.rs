@@ -2,6 +2,7 @@ pub(super) mod agents;
 pub(super) mod config;
 pub(super) mod diff;
 pub(super) mod hooks;
+pub(super) mod kairos;
 pub(super) mod login;
 pub(super) mod lsp_recommendation;
 pub(super) mod mcp;

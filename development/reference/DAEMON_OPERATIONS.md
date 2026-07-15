@@ -34,7 +34,7 @@ daemon 状态位于 `{ALLTHECODES_HOME:-~/.allthecodes}/daemon/`：
 
 ## CLI 管理命令
 
-`daemon start` 管理命令和隐藏 `--daemon` 运行面都接受 `FEATURE_KAIROS=1` 或 `FEATURE_PROACTIVE=1`，用于 KAIROS daemon 或 standalone proactive daemon。管理命令可以从另一个 CLI 进程操作同一个后台 supervisor。
+`daemon start`、`/daemon` 和 `/kairos` 共享 typed lifecycle controller。KAIROS profile 可持久化到 user/project/local settings；`FEATURE_KAIROS*` 与 `FEATURE_PROACTIVE` 环境变量继续作为部署和 CI override。管理命令可以从另一个 CLI 进程操作同一个后台 supervisor。
 
 ```bash
 FEATURE_KAIROS=1 allthecodes daemon start
@@ -60,6 +60,19 @@ FEATURE_KAIROS=1 allthecodes --port 19837 daemon restart
 
 `daemon stop` writes a shutdown request and the daemon runtime now observes that request directly, so normal stop should not wait for the fallback terminate grace period.
 
+推荐的持久化入口：
+
+```text
+/kairos status
+/kairos enable --scope local --start
+/kairos feature brief on
+/kairos feature channels on --apply
+/kairos restart
+/kairos stop
+```
+
+`local` scope 是 Rust TUI `Enable & Start` 的默认值。修改 feature 后 snapshot 会显示 desired/effective/running、字段 source 与 `restart_required`。
+
 ## Standalone Proactive Daemon
 
 `FEATURE_PROACTIVE=1 allthecodes --daemon` starts the daemon with `assistant-session-1` and `proactive-1`. It does not start KAIROS bridge or scheduler workers unless `FEATURE_KAIROS=1` is also set.
@@ -73,8 +86,7 @@ Sleep state lives at `~/.allthecodes/daemon/sleep-state.json` or under `ALLTHECO
 `/daemon` 是会话内轻量入口：
 
 - `/daemon` 或 `/daemon status`：读取跨进程 supervisor/worker 状态。
-- `/daemon stop`：写入 shutdown request，让后台 supervisor 优雅退出。
-- `/daemon start` 与 `/daemon restart`：提示使用 shell 管理命令，不在当前 REPL 内 fork 后台进程。
+- `/daemon start`、`/daemon restart`、`/daemon stop`：调用共享 controller，并等待对应 lifecycle 结果；不再返回 shell 提示。
 - `/daemon bridge sessions` / `status [id]`：查看可复用 bridge session 和 lease 状态。
 - `/daemon bridge resume <id>`：刷新指定 bridge session lease，用于显式恢复。
 - `/daemon bridge new`：在当前 cwd 创建一个新的 bridge session。
@@ -103,6 +115,9 @@ daemon 默认监听 `127.0.0.1:19836`，可通过 `--port` 调整。
 
 - `GET /health`、`GET /healthz`、`GET /readyz`、`GET /startupz`：探针。
 - `GET /api/status`：返回 QueryEngine/KAIROS flags、automation state、supervisor、workers、command root、assistant event log、sleep state。
+- `GET /api/kairos`：返回 typed desired/effective/running profile、source、lifecycle、workers、automation 与 restart-required。
+- `PUT /api/kairos/config`：写入 partial profile；`apply=reconcile` 可立即应用。
+- `POST /api/kairos/start|stop|restart`：执行 lifecycle operation。daemon loopback 的 stop/restart 先返回 `202 Accepted` 和 operation id，再由 detached helper 完成，客户端通过 snapshot/SSE 判断最终状态。
 - `GET /api/history`：返回 current history、history snapshots 和 daemon worker event log。
 - `GET /events`：SSE stream，连接时 replay assistant worker event log。
 - `POST /api/submit`：投递 `Submit` command；assistant worker claim 后拥有 QueryEngine 执行和 worker event log。
@@ -127,6 +142,8 @@ curl -H "x-allthecodes-daemon-token: $TOKEN" \
 ```
 
 也可以使用 `Authorization: Bearer <token>`。
+
+同名 product API 也由 standalone Web host 暴露；它在 daemon 停止时仍可执行 start。daemon loopback API 只监听本机，不是公网 remote-control service。`kairos_lifecycle` 事件复用现有 `/events` bounded replay 日志。
 
 ## 验证命令
 

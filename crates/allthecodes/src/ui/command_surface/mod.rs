@@ -10,10 +10,13 @@ use allthecodes_ipc_protocol::subsystem_types::LspRecommendationPayload;
 mod adapters;
 mod surfaces;
 
+pub(crate) use adapters::kairos::set_kairos_snapshot;
+
 pub use surfaces::agents::AgentsSurface;
 pub use surfaces::config::ConfigSurface;
 pub use surfaces::diff::DiffSurface;
 pub use surfaces::hooks::HooksSurface;
+pub use surfaces::kairos::KairosSurface;
 pub use surfaces::login::LoginSurface;
 pub use surfaces::lsp_recommendation::LspRecommendationSurface;
 pub use surfaces::mcp::McpSurface;
@@ -61,6 +64,7 @@ pub enum CommandSurface {
     Config(ConfigSurface),
     Diff(DiffSurface),
     Hooks(HooksSurface),
+    Kairos(KairosSurface),
     Login(LoginSurface),
     Mcp(McpSurface),
     Memory(MemorySurface),
@@ -99,6 +103,7 @@ impl CommandSurface {
             "diff" => Some(Self::Diff(DiffSurface::new(cwd))),
             "effort" => Some(Self::Config(ConfigSurface::new_thinking_picker(state))),
             "hooks" => Some(Self::Hooks(HooksSurface::new(&state.hooks))),
+            "kairos" => Some(Self::Kairos(KairosSurface::new())),
             "login" => Some(Self::Login(LoginSurface::new())),
             "mcp" => Some(Self::Mcp(McpSurface::new(cwd))),
             "memory" => Some(Self::Memory(MemorySurface::new(cwd))),
@@ -128,6 +133,7 @@ impl CommandSurface {
             Self::Config(_) => "Config",
             Self::Diff(_) => "Diff",
             Self::Hooks(_) => "Hooks",
+            Self::Kairos(_) => "KAIROS",
             Self::Login(_) => "Login",
             Self::Mcp(_) => "MCP",
             Self::Memory(_) => "Memory",
@@ -151,6 +157,7 @@ impl CommandSurface {
             Self::Config(surface) => surface.render(),
             Self::Diff(surface) => surface.render(),
             Self::Hooks(surface) => surface.render(),
+            Self::Kairos(surface) => surface.render(),
             Self::Login(surface) => surface.render(),
             Self::Mcp(surface) => surface.render(),
             Self::Memory(surface) => surface.render(),
@@ -187,6 +194,7 @@ impl CommandSurface {
             Self::Config(surface) => surface.handle_key(key),
             Self::Diff(surface) => surface.handle_key(key),
             Self::Hooks(surface) => surface.handle_key(key),
+            Self::Kairos(surface) => surface.handle_key(key),
             Self::Login(surface) => surface.handle_key(key),
             Self::Mcp(surface) => surface.handle_key(key),
             Self::Memory(surface) => surface.handle_key(key),

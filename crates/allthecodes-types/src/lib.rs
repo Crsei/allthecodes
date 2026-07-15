@@ -26,6 +26,7 @@ pub mod callbacks;
 pub mod commands;
 #[cfg(feature = "runtime-types")]
 pub mod hooks;
+pub mod kairos;
 pub mod mcp;
 pub mod message;
 pub mod models;

@@ -603,9 +603,9 @@ fn parse_json_string_array(key: &str, value: &str) -> Result<Vec<String>> {
 fn normalize_model_reasoning_effort(value: &str) -> Result<String> {
     let normalized = value.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => Ok(normalized),
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => Ok(normalized),
         _ => anyhow::bail!(
-            "Invalid model_reasoning_effort: '{}'. Use none, minimal, low, medium, high, or xhigh.",
+            "Invalid model_reasoning_effort: '{}'. Use none, minimal, low, medium, high, xhigh, or max.",
             value
         ),
     }

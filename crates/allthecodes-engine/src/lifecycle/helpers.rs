@@ -245,7 +245,7 @@ fn resolve_model_reasoning_effort(
 
 fn normalize_model_reasoning_effort(value: &str) -> Option<String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => {
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => {
             Some(value.trim().to_ascii_lowercase())
         }
         _ => None,
@@ -677,11 +677,11 @@ mod tests {
     #[test]
     fn codex_reasoning_effort_prefers_explicit_setting() {
         let mut p = base_params();
-        p.model_reasoning_effort = Some("xhigh".into());
+        p.model_reasoning_effort = Some("max".into());
         p.effort_value = Some("low".into());
 
         let req = build_messages_request(&p);
-        assert_eq!(req.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(req.reasoning_effort.as_deref(), Some("max"));
     }
 
     #[test]

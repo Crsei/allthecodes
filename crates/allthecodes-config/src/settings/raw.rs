@@ -9,8 +9,8 @@ use super::effective::EffectiveSettings;
 use super::providers::{merge_provider_profile, ProviderProfileSettings};
 use super::source::{SettingsSource, SourceMap};
 use super::types::{
-    AutoModeSettings, PermissionsSettings, SandboxFilesystemSettings, SandboxNetworkSettings,
-    SandboxSettings, SpinnerTipsSettings, StatusLineSettings,
+    AutoModeSettings, KairosSettings, PermissionsSettings, SandboxFilesystemSettings,
+    SandboxNetworkSettings, SandboxSettings, SpinnerTipsSettings, StatusLineSettings,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,9 @@ pub struct RawSettings {
     pub allowed_tools: Option<Vec<String>>,
     pub permissions: Option<PermissionsSettings>,
     pub sandbox: Option<SandboxSettings>,
+
+    // -- KAIROS --------------------------------------------------------
+    pub kairos: Option<KairosSettings>,
 
     // -- Hooks ----------------------------------------------------------
     /// Event → config value mapping (deserialized by tools/hooks).
@@ -278,6 +281,13 @@ impl RawSettings {
             }
         }
 
+        if let Some(kairos) = other.kairos {
+            if !kairos.is_effectively_empty() {
+                self.kairos = Some(merge_kairos(self.kairos.take(), kairos, source, sources));
+                sources.insert("kairos".to_string(), source);
+            }
+        }
+
         if let Some(hooks) = other.hooks {
             let mut merged = self.hooks.take().unwrap_or_default();
             for (k, v) in hooks {
@@ -407,6 +417,35 @@ impl RawSettings {
             sources.insert(k, source);
         }
     }
+}
+
+fn merge_kairos(
+    base: Option<KairosSettings>,
+    over: KairosSettings,
+    source: SettingsSource,
+    sources: &mut SourceMap,
+) -> KairosSettings {
+    let mut out = base.unwrap_or_default();
+    macro_rules! merge_field {
+        ($field:ident, $key:literal) => {
+            if over.$field.is_some() {
+                out.$field = over.$field;
+                sources.insert(concat!("kairos.", $key).to_string(), source);
+            }
+        };
+    }
+
+    merge_field!(enabled, "enabled");
+    merge_field!(brief, "brief");
+    merge_field!(channels, "channels");
+    merge_field!(push_notifications, "pushNotifications");
+    merge_field!(github_webhooks, "githubWebhooks");
+    merge_field!(proactive, "proactive");
+    for (key, value) in over.extra {
+        out.extra.insert(key.clone(), value);
+        sources.insert(format!("kairos.{key}"), source);
+    }
+    out
 }
 
 fn merge_on_wins_bool(

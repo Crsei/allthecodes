@@ -47,6 +47,7 @@ fn normalize_codex_reasoning_effort(effort: &str) -> Option<&str> {
         "medium" => Some("medium"),
         "high" => Some("high"),
         "xhigh" => Some("xhigh"),
+        "max" => Some("max"),
         _ => None,
     }
 }

@@ -100,6 +100,19 @@
         }
       }
     },
+    "kairos": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Persistent KAIROS desired feature profile. Environment variables remain higher-priority compatibility overrides.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "brief": { "type": "boolean" },
+        "channels": { "type": "boolean" },
+        "pushNotifications": { "type": "boolean" },
+        "githubWebhooks": { "type": "boolean" },
+        "proactive": { "type": "boolean" }
+      }
+    },
     "hooks": { "type": "object", "additionalProperties": true },
     "statusLine": {
       "type": "object",

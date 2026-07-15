@@ -113,6 +113,9 @@ pub(crate) fn install_command_runtime_providers() {
             resume_bridge_session: resume_bridge_session_for_commands,
             new_bridge_session: new_bridge_session_for_commands,
             release_bridge_session: release_bridge_session_for_commands,
+            kairos_snapshot: allthecodes_daemon::process_state::kairos_snapshot,
+            configure_kairos: allthecodes_daemon::process_state::configure_kairos,
+            control_kairos: control_kairos_for_commands,
         },
     );
     allthecodes_commands::sleep_cmd::set_sleep_command_runtime(
@@ -451,6 +454,18 @@ fn daemon_status_snapshot_for_commands(
             }
         },
     )
+}
+
+fn control_kairos_for_commands(
+    request: allthecodes_types::kairos::KairosControlRequest,
+) -> allthecodes_commands::daemon_cmd::KairosControlFuture {
+    Box::pin(async move {
+        tokio::task::spawn_blocking(move || {
+            allthecodes_daemon::process_state::LocalKairosController.control(request)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("KAIROS control task failed: {error}"))?
+    })
 }
 
 fn map_daemon_state(

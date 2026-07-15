@@ -1586,3 +1586,62 @@ fn write_creates_backup_and_prunes() {
         entries.len()
     );
 }
+
+#[test]
+fn kairos_settings_merge_tracks_each_field_source() {
+    let mut raw = RawSettings::default();
+    let mut sources = SourceMap::new();
+    raw.merge_from(
+        RawSettings {
+            kairos: Some(KairosSettings {
+                enabled: Some(true),
+                brief: Some(true),
+                ..KairosSettings::default()
+            }),
+            ..RawSettings::default()
+        },
+        SettingsSource::User,
+        &mut sources,
+    );
+    raw.merge_from(
+        RawSettings {
+            kairos: Some(KairosSettings {
+                brief: Some(false),
+                channels: Some(true),
+                ..KairosSettings::default()
+            }),
+            ..RawSettings::default()
+        },
+        SettingsSource::Local,
+        &mut sources,
+    );
+
+    let effective = EffectiveSettings::from_raw(raw);
+    assert!(effective.kairos.enabled);
+    assert!(!effective.kairos.brief);
+    assert!(effective.kairos.channels);
+    assert_eq!(sources["kairos.enabled"], SettingsSource::User);
+    assert_eq!(sources["kairos.brief"], SettingsSource::Local);
+    assert_eq!(sources["kairos.channels"], SettingsSource::Local);
+}
+
+#[test]
+fn settings_schema_exposes_typed_kairos_profile() {
+    let schema = settings_schema();
+    for field in [
+        "enabled",
+        "brief",
+        "channels",
+        "pushNotifications",
+        "githubWebhooks",
+        "proactive",
+    ] {
+        assert_eq!(
+            schema
+                .pointer(&format!("/properties/kairos/properties/{field}/type"))
+                .and_then(Value::as_str),
+            Some("boolean"),
+            "missing KAIROS schema field {field}"
+        );
+    }
+}

@@ -451,7 +451,7 @@ impl ApiClient {
     ///
     /// Optional:
     /// - `OPENAI_CODEX_BASE_URL` (default: https://chatgpt.com/backend-api)
-    /// - `OPENAI_CODEX_MODEL` (default: gpt-5.4)
+    /// - `OPENAI_CODEX_MODEL` (default: gpt-5.6-sol)
     pub fn from_codex_auth() -> Option<Self> {
         match Self::from_codex_auth_result() {
             Ok(client) => client,

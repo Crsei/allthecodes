@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use allthecodes_types::kairos::{KairosFeatureProfile, KairosFeatureProfilePatch};
+
 // ---------------------------------------------------------------------------
 // Typed sub-structures for richer settings
 // ---------------------------------------------------------------------------
@@ -315,4 +317,65 @@ pub struct SpinnerTipsSettings {
     pub custom_tips: Vec<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// Source-layer representation of the KAIROS feature profile.
+///
+/// Every field is optional so layered settings can distinguish an omitted
+/// value from an explicit `false` override.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KairosSettings {
+    pub enabled: Option<bool>,
+    pub brief: Option<bool>,
+    pub channels: Option<bool>,
+    pub push_notifications: Option<bool>,
+    pub github_webhooks: Option<bool>,
+    pub proactive: Option<bool>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+impl KairosSettings {
+    pub fn is_effectively_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.brief.is_none()
+            && self.channels.is_none()
+            && self.push_notifications.is_none()
+            && self.github_webhooks.is_none()
+            && self.proactive.is_none()
+            && self.extra.is_empty()
+    }
+
+    pub fn materialize(&self) -> KairosFeatureProfile {
+        KairosFeatureProfile {
+            enabled: self.enabled.unwrap_or(false),
+            brief: self.brief.unwrap_or(false),
+            channels: self.channels.unwrap_or(false),
+            push_notifications: self.push_notifications.unwrap_or(false),
+            github_webhooks: self.github_webhooks.unwrap_or(false),
+            proactive: self.proactive.unwrap_or(false),
+        }
+    }
+
+    pub fn apply_patch(&mut self, patch: &KairosFeatureProfilePatch) {
+        if let Some(value) = patch.enabled {
+            self.enabled = Some(value);
+        }
+        if let Some(value) = patch.brief {
+            self.brief = Some(value);
+        }
+        if let Some(value) = patch.channels {
+            self.channels = Some(value);
+        }
+        if let Some(value) = patch.push_notifications {
+            self.push_notifications = Some(value);
+        }
+        if let Some(value) = patch.github_webhooks {
+            self.github_webhooks = Some(value);
+        }
+        if let Some(value) = patch.proactive {
+            self.proactive = Some(value);
+        }
+    }
 }

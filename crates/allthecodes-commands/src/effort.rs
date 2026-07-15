@@ -462,7 +462,7 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn test_effort_set_max() {
+    async fn test_effort_set_max_rejected_for_legacy_model() {
         let (_dir, _guard) = HomeGuard::temp();
         let handler = EffortHandler;
         let mut ctx = test_ctx();
@@ -475,6 +475,38 @@ mod tests {
             _ => panic!("Expected Output"),
         }
         assert!(ctx.app_state.effort_value.is_none());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_effort_set_max_for_gpt_5_6() {
+        let (dir, _guard) = HomeGuard::temp();
+        let handler = EffortHandler;
+        let mut ctx = test_ctx();
+        add_codex_profile(&mut ctx);
+        ctx.app_state.main_loop_model = "gpt-5.6-sol".to_string();
+        if let Some(profile) = ctx.app_state.settings.auth_profiles.get_mut("codex") {
+            profile.model = Some("gpt-5.6-sol".to_string());
+        }
+
+        let result = handler.execute("MAX", &mut ctx).await.unwrap();
+        match result {
+            CommandResult::Output(text) => assert!(text.contains("max")),
+            _ => panic!("Expected Output"),
+        }
+        assert_eq!(ctx.app_state.effort_value.as_deref(), Some("max"));
+        assert_eq!(
+            ctx.app_state.settings.model_reasoning_effort.as_deref(),
+            Some("max")
+        );
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["authProfiles"]["codex"]["modelReasoningEffort"],
+            "max"
+        );
     }
 
     #[tokio::test]

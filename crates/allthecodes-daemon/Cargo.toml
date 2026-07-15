@@ -18,6 +18,7 @@ allthecodes-auth = { workspace = true }
 allthecodes-config = { workspace = true }
 allthecodes-db = { workspace = true, optional = true }
 allthecodes-engine = { workspace = true }
+allthecodes-protocol = { workspace = true }
 allthecodes-services = { workspace = true }
 allthecodes-tasks = { workspace = true }
 allthecodes-tools = { workspace = true }

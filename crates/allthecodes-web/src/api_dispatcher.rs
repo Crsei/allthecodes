@@ -311,8 +311,11 @@ impl MessageProcessor for ApiDispatcher {
         self.dispatch(self.default_context.clone(), request).await
     }
 
-    async fn process_notification(&self, notification: ServerNotification) -> Result<(), ApiError> {
-        match notification {}
+    async fn process_notification(
+        &self,
+        _notification: ServerNotification,
+    ) -> Result<(), ApiError> {
+        Ok(())
     }
 }
 
