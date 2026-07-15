@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Artifact — TUI revised glyph shapes (2026-07-16)</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+  h1 { margin-bottom: .2rem; }
+  .meta { color: #657; }
+  .card { border: 1px solid #8793a0; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+  code { overflow-wrap: anywhere; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #8793a0; padding: .45rem; text-align: left; vertical-align: top; }
+  .ok { color: #18794e; font-weight: 650; }
+  .pending { color: #9a6700; font-weight: 650; }
+</style>
+</head>
+<body>
+<h1>TUI revised glyph shapes</h1>
+<p class="meta">Task slug: <code>tui-glyph-shapes</code> · worktree branch: <code>worktree/tui-glyph-shapes</code> · 2026-07-16</p>
+
+<section class="card">
+<h2>任务目标</h2>
+<p>将用户在 TUI 字形编辑稿末尾补充的目标形态写入运行时 <code>ALLTHECODES</code> 字形表，保持 3×3 九宫格外观和 6×6 单色子像素表达；格内允许半块形状，默认不使用颜色，并保留平滑几何过渡。</p>
+</section>
+
+<section class="card">
+<h2>计划与输入</h2>
+<ul>
+  <li>主分支设计记录：<code>development/tui/2026-07-16-allthecodes-tui-integrated-glyph-shapes.md</code></li>
+  <li>用户追加草图：该文件的“用户更新形态原稿（2026-07-16）”。</li>
+  <li>同步规则：第二个块为目标形态；<code>A</code>、<code>H</code>、<code>O</code> 保持不变。</li>
+  <li>歧义处理：<code>S</code> 第 5 行的排版空格按固定 6×6 网格归一为 <code>000001</code>（<code>·····█</code>）。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>执行步骤</h2>
+<ol>
+  <li><span class="ok">完成</span> 在主分支单独记录字形设计稿：<code>42c9a140 docs(tui): record revised glyph shapes</code>。</li>
+  <li><span class="ok">完成</span> 从该提交创建隔离 worktree，并仅在此处改代码、快照和本 artifact。</li>
+  <li><span class="ok">完成</span> 将 <code>L/T/E/C/D/S</code> 的目标 6-bit 行写入 <code>WORD</code>；保留 80ms 动画、5 帧渐变和相邻 <code>L</code> 的 pulse。</li>
+  <li><span class="ok">完成</span> 执行 logo、欢迎页与 PTY 定向测试，以及格式检查。</li>
+  <li><span class="ok">完成</span> 全 workspace locked release 构建，并确认目标二进制版本。</li>
+  <li><span class="pending">进行中</span> 提交、fast-forward 合并回本地 <code>allthecodes</code>，再清理本 worktree。</li>
+</ol>
+</section>
+
+<section class="card">
+<h2>改动列表</h2>
+<table>
+<thead><tr><th>路径</th><th>改动</th></tr></thead>
+<tbody>
+<tr><td><code>crates/allthecodes/src/ui/components/brand_logo.rs</code></td><td>更新 <code>L/T/E/C/D/S</code> 的 6×6 子像素行。</td></tr>
+<tr><td><code>crates/allthecodes/src/ui/components/snapshots/allthecodes__ui__brand_logo__tests__allthecodes_integrated_glyphs.snap</code></td><td>更新稳定字形快照。</td></tr>
+<tr><td><code>crates/allthecodes/src/ui/components/snapshots/allthecodes__ui__brand_logo__tests__allthecodes_logo_keyframes.snap</code></td><td>更新 morph 关键帧快照。</td></tr>
+<tr><td><code>development/worktree-workflow-artifacts/2026-07-16-tui-glyph-shapes.html</code></td><td>本任务独立可读的工作流 artifact。</td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="card">
+<h2>Commit 列表</h2>
+<ul>
+  <li><code>42c9a140 docs(tui): record revised glyph shapes</code>（主分支设计记录）</li>
+  <li><code>feat(tui): apply revised glyph shapes</code>（本 worktree 的代码、快照和 artifact）</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>验证依据</h2>
+<ul>
+  <li><span class="ok">通过</span> <code>cargo test -p allthecodes --bin allthecodes ui::brand_logo::tests -- --nocapture</code>：10 passed。</li>
+  <li><span class="ok">通过</span> <code>cargo test -p allthecodes --bin allthecodes ui::welcome::tests -- --nocapture</code>：9 passed。</li>
+  <li><span class="ok">通过</span> <code>cargo test -p allthecodes --test pty_tui_e2e welcome::wide_terminal_shows_integrated_nine_grid_logo -- --exact --nocapture</code>：1 passed。</li>
+  <li><span class="ok">通过</span> <code>cargo fmt --all --check</code>；<code>git diff --check</code>。</li>
+  <li><span class="ok">通过</span> <code>cargo build --workspace --release --locked</code>：exit 0；<code>/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/allthecodes-target/release/allthecodes --version</code> 输出 <code>allthecodes 0.1.14</code>。</li>
+</ul>
+</section>
+</body>
+</html>
