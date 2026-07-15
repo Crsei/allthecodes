@@ -79,7 +79,7 @@ pub(crate) fn render_welcome(
             Constraint::Min(0),
         ])
         .split(inner);
-        render_brand_logo(columns[0], buf, logo_frame, colors);
+        render_brand_logo(columns[0], buf, logo_frame);
         render_info_lines(columns[2], buf, info, colors);
     } else {
         render_info_lines(inner, buf, info, colors);
@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_welcome_renders_source_a_and_preserves_details() {
+    fn wide_welcome_renders_integrated_a_and_preserves_details() {
         let area = Rect::new(0, 0, 64, 8);
         let mut buf = Buffer::empty(area);
         let rendered = render_welcome(
@@ -272,10 +272,10 @@ mod tests {
         );
         let content = buf_to_string(&buf, area);
         assert!(rendered);
-        assert!(content.contains("░░ ██ ░░"));
-        assert!(content.contains("██ ██ ██"));
-        assert!(content.contains("██ ░░ ██"));
-        assert!(content.contains("ALLTHECODES"));
+        assert!(content.contains(" ▄ ▀▀ ▄ "));
+        assert!(content.contains("█▄ ▄▄ ▄█"));
+        assert!(content.contains("█      █"));
+        assert!(!content.contains("ALLTHECODES"));
         assert!(content.contains("Version:"));
         assert!(content.contains("Tips:"));
     }

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Integrated TUI glyph logo merge</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 52rem; padding: 0 1rem; color: #1f2937; }
+      h1, h2 { color: #111827; }
+      code { background: #f3f4f6; border-radius: .2rem; padding: .1rem .25rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Integrated TUI glyph logo merge</h1>
+
+    <h2>Goal</h2>
+    <p>Merge the reviewed Rust TUI updates into <code>allthecodes</code>: render each <code>ALLTHECODES</code> letter inside a monochrome 3×3 grid with partial glyph geometry and a multi-frame morph, and align command-palette input guidance with the updated interaction.</p>
+
+    <h2>Workflow</h2>
+    <ol>
+      <li>Commit the existing integrated-glyph plan: <code>a2166dc8 docs(tui): plan integrated glyph logo</code>.</li>
+      <li>Validate the existing, scoped TUI working-tree changes without staging API or other parallel edits.</li>
+      <li>Commit only the TUI source, snapshots, PTY tests, historical plan/issue record, and this artifact.</li>
+      <li>Push <code>allthecodes</code> after a successful scoped commit.</li>
+    </ol>
+
+    <h2>Changes</h2>
+    <ul>
+      <li>Replace the separate logo tracker with 6×6 glyph geometry rendered as 3×3 half-block tiles.</li>
+      <li>Use five center-out monochrome morph frames, including a pulse for the repeated <code>L</code>.</li>
+      <li>Update welcome, App, command-palette, snapshot, and PTY coverage; palette presents <code>Enter run | Space add args</code>.</li>
+      <li>Record the replacement of the 0.1.13 visual contract and the outstanding non-TUI Clippy blockers.</li>
+    </ul>
+
+    <h2>Plan and commits</h2>
+    <p>Plan: <code>development/tui/2026-07-16-allthecodes-tui-logo-integrated-glyph-plan.md</code>.</p>
+    <ul>
+      <li><code>a2166dc8 docs(tui): plan integrated glyph logo</code></li>
+      <li><code>feat(tui): integrate monochrome glyph logo</code> (scoped source, tests, documentation, and this artifact)</li>
+    </ul>
+
+    <h2>Validation</h2>
+    <ul>
+      <li><code>cargo fmt --all --check</code>: passed.</li>
+      <li>Brand logo, welcome, command-palette, and App unit suites: 10 + 9 + 23 + 77 tests passed.</li>
+      <li>Wide and 47-column welcome PTY cases: passed.</li>
+      <li><code>commands_surface</code> PTY suite: 38 tests passed in 419.68 seconds.</li>
+      <li>Strict Clippy remains blocked only by pre-existing <code>expect_used</code> diagnostics in <code>allthecodes-engine</code>, and by <code>domain.rs:223</code> plus <code>dialog_overlay.rs:538</code> when dependencies are skipped.</li>
+    </ul>
+  </body>
+</html>

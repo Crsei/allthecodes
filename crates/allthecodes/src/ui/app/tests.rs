@@ -53,8 +53,14 @@ fn render_places_prompt_after_compact_welcome() {
 
     let content = buffer_to_lines(terminal.backend().buffer(), 80, 24);
     assert!(
-        content[..8].iter().any(|line| line.contains("ALLTHECODES")),
-        "wide welcome should render the animated word tracker",
+        content[..8].iter().any(|line| line.contains(" ▄ ▀▀ ▄ ")),
+        "wide welcome should render the letter inside the nine-grid logo",
+    );
+    assert!(
+        content[..8]
+            .iter()
+            .all(|line| !line.contains("ALLTHECODES")),
+        "wide welcome must not render an external word tracker",
     );
     assert!(app.welcome_logo_visible);
     assert!(

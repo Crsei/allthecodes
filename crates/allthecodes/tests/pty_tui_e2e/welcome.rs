@@ -7,25 +7,64 @@
 use crate::harness::*;
 
 #[test]
-fn wide_terminal_shows_nine_grid_logo() {
+fn wide_terminal_shows_integrated_nine_grid_logo() {
     let session = PtySession::spawn(&default_args(), 120, 40, true);
     std::thread::sleep(RENDER_WAIT);
     skip_trust_gate(&session);
 
-    let has_tracker = session.wait_for_screen_text("ALLTHECODES", RENDER_WAIT);
+    let has_grid = session.wait_for_screen_text("╭────────╮", RENDER_WAIT);
+    let has_partial_block = session.wait_for_screen_text("▄", RENDER_WAIT);
     let screen = session.current_screen();
-    let has_grid = screen.contains("╭────────╮") && screen.contains("██");
     let output = session.finish_after_quit("welcome_logo_wide");
 
     assert!(
-        has_tracker,
-        "wide welcome should show word tracker:\n{screen}"
+        has_grid,
+        "wide welcome should show the integrated nine-grid logo:\n{screen}"
     );
-    assert!(has_grid, "wide welcome should show the 3x3 grid:\n{screen}");
+    assert!(
+        has_partial_block,
+        "wide welcome should render partial blocks inside the grid:\n{screen}"
+    );
+    assert!(
+        !screen.contains("ALLTHECODES"),
+        "wide welcome must not show an external word tracker:\n{screen}"
+    );
+    assert_grid_edges_are_aligned(&screen);
     assert!(
         !output.contains("panicked"),
         "logo startup should not panic"
     );
+}
+
+fn assert_grid_edges_are_aligned(screen: &str) {
+    let lines = screen.lines().collect::<Vec<_>>();
+    let top_row = lines
+        .iter()
+        .position(|line| line.contains("╭────────╮"))
+        .expect("grid top row");
+    let top_column = lines[top_row]
+        .chars()
+        .position(|character| character == '╭')
+        .expect("grid left column");
+    let expected_edges = [('╭', '╮'), ('│', '│'), ('│', '│'), ('│', '│'), ('╰', '╯')];
+
+    for (offset, (left, right)) in expected_edges.into_iter().enumerate() {
+        let row = lines
+            .get(top_row + offset)
+            .expect("complete five-row grid")
+            .chars()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            row.get(top_column),
+            Some(&left),
+            "left edge at row {offset}"
+        );
+        assert_eq!(
+            row.get(top_column + 9),
+            Some(&right),
+            "right edge at row {offset}",
+        );
+    }
 }
 
 #[test]
@@ -41,10 +80,6 @@ fn forty_seven_columns_hides_grid_but_keeps_welcome() {
     assert!(
         has_wordmark,
         "narrow welcome should keep its wordmark:\n{screen}"
-    );
-    assert!(
-        !screen.contains("ALLTHECODES"),
-        "narrow welcome must hide tracker:\n{screen}"
     );
     assert!(
         !screen.contains("╭────────╮"),

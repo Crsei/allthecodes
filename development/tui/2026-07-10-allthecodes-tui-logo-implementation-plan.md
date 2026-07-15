@@ -1,5 +1,11 @@
 # Allthecodes TUI Logo Implementation Plan
 
+> **Historical implementation:** 本计划对应的“3×3 二值/密度格 + 独立
+> `ALLTHECODES` tracker + 品牌色”方案已由提交 `7d47ed14` 实现。2026-07-16
+> 的视觉复查确认该合同不再符合需求；后续设计与验收由
+> [2026-07-16 integrated glyph follow-up](2026-07-16-allthecodes-tui-logo-integrated-glyph-plan.md)
+> 取代。本文保留为历史实施记录，不再作为当前视觉合同。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 Rust TUI 的紧凑欢迎面板中加入一个固定 3×3 九宫格 logo，以可测试的离散动画依次显示 `ALLTHECODES` 的 11 个字母，同时保留现有会话信息、输入框位置和小终端降级行为。

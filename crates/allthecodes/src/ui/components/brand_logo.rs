@@ -1,150 +1,103 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::Widget;
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::ui::theme::ThemeColors;
-
 pub(crate) const BRAND_COLUMN_WIDTH: u16 = 13;
-pub(crate) const BRAND_COLUMN_HEIGHT: u16 = 6;
+pub(crate) const BRAND_COLUMN_HEIGHT: u16 = 5;
 pub(crate) const FRAME_INTERVAL_MS: u64 = 80;
 
-const STEPS_PER_LETTER: u64 = 9;
+const GLYPH_SIZE: usize = 6;
+const GRID_SIZE: usize = 3;
+const SUBCELL_SIZE: usize = 2;
+const HOLD_STEPS: u64 = 6;
+const MORPH_STEPS: u8 = 5;
+const SETTLE_STEP: u64 = HOLD_STEPS + MORPH_STEPS as u64;
+const STEPS_PER_LETTER: u64 = SETTLE_STEP + 1;
+
+/// Center-out order used to replace source pixels with destination pixels.
+/// Each value is the first morph frame on which that subpixel settles.
+const CENTER_OUT_RANKS: [[u8; GLYPH_SIZE]; GLYPH_SIZE] = [
+    [5, 4, 3, 3, 4, 5],
+    [4, 3, 2, 2, 3, 4],
+    [3, 2, 1, 1, 2, 3],
+    [3, 2, 1, 1, 2, 3],
+    [4, 3, 2, 2, 3, 4],
+    [5, 4, 3, 3, 4, 5],
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Glyph {
-    letter: char,
-    mask: u16,
+    /// Six rows of six monochrome subpixels, stored in the low six bits.
+    rows: [u8; GLYPH_SIZE],
 }
+
+#[cfg(test)]
+const LETTERS: [char; 11] = ['A', 'L', 'L', 'T', 'H', 'E', 'C', 'O', 'D', 'E', 'S'];
 
 const WORD: [Glyph; 11] = [
     Glyph {
-        letter: 'A',
-        mask: 0b010_111_101,
+        rows: [0b001100, 0b010010, 0b100001, 0b111111, 0b100001, 0b100001],
     },
     Glyph {
-        letter: 'L',
-        mask: 0b100_100_111,
+        rows: [0b110000, 0b110000, 0b110000, 0b110000, 0b111111, 0b111111],
     },
     Glyph {
-        letter: 'L',
-        mask: 0b100_100_111,
+        rows: [0b110000, 0b110000, 0b110000, 0b110000, 0b111111, 0b111111],
     },
     Glyph {
-        letter: 'T',
-        mask: 0b111_010_010,
+        rows: [0b111111, 0b111111, 0b001100, 0b001100, 0b001100, 0b001100],
     },
     Glyph {
-        letter: 'H',
-        mask: 0b101_111_101,
+        rows: [0b110011, 0b110011, 0b111111, 0b111111, 0b110011, 0b110011],
     },
     Glyph {
-        letter: 'E',
-        mask: 0b111_110_111,
+        rows: [0b111111, 0b111111, 0b110000, 0b111110, 0b110000, 0b111111],
     },
     Glyph {
-        letter: 'C',
-        mask: 0b111_100_111,
+        rows: [0b001111, 0b011111, 0b110000, 0b110000, 0b011111, 0b001111],
     },
     Glyph {
-        letter: 'O',
-        mask: 0b111_101_111,
+        rows: [0b001100, 0b011110, 0b110011, 0b110011, 0b011110, 0b001100],
     },
     Glyph {
-        letter: 'D',
-        mask: 0b110_101_110,
+        rows: [0b111100, 0b111110, 0b110011, 0b110011, 0b111110, 0b111100],
     },
     Glyph {
-        letter: 'E',
-        mask: 0b111_110_111,
+        rows: [0b111111, 0b111111, 0b110000, 0b111110, 0b110000, 0b111111],
     },
     Glyph {
-        letter: 'S',
-        mask: 0b110_010_011,
+        rows: [0b011111, 0b111111, 0b110000, 0b001100, 0b111111, 0b111110],
     },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MorphPhase {
     Hold,
-    FadeOut,
-    FadeIn,
+    Morph(u8),
     Settle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CellLevel {
-    Off,
-    Low,
-    Medium,
-    On,
-}
-
-impl CellLevel {
-    fn symbol(self) -> &'static str {
-        match self {
-            Self::Off => "░░",
-            Self::Low => "▒▒",
-            Self::Medium => "▓▓",
-            Self::On => "██",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BrandPalette {
-    active: [Color; 3],
-    inactive: Color,
-    outline: Color,
-    tracker: Color,
-}
-
-impl BrandPalette {
-    fn from_theme(colors: &ThemeColors) -> Self {
-        match colors.info {
-            Color::Reset => Self {
-                active: [Color::Reset; 3],
-                inactive: Color::Reset,
-                outline: Color::Reset,
-                tracker: Color::Reset,
-            },
-            Color::Rgb(_, _, _) => Self {
-                active: [
-                    Color::Rgb(0, 101, 253),
-                    Color::Rgb(0, 221, 251),
-                    Color::Rgb(1, 230, 204),
-                ],
-                inactive: colors.inactive,
-                outline: colors.border,
-                tracker: colors.info,
-            },
-            _ => Self {
-                active: [Color::Blue, Color::Cyan, Color::Green],
-                inactive: Color::DarkGray,
-                outline: Color::DarkGray,
-                tracker: Color::Cyan,
-            },
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LogoFrame {
     from_index: usize,
-    active_index: usize,
     phase: MorphPhase,
 }
 
 impl LogoFrame {
+    #[cfg(test)]
     pub(crate) fn active_index(self) -> usize {
-        self.active_index
+        if self.phase == MorphPhase::Settle {
+            (self.from_index + 1) % WORD.len()
+        } else {
+            self.from_index
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn current_letter(self) -> char {
-        WORD[self.active_index].letter
+        LETTERS[self.active_index()]
     }
 
     #[cfg(test)]
@@ -152,79 +105,131 @@ impl LogoFrame {
         self.phase
     }
 
-    pub(crate) fn cell_level(self, row: usize, column: usize) -> CellLevel {
+    fn tile_mask(self, row: usize, column: usize) -> u8 {
+        debug_assert!(row < GRID_SIZE && column < GRID_SIZE);
+        let mut mask = 0;
+        for sub_row in 0..SUBCELL_SIZE {
+            for sub_column in 0..SUBCELL_SIZE {
+                let pixel_row = row * SUBCELL_SIZE + sub_row;
+                let pixel_column = column * SUBCELL_SIZE + sub_column;
+                if self.pixel_on(pixel_row, pixel_column) {
+                    let bit = sub_row * SUBCELL_SIZE + sub_column;
+                    mask |= 1 << bit;
+                }
+            }
+        }
+        mask
+    }
+
+    fn pixel_on(self, row: usize, column: usize) -> bool {
+        debug_assert!(row < GLYPH_SIZE && column < GLYPH_SIZE);
         let from = WORD[self.from_index];
         let to = WORD[(self.from_index + 1) % WORD.len()];
-        let from_on = mask_has(from.mask, row, column);
-        let to_on = mask_has(to.mask, row, column);
+        let from_on = glyph_has(from, row, column);
+        let to_on = glyph_has(to, row, column);
 
         match self.phase {
-            MorphPhase::Hold => level(from_on),
-            MorphPhase::Settle => level(to_on),
-            MorphPhase::FadeOut if from.mask == to.mask => {
-                if from_on {
-                    CellLevel::Medium
+            MorphPhase::Hold => from_on,
+            MorphPhase::Settle => to_on,
+            MorphPhase::Morph(progress) if from.rows == to.rows => {
+                repeated_glyph_pixel(from_on, row, column, progress)
+            }
+            MorphPhase::Morph(_) if from_on == to_on => from_on,
+            MorphPhase::Morph(progress) => {
+                if progress >= transition_rank(from, to, row, column) {
+                    to_on
                 } else {
-                    CellLevel::Off
+                    from_on
                 }
             }
-            MorphPhase::FadeIn if from.mask == to.mask => {
-                if from_on {
-                    CellLevel::Low
-                } else {
-                    CellLevel::Off
-                }
-            }
-            MorphPhase::FadeOut => match (from_on, to_on) {
-                (true, true) => CellLevel::On,
-                (true, false) => CellLevel::Medium,
-                (false, true) => CellLevel::Low,
-                (false, false) => CellLevel::Off,
-            },
-            MorphPhase::FadeIn => match (from_on, to_on) {
-                (true, true) => CellLevel::On,
-                (true, false) => CellLevel::Off,
-                (false, true) => CellLevel::Medium,
-                (false, false) => CellLevel::Off,
-            },
         }
     }
 }
 
-fn level(on: bool) -> CellLevel {
-    if on {
-        CellLevel::On
-    } else {
-        CellLevel::Off
+fn transition_rank(from: Glyph, to: Glyph, row: usize, column: usize) -> u8 {
+    let target_key = (CENTER_OUT_RANKS[row][column], row, column);
+    let mut ordinal = 0;
+    let mut difference_count = 0;
+
+    for (candidate_row, row_ranks) in CENTER_OUT_RANKS.iter().enumerate() {
+        for (candidate_column, &candidate_rank) in row_ranks.iter().enumerate() {
+            if glyph_has(from, candidate_row, candidate_column)
+                == glyph_has(to, candidate_row, candidate_column)
+            {
+                continue;
+            }
+
+            let candidate_key = (candidate_rank, candidate_row, candidate_column);
+            if candidate_key < target_key {
+                ordinal += 1;
+            }
+            difference_count += 1;
+        }
     }
+
+    debug_assert!(difference_count >= usize::from(MORPH_STEPS));
+    1 + (ordinal * usize::from(MORPH_STEPS) / difference_count) as u8
 }
 
-fn mask_has(mask: u16, row: usize, column: usize) -> bool {
-    debug_assert!(row < 3 && column < 3);
-    let bit = 8 - (row * 3 + column);
-    mask & (1 << bit) != 0
+fn glyph_has(glyph: Glyph, row: usize, column: usize) -> bool {
+    let bit = GLYPH_SIZE - 1 - column;
+    glyph.rows[row] & (1 << bit) != 0
+}
+
+fn repeated_glyph_pixel(on: bool, row: usize, column: usize, progress: u8) -> bool {
+    if !on {
+        return false;
+    }
+
+    // The duplicate L has no geometry delta. Shrink it in three ordered
+    // passes and restore it in two so the second word position remains visible
+    // without bringing back the external ALLTHECODES tracker.
+    let depth = match progress {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        3 => 3,
+        4 => 2,
+        5 => 1,
+        _ => 0,
+    };
+    let distance_from_elbow = row.abs_diff(4) + column.abs_diff(1);
+    let rank = match distance_from_elbow {
+        5.. => 1,
+        4 => 2,
+        3 => 3,
+        _ => 4,
+    };
+    rank > depth
+}
+
+fn tile_symbols(mask: u8) -> [&'static str; SUBCELL_SIZE] {
+    [
+        half_block_symbol(mask & 0b0001 != 0, mask & 0b0100 != 0),
+        half_block_symbol(mask & 0b0010 != 0, mask & 0b1000 != 0),
+    ]
+}
+
+fn half_block_symbol(top: bool, bottom: bool) -> &'static str {
+    match (top, bottom) {
+        (false, false) => " ",
+        (true, false) => "▀",
+        (false, true) => "▄",
+        (true, true) => "█",
+    }
 }
 
 pub(crate) fn frame_at(step: u64) -> LogoFrame {
     let from_index = ((step / STEPS_PER_LETTER) % WORD.len() as u64) as usize;
     let step_in_segment = step % STEPS_PER_LETTER;
-    let phase = match step_in_segment {
-        0..=5 => MorphPhase::Hold,
-        6 => MorphPhase::FadeOut,
-        7 => MorphPhase::FadeIn,
-        8 => MorphPhase::Settle,
-        _ => unreachable!("step modulo nine is always in range"),
-    };
-    let active_index = if phase == MorphPhase::Settle {
-        (from_index + 1) % WORD.len()
+    let phase = if step_in_segment < HOLD_STEPS {
+        MorphPhase::Hold
+    } else if step_in_segment < SETTLE_STEP {
+        MorphPhase::Morph((step_in_segment - HOLD_STEPS + 1) as u8)
     } else {
-        from_index
+        MorphPhase::Settle
     };
-    LogoFrame {
-        from_index,
-        active_index,
-        phase,
-    }
+    LogoFrame { from_index, phase }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -252,58 +257,26 @@ impl WelcomeLogoState {
     }
 }
 
-pub(crate) fn render_brand_logo(
-    area: Rect,
-    buf: &mut Buffer,
-    frame: LogoFrame,
-    colors: &ThemeColors,
-) {
-    let palette = BrandPalette::from_theme(colors);
-    let outline = Style::default().fg(palette.outline);
-    let mut lines = vec![Line::styled("╭────────╮", outline)];
+/// Render the monochrome geometry prototype. The default terminal foreground
+/// is intentional: brand colors are deferred until the integrated glyphs and
+/// their morph sequence have been visually approved.
+pub(crate) fn render_brand_logo(area: Rect, buf: &mut Buffer, frame: LogoFrame) {
+    let mut lines = vec![Line::raw("╭────────╮")];
 
-    for row in 0..3 {
-        let mut spans = vec![Span::styled("│", outline)];
-        for column in 0..3 {
+    for row in 0..GRID_SIZE {
+        let mut spans = vec![Span::raw("│")];
+        for column in 0..GRID_SIZE {
             if column > 0 {
                 spans.push(Span::raw(" "));
             }
-            let level = frame.cell_level(row, column);
-            let modifier = match level {
-                CellLevel::Off | CellLevel::Low => Modifier::DIM,
-                CellLevel::Medium => Modifier::empty(),
-                CellLevel::On => Modifier::BOLD,
-            };
-            let color = if level == CellLevel::Off {
-                palette.inactive
-            } else {
-                palette.active[row]
-            };
-            spans.push(Span::styled(
-                level.symbol(),
-                Style::default().fg(color).add_modifier(modifier),
-            ));
+            for symbol in tile_symbols(frame.tile_mask(row, column)) {
+                spans.push(Span::raw(symbol));
+            }
         }
-        spans.push(Span::styled("│", outline));
+        spans.push(Span::raw("│"));
         lines.push(Line::from(spans));
     }
-    lines.push(Line::styled("╰────────╯", outline));
-
-    let tracker = WORD
-        .iter()
-        .enumerate()
-        .map(|(index, glyph)| {
-            let style = if index == frame.active_index() {
-                Style::default()
-                    .fg(palette.tracker)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::default().fg(colors.dim).add_modifier(Modifier::DIM)
-            };
-            Span::styled(glyph.letter.to_string(), style)
-        })
-        .collect::<Vec<_>>();
-    lines.push(Line::from(tracker));
+    lines.push(Line::raw("╰────────╯"));
 
     Paragraph::new(lines)
         .alignment(Alignment::Center)
@@ -313,144 +286,133 @@ pub(crate) fn render_brand_logo(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::theme::ThemeColors;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::style::{Color, Modifier};
+    use ratatui::style::Color;
 
     #[test]
     fn allthecodes_logo_keyframes() {
-        let colors = crate::ui::theme::ThemeProvider::with_name(crate::ui::theme::ThemeName::Dark);
-        let rendered = [0, 6, 7, 8, 15, 16, 17, 96, 97, 98]
-            .into_iter()
-            .map(|step| format!("step={step}\n{}", render_for_test(step, colors.colors())))
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let rendered = [
+            0, 6, 8, 10, 11, 18, 20, 22, 23, 84, 90, 91, 92, 93, 94, 95, 126, 128, 130, 131,
+        ]
+        .into_iter()
+        .map(|step| format!("step={step}\n{}", render_for_test(step)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
         insta::assert_snapshot!("allthecodes_logo_keyframes", rendered);
     }
 
     #[test]
-    fn truecolor_palette_uses_sampled_vertical_gradient() {
-        let colors = crate::ui::theme::ThemeProvider::with_name(crate::ui::theme::ThemeName::Dark);
-        let palette = BrandPalette::from_theme(colors.colors());
-        assert_eq!(
-            palette.active,
-            [
-                Color::Rgb(0, 101, 253),
-                Color::Rgb(0, 221, 251),
-                Color::Rgb(1, 230, 204),
-            ]
-        );
+    fn every_stable_letter_is_rendered_inside_the_grid() {
+        let rendered = WORD
+            .iter()
+            .enumerate()
+            .map(|(index, _glyph)| {
+                format!(
+                    "letter={} index={index}\n{}",
+                    LETTERS[index],
+                    render_for_test(index as u64 * STEPS_PER_LETTER),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        insta::assert_snapshot!("allthecodes_integrated_glyphs", rendered);
     }
 
     #[test]
-    fn ansi_and_reset_palettes_do_not_emit_rgb() {
-        let ansi =
-            crate::ui::theme::ThemeProvider::with_name(crate::ui::theme::ThemeName::DarkAnsi);
-        let ansi_palette = BrandPalette::from_theme(ansi.colors());
-        assert_eq!(
-            ansi_palette.active,
-            [Color::Blue, Color::Cyan, Color::Green]
-        );
-        assert_eq!(ansi_palette.inactive, Color::DarkGray);
-        assert_eq!(ansi_palette.outline, Color::DarkGray);
-        assert_eq!(ansi_palette.tracker, Color::Cyan);
+    fn renderer_has_no_external_tracker_or_explicit_color() {
+        let area = Rect::new(0, 0, BRAND_COLUMN_WIDTH, BRAND_COLUMN_HEIGHT);
+        let mut buf = Buffer::empty(area);
+        render_brand_logo(area, &mut buf, frame_at(0));
 
-        let mut reset = ansi.colors().clone();
-        reset.info = Color::Reset;
-        let reset_palette = BrandPalette::from_theme(&reset);
-        assert_eq!(reset_palette.active, [Color::Reset; 3]);
-        assert_eq!(reset_palette.inactive, Color::Reset);
-        assert_eq!(reset_palette.outline, Color::Reset);
-        assert_eq!(reset_palette.tracker, Color::Reset);
+        assert!(!buffer_text(&buf, area).contains("ALLTHECODES"));
+        for cell in &buf.content {
+            assert_eq!(cell.fg, Color::Reset);
+            assert_eq!(cell.bg, Color::Reset);
+        }
     }
 
     #[test]
-    fn every_builtin_theme_keeps_lit_and_unlit_cells_distinct() {
-        for name in crate::ui::theme::ThemeName::ALL {
-            let provider = crate::ui::theme::ThemeProvider::with_name(*name);
-            let palette = BrandPalette::from_theme(provider.colors());
-            assert!(
-                palette
-                    .active
-                    .iter()
-                    .all(|active| *active != palette.inactive),
-                "theme {name:?} must keep active cells distinct",
+    fn curved_glyphs_use_partial_polygon_tiles() {
+        let a = frame_at(0);
+        assert_eq!(tile_symbols(a.tile_mask(0, 0)), [" ", "▄"]);
+        assert_eq!(tile_symbols(a.tile_mask(0, 1)), ["▀", "▀"]);
+        assert_eq!(tile_symbols(a.tile_mask(1, 0)), ["█", "▄"]);
+        assert_eq!(tile_symbols(a.tile_mask(2, 0)), ["█", " "]);
+
+        let o = frame_at(7 * STEPS_PER_LETTER);
+        assert_eq!(o.current_letter(), 'O');
+        assert!((0..GRID_SIZE)
+            .flat_map(|row| (0..GRID_SIZE).map(move |column| o.tile_mask(row, column)))
+            .any(|mask| !matches!(mask, 0 | 15)),);
+    }
+
+    #[test]
+    fn a_to_l_morph_uses_five_geometry_frames() {
+        for progress in 1..=MORPH_STEPS {
+            assert_eq!(
+                frame_at(HOLD_STEPS + u64::from(progress) - 1).phase(),
+                MorphPhase::Morph(progress),
             );
         }
+        assert_eq!(frame_at(11).phase(), MorphPhase::Settle);
+        assert_eq!(frame_at(11).current_letter(), 'L');
+        assert_ne!(render_for_test(6), render_for_test(8));
+        assert_ne!(render_for_test(8), render_for_test(10));
+        assert_eq!(render_for_test(10), render_for_test(11));
     }
 
     #[test]
-    fn undersized_area_is_clipped_without_panicking() {
-        let colors = crate::ui::theme::ThemeProvider::with_name(crate::ui::theme::ThemeName::Dark);
-        for area in [Rect::new(0, 0, 5, 3), Rect::new(0, 0, 13, 5)] {
-            let mut buf = Buffer::empty(area);
-            render_brand_logo(area, &mut buf, frame_at(0), colors.colors());
+    fn every_letter_transition_changes_on_each_morph_frame() {
+        for index in 0..WORD.len() {
+            let next_index = (index + 1) % WORD.len();
+            let segment_start = index as u64 * STEPS_PER_LETTER;
+            let mut previous = render_for_test(segment_start + HOLD_STEPS - 1);
+
+            for progress in 1..=MORPH_STEPS {
+                let step = segment_start + HOLD_STEPS + u64::from(progress) - 1;
+                let current = render_for_test(step);
+                assert_ne!(
+                    current, previous,
+                    "transition {} -> {} must visibly change at morph frame {progress}",
+                    LETTERS[index], LETTERS[next_index],
+                );
+                previous = current;
+            }
+
+            let settled = render_for_test(segment_start + SETTLE_STEP);
+            if WORD[index].rows == WORD[next_index].rows {
+                assert_ne!(previous, settled, "duplicate glyph pulse must restore");
+            } else {
+                assert_eq!(previous, settled, "final morph frame must equal target");
+            }
         }
     }
 
     #[test]
-    fn repeated_l_moves_the_tracker_highlight_to_the_second_index() {
-        let colors = crate::ui::theme::ThemeProvider::with_name(crate::ui::theme::ThemeName::Dark);
-        let area = Rect::new(0, 0, BRAND_COLUMN_WIDTH, BRAND_COLUMN_HEIGHT);
-
-        let mut first_l = Buffer::empty(area);
-        render_brand_logo(area, &mut first_l, frame_at(8), colors.colors());
-        assert!(first_l[(2, 5)]
-            .style()
-            .add_modifier
-            .contains(Modifier::BOLD | Modifier::UNDERLINED));
-
-        let mut second_l = Buffer::empty(area);
-        render_brand_logo(area, &mut second_l, frame_at(17), colors.colors());
-        assert!(second_l[(3, 5)]
-            .style()
-            .add_modifier
-            .contains(Modifier::BOLD | Modifier::UNDERLINED));
-        assert!(!second_l[(2, 5)]
-            .style()
-            .add_modifier
-            .contains(Modifier::UNDERLINED));
+    fn repeated_l_pulses_and_advances_the_internal_index() {
+        assert_eq!(frame_at(18).phase(), MorphPhase::Morph(1));
+        assert_eq!(frame_at(20).phase(), MorphPhase::Morph(3));
+        assert_ne!(render_for_test(18), render_for_test(20));
+        assert_ne!(render_for_test(20), render_for_test(22));
+        assert_eq!(frame_at(18).active_index(), 1);
+        assert_eq!(frame_at(23).active_index(), 2);
+        assert_eq!(frame_at(23).current_letter(), 'L');
     }
 
     #[test]
     fn word_sequence_preserves_duplicate_positions() {
-        assert_eq!(
-            WORD.iter().map(|glyph| glyph.letter).collect::<String>(),
-            "ALLTHECODES"
-        );
-        assert_eq!(WORD[1].mask, WORD[2].mask);
-        assert_ne!(frame_at(8).active_index(), frame_at(17).active_index());
+        assert_eq!(LETTERS.iter().copied().collect::<String>(), "ALLTHECODES");
+        assert_eq!(WORD[1].rows, WORD[2].rows);
+        assert_ne!(frame_at(11).active_index(), frame_at(23).active_index());
     }
 
     #[test]
-    fn source_icon_a_mask_is_exact() {
-        assert_eq!(WORD[0].mask, 0b010_111_101);
-        assert_eq!(frame_at(0).current_letter(), 'A');
-        assert_eq!(frame_at(0).cell_level(0, 1), CellLevel::On);
-        assert_eq!(frame_at(0).cell_level(0, 0), CellLevel::Off);
-        assert_eq!(frame_at(0).cell_level(2, 1), CellLevel::Off);
-    }
-
-    #[test]
-    fn a_to_l_uses_two_density_transition_frames() {
-        assert_eq!(frame_at(6).phase(), MorphPhase::FadeOut);
-        assert_eq!(frame_at(6).cell_level(0, 1), CellLevel::Medium);
-        assert_eq!(frame_at(6).cell_level(0, 0), CellLevel::Low);
-        assert_eq!(frame_at(7).cell_level(0, 1), CellLevel::Off);
-        assert_eq!(frame_at(7).cell_level(0, 0), CellLevel::Medium);
-        assert_eq!(frame_at(8).current_letter(), 'L');
-        assert_eq!(frame_at(8).cell_level(0, 0), CellLevel::On);
-    }
-
-    #[test]
-    fn repeated_l_pulses_and_advances_tracker() {
-        assert_eq!(frame_at(15).current_letter(), 'L');
-        assert_eq!(frame_at(15).cell_level(0, 0), CellLevel::Medium);
-        assert_eq!(frame_at(16).cell_level(0, 0), CellLevel::Low);
-        assert_eq!(frame_at(17).cell_level(0, 0), CellLevel::On);
-        assert_eq!(frame_at(15).active_index(), 1);
-        assert_eq!(frame_at(17).active_index(), 2);
+    fn undersized_area_is_clipped_without_panicking() {
+        for area in [Rect::new(0, 0, 5, 3), Rect::new(0, 0, 13, 4)] {
+            let mut buf = Buffer::empty(area);
+            render_brand_logo(area, &mut buf, frame_at(0));
+        }
     }
 
     #[test]
@@ -465,10 +427,14 @@ mod tests {
         assert_eq!(state.step(), 3);
     }
 
-    fn render_for_test(step: u64, colors: &ThemeColors) -> String {
+    fn render_for_test(step: u64) -> String {
         let area = Rect::new(0, 0, BRAND_COLUMN_WIDTH, BRAND_COLUMN_HEIGHT);
         let mut buf = Buffer::empty(area);
-        render_brand_logo(area, &mut buf, frame_at(step), colors);
+        render_brand_logo(area, &mut buf, frame_at(step));
+        buffer_text(&buf, area)
+    }
+
+    fn buffer_text(buf: &Buffer, area: Rect) -> String {
         (0..area.height)
             .map(|y| {
                 (0..area.width)
