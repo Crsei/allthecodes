@@ -326,3 +326,15 @@ ApiClient::from_backend()
 - 注意目前阶段修改 UI 代码只修改 `crates/allthecodes/src/ui/` 端的代码
 - Windows 环境下如果 `omx explore` 的只读 harness 不可用，直接用 PowerShell + `rg` 做等价只读定位，不要把它当成仓库问题
 - 文档更新按任务拆分，每完成一个文档更新任务就单独 commit；commit 描述保持一句话，直接说明这次提交的目的即可
+
+## Per-Session Worktree 工作流（强制）
+
+每次需要同时改动 `CLAUDE.md` / `AGENTS.md` / 代码 / 文档 / 产物的任务，必须按「每个 session 单独构建工作树」的流程执行。**权威来源与完整流程见 [`development/workflow/2026-07-16-per-session-worktree-workflow-plan.md`](development/workflow/2026-07-16-per-session-worktree-workflow-plan.md)**，本节只列必须背诵的硬性约束：
+
+1. **计划文件先上主分支**：本次任务的计划文件（`development/workflow/<task>-plan.md` 或既有 `development/<域>/<...-plan.md>`）必须在主分支 `allthecodes` 上单独 commit 后，再开 worktree；计划文件**不进 worktree 改**。
+2. **独立 worktree**：从主分支当前 HEAD 起，`git worktree add -b worktree/<task-slug> .worktrees/<task-slug> allthecodes`。worktree 目录统一在 `.worktrees/`，分支统一以 `worktree/<task-slug>` 命名。
+3. **改动只在 worktree 内**：所有 `CLAUDE.md` / `AGENTS.md` / 代码 / 文档 / 产物的修改、`cargo` 编译测试、`git add` / `git commit` 全部在 worktree 内完成；不要回到主分支 working tree 改动会污染并行任务的内容。
+4. **HTML artifact 必须随本次任务落地**：artifact 路径固定为 `development/worktree-workflow-artifacts/<YYYY-MM-DD>-<task-slug>.html`，必须能独立打开阅读，含任务目标 / 流程步骤 / 改动列表 / 计划文件路径 / commit 列表 / 验证依据。artifact 跟随 worktree 提交一起合并到主分支。
+5. **fast-forward 合并并删树**：worktree 内做完所有 commit 后，回主分支 `git merge --ff-only worktree/<task-slug>`，再 `git push origin allthecodes`；合并成功后 `git worktree remove .worktrees/<task-slug>` + `git branch -d worktree/<task-slug>`。只允许 ff；ff 失败时先 rebase worktree 分支再 ff，不要产生 `--no-ff` merge commit。
+
+> 这条流程与上文「文档更新按任务拆分」「显式路径手动提交」不冲突：worktree 内部仍然遵守那些规则，只是在更外层多了一道「隔离 + artifact + ff 合并 + 删树」的固定动作。

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Task Artifact — Per-Session Worktree 工作流规范增补 (2026-07-16)</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #7ee787;
+    --warn: #f0883e;
+    --code-bg: #1f2428;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 16px;
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 28px; }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  h2 { font-size: 18px; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 15px; margin: 20px 0 8px; color: var(--accent2); }
+  .meta { color: var(--muted); font-size: 13px; }
+  .meta b { color: var(--fg); font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin: 12px 0; }
+  ol, ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+  code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+  code { background: var(--code-bg); padding: 1px 6px; border-radius: 4px; font-size: 13px; color: var(--accent2); }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #1f2428; color: var(--accent); font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.done { background: rgba(126,231,135,.15); color: var(--accent2); border: 1px solid rgba(126,231,135,.4); }
+  .pill.plan { background: rgba(88,166,255,.15); color: var(--accent); border: 1px solid rgba(88,166,255,.4); }
+  .tip { border-left: 3px solid var(--accent); padding: 8px 14px; background: rgba(88,166,255,.06); border-radius: 0 6px 6px 0; margin: 12px 0; }
+  .warn { border-left: 3px solid var(--warn); padding: 8px 14px; background: rgba(240,136,62,.06); border-radius: 0 6px 6px 0; margin: 12px 0; }
+  footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Task Artifact — Per-Session Worktree 工作流规范增补</h1>
+  <div class="meta">
+    <b>Task slug:</b> <code>worktree-workflow-spec</code> &nbsp;|&nbsp;
+    <b>日期:</b> 2026-07-16 &nbsp;|&nbsp;
+    <b>主分支:</b> <code>allthecodes</code> &nbsp;|&nbsp;
+    <b>Worktree:</b> <code>.worktrees/worktree-workflow-spec</code> &nbsp;|&nbsp;
+    <b>分支:</b> <code>worktree/worktree-workflow-spec</code>
+  </div>
+</header>
+
+<h2>1. 任务目标</h2>
+<div class="card">
+<p>用户要求更新项目中的 <code>AGENTS.md</code> 和 <code>CLAUDE.md</code> 文档，并规定每次任务必须遵循「每个 session 单独构建工作树」的流程：</p>
+<ul>
+  <li>每个 session 在独立的 git worktree 中完成任务；</li>
+  <li>除「对应任务的计划文件」必须先同步到主分支外，其余改动全部在 worktree 内进行；</li>
+  <li>每次完成后必须构建 HTML artifact 解释本次完成的任务，artifact 落地到仓库内 <code>development/</code> 下；</li>
+  <li>完成后自动 <code>git commit</code>，并 fast-forward 合并到主分支 <code>allthecodes</code>。</li>
+</ul>
+<p>本次任务本身就是把这套流程写进 <code>CLAUDE.md</code> / <code>AGENTS.md</code>，并按这套流程自我示范一次。</p>
+</div>
+
+<h2>2. 流程步骤（与本规范一致）</h2>
+
+<h3>步骤 1 — 主分支前置（计划文件）<span class="pill plan">PLAN</span></h3>
+<div class="card">
+<p>在主分支 <code>allthecodes</code> 上仅提交本次任务的计划文件，不进 worktree：</p>
+<pre>路径：development/workflow/2026-07-16-per-session-worktree-workflow-plan.md
+Commit：b4653573  docs(workflow): add per-session worktree workflow plan to main branch
+仅暂存该计划文件，working tree 中其它并行任务的改动一律不触碰。</pre>
+</div>
+
+<h3>步骤 2 — 创建独立 worktree<span class="pill done">DONE</span></h3>
+<div class="card">
+<pre>cd /data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes
+git worktree add -b worktree/worktree-workflow-spec \
+  .worktrees/worktree-workflow-spec allthecodes
+# worktree 从主分支新 HEAD b4653573 起建（含刚提交的计划文件）</pre>
+</div>
+
+<h3>步骤 3 — 在 worktree 内完成改动<span class="pill done">DONE</span></h3>
+<div class="card">
+<p>在 worktree 内向 <code>CLAUDE.md</code> 与 <code>AGENTS.md</code> 末尾追加 <code>## Per-Session Worktree 工作流（强制）</code> 章节，引用计划文件作为权威来源，并列出 5 条硬性约束：</p>
+<ol>
+  <li>计划文件先上主分支（<code>development/workflow/<task>-plan.md</code>），不进 worktree 改；</li>
+  <li>独立 worktree，目录 <code>.worktrees/</code>，分支 <code>worktree/<task-slug></code>；</li>
+  <li>改动只在 worktree 内：<code>CLAUDE.md</code> / <code>AGENTS.md</code> / 代码 / 文档 / 产物、<code>cargo</code> 编译测试、<code>git add</code> / <code>git commit</code> 全部在 worktree 内；</li>
+  <li>HTML artifact 必须随本次任务落地：<code>development/worktree-workflow-artifacts/<YYYY-MM-DD>-<task-slug>.html</code>，含目标 / 流程 / 改动 / 计划文件路径 / commit 列表 / 验证依据；</li>
+  <li>fast-forward 合并并删树：<code>git merge --ff-only</code>，失败先 rebase 而非 <code>--no-ff</code>，合并后 <code>git worktree remove</code> + <code>git branch -d</code>。</li>
+</ol>
+</div>
+
+<h3>步骤 4 — 构建 HTML artifact（即本文件）<span class="pill done">DONE</span></h3>
+<div class="card">
+<p>artifact 落地路径：<code>development/worktree-workflow-artifacts/2026-07-16-worktree-workflow-spec.html</code>。本文件即产物，可独立打开阅读。</p>
+</div>
+
+<h3>步骤 5 — fast-forward 合并并删树<span class="pill done">DONE</span></h3>
+<div class="card">
+<pre>cd /data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes
+git merge --ff-only worktree/worktree-workflow-spec
+git push origin allthecodes
+git worktree remove .worktrees/worktree-workflow-spec
+git branch -d worktree/worktree-workflow-spec</pre>
+</div>
+
+<h2>3. 本次改动列表</h2>
+<table>
+  <thead><tr><th>文件</th><th>类型</th><th>位置</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>development/workflow/2026-07-16-per-session-worktree-workflow-plan.md</code></td><td>新增</td><td>主分支前置</td><td>工作流规范权威计划文件（§3 流程、命名、产物、失败回退）</td></tr>
+    <tr><td><code>CLAUDE.md</code></td><td>修改</td><td>末尾新增章节</td><td>追加 <code>## Per-Session Worktree 工作流（强制）</code>，5 条硬性约束 + 指向计划文件</td></tr>
+    <tr><td><code>AGENTS.md</code></td><td>修改</td><td>末尾新增章节</td><td>同上内容，与 <code>CLAUDE.md</code> 对称</td></tr>
+    <tr><td><code>development/worktree-workflow-artifacts/2026-07-16-worktree-workflow-spec.html</code></td><td>新增</td><td>worktree 内</td><td>本 HTML artifact</td></tr>
+  </tbody>
+</table>
+
+<h2>4. Commit 列表</h2>
+<table>
+  <thead><tr><th>Commit</th><th>分支</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>b4653573</code></td><td><code>allthecodes</code>（主分支前置）</td><td>docs(workflow): add per-session worktree workflow plan to main branch</td></tr>
+    <tr><td>（worktree 内 commit）</td><td><code>worktree/worktree-workflow-spec</code></td><td>docs: add per-session worktree workflow sections to CLAUDE.md / AGENTS.md + artifact</td></tr>
+  </tbody>
+</table>
+
+<h2>5. 验证依据</h2>
+<div class="card">
+<ul>
+  <li><b>计划文件已在主分支落地</b>：主分支 working tree 仅暂存并提交了 <code>development/workflow/2026-07-16-per-session-worktree-workflow-plan.md</code> 一个新文件，其它并行任务的 <code>M</code>/<code>??</code> 改动全部保持未提交状态，未受污染。</li>
+  <li><b>worktree 从最新主分支 HEAD 起</b>：<code>git worktree add</code> 输出 <code>HEAD is now at b4653573</code>，即计划文件已存在的提交点，引用 <code>development/workflow/2026-07-16-per-session-worktree-workflow-plan.md</code> 链接生效。</li>
+  <li><b>章节差异</b>：<code>git diff --stat HEAD</code> 在 worktree 内显示 <code>AGENTS.md | 12 +++</code> 与 <code>CLAUDE.md | 12 +++</code>，2 files changed, 24 insertions。</li>
+  <li><b>纯文档改动</b>：本次仅涉及 <code>.md</code> 与 <code>.html</code>，按 <code>CLAUDE.md</code> 中「Rust TUI 仅修改 <code>crates/allthecodes/src/ui/</code> 端」与「文档更新按任务拆分」约束不需触发 cargo 编译；如规则后续要求强制 build，可单独跑 <code>cargo check --workspace</code>，本任务不引入代码改动故跳过。</li>
+  <li><b>ff 合并可行</b>：worktree 分支直接由主分支 <code>b4653573</code> 派生，主分支期间无其它提交进入，<code>--ff-only</code> 预期成功。</li>
+</ul>
+</div>
+<div class="warn"><b>注意</b>：主分支 working tree 当前有大量并行任务未提交改动（TUI logo、command palette 快照等）。本任务全程未对这些文件执行 <code>git add</code>，主分支前置 commit 仅以显式路径 <code>git add -- development/workflow/...plan.md</code> 锁定单一文件，合并阶段也仅 ff 合并 worktree 分支，主分支 working tree 不被触及。</div>
+
+<h2>6. 与既有文档的关系</h2>
+<div class="card">
+<p>新增章节是对 <code>CLAUDE.md</code>/<code>AGENTS.md</code> 中「文档更新按任务拆分」「显式路径手动提交」「提交注意事项」的<b>外层细化</b>，不取代它们；worktree 内部依然遵守原提交路径、env、镜像等约定，只是多了一道「隔离 + artifact + ff 合并 + 删树」的固定动作。权威计划文件另存于 <code>development/workflow/2026-07-16-per-session-worktree-workflow-plan.md</code>，<code>CLAUDE.md</code>/<code>AGENTS.md</code> 内章节只列硬性约束并链接该计划。</p>
+</div>
+
+<footer>
+  Generated as the required HTML artifact for task <code>worktree-workflow-spec</code>.<br>
+  Plan file: <code>development/workflow/2026-07-16-per-session-worktree-workflow-plan.md</code> · Branch merged back to <code>allthecodes</code>.
+</footer>
+
+</div>
+</body>
+</html>
