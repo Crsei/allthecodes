@@ -272,9 +272,10 @@ mod tests {
         );
         let content = buf_to_string(&buf, area);
         assert!(rendered);
-        assert!(content.contains(" ▄ ▀▀ ▄ "));
-        assert!(content.contains("█▄ ▄▄ ▄█"));
-        assert!(content.contains("█      █"));
+        assert!(content.contains("╭──────╮"));
+        assert!(content.contains(" ▄▀▀▄ "));
+        assert!(content.contains("█▄▄▄▄█"));
+        assert!(content.contains("█    █"));
         assert!(!content.contains("ALLTHECODES"));
         assert!(content.contains("Version:"));
         assert!(content.contains("Tips:"));

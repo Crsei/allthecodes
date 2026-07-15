@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Artifact — TUI grid spacing tightening (2026-07-16)</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+  h1 { margin-bottom: .2rem; }
+  .meta { color: #657; }
+  .card { border: 1px solid #8793a0; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+  code { overflow-wrap: anywhere; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #8793a0; padding: .45rem; text-align: left; vertical-align: top; }
+  .ok { color: #18794e; font-weight: 650; }
+  .pending { color: #9a6700; font-weight: 650; }
+</style>
+</head>
+<body>
+<h1>TUI 九宫格紧凑间距</h1>
+<p class="meta">Task slug: <code>tui-grid-spacing</code> · worktree branch: <code>worktree/tui-grid-spacing</code> · 2026-07-16</p>
+
+<section class="card">
+<h2>任务目标</h2>
+<p>删除九宫格逻辑列之间人为插入的空格，将 logo 内容从 10 列收紧为 6 列，并将包含左右边框的布局宽度从 13 列调整为 8 列。字形本身的留白、6×6 子像素、half-block 形状、无颜色样式和 morph 动画均保持不变。</p>
+</section>
+
+<section class="card">
+<h2>计划与实现</h2>
+<ul>
+  <li>计划：<code>development/tui/2026-07-16-tui-grid-spacing-tightening-plan.md</code>。</li>
+  <li>移除 <code>brand_logo</code> 每个逻辑列前的 <code>Span::raw(&quot; &quot;)</code>。</li>
+  <li>将 <code>BRAND_COLUMN_WIDTH</code> 设为 <code>8</code>，边框改为 <code>╭──────╮</code> / <code>╰──────╯</code>。</li>
+  <li>同步更新 welcome、应用、PTY 边界检查和全部相关快照。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>改动路径</h2>
+<table>
+<thead><tr><th>路径</th><th>改动</th></tr></thead>
+<tbody>
+<tr><td><code>crates/allthecodes/src/ui/components/brand_logo.rs</code></td><td>收紧 renderer、边框、布局常量和单元测试。</td></tr>
+<tr><td><code>crates/allthecodes/src/ui/components/welcome.rs</code>、<code>crates/allthecodes/src/ui/app/tests.rs</code></td><td>按紧凑字形更新 welcome 断言。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/welcome.rs</code></td><td>按 8 列边框更新宽屏和右边界验证。</td></tr>
+<tr><td><code>crates/allthecodes/src/ui/components/snapshots/</code></td><td>更新集成字形、morph 关键帧和 welcome 快照。</td></tr>
+<tr><td><code>development/worktree-workflow-artifacts/2026-07-16-tui-grid-spacing.html</code></td><td>本任务工作流记录。</td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="card">
+<h2>提交边界</h2>
+<ul>
+  <li><code>195d16cb docs(tui): plan compact grid spacing</code>：主分支计划。</li>
+  <li><code>42d679bc docs(tui): correct compact grid example</code>：主分支示例修正。</li>
+  <li><code>feat(tui): tighten grid spacing</code>：本 worktree 的代码、测试、快照和本 artifact。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>验证依据</h2>
+<ul>
+  <li><span class="ok">通过</span> <code>cargo fmt --all --check</code> 与 <code>git diff --check</code>。</li>
+  <li><span class="ok">通过</span> brand logo 单元测试：11 passed。</li>
+  <li><span class="ok">通过</span> welcome 单元测试：9 passed；应用 welcome 定向测试：1 passed。</li>
+  <li><span class="ok">通过</span> PTY 宽屏与 47 列窄屏定向测试：各 1 passed。</li>
+  <li><span class="ok">通过</span> <code>cargo build --workspace --release --locked</code>：exit 0；<code>/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/allthecodes-target/release/allthecodes --version</code> 输出 <code>allthecodes 0.1.14</code>。</li>
+</ul>
+</section>
+</body>
+</html>

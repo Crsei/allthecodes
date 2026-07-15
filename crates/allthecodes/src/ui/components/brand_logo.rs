@@ -4,7 +4,8 @@ use ratatui::prelude::Widget;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-pub(crate) const BRAND_COLUMN_WIDTH: u16 = 13;
+/// Two vertical borders plus three adjacent two-column logical tiles.
+pub(crate) const BRAND_COLUMN_WIDTH: u16 = 8;
 pub(crate) const BRAND_COLUMN_HEIGHT: u16 = 5;
 pub(crate) const FRAME_INTERVAL_MS: u64 = 80;
 
@@ -261,14 +262,11 @@ impl WelcomeLogoState {
 /// is intentional: brand colors are deferred until the integrated glyphs and
 /// their morph sequence have been visually approved.
 pub(crate) fn render_brand_logo(area: Rect, buf: &mut Buffer, frame: LogoFrame) {
-    let mut lines = vec![Line::raw("╭────────╮")];
+    let mut lines = vec![Line::raw("╭──────╮")];
 
     for row in 0..GRID_SIZE {
         let mut spans = vec![Span::raw("│")];
         for column in 0..GRID_SIZE {
-            if column > 0 {
-                spans.push(Span::raw(" "));
-            }
             for symbol in tile_symbols(frame.tile_mask(row, column)) {
                 spans.push(Span::raw(symbol));
             }
@@ -276,7 +274,7 @@ pub(crate) fn render_brand_logo(area: Rect, buf: &mut Buffer, frame: LogoFrame) 
         spans.push(Span::raw("│"));
         lines.push(Line::from(spans));
     }
-    lines.push(Line::raw("╰────────╯"));
+    lines.push(Line::raw("╰──────╯"));
 
     Paragraph::new(lines)
         .alignment(Alignment::Center)
@@ -330,6 +328,17 @@ mod tests {
             assert_eq!(cell.fg, Color::Reset);
             assert_eq!(cell.bg, Color::Reset);
         }
+    }
+
+    #[test]
+    fn renderer_packs_logical_columns_without_separator_spaces() {
+        let rendered = render_for_test(0);
+        let lines = rendered.lines().collect::<Vec<_>>();
+
+        assert_eq!(BRAND_COLUMN_WIDTH, 8);
+        assert_eq!(lines[0], "╭──────╮");
+        assert_eq!(lines[1], "│ ▄▀▀▄ │");
+        assert!(lines.iter().all(|line| line.chars().count() == 8));
     }
 
     #[test]
@@ -409,7 +418,7 @@ mod tests {
 
     #[test]
     fn undersized_area_is_clipped_without_panicking() {
-        for area in [Rect::new(0, 0, 5, 3), Rect::new(0, 0, 13, 4)] {
+        for area in [Rect::new(0, 0, 5, 3), Rect::new(0, 0, 8, 4)] {
             let mut buf = Buffer::empty(area);
             render_brand_logo(area, &mut buf, frame_at(0));
         }

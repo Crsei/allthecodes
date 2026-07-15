@@ -4,21 +4,21 @@ expression: "render_responsive_test_cases([(64, 8), (48, 8), (47, 8), (19, 5), (
 ---
 64x8 logo=true
 ┌ allthecodes ─────────────────────────────────────────────────┐
-│ ╭────────╮    Version: v0.1.0                                │
-│ │ ▄ ▀▀ ▄ │    Model:   sonnet-4                              │
-│ │█▄ ▄▄ ▄█│    Session: abcdef12                              │
-│ │█      █│    CWD:     /home/user/project                    │
-│ ╰────────╯    Tips:    Enter to send, /help for commands     │
+│╭──────╮  Version: v0.1.0                                     │
+││ ▄▀▀▄ │  Model:   sonnet-4                                   │
+││█▄▄▄▄█│  Session: abcdef12                                   │
+││█    █│  CWD:     /home/user/project                         │
+│╰──────╯  Tips:    Enter to send, /help for commands          │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 
 48x8 logo=true
 ┌ allthecodes ─────────────────────────────────┐
-│ ╭────────╮    Version: v0.1.0                │
-│ │ ▄ ▀▀ ▄ │    Model:   sonnet-4              │
-│ │█▄ ▄▄ ▄█│    Session: abcdef12              │
-│ │█      █│    CWD:     /home/user/project    │
-│ ╰────────╯    Tips:    Enter to send, /hel...│
+│╭──────╮  Version: v0.1.0                     │
+││ ▄▀▀▄ │  Model:   sonnet-4                   │
+││█▄▄▄▄█│  Session: abcdef12                   │
+││█    █│  CWD:     /home/user/project         │
+│╰──────╯  Tips:    Enter to send, /help for...│
 │                                              │
 └──────────────────────────────────────────────┘
 

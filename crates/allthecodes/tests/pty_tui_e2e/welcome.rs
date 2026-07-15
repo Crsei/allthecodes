@@ -12,7 +12,7 @@ fn wide_terminal_shows_integrated_nine_grid_logo() {
     std::thread::sleep(RENDER_WAIT);
     skip_trust_gate(&session);
 
-    let has_grid = session.wait_for_screen_text("╭────────╮", RENDER_WAIT);
+    let has_grid = session.wait_for_screen_text("╭──────╮", RENDER_WAIT);
     let has_partial_block = session.wait_for_screen_text("▄", RENDER_WAIT);
     let screen = session.current_screen();
     let output = session.finish_after_quit("welcome_logo_wide");
@@ -40,7 +40,7 @@ fn assert_grid_edges_are_aligned(screen: &str) {
     let lines = screen.lines().collect::<Vec<_>>();
     let top_row = lines
         .iter()
-        .position(|line| line.contains("╭────────╮"))
+        .position(|line| line.contains("╭──────╮"))
         .expect("grid top row");
     let top_column = lines[top_row]
         .chars()
@@ -60,7 +60,7 @@ fn assert_grid_edges_are_aligned(screen: &str) {
             "left edge at row {offset}"
         );
         assert_eq!(
-            row.get(top_column + 9),
+            row.get(top_column + 7),
             Some(&right),
             "right edge at row {offset}",
         );
@@ -82,7 +82,7 @@ fn forty_seven_columns_hides_grid_but_keeps_welcome() {
         "narrow welcome should keep its wordmark:\n{screen}"
     );
     assert!(
-        !screen.contains("╭────────╮"),
+        !screen.contains("╭──────╮"),
         "narrow welcome must hide grid:\n{screen}"
     );
     assert!(

@@ -53,7 +53,7 @@ fn render_places_prompt_after_compact_welcome() {
 
     let content = buffer_to_lines(terminal.backend().buffer(), 80, 24);
     assert!(
-        content[..8].iter().any(|line| line.contains(" ▄ ▀▀ ▄ ")),
+        content[..8].iter().any(|line| line.contains(" ▄▀▀▄ ")),
         "wide welcome should render the letter inside the nine-grid logo",
     );
     assert!(
