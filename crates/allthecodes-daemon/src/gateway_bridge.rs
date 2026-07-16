@@ -576,6 +576,8 @@ impl AssistantWorkerRuntime {
                 command.command_id
             );
         }
+        // Reset while holding the same lock as `abort` so a new abort cannot be lost.
+        self.engine.reset_abort();
         *active = Some(ActiveSubmitRun {
             command_id: command.command_id.clone(),
             cancellation: cancellation.clone(),
@@ -777,13 +779,10 @@ impl AssistantWorkerRuntime {
     }
 
     pub(crate) fn abort(&self) {
-        let cancellation = self
-            .active_submit
-            .lock()
-            .as_ref()
-            .map(|run| run.cancellation.clone());
-        if let Some(cancellation) = cancellation {
-            cancellation.cancel();
+        // Keep the guard through `engine.abort()` so `begin_submit` cannot reset a concurrent abort.
+        let active = self.active_submit.lock();
+        if let Some(active) = active.as_ref() {
+            active.cancellation.cancel();
         }
         self.engine.abort();
     }

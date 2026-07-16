@@ -316,6 +316,8 @@ async fn proxy_team_memory_with_timeouts(
 
 fn team_memory_http_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
+        // The peer is fixed to loopback; never forward its shared secret through an environment proxy.
+        .no_proxy()
         .connect_timeout(HTTP_CONNECT_TIMEOUT)
         .build()
 }
