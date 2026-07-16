@@ -535,7 +535,9 @@ fn panel_line_to_text(line: &str) -> String {
         return String::new();
     }
     if trimmed.starts_with('|') || trimmed.starts_with('│') {
-        let border = trimmed.chars().next().expect("non-empty panel line");
+        let Some(border) = trimmed.chars().next() else {
+            return String::new();
+        };
         let inner = trimmed
             .strip_prefix(border)
             .unwrap_or(trimmed)

@@ -220,9 +220,11 @@ impl VerificationUiSummary {
             Some(false) => "integrity=invalid",
             None => "integrity=unknown",
         };
-        let missing = (!self.missing_requirements.is_empty())
-            .then(|| format!(" missing={}", self.missing_requirements.join(",")))
-            .unwrap_or_default();
+        let missing = if self.missing_requirements.is_empty() {
+            String::new()
+        } else {
+            format!(" missing={}", self.missing_requirements.join(","))
+        };
         let cost = self
             .cost_usd
             .map(|value| format!(" cost=${value:.4}"))
