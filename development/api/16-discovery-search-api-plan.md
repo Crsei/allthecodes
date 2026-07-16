@@ -6,8 +6,8 @@
 
 ## Implementation Result (2026-07-16)
 
-Implemented in `53254712` and included in the backend artifacts refreshed by
-`f9dc6d76`:
+Implemented in `15473922` and included in the backend artifacts refreshed by
+`e5163791`:
 
 - one typed, read-only operation reuses the MCP/plugin discovery providers and
   existing scorer rather than maintaining a Web index;

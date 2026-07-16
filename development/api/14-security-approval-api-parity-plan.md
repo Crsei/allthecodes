@@ -6,8 +6,8 @@
 
 ## Implementation Result (2026-07-16)
 
-Implemented in `090e346d` and described by the backend artifacts refreshed in
-`f9dc6d76`:
+Implemented in `72bce1b4` and described by the backend artifacts refreshed in
+`e5163791`:
 
 - Web chat SSE and Web IPC preserve the normalized operation and display-safe
   `SecurityDecisionDisplay` supplied by the engine;

@@ -6,8 +6,8 @@
 
 ## Implementation Result (2026-07-16)
 
-The scheduler integration is complete in `5362564d` and is represented in the
-backend artifacts refreshed by `f9dc6d76`:
+The scheduler integration is complete in `c3862b2f` and is represented in the
+backend artifacts refreshed by `e5163791`:
 
 - `SchedulerStore`/the shared scheduler service own definitions, revisions,
   JSON/SQLite persistence, migrations, and durable run history;

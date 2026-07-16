@@ -6,8 +6,8 @@
 
 ## Implementation Result (2026-07-16)
 
-Implemented in `f7b5b7dc` and reflected in the backend API artifacts refreshed
-by `f9dc6d76`:
+Implemented in `dc50b658` and reflected in the backend API artifacts refreshed
+by `e5163791`:
 
 - ordinary reads and updates use `allthecodes_session::memdir` across the
   `global`, `project`, `team`, and `auto` scopes;

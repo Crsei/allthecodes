@@ -6,8 +6,8 @@
 
 ## Implementation Result (2026-07-16)
 
-Backend freshness enforcement is implemented in `e931f35f`, and the current
-backend artifacts were regenerated and checked in `f9dc6d76`:
+Backend freshness enforcement is implemented in `61583df9`, and the current
+backend artifacts were regenerated and checked in `e5163791`:
 
 - one six-artifact manifest drives shared write/check paths;
 - the CLI supports explicit `backend-docs`, `frontend`, and `all` targets plus

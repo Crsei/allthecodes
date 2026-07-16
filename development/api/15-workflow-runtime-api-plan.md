@@ -9,8 +9,8 @@
 
 ## Implementation Result (2026-07-16)
 
-Implemented in `311a7bca` and hardened in `e36205f0`; the seven operations are
-included in the backend artifacts refreshed by `f9dc6d76`:
+Implemented in `6603aa89` and hardened in `7f6a017a`; the seven operations are
+included in the backend artifacts refreshed by `e5163791`:
 
 - definition list/detail and run list/status read the canonical project-local
   FileWorkflow owner through typed REST/API-RPC adapters;

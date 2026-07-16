@@ -7,7 +7,7 @@
 
 ## Implementation Result (2026-07-16)
 
-Implemented in `9e7e48b8`, with SSE OpenAPI output included in `f9dc6d76`:
+Implemented in `0df0a8d7`, with SSE OpenAPI output included in `e5163791`:
 
 - invite GET is pure; privileged POST owns revisioned, request-idempotent
   create/rotation;

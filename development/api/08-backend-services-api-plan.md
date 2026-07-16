@@ -7,8 +7,8 @@
 
 ## Implementation Result (2026-07-16)
 
-Commit `6bc36588` replaced synthetic success with truthful typed projections and
-failure semantics; its contracts are included in `f9dc6d76`:
+Commit `af35d541` replaced synthetic success with truthful typed projections and
+failure semantics; its contracts are included in `e5163791`:
 
 - dashboard/session sync queries canonical persisted sessions plus the current
   Web runtime inventory, supports dry-run, and reports partial inventory
