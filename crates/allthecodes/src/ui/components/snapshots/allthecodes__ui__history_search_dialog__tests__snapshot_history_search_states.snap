@@ -1,68 +1,67 @@
 ---
 source: crates/allthecodes/src/ui/components/history_search_dialog.rs
-assertion_line: 526
 expression: "format!(\"## wide\\n{wide}\\n\\n## narrow\\n{narrow}\\n\\n## truncated\\n{truncated}\\n\\n## loading\\n{loading}\\n\\n## no history\\n{no_history}\\n\\n## no matches\\n{no_matches}\")"
 ---
 ## wide
-+ History search --------------------------------------------------------------------------------------------------------------------------+
-| filter= matches=4                                                                                                                        |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| History                                  Preview                                                                                         |
-| > Prompts                                > now      git status --short                                                                   |
-|   Preview                                  4m       cargo test -p allthecodes history_search                                             |
-|                                            2h       open model context protocol docs                                                     |
-|                                            2d       write a multi-line prompt                                                            |
-|                                                                                                                                          |
-|                                          Preview                                                                                         |
-|                                          git status --short                                                                              |
-|                                                                                                                                          |
+┌ History search ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ filter= matches=4                                                                                                                        │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ History                                  Preview                                                                                         │
+│ > Prompts                                > now      git status --short                                                                   │
+│   Preview                                  4m       cargo test -p allthecodes history_search                                             │
+│                                            2h       open model context protocol docs                                                     │
+│                                            2d       write a multi-line prompt                                                            │
+│                                                                                                                                          │
+│                                          Preview                                                                                         │
+│                                          git status --short                                                                              │
+│                                                                                                                                          │
 
 ## narrow
-+ History search --------------------------------------------------------------------------------------------------------------------------+
-| filter=write matches=1                                                                                                                   |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| History                                  Preview                                                                                         |
-| > Prompts                                > 2d       write a multi-line...                                                                |
-|   Preview                                                                                                                                |
-|                                          Preview                                                                                         |
-|                                          write a multi-line prompt                                                                       |
-|                                          with enough detail to preview                                                                   |
-|                                          and extra rows                                                                                  |
-|                                          that should overflow                                                                            |
-|                                          line five                                                                                       |
-|                                          +2 more lines                                                                                   |
-|                                                                                                                                          |
+┌ History search ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ filter=write matches=1                                                                                                                   │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ History                                  Preview                                                                                         │
+│ > Prompts                                > 2d       write a multi-line...                                                                │
+│   Preview                                                                                                                                │
+│                                          Preview                                                                                         │
+│                                          write a multi-line prompt                                                                       │
+│                                          with enough detail to preview                                                                   │
+│                                          and extra rows                                                                                  │
+│                                          that should overflow                                                                            │
+│                                          line five                                                                                       │
+│                                          +2 more lines                                                                                   │
+│                                                                                                                                          │
 
 ## truncated
-+ History search --------------------------------------------------------------------------------------------------------------------------+
-| filter=permission matches=1                                                                                                              |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| History                                  Preview                                                                                         |
-| > Prompts                                > now      run a v...                                                                           |
-|   Preview                                                                                                                                |
-|                                          Preview                                                                                         |
-|                                          run a very long                                                                                 |
+┌ History search ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ filter=permission matches=1                                                                                                              │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ History                                  Preview                                                                                         │
+│ > Prompts                                > now      run a v...                                                                           │
+│   Preview                                                                                                                                │
+│                                          Preview                                                                                         │
+│                                          run a very long                                                                                 │
 
 ## loading
-+ History search --------------------------------------------------------------------------------------------------------------------------+
-| filter= matches=0                                                                                                                        |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| History                                  Preview                                                                                         |
-| > Prompts                                Loading...                                                                                      |
-|   Preview                                                                                                                                |
+┌ History search ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ filter= matches=0                                                                                                                        │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ History                                  Preview                                                                                         │
+│ > Prompts                                Loading...                                                                                      │
+│   Preview                                                                                                                                │
 
 ## no history
-+ History search --------------------------------------------------------------------------------------------------------------------------+
-| filter= matches=0                                                                                                                        |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| History                                  Preview                                                                                         |
-| > Prompts                                No saved prompts for this workspace yet                                                         |
-|   Preview                                                                                                                                |
+┌ History search ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ filter= matches=0                                                                                                                        │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ History                                  Preview                                                                                         │
+│ > Prompts                                No saved prompts for this workspace yet                                                         │
+│   Preview                                                                                                                                │
 
 ## no matches
-+ History search --------------------------------------------------------------------------------------------------------------------------+
-| filter=zzz matches=0                                                                                                                     |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| History                                  Preview                                                                                         |
-| > Prompts                                No matching prompts                                                                             |
-|   Preview                                                                                                                                |
+┌ History search ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ filter=zzz matches=0                                                                                                                     │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ History                                  Preview                                                                                         │
+│ > Prompts                                No matching prompts                                                                             │
+│   Preview                                                                                                                                │

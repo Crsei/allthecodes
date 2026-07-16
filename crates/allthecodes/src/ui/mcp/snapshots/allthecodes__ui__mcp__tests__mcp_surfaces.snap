@@ -1,6 +1,5 @@
 ---
 source: crates/allthecodes/src/ui/mcp/mod.rs
-assertion_line: 234
 expression: rendered
 ---
 ## list
@@ -57,37 +56,37 @@ MCP servers may execute code or access system resources. All tool calls require 
 Enter continue | Esc cancel
 
 ## approval-dialog
-+ New MCP server --------------------------------------------------------------------------------------------------------------------------+
-| server=playwright source=.mcp.json risk=code                                                                                             |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| Decisions                                MCP servers may execute code or access system resources. All tool calls require approval. Le... |
-|   Use future project servers               Use this and all future MCP servers in this project enable current server and trust future... |
-| > Use this server                        > Use this MCP server          enable only this project MCP server  /mcp approve playwright     |
-|   Continue without server                  Continue without using this MCP server record this project MCP server as disabled  /mcp re... |
-|                                                                                                                                          |
-|                                          Commands                                                                                        |
-|                                          approve all:                   /mcp approve playwright --all-project                            |
-|                                          approve one:                   /mcp approve playwright                                          |
-|                                          reject:                        /mcp reject playwright                                           |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| Up/Down decision | Enter submit | Esc reject                                                                                             |
-+------------------------------------------------------------------------------------------------------------------------------------------+
+┌ New MCP server ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ server=playwright source=.mcp.json risk=code                                                                                             │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ Decisions                                MCP servers may execute code or access system resources. All tool calls require approval. Le... │
+│   Use future project servers               Use this and all future MCP servers in this project enable current server and trust future... │
+│ > Use this server                        > Use this MCP server          enable only this project MCP server  /mcp approve playwright     │
+│   Continue without server                  Continue without using this MCP server record this project MCP server as disabled  /mcp re... │
+│                                                                                                                                          │
+│                                          Commands                                                                                        │
+│                                          approve all:                   /mcp approve playwright --all-project                            │
+│                                          approve one:                   /mcp approve playwright                                          │
+│                                          reject:                        /mcp reject playwright                                           │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ Up/Down decision | Enter submit | Esc reject                                                                                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
 ## multiselect-dialog
-+ New MCP servers -------------------------------------------------------------------------------------------------------------------------+
-| count=3 source=.mcp.json risk=code                                                                                                       |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| Servers                                  MCP servers may execute code or access system resources. All tool calls require approval. Le... |
-|   github                                   [x] github                   enable                                                           |
-| > playwright                             > [ ] playwright               disable                                                          |
-|   sentry                                   [x] sentry                   enable                                                           |
-|                                                                                                                                          |
-|                                          Commands                                                                                        |
-|                                          enable:                        /mcp approve github sentry                                       |
-|                                          disable:                       /mcp reject playwright                                           |
-|------------------------------------------------------------------------------------------------------------------------------------------|
-| Up/Down server | Space toggle | Enter apply | Esc reject all                                                                             |
-+------------------------------------------------------------------------------------------------------------------------------------------+
+┌ New MCP servers ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ count=3 source=.mcp.json risk=code                                                                                                       │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ Servers                                  MCP servers may execute code or access system resources. All tool calls require approval. Le... │
+│   github                                   [x] github                   enable                                                           │
+│ > playwright                             > [ ] playwright               disable                                                          │
+│   sentry                                   [x] sentry                   enable                                                           │
+│                                                                                                                                          │
+│                                          Commands                                                                                        │
+│                                          enable:                        /mcp approve github sentry                                       │
+│                                          disable:                       /mcp reject playwright                                           │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ Up/Down server | Space toggle | Enter apply | Esc reject all                                                                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
 ## desktop-import-dialog
 Import MCP Servers from Claude Desktop
