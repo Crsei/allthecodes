@@ -145,7 +145,8 @@ fn running_task_tab_queues_unavailable_slash_command() {
     std::thread::sleep(Duration::from_millis(100));
     session.send_tab();
 
-    let queued = session.wait_for_text("Queued next prompt (1 pending).", Duration::from_secs(3));
+    let queued =
+        session.wait_for_screen_text("Queued next prompt (1 pending).", Duration::from_secs(3));
     let disabled = session
         .current_text()
         .contains("disabled while a task is in progress");

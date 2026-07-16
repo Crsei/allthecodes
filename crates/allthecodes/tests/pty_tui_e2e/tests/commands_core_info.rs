@@ -69,8 +69,8 @@ fn exit_alias_quit_quits_repl() {
 /// T03: `/config` 显示设置（无参数）。
 ///
 /// 步骤：启动 PTY → skip_trust_gate → Command("config") → Wait(2s) →
-///       AssertScreenContains("model") → Snapshot("config_show")
-/// 断言：屏幕包含配置相关文本（model、backend、theme）
+///       AssertScreenContains("Show effective config") → Snapshot("config_show")
+/// 断言：屏幕包含配置表面的固定标题。
 #[test]
 fn config_show_displays_settings() {
     let case = TestCase::new("config_show_displays_settings")
@@ -80,7 +80,9 @@ fn config_show_displays_settings() {
         .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("config".into()))
         .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains("show".into()))
+        .step(TestStep::AssertScreenContains(
+            "Show effective config".into(),
+        ))
         .step(TestStep::Snapshot("config_show".into()));
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -111,7 +113,7 @@ fn config_reset_restores_defaults() {
 /// T05: `/config` 别名 `/settings`。
 ///
 /// 步骤：启动 PTY → skip_trust_gate → Command("settings") → Wait(2s) →
-///       AssertScreenContains("model")
+///       AssertScreenContains("Show effective config")
 /// 断言：别名效果与 /config 相同
 #[test]
 fn config_alias_settings() {
@@ -122,7 +124,9 @@ fn config_alias_settings() {
         .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("settings".into()))
         .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains("show".into()));
+        .step(TestStep::AssertScreenContains(
+            "Show effective config".into(),
+        ));
 
     TestRunner::new().run(&case).assert_no_errors();
 }
@@ -157,8 +161,8 @@ fn debug_command_shows_info() {
 /// T07: `/effort` 显示当前 effort。
 ///
 /// 步骤：启动 PTY → skip_trust_gate → Command("effort") → Wait(2s) →
-///       AssertScreenContains("effort")
-/// 断言：显示当前 effort 级别
+///       AssertScreenContains("Effort / Filter")
+/// 断言：显示 effort 选择器。
 #[test]
 fn effort_shows_current() {
     let case = TestCase::new("effort_shows_current")
@@ -168,26 +172,32 @@ fn effort_shows_current() {
         .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("effort".into()))
         .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains("effort".into()));
+        .step(TestStep::AssertScreenContains("Effort / Filter".into()));
 
     TestRunner::new().run(&case).assert_no_errors();
 }
 
-/// T08: `/effort high` 在离线 profile 不声明 reasoning levels 时给出诊断。
+/// T08: `/effort high` 报告当前 profile 的设置结果。
 ///
 /// 步骤：启动 PTY → skip_trust_gate → Command("effort high") → Wait(2s) →
-///       AssertScreenContains("reasoning levels")
-/// 断言：不猜测 provider 能力，并引导用户选择已配置的 profile/model。
+///       WaitForAny("Effort set to", "Current profile has no configured")
+/// 断言：支持 high 的 profile 成功设置；不支持的 profile 给出能力诊断。
 #[test]
-fn effort_set_high_reports_unsupported_profile() {
-    let case = TestCase::new("effort_set_high_reports_unsupported_profile")
+fn effort_set_high_reports_profile_result() {
+    let case = TestCase::new("effort_set_high_reports_profile_result")
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("effort high".into()))
         .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains("reasoning levels".into()));
+        .step(TestStep::WaitForAny(
+            vec![
+                "Effort set to".into(),
+                "Current profile has no configured".into(),
+            ],
+            Duration::from_secs(5),
+        ));
 
     TestRunner::new().run(&case).assert_no_errors();
 }

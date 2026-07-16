@@ -10,6 +10,7 @@ use std::time::Duration;
 /// 流程：启动 TUI（default 权限模式）→ /login claude-code → 输入问题 →
 ///       等待权限对话框或响应 → 批准对话框 → 验证输出 → 关闭
 #[test]
+#[ignore = "requires a real API key and network"]
 fn script_login_structure_with_permissions() {
     let ws = "/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/claude-code-bun";
     let case = TestCase::new("login_structure_with_permissions")

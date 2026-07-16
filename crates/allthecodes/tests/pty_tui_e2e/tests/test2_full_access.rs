@@ -10,6 +10,7 @@ use std::time::Duration;
 /// 流程：启动 TUI（default 权限模式）→ /permissions full access → 输入相同问题 →
 ///       验证直接运行（无权限对话框）→ 中止
 #[test]
+#[ignore = "requires a real API key and network"]
 fn script_full_access_structure_no_dialog() {
     let ws = "/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/claude-code-bun";
     let case = TestCase::new("full_access_structure_no_dialog")
