@@ -53,6 +53,7 @@ impl AcpEngineFactory for ConfigEngineFactory {
             fallback_model: None,
             max_budget_usd: None,
             task_budget: None,
+            verification_policy: None,
             agent_context: None,
         };
         let engine = Arc::new(QueryEngine::new(config));

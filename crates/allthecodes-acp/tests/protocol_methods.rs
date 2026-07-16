@@ -46,6 +46,7 @@ impl AcpEngineFactory for TestEngineFactory {
             fallback_model: None,
             max_budget_usd: None,
             task_budget: None,
+            verification_policy: None,
             agent_context: None,
         };
         Ok(Arc::new(QueryEngine::new(config)))
@@ -174,14 +175,17 @@ fn isolated_auth_env() -> AuthEnv {
     let temp = tempfile::tempdir().unwrap();
     let data_home = temp.path().join("allthecodes-home");
     let user_home = temp.path().join("user-home");
+    let codex_home = user_home.join(".codex");
     std::fs::create_dir_all(&data_home).unwrap();
     std::fs::create_dir_all(&user_home).unwrap();
+    std::fs::create_dir_all(&codex_home).unwrap();
 
     AuthEnv {
         _temp: temp,
         _guards: vec![
             EnvGuard::set_path("ALLTHECODES_HOME", &data_home),
             EnvGuard::set_path("HOME", &user_home),
+            EnvGuard::set_path("CODEX_HOME", &codex_home),
             EnvGuard::remove("ANTHROPIC_API_KEY"),
             EnvGuard::remove("ANTHROPIC_AUTH_TOKEN"),
             EnvGuard::remove("OPENAI_API_KEY"),
