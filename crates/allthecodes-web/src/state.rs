@@ -382,6 +382,15 @@ struct ChatPermissionKey {
     tool_use_id: String,
 }
 
+impl ChatPermissionKey {
+    fn new(session_id: &str, tool_use_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            tool_use_id: tool_use_id.to_string(),
+        }
+    }
+}
+
 const CHAT_PERMISSION_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const MAX_CHAT_PERMISSION_BINDING_MISMATCHES: u8 = 5;
 
@@ -763,14 +772,5 @@ mod chat_permission_tests {
             ),
             Err(ChatPermissionResolveError::Stale)
         );
-    }
-}
-
-impl ChatPermissionKey {
-    fn new(session_id: &str, tool_use_id: &str) -> Self {
-        Self {
-            session_id: session_id.to_string(),
-            tool_use_id: tool_use_id.to_string(),
-        }
     }
 }
