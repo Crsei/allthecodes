@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>API gap remediation worktree record</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f8fafc;
+        --panel: #ffffff;
+        --text: #172033;
+        --muted: #526079;
+        --line: #d9e0ea;
+        --ok: #087a55;
+        --partial: #a45a00;
+        --code: #eef2f7;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f172a;
+          --panel: #172033;
+          --text: #e5e7eb;
+          --muted: #b4bfd1;
+          --line: #334155;
+          --ok: #67d6ae;
+          --partial: #f2b563;
+          --code: #243047;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+      }
+      main { margin: 0 auto; max-width: 76rem; padding: 2.5rem 1.25rem 5rem; }
+      header, section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: .75rem;
+        margin-bottom: 1rem;
+        padding: 1.25rem 1.5rem;
+      }
+      h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .5rem; }
+      h2 { border-bottom: 1px solid var(--line); font-size: 1.3rem; padding-bottom: .35rem; }
+      h3 { font-size: 1.05rem; margin-top: 1.3rem; }
+      p, li { max-width: 72rem; }
+      code, pre {
+        background: var(--code);
+        border-radius: .3rem;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      code { padding: .1rem .3rem; }
+      pre { overflow-x: auto; padding: .85rem 1rem; }
+      pre code { padding: 0; }
+      table { border-collapse: collapse; display: block; overflow-x: auto; width: 100%; }
+      th, td { border: 1px solid var(--line); padding: .55rem .65rem; text-align: left; vertical-align: top; }
+      th { background: var(--code); }
+      .badges { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: 1rem; }
+      .badge { border: 1px solid var(--line); border-radius: 999px; padding: .25rem .65rem; }
+      .ok { color: var(--ok); font-weight: 700; }
+      .partial { color: var(--partial); font-weight: 700; }
+      .note { border-left: .3rem solid var(--partial); color: var(--muted); padding-left: .8rem; }
+      .muted { color: var(--muted); }
+      details { border: 1px solid var(--line); border-radius: .5rem; padding: .6rem .8rem; }
+      summary { cursor: pointer; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>API gap remediation worktree record</h1>
+        <p>
+          Implementation record for the API gaps found in the frozen
+          <code>d5e16fde..6d426dc9</code> audit. Work was isolated on
+          <code>worktree/api-gap-remediation</code>, finally rebased onto
+          <code>allthecodes@803314c7</code>, and completed on 2026-07-17.
+        </p>
+        <div class="badges">
+          <span class="badge ok">273 backend operations</span>
+          <span class="badge ok">release build passed</span>
+          <span class="badge ok">non-PTY tests passed</span>
+          <span class="badge partial">truthful partial boundaries retained</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Goal and controlling documents</h2>
+        <p>
+          Expose recent runtime capabilities through typed, registered APIs backed by their
+          canonical owners. The implementation must not add Web-only canonical stores,
+          synthetic successes, reusable exact approvals, or unbounded transport payloads.
+        </p>
+        <ul>
+          <li>Audit: <code>development/api/13-recent-feature-api-gap-audit.md</code>, committed as <code>0832368d</code>.</li>
+          <li>Plan: <code>development/workflow/2026-07-16-api-gap-remediation-plan.md</code>, committed on the main branch as <code>a9961a4d</code>.</li>
+          <li>Worktree: <code>.worktrees/api-gap-remediation</code>.</li>
+          <li>Artifact: <code>development/worktree-workflow-artifacts/2026-07-16-api-gap-remediation.html</code>.</li>
+        </ul>
+        <p class="muted">
+          The prerequisite plan remained unchanged inside the worktree, as required by the
+          per-session worktree workflow.
+        </p>
+      </section>
+
+      <section>
+        <h2>Workflow</h2>
+        <ol>
+          <li>Freeze the recent-feature audit and commit the implementation plan on <code>allthecodes</code>.</li>
+          <li>Create <code>worktree/api-gap-remediation</code> under <code>.worktrees/</code>.</li>
+          <li>Implement each runtime/API domain in bounded commits, then regenerate the owned backend contracts.</li>
+          <li>Rebase without conflicts onto <code>allthecodes@803314c7</code> and refresh implementation references.</li>
+          <li>Repair concrete baseline gates exposed by repository-wide validation, preserving unrelated work.</li>
+          <li>Run focused, strict, non-PTY workspace, codegen, and release gates; record honest exclusions and partial boundaries.</li>
+          <li>Commit this artifact, fast-forward the worktree into <code>allthecodes</code>, push, then remove the worktree and branch.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Implemented API outcomes</h2>
+        <table>
+          <thead>
+            <tr><th>Domain</th><th>Outcome</th><th>Canonical owner and behavior</th><th>Remaining boundary</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Security approval</td><td class="ok">Implemented</td>
+              <td>Chat SSE and Web IPC preserve normalized operations and display-safe security metadata. Privileged, bound, one-shot responses enforce exact approval semantics.</td>
+              <td>Full Web SSE → bound response → execution E2E remains pending.</td>
+            </tr>
+            <tr>
+              <td>Memory and review proposals</td><td class="ok">Implemented</td>
+              <td>Runtime memdir, bounded dream reads, and background-review proposal decisions replace the Web-only canonical entry store.</td>
+              <td>Reserved producer kinds are not advertised as active producers.</td>
+            </tr>
+            <tr>
+              <td>Workflow runtime</td><td class="ok">Fail-closed contract</td>
+              <td>Seven typed definition/run operations adapt the persisted, workspace-scoped <code>FileWorkflow</code> owner.</td>
+              <td>Production policy <code>Ask</code> returns <code>409 interactive_approval_required</code> without mutation until challenge/resume exists.</td>
+            </tr>
+            <tr>
+              <td>Jobs and Cron</td><td class="ok">Implemented</td>
+              <td>Definitions, durable history, due/manual dispatch, and task projections use the scheduler and daemon runtime.</td>
+              <td>No known scoped code gap.</td>
+            </tr>
+            <tr>
+              <td>Skills proposals</td><td class="ok">Implemented</td>
+              <td>Native and reserved background proposals share bounded list/detail/diff/approve/reject services with scope and digest checks.</td>
+              <td>Extended symlink and failure-injection evidence remains incomplete.</td>
+            </tr>
+            <tr>
+              <td>Web IPC Agent/Team</td><td class="ok">Implemented</td>
+              <td>Typed commands use the shared authorized dispatcher and requester-only result lane with bounds and redaction.</td>
+              <td>A dedicated fresh Web IPC PTY command-integration result remains pending.</td>
+            </tr>
+            <tr>
+              <td>Group Chat</td><td class="ok">Implemented</td>
+              <td>Invite reads are pure, mutations privileged, messages dispatch through delegated agents, and replay uses typed bounded SSE envelopes.</td>
+              <td>Compression remains an explicitly local room summary.</td>
+            </tr>
+            <tr>
+              <td>Backend Services</td><td class="partial">Partial</td>
+              <td>Session, task, and runtime-history projections use canonical owners; unavailable actions fail closed.</td>
+              <td>Compaction, durable retry, aggregate migration, and consistent backup owners remain absent and return typed <code>409</code>/<code>503</code>.</td>
+            </tr>
+            <tr>
+              <td>Discovery</td><td class="ok">Implemented</td>
+              <td>One bounded read-only operation reuses MCP/plugin providers and the existing scorer with partial-provider states.</td>
+              <td>No known scoped code gap.</td>
+            </tr>
+            <tr>
+              <td>Generated artifacts</td><td class="partial">Backend complete; cross-repo partial</td>
+              <td>One manifest, deterministic digest, atomic generation, backend CI freshness, schema, routes, and OpenAPI are current.</td>
+              <td>Paired frontend artifacts/CI and explicit environment-invariance tests remain outstanding.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Changed paths by concern</h2>
+        <p>The implementation branch changed 125 files before adding this artifact. Generated contracts account for most of the 82,121 inserted lines.</p>
+        <ul>
+          <li><strong>Protocol and contracts:</strong> <code>crates/allthecodes-protocol/src/v1/</code>, protocol request/transport/codegen modules, <code>docs/api/{routes.md,schema.json,openapi.json}</code>, and backend CI freshness checks.</li>
+          <li><strong>Web runtime handlers:</strong> <code>crates/allthecodes-web/src/handlers/</code>, handler and API-operation registries, API-RPC, chat and IPC WebSockets, state, and direct IPC streams.</li>
+          <li><strong>Canonical runtime owners:</strong> engine background review/skill proposal services, session memdir, scheduler services, daemon protocol/scheduler, workflow tools, delegated-agent dispatch, and dream services.</li>
+          <li><strong>Shared transport types:</strong> <code>allthecodes-types</code>, <code>allthecodes-tool-display</code>, <code>allthecodes-ipc-protocol</code>, and <code>allthecodes-ipc</code>.</li>
+          <li><strong>Commands and discovery:</strong> Memory, Skills, MCP, Plugin, and discovery scoring/adapters.</li>
+          <li><strong>Plans and evidence:</strong> <code>development/api/00-api-gap-index.md</code> plus plans 02, 03, 06, 07, 08, and 14–18.</li>
+          <li><strong>Gate hardening:</strong> MCP ownership transfer, daemon loopback proxy isolation and abort ordering, Optional IPC security compatibility, ACP/Web fixtures, strict lint fixes, and TUI/PTY assertions.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Generated contract evidence</h2>
+        <ul>
+          <li><code>docs/api/routes.md</code> contains <strong>273</strong> operation rows.</li>
+          <li>Protocol digest: <code>eb5ae873ce113e5206cad0e58a714f3ae88f7f5b97044f0b5178562c8a7d685c</code>.</li>
+          <li><code>routes.md</code>, <code>schema.json</code>, and <code>openapi.json</code> resolve from the same backend manifest and pass check mode.</li>
+          <li>Group Chat OpenAPI declares <code>text/event-stream</code> with <code>GroupChatStreamEnvelope</code>.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Validation evidence</h2>
+        <table>
+          <thead><tr><th>Command or suite</th><th>Result</th><th>Evidence</th></tr></thead>
+          <tbody>
+            <tr><td><code>cargo fmt --all --check</code></td><td class="ok">Passed</td><td>Final Rust tree formatted.</td></tr>
+            <tr><td><code>cargo clippy --workspace --all-targets -- -D warnings</code></td><td class="ok">Passed</td><td>Strict workspace lint completed after the final IPC changes.</td></tr>
+            <tr><td>Protocol/codegen focused suite</td><td class="ok">Passed</td><td>59 tests; backend artifact check also passed independently.</td></tr>
+            <tr><td><code>cargo test -p allthecodes-web</code></td><td class="ok">Passed</td><td>292 tests.</td></tr>
+            <tr><td>IPC Agent handlers</td><td class="ok">Passed</td><td>12 focused tests.</td></tr>
+            <tr><td><code>cargo test -p allthecodes-engine</code></td><td class="ok">Passed</td><td>609 passed, 4 ignored.</td></tr>
+            <tr><td><code>cargo test -p allthecodes-tools</code></td><td class="ok">Passed</td><td>437 tests.</td></tr>
+            <tr><td>Commands Skills suite</td><td class="ok">Passed</td><td>7 focused tests.</td></tr>
+            <tr><td>ACP suite</td><td class="ok">Passed</td><td>80 valid tests after fixture alignment.</td></tr>
+            <tr><td><code>cargo test -p allthecodes-daemon --lib --quiet</code></td><td class="ok">Passed</td><td>196/196 after loopback and abort-order fixes.</td></tr>
+            <tr><td><code>cargo test -p allthecodes-ipc-protocol --lib --quiet</code></td><td class="ok">Passed</td><td>117/117, including missing/null Optional security.</td></tr>
+            <tr><td><code>cargo test -p allthecodes-ipc --lib --quiet</code></td><td class="ok">Passed</td><td>68/68 with bounded interaction waits.</td></tr>
+            <tr><td>All workspace tests excluding <code>allthecodes</code>, then the main bin and six explicit non-PTY integration targets</td><td class="ok">Passed, exit 0</td><td>PTY excluded at the user's explicit direction; every other Cargo test target completed.</td></tr>
+            <tr><td><code>cargo build --workspace --release</code></td><td class="ok">Passed</td><td>Finished optimized workspace build in 4m 29s with no warning.</td></tr>
+            <tr><td><code>codegen --check --target backend-docs</code></td><td class="ok">Passed</td><td>All three backend artifacts checked current.</td></tr>
+            <tr><td><code>git diff --check</code></td><td class="ok">Passed</td><td>No whitespace errors.</td></tr>
+          </tbody>
+        </table>
+
+        <h3>PTY scope and user-directed skip</h3>
+        <p class="note">
+          The final validation set intentionally excluded <code>pty_tui_e2e</code> after the user
+          directed “skip PTY tests”. Before the final IPC-only compatibility commit, two complete
+          PTY runs on this branch each passed 215 tests with 36 ignored (1924.92s and 1930.03s).
+          Those runs are historical evidence only; this artifact does not claim a fresh final Web
+          IPC PTY integration gate.
+        </p>
+
+        <h3>Failure discovery and recovery</h3>
+        <ol>
+          <li>The first repository-wide run passed PTY, then exposed four deterministic daemon failures. Loopback Team Memory traffic was incorrectly inheriting <code>HTTP_PROXY</code>, and a new submit inherited the previous engine abort. Commit <code>71bb6768</code> fixed both; daemon then passed 196/196.</li>
+          <li>The next run passed PTY and daemon, then exposed an IPC hang. Explicit JSON <code>null</code> security was rejected as a non-Optional structure; the spawned request task panicked while another sender clone kept the receiver open. Commit <code>46b22cad</code> added missing/null compatibility, moved adapter conversion before pending registration, and bounded test receives.</li>
+          <li>The final PTY run was stopped at the user's request. A complete explicit non-PTY target set then returned exit 0.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Worktree commits</h2>
+        <details open>
+          <summary>28 committed implementation, documentation, and gate-repair changes</summary>
+          <ol>
+            <li><code>dd4df846</code> fix(api): preserve exact approval semantics on Web transports</li>
+            <li><code>cbf15997</code> feat(api): project runtime memory and review proposals</li>
+            <li><code>be01ca4b</code> build(api): enforce generated artifact freshness</li>
+            <li><code>054b8211</code> feat(ipc): dispatch Web agent and team commands</li>
+            <li><code>efb75dab</code> feat(api): expose file workflow runtime operations</li>
+            <li><code>3253049b</code> fix(api): harden workflow error paths</li>
+            <li><code>26f4e351</code> feat(api): add bounded discovery search</li>
+            <li><code>61629dc1</code> feat(api): expose skill proposal lifecycle</li>
+            <li><code>15190913</code> feat(api): connect backend services to runtime owners</li>
+            <li><code>f4ab9dd7</code> fix(runtime): remove API integration panic paths</li>
+            <li><code>835dc804</code> fix(protocol): bound transport frame payloads</li>
+            <li><code>50dd2d23</code> feat(api): connect group chat to delegated agents</li>
+            <li><code>cb4801c1</code> feat(api): connect jobs API to scheduler runtime</li>
+            <li><code>32e766e0</code> style(api): normalize memory handler formatting</li>
+            <li><code>8f3baa52</code> docs(api): regenerate backend contracts</li>
+            <li><code>8c68aae1</code> docs(api): record remediation status and boundaries</li>
+            <li><code>09a26373</code> docs(api): update remediation index</li>
+            <li><code>06a2af30</code> fix(mcp): restore manager ownership transfer</li>
+            <li><code>87fff195</code> test(web): authenticate protected route assertions</li>
+            <li><code>8caad2e0</code> test(acp): align fixtures with runtime contracts</li>
+            <li><code>7bca271e</code> test(web): keep state helpers before test modules</li>
+            <li><code>0dfcb1c7</code> fix(tui): satisfy strict workspace lint gates</li>
+            <li><code>7b5d36b5</code> docs(api): refresh rebased implementation references</li>
+            <li><code>f9bf6644</code> test(tui): refresh current interaction snapshots</li>
+            <li><code>630c71d3</code> test(tui): stabilize offline PTY gates</li>
+            <li><code>71bb6768</code> fix(daemon): isolate loopback and reset submit aborts</li>
+            <li><code>46b22cad</code> fix(ipc): accept absent permission security</li>
+            <li><code>9df397eb</code> docs(api): refresh final implementation references</li>
+          </ol>
+        </details>
+        <p>
+          Artifact commit: <code>docs(workflow): record API gap remediation</code>. Its hash is
+          intentionally omitted because embedding a commit's own hash would be self-referential.
+        </p>
+      </section>
+
+      <section>
+        <h2>Merge handoff</h2>
+        <p>
+          At artifact creation time, <code>allthecodes</code> remains at <code>803314c7</code> and is
+          an ancestor of this worktree, so the branch is ready for a fast-forward merge. The
+          remaining workflow actions are: commit this artifact, recheck ancestry and cleanliness,
+          <code>git merge --ff-only worktree/api-gap-remediation</code>, push <code>allthecodes</code>,
+          then remove the worktree and delete its merged branch.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
