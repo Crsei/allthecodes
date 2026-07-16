@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use allthecodes_protocol::{ApiErrorBody, ClientRequest};
+use allthecodes_types::callbacks::SecurityDecisionDisplay;
 use allthecodes_types::tool_operation::ToolOperation;
 
 use crate::normalized::{
@@ -439,15 +440,7 @@ fn server_request_to_legacy_backend(
                 .cloned()
                 .unwrap_or(Value::Object(serde_json::Map::new())),
             options: required_string_vec(&request.params, "options")?,
-            security: request
-                .params
-                .get("security")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|error| IpcPayloadAdapterError::InvalidPayload {
-                    message: error.to_string(),
-                })?,
+            security: optional_security(&request.params)?,
             operation: optional_operation(&request.params)?,
         }),
         ServerRequestMethod::AskUserQuestion => Ok(BackendMessage::QuestionRequest {
@@ -549,12 +542,27 @@ fn optional_operation(params: &Value) -> Result<Option<ToolOperation>, IpcPayloa
         })
 }
 
+fn optional_security(
+    params: &Value,
+) -> Result<Option<SecurityDecisionDisplay>, IpcPayloadAdapterError> {
+    let Some(value) = params.get("security") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(value.clone())
+        .map(Some)
+        .map_err(|error| IpcPayloadAdapterError::InvalidPayload {
+            message: format!("invalid security field: {error}"),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::IpcEnvelope;
     use allthecodes_protocol::ClientResponse;
-    use allthecodes_types::callbacks::SecurityDecisionDisplay;
     use allthecodes_types::tool_operation::{
         OperationConfidence, OperationKind, OperationRisk, OperationStatus, ToolOperation,
     };
@@ -697,6 +705,54 @@ mod tests {
                     && remapped_security.exact_approval
                     && remapped_security.sink == "ShellExec"
         ));
+    }
+
+    #[test]
+    fn server_permission_request_absent_optionals_map_to_legacy_none() {
+        let cases = [
+            (
+                "missing",
+                json!({
+                    "tool_use_id": "tool-missing",
+                    "tool": "Bash",
+                    "command": "ls",
+                    "input": { "command": "ls" },
+                    "options": ["allow", "deny"],
+                }),
+            ),
+            (
+                "null",
+                json!({
+                    "tool_use_id": "tool-null",
+                    "tool": "Bash",
+                    "command": "ls",
+                    "input": { "command": "ls" },
+                    "options": ["allow", "deny"],
+                    "operation": null,
+                    "security": null,
+                }),
+            ),
+        ];
+
+        for (case, params) in cases {
+            let payload = IpcPayload::ServerRequest(ServerRequestEnvelope {
+                request_id: format!("tool-{case}"),
+                method: ServerRequestMethod::PermissionDecision,
+                params,
+                timeout_ms: None,
+            });
+
+            let remapped = payload_to_legacy_backend(&payload).unwrap();
+            assert!(matches!(
+                remapped,
+                BackendMessage::PermissionRequest {
+                    tool_use_id,
+                    operation: None,
+                    security: None,
+                    ..
+                } if tool_use_id == format!("tool-{case}")
+            ));
+        }
     }
 
     #[test]

@@ -608,14 +608,13 @@ impl IpcRuntime {
             }),
             timeout_ms: Some(Self::timeout_ms(self.server_request_timeout)),
         };
-        let (sender, receiver) = oneshot::channel();
-        self.pending_interactions()
-            .insert_server_request(envelope.clone());
-        self.pending_interactions()
-            .insert_legacy_permission(envelope.request_id.clone(), sender);
-
-        let legacy = payload_to_legacy_backend(&IpcPayload::ServerRequest(envelope))
+        let legacy = payload_to_legacy_backend(&IpcPayload::ServerRequest(envelope.clone()))
             .map_err(IpcRuntimeError::Adapter)?;
+        let (sender, receiver) = oneshot::channel();
+        self.pending_interactions().insert_server_request(envelope);
+        self.pending_interactions()
+            .insert_legacy_permission(request_id.clone(), sender);
+
         if let Err(error) = self.send_backend(legacy).await {
             self.pending_interactions().complete_permission(
                 None,
@@ -650,14 +649,13 @@ impl IpcRuntime {
             }),
             timeout_ms: Some(Self::timeout_ms(self.server_request_timeout)),
         };
-        let (sender, receiver) = oneshot::channel();
-        self.pending_interactions()
-            .insert_server_request(envelope.clone());
-        self.pending_interactions()
-            .insert_legacy_question(envelope.request_id.clone(), sender);
-
-        let legacy = payload_to_legacy_backend(&IpcPayload::ServerRequest(envelope))
+        let legacy = payload_to_legacy_backend(&IpcPayload::ServerRequest(envelope.clone()))
             .map_err(IpcRuntimeError::Adapter)?;
+        let (sender, receiver) = oneshot::channel();
+        self.pending_interactions().insert_server_request(envelope);
+        self.pending_interactions()
+            .insert_legacy_question(question_id.clone(), sender);
+
         if let Err(error) = self.send_backend(legacy).await {
             self.pending_interactions()
                 .complete_question(None, None, &question_id, String::new());
@@ -838,6 +836,15 @@ mod tests {
     use allthecodes_ipc_protocol::{ClientCapabilities, ClientRequestEnvelope};
     use allthecodes_protocol::{ClientRequest, NoParams};
     use allthecodes_types::callbacks::SecurityDecisionDisplay;
+
+    async fn recv_backend_with_timeout(
+        receiver: &mut tokio::sync::mpsc::Receiver<BackendMessage>,
+    ) -> BackendMessage {
+        tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+            .await
+            .expect("timed out waiting for IPC backend message")
+            .expect("IPC backend channel closed before producing a message")
+    }
 
     fn info(text: &str) -> BackendMessage {
         BackendMessage::SystemInfo {
@@ -1130,7 +1137,7 @@ mod tests {
         let runtime_for_response = runtime.clone();
 
         let task = tokio::spawn(async move { runtime.request_permission(request).await.unwrap() });
-        let outbound = receiver.recv().await.unwrap();
+        let outbound = recv_backend_with_timeout(&mut receiver).await;
 
         assert!(matches!(
             outbound,
@@ -1197,7 +1204,7 @@ mod tests {
         let runtime_for_response = runtime.clone();
 
         let task = tokio::spawn(async move { runtime.request_permission(request).await.unwrap() });
-        let outbound = receiver.recv().await.unwrap();
+        let outbound = recv_backend_with_timeout(&mut receiver).await;
 
         assert!(matches!(
             outbound,
@@ -1248,7 +1255,7 @@ mod tests {
             tokio::spawn(
                 async move { runtime_for_task.request_permission(request).await.unwrap() },
             );
-        let outbound = receiver.recv().await.unwrap();
+        let outbound = recv_backend_with_timeout(&mut receiver).await;
         assert!(matches!(
             outbound,
             BackendMessage::PermissionRequest { tool_use_id, .. } if tool_use_id == "tool-1"
@@ -1272,7 +1279,7 @@ mod tests {
         let runtime_for_response = runtime.clone();
 
         let task = tokio::spawn(async move { runtime.request_question(request).await.unwrap() });
-        let outbound = receiver.recv().await.unwrap();
+        let outbound = recv_backend_with_timeout(&mut receiver).await;
 
         assert!(matches!(
             outbound,
@@ -1322,7 +1329,7 @@ mod tests {
 
         let task =
             tokio::spawn(async move { runtime_for_task.request_question(request).await.unwrap() });
-        let outbound = receiver.recv().await.unwrap();
+        let outbound = recv_backend_with_timeout(&mut receiver).await;
         assert!(matches!(
             outbound,
             BackendMessage::QuestionRequest { id, .. } if id == "Continue?"
