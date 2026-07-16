@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Artifact — PTY TUI E2E timing optimization Phase 1 (2026-07-17)</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+  h1 { margin-bottom: .2rem; }
+  .meta { color: #657; }
+  .card { border: 1px solid #8793a0; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+  code { overflow-wrap: anywhere; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+  th, td { border: 1px solid #8793a0; padding: .45rem; text-align: left; vertical-align: top; }
+  .ok { color: #18794e; font-weight: 650; }
+  .pending { color: #9a6700; font-weight: 650; }
+  .delta { color: #18794e; font-weight: 650; }
+  .num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>PTY TUI E2E 离线套件时效优化（Phase 1）</h1>
+<p class="meta">Task slug: <code>pty-e2e-timing</code> · worktree branch: <code>worktree/pty-e2e-timing</code> · 2026-07-17</p>
+
+<section class="card">
+<h2>任务目标（Phase 1 范围）</h2>
+<p>离线 PTY E2E 套件历史上墙钟 1930s，大量 <code>TestStep::Wait(Duration::from_secs(2))</code> 这类"等屏幕静下来"的固定等待是主要拖慢项。Phase 1 用<strong>信号化等待</strong>（<code>WaitForScreenText</code> / <code>WaitForAny</code>）替换：屏幕一命中目标文字即返回，没有命中则短 timeout 失败。<strong>不</strong>触及 <code>#[ignore]</code> 在线测试语义、<strong>不</strong>动并发锁（Phase 2 / Task 4）、<strong>不</strong>收紧进程收尾（Task 5）。</p>
+</section>
+
+<section class="card">
+<h2>计划与实现</h2>
+<ul>
+  <li>计划：<code>development/test/pty-tui-e2e-timing-plan.md</code>（Task 1 + Task 2 + Task 3 + Task 6+7 阶段）。</li>
+  <li>Task 1（已完成）：在 <code>script.rs</code> 中加 <code>WaitForScreenText</code> 信号化原语；<code>AssertNoPanic</code> 与 <code>SkipTrustGate</code> 内部自带短稳定窗口。</li>
+  <li>Task 2（已完成）：在 11 个离线测试文件中按"看上下行"规则替换或丢弃固定 <code>Wait</code>。</li>
+  <li>Task 3（按用户决策跳过字面拆分）：<code>test4_task_execution.rs</code> 与 <code>test5_compact.rs</code> 内的拆分要求与计划 §7 非目标冲突（不改 <code>#[ignore]</code> 在线测试语义）；<code>running_task_slash_commands.rs</code> 已经全部信号化、无可拆分处。详见 README <strong>时效策略</strong>一节。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>改动路径（11 文件 + 2 文档 + 本 artifact）</h2>
+<table>
+<thead><tr><th>路径</th><th>改动</th></tr></thead>
+<tbody>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_core_info.rs</code></td><td>200 行级 deprecated <code>Wait</code> → <code>WaitForScreenText</code>；net <strong>~50 行 -</strong>。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_mcp_plugin.rs</code></td><td>同模式替换；保留下游 <code>Snapshot</code>。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_aliases.rs</code></td><td>同模式替换。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_permissions.rs</code></td><td>同模式替换。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_kairos.rs</code></td><td>同模式替换。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_memory_skills_hooks.rs</code></td><td>同模式替换。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_agent_team.rs</code></td><td>同模式替换。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_session.rs</code></td><td>同模式替换。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_auth.rs</code></td><td>去掉冗余 post-trust / pre-<code>AssertNoPanic</code> <code>Wait</code>；drop now-unused <code>use std::time::Duration</code>。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_git.rs</code></td><td>仅替换离线（<code>#[test]</code>，非 <code>#[ignore]</code>）函数内的固定 <code>Wait</code>；<code>Wait(3s)+Snapshot</code> → <code>Wait(500ms)+Snapshot</code>。<code>script_branch_forks_session</code> <code>#[ignore]</code> 函数体保留原状。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_query.rs</code></td><td>仅替换 3 个离线测试；4 个 <code>#[ignore]</code> 在线测试保留。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_surface.rs</code></td><td><strong>无改动</strong>（已使用 <code>SHORT_WAIT</code> 常量 + 信号化原语）。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/README.md</code></td><td>新增<strong>时效策略</strong>一节（信号化等待规则表 + 维护纪律）。</td></tr>
+<tr><td><code>development/test/README.md</code></td><td>在索引表登记本计划。</td></tr>
+<tr><td><code>development/worktree-workflow-artifacts/2026-07-17-pty-e2e-timing.html</code></td><td>本任务工作流记录。</td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="card">
+<h2>提交边界（11 个 worktree 提交 + 主分支前置计划）</h2>
+<ul>
+  <li><code>dd74b9d4 docs(test): add PTY TUI E2E timing optimization plan</code>：主分支前置计划提交。</li>
+  <li><code>ff9bbfd4 test(pty_e2e): replace Wait(2s) with signal-driven waits in commands_core_info</code></li>
+  <li><code>270bcef4 test(pty_e2e): replace Wait(2s) with signal-driven waits in commands_mcp_plugin</code></li>
+  <li><code>323f77dd test(pty_e2e): replace Wait(2s) with signal-driven waits in commands_aliases</code></li>
+  <li><code>dee1a75b test(pty_e2e): replace Wait(2s) with signal-driven waits in commands_permissions</code></li>
+  <li><code>d8252a0d test(pty_e2e): replace Wait(2s) with signal-driven waits in commands_kairos</code></li>
+  <li><code>610a39ff test(pty_e2e): replace Wait(2s) with signal-driven waits in commands_memory_skills_hooks</code></li>
+  <li><code>9fce9d55 test(pty_e2e): replace Wait(2s) with signal-driven waits in commands_agent_team</code></li>
+  <li><code>7a96ff97 test(pty_e2e): replace Wait(2s) with signal-driven waits in commands_session</code></li>
+  <li><code>0562c185 test(pty_e2e): drop redundant Wait(2s) in commands_auth</code></li>
+  <li><code>a4d2ce20 test(pty_e2e): trim fixed Waits in commands_git offline tests</code></li>
+  <li><code>f9aeec14 test(pty_e2e): trim fixed Waits in commands_query offline tests</code></li>
+  <li>本次文档 + artifact 提交：见 worktree HEAD。</li>
+</ul>
+<p>净 diff（vs <code>allthecodes</code>）：<code class="num">11 commits, 23 insertions, 366 deletions</code>。</p>
+</section>
+
+<section class="card">
+<h2>验证依据（runtime capture）</h2>
+<p class="meta">测试机：本机直接 build/run；360s 上限 tool 时间不限制单测验证，多测点抽样驱动了运行时观测。</p>
+<table>
+<thead><tr><th>测试</th><th>改动类型</th><th>before (估)</th><th>after (实测)</th><th>降幅</th></tr></thead>
+<tbody>
+<tr><td><code>exit_command_quits_repl</code></td><td>Wait+AssertScreenContains → WaitForScreenText</td><td class="num">~7.7s</td><td class="num">4.07s</td><td class="delta">−47%</td></tr>
+<tr><td><code>config_show_displays_settings</code></td><td>同上</td><td class="num">~7.7s</td><td class="num">4.25s</td><td class="delta">−45%</td></tr>
+<tr><td><code>effort_shows_current</code></td><td>同上</td><td class="num">~7.7s</td><td class="num">4.21s</td><td class="delta">−45%</td></tr>
+<tr><td><code>mcp_help_no_args</code></td><td>同上</td><td class="num">~7.0s</td><td class="num">4.97s</td><td class="delta">−29%</td></tr>
+<tr><td><code>script_diff_command</code></td><td>Wait(3s)+Snapshot → Wait(500ms)+Snapshot</td><td class="num">~12.7s</td><td class="num">5.33s</td><td class="delta">−58%</td></tr>
+<tr><td><code>logout_command</code></td><td>drop post-trust + drop pre-AssertNoPanic</td><td class="num">~7.7s</td><td class="num">4.22s</td><td class="delta">−45%</td></tr>
+<tr><td><code>exit_alias_q_quits_repl</code>（探针）</td><td>验证去掉 post-trust Wait 后 AssertNoPanic 仍正确</td><td>n/a</td><td class="num">4.05s, ALL PASS</td><td class="ok">✓</td></tr>
+<tr><td><code>mcp_status</code>（探针）</td><td>跨文件验证 WaitForScreenText 多步混合流仍正确</td><td>n/a</td><td class="num">13.11s, ALL 12 PASS</td><td class="ok">✓</td></tr>
+</tbody>
+</table>
+<ul>
+  <li><span class="ok">通过</span> <code>cargo check --tests --quiet</code>：exit 0。</li>
+  <li><span class="ok">通过</span> <code>cargo clippy -p allthecodes --test pty_tui_e2e --quiet -- -D warnings</code>：exit 0。</li>
+  <li><span class="ok">通过</span> 选定代表测点 <code>--nocapture</code> 实跑：见上表，全部绿。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>未做范围与遗留</h2>
+<ul>
+  <li><span class="pending">Phase 2 / Task 4</span>（lift 全局串行锁、有界并发）<strong>未在本阶段开始</strong>，按用户决策延后；这是 ≤600s 目标的主要后置来源。</li>
+  <li><span class="pending">Task 5</span>（进程生命周期收否收窄、<code>/proc</code> 扫描降频）<strong>未在该阶段开始</strong>。</li>
+  <li><span class="pending">Task 3 字面拆分</span>（<code>test4</code> / <code>test5</code> 的 <code>#[ignore]</code> 在线测试）<strong>跳过</strong> — 与计划 §7 非目标冲突，用户已确认跳过。如未来 Phase 2 仍受在线套件墙钟束缚，需先解决在线真假 API 依赖再讨论拆分。</li>
+  <li>套件绝对墙钟（目标 ≤1200s）<strong>未度量</strong>：本工作机单测全跑 >10min tool 上限。用户已选 defer，信任单测墙钟降幅。</li>
+  <li><strong>脚本已知瑕疵</strong>：本 worktree 使用的 <code>.worktree-scripts/replace_waits.py</code>（不入 git）对 <code>#[ignore]</code> 函数体的跳过有 race，<code>commands_git.rs</code> 起初误改了 <code>script_branch_forks_session</code>，后手动还原；<code>commands_query.rs</code> 4 个 <code>#[ignore]</code> 函数体保留正确。如未来复用此脚本，应将 <code>skip_ignored_until</code> 在进入函数体之前设置。</li>
+</ul>
+</section>
+</body>
+</html>

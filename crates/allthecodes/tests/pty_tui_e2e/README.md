@@ -368,6 +368,52 @@ HTML 文件可在浏览器中打开查看终端截图，带暗色终端样式和
 - `script::tests::script_abort_and_recover` — 模板中断恢复
 - `script::tests::script_model_switch` — 模板模型切换
 
+## 时效策略（信号化等待）
+
+> 实施依据：`development/test/pty-tui-e2e-timing-plan.md`（Task 1 + Task 2 阶段）。
+
+历史上离线套件使用大量硬编码 `TestStep::Wait(Duration::from_secs(2))` 等"等待屏幕静下来再读取"的固定等待。基线 1930s 中相当比例来自这些所选时间（其中很多并不必要），且会因机器波动 flaky。**信号化等待**的做法是：用屏幕内容判断"已经到该到的地方没"，命中即返回，未命中则短 timeout 后失败。
+
+### 何时用哪种等待
+
+| 模式 | 何时用 | 实现 |
+|------|--------|------|
+| `WaitForScreenText(needle, timeout)` | 紧跟 `Command` 之后需要断言屏幕出现某文字 | 命中 needle 即返回（实测 ~150-270ms）；超时才 stage 时间到达 timeout 上界 |
+| `WaitForAny(needles, timeout)` | 多个等价成功信号任选其一（如 "Effort set to" 但也可能 "Current profile has no configured"） | 任一命中即返回 |
+| `Wait(Duration::from_millis(500))` | 在 `Snapshot` 之前给缓冲一个短稳定窗口（命令输出刷屏已基本完成，但仍要给 vt100 时间分页） | 与上面信号化不冲突：Snapshot 读的是屏幕瞬时状态，500ms 量级已够 |
+| `Wait(Duration::from_secs(2))` 之后 `AssertNoPanic` | **不要再用** | `AssertNoPanic` 内部已 sleep 200ms 足够 buffer flush |
+| `Wait(Duration::from_secs(2))` 紧跟 `SkipTrustGate` | **不要再用** | `SkipTrustGate` 内部已 sleep `RENDER_WAIT`(3s) + 500ms |
+
+### Drop / Replace 规则
+
+每次替换前必须先看上下两行：
+
+1. `SkipTrustGate` → `Wait(2s)` → **DROP**：后续步骤无信号依赖
+2. `Command(X)` → `Wait(2s)` → `AssertScreenContains(needle)`：**REPLACE** 为
+   `Command(X)` → `WaitForScreenText(needle, 3s)`
+3. `Command(X)` → `Wait(Ns)` → `Snapshot`：**缩短** 为
+   `Command(X)` → `Wait(Duration::from_millis(500))` → `Snapshot`
+   （Snapshot 是调试用途，留个短窗口即可）
+4. `Y` → `Wait(Ns)` → `AssertNoPanic/Snapshot`：**DROP**，下游已自带稳定窗口
+
+### 范围与边界
+
+- **离线测试**：替换原 11 个测试文件里 200+ 个固定 `Wait(secs)` 步骤中绝大多数。`commands_surface.rs` 已经 `SHORT_WAIT` 常量 + 信号化，无改动。
+- **在线测试**（`#[ignore = "requires real API key"]`）：**不替换其内对 `API_TIMEOUT` 的依赖**，且保留它们原有的固定 `Wait` —— 在线测试的耗时由 API 调用决定，不在本计划的可提速范围（参 §1.4 + §7 非目标）。脚本扫描器对带有 `#[ignore]` 属性的函数体应跳过替换。
+
+### 量化
+
+按 plan §6.1 的验收：替换后单测墙钟大体会从 ~7-13s 降到 ~4-5s（命令输出回显在数百毫秒级，旧版每步固定砍 2s 浪费）。绝对套件墙钟（≤1200s Phase 1 阈值）请用 `time cargo test -p allthecodes --test pty_tui_e2e -- --nocapture` 自行度量（与硬件强相关，工作机差异 ±30%）。
+
+### 维护纪律（针对新加测试）
+
+写新的离线测试时：
+
+- 在 `Command` 后要看屏幕就直接 `WaitForScreenText(needle, timeout)` —— 不要 `Wait(2s) + AssertScreenContains` 双步。
+- 在 `SkipTrustGate` 后不要再插 `Wait(2s)`；trust gate 自己睡了 render。
+- 想 snapshot 调试时留一个 `Wait(Duration::from_millis(500))` 短窗口，不要 `Wait(2s)`。
+- 替代方案是 clippy-style 检查（待补）：作为本计划 Task 4 之后的收尾项。
+
 ## 添加新测试
 
 ### 方式 1：使用模板引擎（推荐）
