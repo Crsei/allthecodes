@@ -2,7 +2,6 @@
 
 use crate::script::{TestCase, TestRunner, TestStep};
 use crate::tests::SCRIPTS_LOG_ROOT;
-use std::time::Duration;
 
 /// T01：/logout — 清理认证凭据与 onboarding 状态。
 ///
@@ -20,9 +19,7 @@ fn logout_command() {
     let case = TestCase::new("logout_command")
         .log_root(SCRIPTS_LOG_ROOT)
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("logout".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Snapshot("logout_result".into()));
 
@@ -44,9 +41,7 @@ fn advisor_show() {
     let case = TestCase::new("advisor_show")
         .log_root(SCRIPTS_LOG_ROOT)
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("advisor".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Snapshot("advisor_show".into()));
 
@@ -68,9 +63,7 @@ fn advisor_set_model() {
     let case = TestCase::new("advisor_set_model")
         .log_root(SCRIPTS_LOG_ROOT)
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("advisor set gpt-5.5".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Snapshot("advisor_set_model".into()));
 
@@ -92,9 +85,7 @@ fn advisor_clear() {
     let case = TestCase::new("advisor_clear")
         .log_root(SCRIPTS_LOG_ROOT)
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("advisor clear".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Snapshot("advisor_clear".into()));
 
