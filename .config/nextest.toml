@@ -8,7 +8,10 @@ path = "junit.xml"
 inherits = "default"
 
 [test-groups.tui_pty_e2e]
-max-threads = 1
+# Phase 2: lifted the global pty serialization lock (harness.rs `cleanup_lock`).
+# Validated at 4 with spot parallel run (4 offline tests, no flake). Bump higher
+# only after a full pty_tui_e2e sweep records zero interference.
+max-threads = 4
 
 [test-groups.integration_process_heavy]
 max-threads = 2

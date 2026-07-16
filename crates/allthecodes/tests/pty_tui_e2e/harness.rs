@@ -8,7 +8,9 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 // ─── 路径与配置 ──────────────────────────────────────────────────────
@@ -24,14 +26,18 @@ pub fn workspace() -> &'static str {
     })
 }
 
-/// 日志输出目录（按时间戳命名，每轮测试进程共享一个）。
+/// 日志输出目录。
+///
+/// Phase 2 起并发：进程级 timestamp 目录 + PID 后缀，保证 nextest 多进程
+/// 同秒跑也写不同目录（PID 进程级别唯一）。`test_subdir(test_name)` 再按名隔离。
 pub fn logs_dir() -> &'static PathBuf {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let now = chrono::Local::now();
+        let pid = std::process::id();
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("logs")
-            .join(format!("pty_tui_e2e_{}", now.format("%Y%m%d%H%M")));
+            .join(format!("pty_tui_e2e_{}_{}", now.format("%Y%m%d%H%M"), pid));
         std::fs::create_dir_all(&dir).expect("create logs dir");
         dir
     })
@@ -58,7 +64,12 @@ pub fn default_args() -> Vec<&'static str> {
     vec!["-C", workspace(), "--permission-mode", "bypass"]
 }
 
-fn pty_test_lock() -> MutexGuard<'static, ()> {
+/// 短临界区锁：仅用于"扫描 `/proc` + 信号残留 workspace 进程"互斥。
+///
+/// Phase 2 起 `PtySession` 不再持此锁——会话期间允许并发；只在每个测试
+/// `finish_in_dir` 收尾时短暂持有，避免两个并发收尾同时扫 `/proc` 行为
+/// 重复 + 信号同一 pid 二次。
+fn cleanup_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
@@ -99,7 +110,6 @@ pub const API_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 伪终端会话：在真实 PTY 中启动二进制，捕获输出，模拟输入。
 pub struct PtySession {
-    _serial_guard: MutexGuard<'static, ()>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     #[cfg(unix)]
@@ -129,7 +139,6 @@ impl PtySession {
         strip_keys: bool,
         envs: &[(&str, &str)],
     ) -> Self {
-        let serial_guard = pty_test_lock();
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -209,7 +218,6 @@ impl PtySession {
         });
 
         Self {
-            _serial_guard: serial_guard,
             writer: shared_writer,
             child,
             #[cfg(unix)]
@@ -1045,6 +1053,8 @@ struct WorkspaceProcess {
 
 #[cfg(unix)]
 fn cleanup_detached_workspace_processes() {
+    // Phase 2：仅在 cleanup 短临界区持锁；不再包住整个会话。
+    let _guard = cleanup_lock();
     let targets = find_detached_workspace_processes();
     if targets.is_empty() {
         return;
@@ -1150,6 +1160,51 @@ fn workspace_process_is_alive(pid: libc::pid_t) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Phase-2 Task 4 Step 1：验证 `PtySession::spawn` 不再被全局 lock 串行化。
+    ///
+    /// 同时让两个线程各自 `PtySession::spawn` 一个 cc-rust 实例，在 spawn 之后立即
+    /// 把"PtySession 还活着"计数登记进 `Arc<AtomicUsize>`；`overlap ≥ 2` 即代表
+    /// 两个会话在时间窗内重叠。Phase 1 时 `_serial_guard` 把整个会话串行化，
+    /// 此 test 红；Phase 2 起 cleanup_lock 只在收尾临界区持锁，此 test 应绿。
+    #[test]
+    fn concurrent_sessions_do_not_serialize() {
+        let alive = Arc::new(AtomicUsize::new(0));
+        let overlap = Arc::new(AtomicUsize::new(0));
+
+        let args = default_args();
+        let spawn_thread = move |_alive: Arc<AtomicUsize>, _overlap: Arc<AtomicUsize>| {
+            let alive = _alive;
+            let overlap = _overlap;
+            let args = args.clone();
+            thread::spawn(move || {
+                let session = PtySession::spawn(&args, 80, 24, true);
+                let cur = alive.fetch_add(1, Ordering::SeqCst) + 1;
+                if cur > 1 {
+                    overlap.fetch_max(cur, Ordering::SeqCst);
+                }
+                // Hold ~700ms — overlap window
+                std::thread::sleep(Duration::from_millis(700));
+                drop(session);
+                alive.fetch_sub(1, Ordering::SeqCst);
+            })
+        };
+
+        let h1 = spawn_thread(Arc::clone(&alive), Arc::clone(&overlap));
+        // Tiny offset so thread-1 has entered spawn() first
+        std::thread::sleep(Duration::from_millis(50));
+        let h2 = spawn_thread(Arc::clone(&alive), Arc::clone(&overlap));
+
+        h1.join().expect("t1");
+        h2.join().expect("t2");
+
+        let max_overlap = overlap.load(Ordering::SeqCst);
+        assert!(
+            max_overlap >= 2,
+            "concurrent sessions were serialized by the global pty lock; \
+             max overlap observed = {max_overlap}, expected ≥ 2"
+        );
+    }
 
     #[test]
     fn status_candidate_accepts_model_path_line() {
