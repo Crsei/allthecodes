@@ -6,8 +6,8 @@
 
 ## Implementation Result (2026-07-16)
 
-Implemented in `17f32665` and included in the backend artifacts refreshed by
-`e5163791`:
+Implemented in `61629dc1` and included in the backend artifacts refreshed by
+`8f3baa52`:
 
 - list/detail/diff/approve/reject are registered as typed REST and API-RPC
   operations;

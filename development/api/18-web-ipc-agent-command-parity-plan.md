@@ -8,7 +8,7 @@
 
 ## Implementation Result (2026-07-16)
 
-Implemented in `de13d91b` without adding duplicate REST task/agent/team
+Implemented in `054b8211` without adding duplicate REST task/agent/team
 operations:
 
 - `/api/ipc/ws` dispatches the existing Agent and Team commands through the
