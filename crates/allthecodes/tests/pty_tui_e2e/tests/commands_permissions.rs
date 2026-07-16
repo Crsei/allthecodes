@@ -25,10 +25,8 @@ fn sandbox_shows_status() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("sandbox".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("sandbox_status".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -42,10 +40,8 @@ fn sandbox_status_subcommand() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("sandbox status".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("status_sub".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -59,13 +55,10 @@ fn sandbox_toggle() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("sandbox on".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("sandbox off".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("after_off".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -79,10 +72,8 @@ fn sandbox_mode_workspace() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("sandbox mode workspace".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("mode_workspace".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -96,10 +87,8 @@ fn sandbox_mode_readonly() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("sandbox mode read-only".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("mode_readonly".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -113,10 +102,8 @@ fn sandbox_mode_full() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("sandbox mode full".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("mode_full".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -130,10 +117,8 @@ fn sandbox_require() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("sandbox require".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("require".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -147,13 +132,10 @@ fn sandbox_network_toggle() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("sandbox network off".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("sandbox network on".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("network_on".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -167,10 +149,8 @@ fn sandbox_no_network() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("sandbox no-network".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("no_network".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -188,11 +168,9 @@ fn permissions_mode_default() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions mode default".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains("default".into()))
+        .step(TestStep::WaitForScreenText("default".into(), Duration::from_secs(3)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -205,11 +183,9 @@ fn permissions_mode_auto() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions mode auto".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains("Auto".into()))
+        .step(TestStep::WaitForScreenText("Auto".into(), Duration::from_secs(3)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -222,11 +198,9 @@ fn permissions_mode_plan() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions mode plan".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains("plan".into()))
+        .step(TestStep::WaitForScreenText("plan".into(), Duration::from_secs(3)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -239,10 +213,8 @@ fn permissions_mode_accept_edits() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions mode acceptEdits".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -255,10 +227,8 @@ fn permissions_mode_dont_ask() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions mode dontAsk".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -275,10 +245,8 @@ fn permissions_allow_rule() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions allow Bash --session".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("allow_rule".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -292,10 +260,8 @@ fn permissions_ask_rule() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions ask Edit --session".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("ask_rule".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -309,10 +275,8 @@ fn permissions_deny_rule() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions deny Write --session".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("deny_rule".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -330,13 +294,10 @@ fn permissions_session_grant() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions session-grant Bash".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("permissions clear-session-grants".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("grants_cleared".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -354,10 +315,8 @@ fn permissions_reset() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions reset".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("reset".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -375,10 +334,8 @@ fn permissions_alias_perms() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("perms".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("perms_alias".into()))
         .step(TestStep::AssertNoPanic);
 
