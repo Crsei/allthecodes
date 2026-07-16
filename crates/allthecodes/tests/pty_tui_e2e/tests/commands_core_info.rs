@@ -18,9 +18,7 @@ fn exit_command_quits_repl() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("exit".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -36,9 +34,7 @@ fn exit_alias_q_quits_repl() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("q".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -54,9 +50,7 @@ fn exit_alias_quit_quits_repl() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("quit".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -77,11 +71,10 @@ fn config_show_displays_settings() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("config".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains(
+        .step(TestStep::WaitForScreenText(
             "Show effective config".into(),
+            Duration::from_secs(3),
         ))
         .step(TestStep::Snapshot("config_show".into()));
 
@@ -99,11 +92,8 @@ fn config_reset_restores_defaults() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("config set theme dark".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::Command("config reset".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Snapshot("after_reset".into()))
         .step(TestStep::AssertNoPanic);
 
@@ -121,11 +111,10 @@ fn config_alias_settings() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("settings".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains(
+        .step(TestStep::WaitForScreenText(
             "Show effective config".into(),
+            Duration::from_secs(3),
         ));
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -145,9 +134,7 @@ fn debug_command_shows_info() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("debug".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Snapshot("debug_output".into()));
 
@@ -169,10 +156,8 @@ fn effort_shows_current() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("effort".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains("Effort / Filter".into()));
+        .step(TestStep::WaitForScreenText("Effort / Filter".into(), Duration::from_secs(3)));
 
     TestRunner::new().run(&case).assert_no_errors();
 }
@@ -188,9 +173,7 @@ fn effort_set_high_reports_profile_result() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("effort high".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::WaitForAny(
             vec![
                 "Effort set to".into(),
@@ -213,9 +196,7 @@ fn effort_rejects_invalid() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("effort extreme".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::WaitForAny(
             vec!["low".into(), "medium".into(), "high".into()],
             Duration::from_secs(5),
@@ -241,15 +222,11 @@ fn fast_toggle() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("fast status".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::Snapshot("fast_initial".into()))
         .step(TestStep::Command("fast on".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
-        .step(TestStep::AssertScreenContains("Fast".into()))
+        .step(TestStep::WaitForScreenText("Fast".into(), Duration::from_secs(3)))
         .step(TestStep::Command("fast off".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -270,9 +247,7 @@ fn context_command_shows_usage() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("context".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::WaitForAny(
             vec!["token".into(), "context".into()],
             Duration::from_secs(5),
@@ -292,9 +267,7 @@ fn context_alias_ctx() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("ctx".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -315,9 +288,7 @@ fn files_command_works() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("files".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -338,9 +309,7 @@ fn copy_no_crash_fresh_session() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("copy".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -357,9 +326,7 @@ fn copy_alias_cp() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("cp".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -380,9 +347,7 @@ fn compact_no_crash_empty() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("compact".into()))
-        .step(TestStep::Wait(Duration::from_secs(3)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -403,9 +368,7 @@ fn keybindings_command() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("keybindings".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::WaitForAny(
             vec!["Ctrl".into(), "key".into()],
             Duration::from_secs(5),
@@ -429,9 +392,7 @@ fn statusline_command() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("statusline".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -452,9 +413,7 @@ fn terminal_setup_command() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("terminal-setup".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -475,9 +434,7 @@ fn doctor_command() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("doctor".into()))
-        .step(TestStep::Wait(Duration::from_secs(3)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Snapshot("doctor".into()));
 
@@ -495,9 +452,7 @@ fn doctor_alias_diagnostics() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("diagnostics".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -514,9 +469,7 @@ fn doctor_alias_diag() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("diag".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -537,9 +490,7 @@ fn experimental_command() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("experimental".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -560,27 +511,19 @@ fn all_core_aliases_batch() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("v".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("settings".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("ctx".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("cp".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("keys".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("diag".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("exp".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
