@@ -106,6 +106,17 @@ pub const EXIT_CONFIRM_DELAY: Duration = Duration::from_millis(500);
 /// API 超时：网络 + 模型延迟。
 pub const API_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Phase-2 Task 5：cleanup 节流窗——两次 `/proc` 扫描最少间隔 2s。
+pub const CLEANUP_THROTTLE: Duration = Duration::from_secs(2);
+
+/// Phase-2 Task 5：被节流跳过的 cleanup 调用次数（测试可读断言）。
+pub static CLEANUP_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Phase-2 Task 5：find_detached_workspace_processes 实际触发次数（测试用）。
+pub static FIND_DETACHED_SCAN_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+static LAST_CLEANUP_SCAN: OnceLock<std::sync::Mutex<Instant>> = OnceLock::new();
+
 // ─── PtySession ──────────────────────────────────────────────────────
 
 /// 伪终端会话：在真实 PTY 中启动二进制，捕获输出，模拟输入。
@@ -712,12 +723,15 @@ impl PtySession {
         test_name: &str,
         dir: &std::path::Path,
     ) -> (CapturedOutput, CapturePaths) {
-        std::thread::sleep(Duration::from_millis(200));
+        // Phase-2 Task 5：从 200ms → 100ms 收尾 sleep（reader 线程已 endpoint-flush）。
+        std::thread::sleep(Duration::from_millis(100));
         drop(self.slave.take());
         drop(self.writer);
         if let Some(h) = self.reader_thread.take() {
             let start = Instant::now();
-            while !h.is_finished() && start.elapsed() < Duration::from_millis(500) {
+            // Phase-2 Task 5：reader join deadline 从 500ms → 250ms（多数情况下
+            // reader 在 endpoint 收到 Eof 后 < 50ms 退出）。
+            while !h.is_finished() && start.elapsed() < Duration::from_millis(250) {
                 std::thread::sleep(Duration::from_millis(20));
             }
             if h.is_finished() {
@@ -1055,6 +1069,16 @@ struct WorkspaceProcess {
 fn cleanup_detached_workspace_processes() {
     // Phase 2：仅在 cleanup 短临界区持锁；不再包住整个会话。
     let _guard = cleanup_lock();
+    // Phase 2 Task 5：节流 — 若距上次扫描不足 CLEANUP_THROTTLE，跳过 /proc 扫描。
+    let last = LAST_CLEANUP_SCAN.get_or_init(|| std::sync::Mutex::new(Instant::now()));
+    {
+        let mut g = last.lock().expect("last cleanup scan poisoned");
+        if g.elapsed() < CLEANUP_THROTTLE {
+            CLEANUP_SKIP_COUNT.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        *g = Instant::now();
+    }
     let targets = find_detached_workspace_processes();
     if targets.is_empty() {
         return;
@@ -1087,6 +1111,7 @@ fn cleanup_detached_workspace_processes() {}
 
 #[cfg(unix)]
 fn find_detached_workspace_processes() -> Vec<WorkspaceProcess> {
+    FIND_DETACHED_SCAN_COUNT.fetch_add(1, Ordering::Relaxed);
     let workspace = workspace();
     let current_pid = std::process::id();
     let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -1203,6 +1228,42 @@ mod tests {
             max_overlap >= 2,
             "concurrent sessions were serialized by the global pty lock; \
              max overlap observed = {max_overlap}, expected ≥ 2"
+        );
+    }
+
+    /// Phase-2 Task 5：验证 cleanup 调用被节流。
+    ///
+    /// 调用 5 次连续 `cleanup_detached_workspace_processes()`（每次间隔 50ms，
+    /// 总耗时 250ms < 节流窗 2s）。若节流生效，至少后 4 次跳过 /proc 扫描
+    /// （`CLEANUP_SKIP_COUNT` ≥ 4），实际 `find_detached_workspace_processes`
+    /// 触发次数 ≤ 1。
+    ///
+    /// 注意：测试进程级的 throttle 与测试顺序敏感——若其他 test 在测试间
+    /// 留下 < 2s 的扫描时间戳，本断言仍应成立（连续 5 次只多 1 次扫描就够）。
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_detached_workspace_processes_throttles() {
+        let before_skip = CLEANUP_SKIP_COUNT.load(Ordering::Relaxed);
+        let before_scan = FIND_DETACHED_SCAN_COUNT.load(Ordering::Relaxed);
+
+        for _ in 0..5 {
+            cleanup_detached_workspace_processes();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let after_skip = CLEANUP_SKIP_COUNT.load(Ordering::Relaxed);
+        let after_scan = FIND_DETACHED_SCAN_COUNT.load(Ordering::Relaxed);
+
+        let skipped = after_skip.saturating_sub(before_skip);
+        let scans = after_scan.saturating_sub(before_scan);
+
+        assert!(
+            skipped >= 4,
+            "cleanup was not throttled: skipped {skipped}/5 calls, expected ≥ 4"
+        );
+        assert!(
+            scans <= 1,
+            "cleanup scanned /proc too many times: {scans}, expected ≤ 1"
         );
     }
 
