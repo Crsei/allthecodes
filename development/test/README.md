@@ -15,7 +15,7 @@
 | [worktree-session-tdd-test-plan.md](worktree-session-tdd-test-plan.md) | `development/worktree/worktree-aware-session-plan.md` | **已实现**（回归） | ✅ 回归 |
 | [tui-command-operation-tdd-test-plan.md](tui-command-operation-tdd-test-plan.md) | `development/tui/command-operation-display-plan.md` | **已实现**（回归） | ✅ 回归 |
 | [runtime-current-state-tdd-reference.md](runtime-current-state-tdd-reference.md) | `development/runtime/` 4 份 RFC 状态文档 | 已知边界参考 | 📖 参考 |
-| [pty-tui-e2e-timing-plan.md](pty-tui-e2e-timing-plan.md) | `development/test/pty-tui-e2e-timing-plan.md`（本目录内） | **Phase 1 已实现**（信号化等待替换） | ✅ 部分 |
+| [pty-tui-e2e-timing-plan.md](pty-tui-e2e-timing-plan.md) | `development/test/pty-tui-e2e-timing-plan.md`（本目录内） | **Phase 1+2 已实现**（信号化等待 + cleanup 节流 + 串行锁 lift；nextest `max-threads=1` 待 Phase 3 per-session workspace 隔离后再升 2 → 4） | ✅ 部分 |
 
 ## 测试层级定义
 

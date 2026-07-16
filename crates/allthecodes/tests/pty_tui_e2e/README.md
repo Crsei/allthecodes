@@ -414,6 +414,35 @@ HTML 文件可在浏览器中打开查看终端截图，带暗色终端样式和
 - 想 snapshot 调试时留一个 `Wait(Duration::from_millis(500))` 短窗口，不要 `Wait(2s)`。
 - 替代方案是 clippy-style 检查（待补）：作为本计划 Task 4 之后的收尾项。
 
+### 并发与锁（Phase 2）
+
+历史上 `PtySession::spawn` 持有一个全局 `OnceLock<Mutex<()>>` 守卫 `_serial_guard`，**把整个会话生命周期串行化**——任何时刻只有一个 cc-rust 在 PTY 里跑。Phase 2 已落地：
+
+- **lift 全局串行锁**：`PtySession` 不再持 guard；并发 invariant 由 `concurrent_sessions_do_not_serialize` 测试钉住（两线程同时 spawn 同会话 → overlap ≥ 2）。
+- **收窄到 `cleanup_lock()`**：仅在 `cleanup_detached_workspace_processes()` 这段"扫 `/proc` + 发信号"短临界区持锁，避免两个并发收尾重复扫同一组 pid。
+- **per-process 日志根**：`logs_dir()` 加 PID 后缀，nextest 多进程同秒领号互不覆盖；`test_subdir(test_name)` 已天然按测试名隔离。
+
+**但是** `nextest` `tui_pty_e2e` test-group **目前仍 `max-threads = 1`**。原因：跑了 16 个离线测试的抽样墙钟：
+
+| `max-threads` | 通过 | 现象 |
+|---------------|------|------|
+| 1 | 16/16 | ✅ 稳定 |
+| 2 | 14/16 | `effort_shows_current` / `config_alias_settings` flake（`WaitForScreenText` 在 3s 内未等到屏幕文字） |
+| 4 | 13/16 | 上限；后续 cc-rust 启动被拖慢到 window 外 |
+
+根因不是锁本身，而是**所有 cc-rust 子进程共用同一个 `/tmp/cc-rust-e2e-test` workspace**——并发的 `settings.json` / `sessions.db` 读写彼此竞争。修复路径（Phase 3）是 per-session workspace 隔离（`/tmp/cc-rust-e2e-test-{pid}-{ts}`），届时再 bump `max-threads` 到 2 → 4。在此之前锁虽然不再守门，但 `max-threads=1` 仍把并发关回去——保守优先于 flake。
+
+### 收尾 / cleanup 节流（Phase 2 Task 5）
+
+`capture_output_after_finish` 里两次常量被收紧：
+
+| 参数 | 旧 | 新 |
+|------|----|----|
+| 收尾 buffer flush sleep | 200ms | 100ms |
+| reader-thread join deadline | 500ms | 250ms |
+
+`cleanup_detached_workspace_processes()` 自带 2s 节流窗（`OnceLock<Mutex<Instant>>` + `CLEANUP_THROTTLE`）：若距上次扫描不足 2s，跳过本次 `/proc` 扫描，原子计数 `CLEANUP_SKIP_COUNT` 自增供测试观测。平行 invariant 由 `cleanup_detached_workspace_processes_throttles` 钉住（5 次快速调用 ⇒ ≥4 次跳过 / ≤1 次实际扫描）。每次收尾可省下大约 100-300ms 的 `/proc` 遍历。
+
 ## 添加新测试
 
 ### 方式 1：使用模板引擎（推荐）

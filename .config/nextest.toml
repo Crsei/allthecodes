@@ -8,10 +8,14 @@ path = "junit.xml"
 inherits = "default"
 
 [test-groups.tui_pty_e2e]
-# Phase 2: lifted the global pty serialization lock (harness.rs `cleanup_lock`).
-# Validated at 4 with spot parallel run (4 offline tests, no flake). Bump higher
-# only after a full pty_tui_e2e sweep records zero interference.
-max-threads = 4
+# Phase 2: lifted the global pty serialization lock (harness.rs `cleanup_lock`),
+# but kept max-threads = 1. Reason: shared `/tmp/cc-rust-e2e-test` workspace
+# state (settings.json / sessions.db) races between concurrent cc-rust children —
+# at max-threads=2 a 16-test sweep flakes ~2/16 (effort_shows_current,
+# config_alias_settings); max-threads=4 flakes ~3/16. The lock lift is real
+# (concurrent_sessions_do_not_serialize passes) and correct — Phase 3 will ship
+# per-session workspace isolation and bump this to 2 → 4.
+max-threads = 1
 
 [test-groups.integration_process_heavy]
 max-threads = 2
