@@ -27,7 +27,10 @@ fn session_command_shows_info() {
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Command("session".into()))
-        .step(TestStep::WaitForScreenText("session".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "session".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::Snapshot("session_info".into()))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
@@ -80,7 +83,10 @@ fn rename_command_sets_title() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::Command("rename My Test Session".into()))
-        .step(TestStep::WaitForScreenText("My Test Session".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "My Test Session".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
         .step(TestStep::Wait(Duration::from_millis(500)))
@@ -218,7 +224,10 @@ fn add_dir_with_path() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::Command("add-dir /tmp".into()))
-        .step(TestStep::WaitForScreenText("/tmp".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "/tmp".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
         .step(TestStep::Wait(Duration::from_millis(500)))

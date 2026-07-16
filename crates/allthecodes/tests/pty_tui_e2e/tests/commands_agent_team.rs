@@ -15,7 +15,10 @@ fn agents_list() {
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Command("agents".into()))
-        .step(TestStep::WaitForScreenText("agent".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "agent".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::Snapshot("agents_list".into()))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))

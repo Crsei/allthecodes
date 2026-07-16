@@ -157,7 +157,10 @@ fn effort_shows_current() {
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Command("effort".into()))
-        .step(TestStep::WaitForScreenText("Effort / Filter".into(), Duration::from_secs(3)));
+        .step(TestStep::WaitForScreenText(
+            "Effort / Filter".into(),
+            Duration::from_secs(3),
+        ));
 
     TestRunner::new().run(&case).assert_no_errors();
 }
@@ -225,7 +228,10 @@ fn fast_toggle() {
         .step(TestStep::Command("fast status".into()))
         .step(TestStep::Snapshot("fast_initial".into()))
         .step(TestStep::Command("fast on".into()))
-        .step(TestStep::WaitForScreenText("Fast".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "Fast".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::Command("fast off".into()))
         .step(TestStep::AssertNoPanic);
 

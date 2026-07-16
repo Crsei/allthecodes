@@ -170,7 +170,10 @@ fn permissions_mode_default() {
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions mode default".into()))
-        .step(TestStep::WaitForScreenText("default".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "default".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -185,7 +188,10 @@ fn permissions_mode_auto() {
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions mode auto".into()))
-        .step(TestStep::WaitForScreenText("Auto".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "Auto".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();
@@ -200,7 +206,10 @@ fn permissions_mode_plan() {
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Snapshot("initial".into()))
         .step(TestStep::Command("permissions mode plan".into()))
-        .step(TestStep::WaitForScreenText("plan".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "plan".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::AssertNoPanic);
 
     TestRunner::new().run(&case).assert_no_errors();

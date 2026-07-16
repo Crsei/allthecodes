@@ -14,7 +14,10 @@ fn mcp_help_no_args() {
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Command("mcp".into()))
-        .step(TestStep::WaitForScreenText("list".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "list".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::Snapshot("mcp_help".into()))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
@@ -224,7 +227,10 @@ fn plugin_enable_missing_id() {
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Command("plugin enable".into()))
-        .step(TestStep::WaitForScreenText("Usage".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "Usage".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::Snapshot("plugin_enable_missing_id".into()))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
@@ -242,7 +248,10 @@ fn plugin_disable_missing_id() {
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Command("plugin disable".into()))
-        .step(TestStep::WaitForScreenText("Usage".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "Usage".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::Snapshot("plugin_disable_missing_id".into()))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))

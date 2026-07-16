@@ -106,7 +106,10 @@ fn memory_set_get_rm_cycle() {
         ))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("memory get e2e_test_key".into()))
-        .step(TestStep::WaitForScreenText("test_value".into(), Duration::from_secs(3)))
+        .step(TestStep::WaitForScreenText(
+            "test_value".into(),
+            Duration::from_secs(3),
+        ))
         .step(TestStep::Command("memory rm e2e_test_key".into()))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
