@@ -27,78 +27,59 @@ fn alias_batch_group1() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         // /h
         .step(TestStep::Command("h".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /?
         .step(TestStep::Command("?".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /v
         .step(TestStep::Command("v".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /settings
         .step(TestStep::Command("settings".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /ctx
         .step(TestStep::Command("ctx".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /cp
         .step(TestStep::Command("cp".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /mem
         .step(TestStep::Command("mem".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /perms
         .step(TestStep::Command("perms".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /gitbranch
         .step(TestStep::Command("gitbranch".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /keys
         .step(TestStep::Command("keys".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /shortcuts
         .step(TestStep::Command("shortcuts".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /status-line
         .step(TestStep::Command("status-line".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /term-setup
         .step(TestStep::Command("term-setup".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /terminal
         .step(TestStep::Command("terminal".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /diagnostics
         .step(TestStep::Command("diagnostics".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /diag
         .step(TestStep::Command("diag".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /exp
         .step(TestStep::Command("exp".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         // /experiments
         .step(TestStep::Command("experiments".into()))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
         .step(TestStep::Wait(Duration::from_millis(500)))
@@ -122,9 +103,7 @@ fn alias_batch_group2_exit() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("q".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
     TestRunner::new().run(&case_q).assert_no_errors();
 
@@ -133,9 +112,7 @@ fn alias_batch_group2_exit() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("quit".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic);
     TestRunner::new().run(&case_quit).assert_no_errors();
 }
@@ -156,58 +133,44 @@ fn alias_batch_group3() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         // /markdown-export
         .step(TestStep::Command("markdown-export".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /audit
         .step(TestStep::Command("audit".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /sexport
         .step(TestStep::Command("sexport".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /structured-export
         .step(TestStep::Command("structured-export".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /plugins
         .step(TestStep::Command("plugins".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /kairos
         .step(TestStep::Command("kairos".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /logs
         .step(TestStep::Command("logs".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /teams
         .step(TestStep::Command("teams".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /teamonboarding
         .step(TestStep::Command("teamonboarding".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /coord
         .step(TestStep::Command("coord".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /secreview
         .step(TestStep::Command("secreview".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /cron
         .step(TestStep::Command("cron".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         // /br
         .step(TestStep::Command("br".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
         .step(TestStep::Wait(Duration::from_millis(500)))
@@ -228,9 +191,7 @@ fn unknown_command_no_crash() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("nonexistent-command-xyz".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
         .step(TestStep::Wait(Duration::from_millis(500)))
@@ -251,10 +212,8 @@ fn empty_slash_command() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::TypeText("/".into()))
         .step(TestStep::Key(TestKey::Enter))
-        .step(TestStep::Wait(Duration::from_secs(1)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
         .step(TestStep::Wait(Duration::from_millis(500)))
@@ -275,9 +234,7 @@ fn command_with_whitespace() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("  help  ".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
         .step(TestStep::Wait(Duration::from_millis(500)))
@@ -298,9 +255,7 @@ fn command_case_sensitivity() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::Command("HELP".into()))
-        .step(TestStep::Wait(Duration::from_secs(2)))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Key(TestKey::CtrlC))
         .step(TestStep::Wait(Duration::from_millis(500)))
