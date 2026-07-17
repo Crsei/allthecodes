@@ -101,9 +101,7 @@ fn memory_set_get_rm_cycle() {
         .log_root(SCRIPTS_LOG_ROOT)
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
-        .step(TestStep::Command(
-            "memory set e2e_test_key v9Z".into(),
-        ))
+        .step(TestStep::Command("memory set e2e_test_key v9Z".into()))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("memory get e2e_test_key".into()))
         .step(TestStep::WaitForScreenText(
