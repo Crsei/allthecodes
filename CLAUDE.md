@@ -281,6 +281,26 @@ ApiClient::from_backend()
 - Windows 环境下如果 `omx explore` 的只读 harness 不可用，直接用 PowerShell + `rg` 做等价只读定位，不要把它当成仓库问题
 - 文档更新按任务拆分，每完成一个文档更新任务就单独 commit；commit 描述保持一句话，直接说明这次提交的目的即可
 
+## 测试分层验证 SOP（立即可行）
+
+> 来源：复盘 Codex session `019f668f-207c-7853-aa03-e9f0755bcd9e`（2026-07-15→16）。该 session 用了 5 轮 `cargo test --workspace` + 95 分钟轮询守候才把 1 个 release 推上去，根因并非模型不努力，而是「单一巨型 PTY 套件（32min/轮）绑架了所有验证」+「测试夹具漏掉的隔离以慢/挂形式暴露」。下面 5 条**全部立刻可做**，不需要改产品代码或 CI：
+
+1. **分层验证，禁止一开始就全仓跑**：任何 commit 前的本地验证都按以下顺序，禁止第一轮就直接 `cargo test --workspace`：
+   - `cargo fmt --all --check`（秒级）
+   - `cargo clippy --workspace --all-targets -- -D warnings`（分钟级）
+   - 非-PTY crate：`cargo test --workspace --exclude allthecodes --lib`（分钟级，可先抓 daemon/IPC/types/protocol 等 crate 级失败）
+   - **最后** 单独跑 PTY：`cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1`（32min/轮）
+
+2. **快照一次性 batch**：首次出现 PTY snapshot 失败时，用 `INSTA_UPDATE=always cargo test -p allthecodes --test pty_tui_e2e -- <failing-test>` 一次性更新所有 `.snap.new`，**统一肉眼审阅后一次提交**；禁止「修一个 → 跑全套 → 再发现下一个 → 再跑全套」的循环。
+
+3. **跨 worktree target 隔离**：单一仓库顺序工作时仍用全局 `…/.tmp/allthecodes-target`；**并行 worktree 时** 每个 worktree 各自 `export CARGO_TARGET_DIR=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/atc-<slug>`。共用一个 target 会让对方分支的陈旧 `types` 元数据被链接进来，造成 phantom 编译错误。
+
+4. **凭据/环境隔离前置守卫**：涉及认证、网络或凭据的测试（ACP、daemon、IPC、Web 鉴权等），在测试夹具启动时显式隔离 `CODEX_HOME`、`HTTP_PROXY`、`NO_PROXY=*`、`ANTHROPIC_API_KEY` 等环境，并强制 `RUNTIME_ENVIRONMENT=test`；禁止让测试靠真实环境被动发现未隔离。
+
+5. **全仓 `.workspace` 测试一次任务上限 2 次**：超过 2 次完整 `cargo test --workspace` 仍未拿 exit 0 时，**必须降级到分 crate 跑**，并在 worktree commit message 或 PR 描述里写明为什么分 crate 不足以定位失败；禁止「修一项就重跑全套」的无限循环。
+
+> 详细根因与"已修复"代码证据见 [`development/archive/KNOWN_ISSUES.md`](development/archive/KNOWN_ISSUES.md) §14（TESTISO-001..004）。后续整改（测试 binary 拆分、Codex exec 后台任务模型等）作为独立任务推进，不在本节范围。
+
 ## Per-Session Worktree 工作流（强制）
 
 每次需要同时改动 `CLAUDE.md` / `AGENTS.md` / 代码 / 文档 / 产物的任务，必须按「每个 session 单独构建工作树」的流程执行。**权威来源与完整流程见 [`development/workflow/2026-07-16-per-session-worktree-workflow-plan.md`](development/workflow/2026-07-16-per-session-worktree-workflow-plan.md)**，本节只列必须背诵的硬性约束：
