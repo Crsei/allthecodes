@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>测试隔离 / 长跑门禁 SOP — Worktree Workflow Artifact (2026-07-18)</title>
+<style>
+  body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;max-width:920px;margin:32px auto;padding:0 24px;color:#1f2328;background:#fff}
+  h1{font-size:1.45rem;border-bottom:2px solid #1f6feb;padding-bottom:8px;margin-bottom:6px}
+  h2{font-size:1.18rem;margin-top:30px;border-bottom:1px solid #d0d7de;padding-bottom:5px}
+  h3{font-size:1.02rem;margin-top:20px}
+  code{background:#f6f8fa;padding:2px 5px;border-radius:4px;font:13px/1.4 SFMono-Regular,Consolas,Liberation Mono,Menlo,monospace;color:#24292f}
+  pre{background:#f6f8fa;padding:12px 14px;border-radius:6px;overflow-x:auto;font:13px/1.5 SFMono-Regular,Consolas,Menlo,monospace}
+  table{border-collapse:collapse;width:100%;margin:10px 0}
+  th,td{border:1px solid #d0d7de;padding:6px 10px;text-align:left;vertical-align:top;font-size:14px}
+  th{background:#f6f8fa}
+  .meta{color:#57606a;font-size:13px;margin-bottom:18px}
+  .ok{color:#1a7f37;font-weight:600}
+  .warn{color:#9a6700;font-weight:600}
+  ul{padding-left:22px}
+  li{margin:3px 0}
+  a{color:#0969da;text-decoration:none}
+  a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+
+<h1>测试隔离 / 长跑门禁 SOP — Worktree Workflow Artifact</h1>
+<div class="meta">
+  日期：2026-07-18 &nbsp;|&nbsp; 任务 slug：<code>test-isolation-known-issues</code> &nbsp;|&nbsp; 工作分支：<code>worktree/test-isolation-known-issues</code> &nbsp;|&nbsp; 计划文件：<a href="../../workflow/2026-07-18-test-isolation-known-issues-plan.md">development/workflow/2026-07-18-test-isolation-known-issues-plan.md</a>
+</div>
+
+<h2>1. 任务目标</h2>
+<p>复盘 Codex session <code>019f668f-207c-7853-aa03-e9f0755bcd9e</code>（2026-07-15 → 2026-07-16），把该 session 暴露的「测试隔离 / 长跑门禁」共 4 类根因记录为防回归条目，并把 5 条「立即可行」的验证 SOP 写进 <code>CLAUDE.md</code> 与 <code>AGENTS.md</code>，让后续 session 不再陷入「5 轮全仓 + 95 分钟轮询守候」的低效循环。<strong>本次任务只改文档，不碰产品代码或 CI。</strong></p>
+
+<h2>2. 量化背景（session 复盘数据）</h2>
+<table>
+<tr><th>维度</th><th>数据</th></tr>
+<tr><td>全仓 <code>cargo test --workspace</code> 跑了</td><td>5 次（4 次未拿 exit 0）</td></tr>
+<tr><td>PTY 套件单轮耗时</td><td>32–34 分钟（215 项并发 PTY）</td></tr>
+<tr><td>"守候式轮询" agent 消息</td><td>77 条，占全部 agent 消息 47%</td></tr>
+<tr><td>三段最长连续守候</td><td>36.8 + 36.1 + 21.9 ≈ 95 分钟纯等待</td></tr>
+<tr><td>串行暴露的独立根因</td><td>5 类（PTY snapshot / PTY 陈旧断言 / daemon 时序 / IPC null / 第三轮截断）</td></tr>
+</table>
+
+<h2>3. 流程步骤（按 Per-Session Worktree Workflow 硬性约束）</h2>
+<ol>
+<li>本计划文件单独 commit 到主分支 <code>allthecodes</code>（commit <code>00cbb676</code>）。</li>
+<li><code>git worktree add -b worktree/test-isolation-known-issues .worktrees/test-isolation-known-issues allthecodes</code>（基于主分支 HEAD <code>00cbb676</code>）。</li>
+<li>在 worktree 内分别 commit：
+  <ul>
+    <li><code>CLAUDE.md</code>（新增「## 测试分层验证 SOP（立即可行）」节）→ <code>4c395e11</code>。</li>
+    <li><code>AGENTS.md</code>（同节，两文件各自维护）→ <code>80dcf7da</code>。</li>
+    <li><code>development/archive/KNOWN_ISSUES.md</code>（新增 §14，TESTISO-001..005）→ <code>9c4ceb6c</code>。</li>
+    <li>本 HTML artifact → 见下方 commit 列表。</li>
+  </ul>
+</li>
+<li><code>git merge --ff-only worktree/test-isolation-known-issues</code> &rarr; <code>git push origin allthecodes</code> &rarr; <code>git worktree remove</code> + <code>git branch -d</code>。</li>
+</ol>
+
+<h2>4. 改动列表</h2>
+<table>
+<tr><th>文件</th><th>改动</th><th>commit</th></tr>
+<tr><td><code>CLAUDE.md</code></td><td>在「### 注意事项」之后、「## Per-Session Worktree 工作流（强制）」之前插入「## 测试分层验证 SOP（立即可行）」节（5 条 + 来源说明 + 链接到 KNOWN_ISSUES §14）。</td><td><code>4c395e11</code></td></tr>
+<tr><td><code>AGENTS.md</code></td><td>同位置同节（与 CLAUDE.md 内容一致，两文件各自维护）。</td><td><code>80dcf7da</code></td></tr>
+<tr><td><code>development/archive/KNOWN_ISSUES.md</code></td><td>追加 §14「测试隔离 / 长跑门禁 (2026-07-18)」，列 TESTISO-001..005 共 5 条（4 个已修复根因 + 1 个 Open 防回归哨兵）。</td><td><code>9c4ceb6c</code></td></tr>
+<tr><td>本 HTML artifact</td><td>独立可读，含目标/流程/改动/计划路径/commit/验证依据。</td><td>见 commit 列表</td></tr>
+</table>
+
+<h2>5. 4 个根因摘要（详情见 KNOWN_ISSUES §14）</h2>
+<table>
+<tr><th>ID</th><th>严重度</th><th>状态</th><th>范围</th><th>修复 commit</th></tr>
+<tr><td>TESTISO-001</td><td>高</td><td class="ok">Fixed</td><td>跨 worktree target 共享</td><td>SOP（无代码改动）</td></tr>
+<tr><td>TESTISO-002</td><td>高</td><td class="ok">Fixed</td><td>ACP 凭据测试未隔离 <code>CODEX_HOME</code></td><td>session 同期 commit</td></tr>
+<tr><td>TESTISO-003</td><td>高</td><td class="ok">Fixed</td><td>daemon Team Memory 被 <code>HTTP_PROXY</code> 接管</td><td><code>71bb6768</code></td></tr>
+<tr><td>TESTISO-004</td><td>高</td><td class="ok">Fixed</td><td>IPC <code>Optional<security></code> 反序列化用非 Optional 结构</td><td><code>46b22cad</code></td></tr>
+<tr><td>TESTISO-005</td><td>低</td><td class="warn">Open</td><td>单一巨型 PTY 套件绑架全仓验证（防回归哨兵）</td><td>SOP 第 1、5 条覆盖</td></tr>
+</table>
+
+<h2>6. SOP 五条（写入 CLAUDE.md / AGENTS.md）</h2>
+<ol>
+<li><strong>分层验证</strong>：先 fmt / clippy / lib 单测，再 <code>-exclude allthecodes</code> 跑非-PTY crate，最后单独跑 <code>-p allthecodes --test pty_tui_e2e -- --test-threads=1</code>；禁止一开始就 <code>cargo test --workspace</code>。</li>
+<li><strong>快照一次性 batch</strong>：PTY snapshot 失败用 <code>INSTA_UPDATE=always</code> 一次性更新所有 <code>.snap.new</code>，统一审阅后一次提交；禁止「修一个 → 跑全套 → 再发现下一个」循环。</li>
+<li><strong>跨 worktree target 隔离</strong>：并行 worktree 各自 <code>CARGO_TARGET_DIR=…/.tmp/atc-<slug></code>。</li>
+<li><strong>凭据/环境隔离前置守卫</strong>：涉及认证/网络/凭据的测试在夹具启动时显式隔离 <code>CODEX_HOME</code> / <code>HTTP_PROXY</code> / <code>NO_PROXY=*</code> / <code>ANTHROPIC_API_KEY</code>，强制 <code>RUNTIME_ENVIRONMENT=test</code>。</li>
+<li><strong>全仓 <code>.workspace</code> 测试一次任务上限 2 次</strong>：超过 2 次必须降级到分 crate 跑并写明原因；禁止「修一项就重跑全套」的无限循环。</li>
+</ol>
+
+<h2>7. Commit 列表（worktree 内）</h2>
+<pre>
+00cbb676 docs(workflow): plan test isolation / long-run gate SOP         (主分支, 先 commit)
+4c395e11 docs(claude): add test-layered verification SOP
+80dcf7da docs(agents): add test-layered verification SOP
+9c4ceb6c docs(known-issues): record 4 test-isolation root causes from 2026-07-16 session
+<artifact commit hash> docs(worktree-artifact): record test-isolation SOP delivery HTML
+</pre>
+
+<h2>8. 验证依据</h2>
+<ul>
+<li>三个文档 diff <strong>只追加</strong>，不删改既有结构：CLAUDE.md +20 行、AGENTS.md +20 行、KNOWN_ISSUES.md +13 行（仅新增 §14 章节及 6 个表格行）。</li>
+<li>KNOWN_ISSUES 章节 ID 连续：§1..§14，新增 ID 命名 <code>TESTISO-001..005</code>，不与既有 <code>PTY-xxx</code>、<code>SAFETY-xxx</code>、<code>ACP-xxx</code>、<code>HERMES-xxx</code>、<code>TEAMS-xxx</code>、<code>REMOTE-xxx</code>、<code>UI-xxx</code>、<code>DOC-xxx</code> 冲突。</li>
+<li>CLAUDE.md / AGENTS.md SOP 节标题一致（「## 测试分层验证 SOP（立即可行）」），约束条数对齐 §4（5 条）。</li>
+<li>本 artifact 含本计划路径、4 段 commit、改动文件清单、5 个根因摘要、SOP 5 条与验证依据；可独立打开阅读。</li>
+<li>主分支 ff-only 合并成功，无 <code>--no-ff</code> merge commit（任务结束后由 §5 步骤落地）。</li>
+</ul>
+
+<h2>9. 非目标</h2>
+<ul>
+<li>未修复任何产品代码 Bug（IPC <code>46b22cad</code>、daemon <code>71bb6768</code> 均为历史 commit）。</li>
+<li>未引入 CI 改造、未拆测试 binary、未重构 PTY 套件。</li>
+<li>未动 Per-Session Worktree Workflow 主流程文档（<code>development/workflow/2026-07-16-per-session-worktree-workflow-plan.md</code>）。</li>
+<li>未推送任何远端变更（合并后才推送，由 §5 步骤完成）。</li>
+</ul>
+
+</body>
+</html>
