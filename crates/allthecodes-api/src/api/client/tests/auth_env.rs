@@ -546,12 +546,7 @@ fn test_try_new_env_proxy_fallbacks_when_settings_absent() {
     std::fs::create_dir_all(&dir).expect("create temp dir");
     let _cwd_guard = CwdGuard::set(&dir);
 
-    clear_env(&[
-        "HTTP_PROXY",
-        "ALL_PROXY",
-        "https_proxy",
-        "http_proxy",
-    ]);
+    clear_env(&["HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy"]);
     std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:17891");
 
     let client = ApiClient::try_new(anthropic_config());
