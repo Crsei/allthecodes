@@ -168,7 +168,7 @@ fn effort_shows_current() {
 /// T08: `/effort high` 报告当前 profile 的设置结果。
 ///
 /// 步骤：启动 PTY → skip_trust_gate → Command("effort high") → Wait(2s) →
-///       WaitForAny("Effort set to", "Current profile has no configured")
+///       WaitForAny("Effort set to", "Current profile has no")
 /// 断言：支持 high 的 profile 成功设置；不支持的 profile 给出能力诊断。
 #[test]
 fn effort_set_high_reports_profile_result() {
@@ -180,7 +180,9 @@ fn effort_set_high_reports_profile_result() {
         .step(TestStep::WaitForAny(
             vec![
                 "Effort set to".into(),
-                "Current profile has no configured".into(),
+                // Status notices are clipped to the terminal width. Match a stable semantic
+                // prefix that is present in both the complete message and clipped rendering.
+                "Current profile has no".into(),
             ],
             Duration::from_secs(5),
         ));
