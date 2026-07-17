@@ -469,6 +469,102 @@ fn test_from_auth_with_env() {
     restore_env(saved_flags);
 }
 
+// -----------------------------------------------------------------------
+// try_new proxy resolution (settings.json → env)
+// -----------------------------------------------------------------------
+
+fn make_proxy_settings_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "allthecodes-proxy-settings-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(dir.join(".allthecodes")).expect("create temp .allthecodes");
+    dir
+}
+
+#[test]
+fn test_try_new_uses_proxy_url_from_settings() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock poisoned");
+    let saved_flags = save_env(&[
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "https_proxy",
+        "http_proxy",
+    ]);
+    clear_env(&[
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "https_proxy",
+        "http_proxy",
+    ]);
+
+    let dir = make_proxy_settings_dir();
+    std::fs::write(
+        dir.join(".allthecodes").join("settings.json"),
+        r#"{"proxyUrl": "http://127.0.0.1:17891"}"#,
+    )
+    .expect("write settings.json");
+
+    let _cwd_guard = CwdGuard::set(&dir);
+    let client = ApiClient::try_new(anthropic_config());
+    assert!(
+        client.is_ok(),
+        "try_new should succeed with proxyUrl in settings.json: {:?}",
+        client.err()
+    );
+
+    // Env vars stay cleared inside this scope; restore_env below resets them.
+    restore_env(saved_flags);
+}
+
+#[test]
+fn test_try_new_env_proxy_fallbacks_when_settings_absent() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock poisoned");
+    let saved_flags = save_env(&[
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "https_proxy",
+        "http_proxy",
+    ]);
+    // Point cwd at a temp dir with no .allthecodes/settings.json so the
+    // settings-driven proxy path is skipped and env fallback kicks in.
+    let dir = std::env::temp_dir().join(format!(
+        "allthecodes-proxy-no-settings-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let _cwd_guard = CwdGuard::set(&dir);
+
+    clear_env(&[
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "https_proxy",
+        "http_proxy",
+    ]);
+    std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:17891");
+
+    let client = ApiClient::try_new(anthropic_config());
+    assert!(
+        client.is_ok(),
+        "try_new should succeed via env proxy fallback: {:?}",
+        client.err()
+    );
+
+    std::env::remove_var("HTTPS_PROXY");
+    restore_env(saved_flags);
+}
+
 #[test]
 fn test_from_codex_auth_with_env() {
     let _env_lock = ENV_LOCK.lock().expect("env lock poisoned");

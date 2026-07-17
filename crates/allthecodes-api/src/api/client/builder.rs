@@ -68,6 +68,51 @@ pub(super) fn make_stream_provider(
 }
 
 // ---------------------------------------------------------------------------
+// Proxy resolution (settings.json → env vars)
+// ---------------------------------------------------------------------------
+
+/// Resolve the HTTP proxy URL to use for the API client.
+///
+/// Priority:
+/// 1. `settings.json::proxyUrl` (read via `load_effective(cwd)`, which merges
+///    the full managed → user → project → local layer stack), gated only by
+///    `proxyEnabled: false` as an explicit opt-out. Presence of a non-empty
+///    `proxyUrl` is treated as "use it" so users don't have to also flip
+///    `proxyEnabled`. This mirrors the read pattern used by
+///    [`selected_api_provider_from_settings`](super::model::selected_api_provider_from_settings):
+///    the user-level `~/.allthecodes/settings.json` is the natural home for a
+///    machine-wide proxy, while a project `.allthecodes/settings.json` can
+///    override it per-repo. Settings-load failures are non-fatal: we log at
+///    `debug` and fall through to env.
+/// 2. `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (upper- then lower-case),
+///    preserving the original precedence so existing shell/env flows keep
+///    working when no `proxyUrl` is configured on disk.
+fn resolve_proxy_url() -> Option<String> {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(loaded) = allthecodes_config::settings::load_effective(&cwd) {
+            let eff = &loaded.effective;
+            if !matches!(eff.proxy_enabled, Some(false)) {
+                if let Some(url) = eff.proxy_url.as_deref() {
+                    let trimmed = url.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+        } else {
+            tracing::debug!("could not load effective settings for proxy_url");
+        }
+    }
+
+    std::env::var("HTTPS_PROXY")
+        .or_else(|_| std::env::var("https_proxy"))
+        .or_else(|_| std::env::var("HTTP_PROXY"))
+        .or_else(|_| std::env::var("http_proxy"))
+        .or_else(|_| std::env::var("ALL_PROXY"))
+        .ok()
+}
+
+// ---------------------------------------------------------------------------
 // Validation helpers
 // ---------------------------------------------------------------------------
 
@@ -182,19 +227,18 @@ impl ApiClient {
                     .timeout(std::time::Duration::from_secs(config.timeout_secs))
                     .user_agent(allthecodes_config::user_agent::api_user_agent());
 
-                // Honor HTTPS_PROXY/HTTP_PROXY/ALL_PROXY explicitly so the
-                // client works under TUN/fake-ip DNS hijacking (e.g. Clash TUN)
-                // where the system DNS resolves API hosts to private IPs and
-                // direct TLS handshakes fail with "unexpected EOF".
-                if let Ok(proxy_url) = std::env::var("HTTPS_PROXY")
-                    .or_else(|_| std::env::var("https_proxy"))
-                    .or_else(|_| std::env::var("HTTP_PROXY"))
-                    .or_else(|_| std::env::var("http_proxy"))
-                    .or_else(|_| std::env::var("ALL_PROXY"))
-                {
+                // Honor a proxy URL from settings.json::proxyUrl first, then
+                // HTTPS_PROXY/HTTP_PROXY/ALL_PROXY explicitly. This keeps the
+                // client working under TUN/fake-ip DNS hijacking (e.g. Clash
+                // TUN) where the system DNS resolves API hosts to private IPs
+                // and direct TLS handshakes fail with "unexpected EOF", without
+                // requiring the user to export proxy env vars in every shell.
+                if let Some(proxy_url) = resolve_proxy_url() {
                     if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
                         tracing::info!(proxy = %proxy_url, "using explicit HTTP proxy");
                         builder = builder.proxy(proxy);
+                    } else {
+                        tracing::warn!(proxy = %proxy_url, "invalid proxy URL, ignoring");
                     }
                 }
 
