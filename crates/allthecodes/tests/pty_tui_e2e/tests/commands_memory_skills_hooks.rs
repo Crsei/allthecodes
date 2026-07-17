@@ -92,8 +92,8 @@ fn memory_list() {
 /// T05：/memory set / get / rm 完整 CRUD 循环。
 ///
 /// 验证记忆条目的创建、读取和删除全流程：
-/// 1. 设置记忆项 "e2e_test_key" = "test_value"
-/// 2. 获取并验证值包含 "test_value"
+/// 1. 设置记忆项 "e2e_test_key" = "v9Z"
+/// 2. 获取并验证值包含短且唯一的 "v9Z"（避免状态栏裁剪长值）
 /// 3. 删除该项
 #[test]
 fn memory_set_get_rm_cycle() {
@@ -102,12 +102,12 @@ fn memory_set_get_rm_cycle() {
         .permission_mode("bypass")
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Command(
-            "memory set e2e_test_key test_value".into(),
+            "memory set e2e_test_key v9Z".into(),
         ))
         .step(TestStep::AssertNoPanic)
         .step(TestStep::Command("memory get e2e_test_key".into()))
         .step(TestStep::WaitForScreenText(
-            "test_value".into(),
+            "v9Z".into(),
             Duration::from_secs(3),
         ))
         .step(TestStep::Command("memory rm e2e_test_key".into()))
