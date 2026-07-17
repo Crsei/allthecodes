@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust TUI command panel scroll occlusion fix</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.55; }
+    h1, h2 { line-height: 1.2; }
+    section { margin-top: 28px; }
+    code { background: color-mix(in srgb, currentColor 10%, transparent); padding: 0.12rem 0.3rem; border-radius: 4px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); padding: 8px 10px; text-align: left; vertical-align: top; }
+    .pass { color: #16803c; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Rust TUI command panel scroll occlusion fix</h1>
+    <p><strong>Date:</strong> 2026-07-18</p>
+
+    <section>
+      <h2>任务目标</h2>
+      <p>修复会话区有文本时打开斜杠命令列表或命令 surface，鼠标滚轮仍会移动底层会话文字并让文字透到面板下方的问题。</p>
+      <p><strong>计划文件：</strong> <code>development/tui/2026-07-18-command-surface-scroll-occlusion-plan.md</code></p>
+    </section>
+
+    <section>
+      <h2>流程步骤</h2>
+      <ol>
+        <li>在主分支单独提交任务计划。</li>
+        <li>从主分支创建 <code>worktree/command-surface-scroll-occlusion</code> 独立 worktree。</li>
+        <li>在 worktree 内完成输入隔离、绘制遮挡、回归测试和已知问题记录。</li>
+        <li>按分层 SOP 完成格式、定向测试、PTY、clippy、非 PTY workspace 测试和 release build。</li>
+        <li>代码、已知问题和本 artifact 分开提交，随后 fast-forward 合并并清理 worktree。</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>改动列表</h2>
+      <ul>
+        <li>命令 palette 或 command surface 打开时，滚轮事件不再修改底层会话 <code>scroll_offset</code>。</li>
+        <li>command palette 和 prompt-adjacent command surface 绘制前使用 <code>Clear</code> 清空占用矩形。</li>
+        <li>新增两项滚轮输入隔离测试和两项缓冲区遮挡测试。</li>
+        <li>在 <code>development/archive/KNOWN_ISSUES.md</code> 记录并关闭 <code>UI-013</code>。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Commit 列表</h2>
+      <table>
+        <thead><tr><th>Commit</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td><code>0c745675</code></td><td>Plan command surface scroll occlusion fix</td></tr>
+          <tr><td><code>30e672c2</code></td><td>Fix TUI command panel scroll occlusion</td></tr>
+          <tr><td><code>9c5aff03</code></td><td>Record TUI command panel scroll issue</td></tr>
+          <tr><td>本 artifact commit</td><td>Document command panel scroll fix evidence</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>验证依据</h2>
+      <table>
+        <thead><tr><th>检查</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td><code>cargo fmt --all --check</code></td><td class="pass">PASS</td></tr>
+          <tr><td><code>git diff --check</code></td><td class="pass">PASS</td></tr>
+          <tr><td>滚轮隔离回归（palette + surface，2 tests）</td><td class="pass">PASS</td></tr>
+          <tr><td>缓冲区遮挡回归（palette + prompt-adjacent surface，2 tests）</td><td class="pass">PASS</td></tr>
+          <tr><td><code>surface_model_open_content</code> PTY E2E（12 steps）</td><td class="pass">PASS</td></tr>
+          <tr><td><code>cargo clippy --workspace --all-targets -- -D warnings</code></td><td class="pass">PASS</td></tr>
+          <tr><td><code>cargo test --workspace --exclude allthecodes --lib</code></td><td class="pass">PASS</td></tr>
+          <tr><td><code>cargo build --workspace --release</code>（7m 34s）</td><td class="pass">PASS</td></tr>
+        </tbody>
+      </table>
+      <p>完整 PTY 套件未重复执行；本次采用直接覆盖报告 surface 的定向 PTY 用例，并由 in-process 鼠标事件和 buffer 测试覆盖新增行为，符合仓库分层验证 SOP。</p>
+    </section>
+  </main>
+</body>
+</html>
