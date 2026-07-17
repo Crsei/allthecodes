@@ -224,6 +224,56 @@ pub fn codex_model_ids() -> Vec<String> {
     .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Bundled Codex capability catalog provenance
+// ---------------------------------------------------------------------------
+//
+// `codex_capability_entries()` is a *bundled* snapshot of the Codex model
+// line that ships with this binary. It is not a live query to any provider
+// API — when Codex releases a new model or changes a reasoning-level set,
+// this table only changes by shipping a new binary. The two constants below
+// are exposed so that runtime callers (`/login`, `/model`, `/fast`,
+// `provenance_for_model`) can label the origin of `modelCapabilities` they
+// copy into user settings, and so settings-tooling can detect "this entry
+// came from a bundled snapshot of version X" vs "a user edited this entry".
+//
+// Update protocol:
+//   1. Bump `BUNDLED_CODEX_CATALOG_VERSION` (semver-style, e.g. "2026.07.18"
+//      for a date-stamped catalog, or `"0.2.0"` for a numbered catalog).
+//   2. Update `BUNDLED_CODEX_CATALOG_UPDATED` to the merge date.
+//   3. Update `codex_capability_entries()` below with the new model rows.
+//   4. Run `cargo test -p allthecodes-config --lib settings::providers` to
+//      confirm the catalog still serializes round-trip and that
+//      `bundled_codex_catalog_provenance()` returns the new constants.
+
+/// Version stamp for the bundled Codex capability catalog in this binary.
+/// Bumped whenever `codex_capability_entries()` is updated.
+pub const BUNDLED_CODEX_CATALOG_VERSION: &str = "2026.07.18";
+
+/// ISO-style date (UTC) on which `codex_capability_entries()` was last
+/// refreshed in this binary. Used for the "updated" provenance field.
+pub const BUNDLED_CODEX_CATALOG_UPDATED: &str = "2026-07-18";
+
+/// Maintenance source label exposed to runtime/UI consumers. Stable string;
+/// do not include the version here (callers compose it with the constants).
+pub const BUNDLED_CODEX_CATALOG_SOURCE: &str = "allthecodes-bundled-codex-catalog";
+
+/// Identifier for entries the bundled catalog stamps into user settings via
+/// `copy_bundled_catalog_into_profile`. Used by legacy-snapshot detection
+/// to distinguish "snapshotted from binary revision X" vs "user edited".
+pub fn bundled_codex_catalog_provenance() -> &'static str {
+    BUNDLED_CODEX_CATALOG_SOURCE
+}
+
+/// Composed provenance string for display, e.g.
+/// `allthecodes-bundled-codex-catalog@2026.07.18 (2026-07-18)`.
+pub fn bundled_codex_catalog_display_label() -> String {
+    format!(
+        "{}@{} ({})",
+        BUNDLED_CODEX_CATALOG_SOURCE, BUNDLED_CODEX_CATALOG_VERSION, BUNDLED_CODEX_CATALOG_UPDATED
+    )
+}
+
 pub fn codex_model_capabilities() -> HashMap<String, ModelCapabilitySettings> {
     codex_capability_entries()
         .into_iter()
@@ -481,6 +531,49 @@ pub fn display_auth_profile_name(profile_name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_codex_catalog_provenance_constants_are_stable() {
+        // Stable machine identifier used to mark bundled-snapshot entries in
+        // user settings. Changing this string breaks the legacy-snapshot
+        // detector; bump via a coordinated migration instead.
+        assert_eq!(
+            BUNDLED_CODEX_CATALOG_SOURCE,
+            "allthecodes-bundled-codex-catalog"
+        );
+        // Clippy flags `!const.is_empty()` as always-false since the const is
+        // a non-empty literal at compile time; bind the value through a `let`
+        // so the assertion actually executes if the constant ever changes.
+        let version = BUNDLED_CODEX_CATALOG_VERSION;
+        let updated = BUNDLED_CODEX_CATALOG_UPDATED;
+        assert!(!version.is_empty(), "version must never be empty");
+        assert!(!updated.is_empty(), "updated timestamp must never be empty");
+    }
+
+    #[test]
+    fn bundled_codex_catalog_display_label_composes_source_version_and_date() {
+        let label = bundled_codex_catalog_display_label();
+        assert!(
+            label.starts_with(BUNDLED_CODEX_CATALOG_SOURCE),
+            "label should start with the source identifier: {label}"
+        );
+        assert!(
+            label.contains(BUNDLED_CODEX_CATALOG_VERSION),
+            "label should embed the version: {label}"
+        );
+        assert!(
+            label.contains(BUNDLED_CODEX_CATALOG_UPDATED),
+            "label should embed the updated date: {label}"
+        );
+    }
+
+    #[test]
+    fn bundled_codex_catalog_provenance_accessor_matches_constant() {
+        assert_eq!(
+            bundled_codex_catalog_provenance(),
+            BUNDLED_CODEX_CATALOG_SOURCE
+        );
+    }
 
     #[test]
     fn codex_catalog_starts_with_gpt_5_6_family() {

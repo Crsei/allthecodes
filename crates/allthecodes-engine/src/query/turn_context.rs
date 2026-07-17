@@ -154,6 +154,19 @@ pub(crate) async fn prepare_model_request(
         .model_reasoning_effort
         .clone();
     let request_advisor_model = app_state_for_request.advisor_model.clone();
+
+    // Provider-aware effort resolution: pick the wire transport (Anthropic
+    // fixed budget vs. Codex reasoning.effort vs. passthrough) and the
+    // canonical level following the fixed priority chain described in
+    // `engine::effort::resolve_effort`. This avoids the legacy
+    // cross-contamination where Codex paths wrote `output_config.effort`
+    // (Anthropic compat) and silently down-ranked per-turn overrides.
+    let request_resolved_effort = resolve_request_effort(
+        &app_state_for_request,
+        request_effort_value.as_deref(),
+        request_output_config.as_ref(),
+        request_model_reasoning_effort.as_deref(),
+    );
     let capability_filtered_tools = allthecodes_tools::media::filter_tools_for_model_capabilities(
         deps.get_tools(),
         &app_state_for_request.settings,
@@ -200,6 +213,7 @@ pub(crate) async fn prepare_model_request(
         effort_value: request_effort_value.clone(),
         output_config: request_output_config.clone(),
         model_reasoning_effort: request_model_reasoning_effort.clone(),
+        resolved_effort: request_resolved_effort.clone(),
         advisor_model: request_advisor_model.clone(),
     };
 
@@ -253,6 +267,7 @@ pub(crate) async fn prepare_model_request(
         effort_value: request_effort_value,
         output_config: request_output_config,
         model_reasoning_effort: request_model_reasoning_effort,
+        resolved_effort: request_resolved_effort,
         advisor_model: request_advisor_model,
     };
 
@@ -260,6 +275,73 @@ pub(crate) async fn prepare_model_request(
         tools: tools_for_request,
         call_params,
     }
+}
+
+/// Resolve the provider-aware [`ResolvedEffort`] for a turn from `AppState`.
+///
+/// `effort_value` carries the per-turn `SubmitMessageOverrides.effort`
+/// (already merged into `app_state.effort_value` by the deps layer) plus
+/// the `/effort`-set legacy value; it is treated as the priority candidate
+/// once the explicit per-turn override slot is reserved. `output_config` is
+/// the raw `output_config.effort` Anthropic-compat wire field.
+fn resolve_request_effort(
+    app_state: &crate::types::app_state::AppState,
+    effort_value: Option<&str>,
+    output_config: Option<&serde_json::Value>,
+    model_reasoning_effort: Option<&str>,
+) -> Option<crate::effort::ResolvedEffort> {
+    use crate::effort::{resolve_effort, CapabilityProvenance, ResolveEffortInput};
+    use allthecodes_config::settings::{codex_model_capabilities, codex_model_ids};
+
+    let settings = &app_state.settings;
+    let api_provider = settings.api_provider.as_deref();
+    let effort_level = settings.effort_level.as_deref();
+    let output_config_effort = output_config.and_then(crate::effort::normalize_output_effort_json);
+
+    // Active profile's persisted Codex baseline.
+    let profile_model_reasoning_effort = settings
+        .active_auth_profile
+        .as_deref()
+        .and_then(|name| settings.auth_profiles.get(name))
+        .and_then(|profile| profile.model_reasoning_effort.as_deref())
+        .or(model_reasoning_effort);
+
+    // Capability lookup: bundled catalog takes priority for provenance, but
+    // we honor a user override if the model id is not in the bundled catalog.
+    let model = &app_state.main_loop_model;
+    let bundled_ids = codex_model_ids();
+    // Lookup the model's capability and the provenance of that lookup. The
+    // bundled catalog is preferred for bundled model ids (so codex
+    // catalog changes keep working without a user re-login); a user
+    // override is only consulted for non-bundled models or as a fallback
+    // if a bundled id somehow lost its catalog entry.
+    let is_bundled = bundled_ids.iter().any(|id| id == model);
+    let capability: Option<allthecodes_config::settings::ModelCapabilitySettings> = if is_bundled {
+        codex_model_capabilities()
+            .get(model)
+            .cloned()
+            .or_else(|| settings.model_capabilities.get(model).cloned())
+    } else {
+        settings.model_capabilities.get(model).cloned()
+    };
+    let capability_provenance = match &capability {
+        Some(_) if is_bundled => CapabilityProvenance::Bundled,
+        Some(_) => CapabilityProvenance::UserProfile,
+        None => CapabilityProvenance::None,
+    };
+
+    let resolved = resolve_effort(ResolveEffortInput {
+        per_turn_override: None, // effort_value already carries the override.
+        profile_model_reasoning_effort,
+        output_config_effort: output_config_effort.as_deref(),
+        effort_level,
+        effort_value,
+        api_provider,
+        capability: capability.as_ref(),
+        capability_provenance,
+    });
+
+    Some(resolved)
 }
 
 async fn run_compact_hook(deps: &Arc<dyn QueryDeps>, event: &str, payload: serde_json::Value) {

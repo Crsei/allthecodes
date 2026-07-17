@@ -208,6 +208,7 @@ impl SafetyClassifierModel for QueryDepsSafetyClassifierModel {
                 }),
                 output_config: None,
                 model_reasoning_effort: None,
+                resolved_effort: None,
                 advisor_model: None,
             })
             .await?;

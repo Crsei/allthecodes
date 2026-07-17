@@ -174,40 +174,112 @@ pub(crate) fn build_messages_request(
         )
     };
 
-    // Build thinking config.
-    //
-    // The budget is resolved with `effort_value` taking priority over
-    // `max_output_tokens`, so /effort low|medium|high (or a numeric override)
-    // controls reasoning depth without also capping the response length.
-    let thinking = params.thinking_enabled.and_then(|enabled| {
-        if enabled {
-            let max_tokens_fallback = params
-                .max_output_tokens
-                .map(|n| n.min(u32::MAX as usize) as u32);
-            let budget = crate::effort::resolve_thinking_budget(
-                params.effort_value.as_deref(),
-                max_tokens_fallback,
-            );
-            Some(serde_json::json!({
-                "type": "enabled",
-                "budget_tokens": budget,
-            }))
-        } else {
-            None
-        }
-    });
+    // Build thinking, output_config, and reasoning_effort from the
+    // provider-aware resolved effort when present. The legacy scalar fields
+    // (`effort_value`, `output_config`, `model_reasoning_effort`) are kept as
+    // a compatibility fallback for callers that have not been migrated to
+    // populate `resolved_effort` yet; they should never be set in production
+    // once Phase B is fully landed.
+    let (thinking, output_config, reasoning_effort) = match &params.resolved_effort {
+        Some(resolved) => {
+            // Thinking budget is only derived for the Anthropic fixed-budget
+            // transport. Codex / passthrough never carry a local budget.
+            let thinking = params.thinking_enabled.and_then(|enabled| {
+                if enabled {
+                    let budget = resolved.local_budget_tokens.unwrap_or_else(|| {
+                        let max_tokens_fallback = params
+                            .max_output_tokens
+                            .map(|n| n.min(u32::MAX as usize) as u32);
+                        crate::effort::resolve_thinking_budget(
+                            params.effort_value.as_deref(),
+                            max_tokens_fallback,
+                        )
+                    });
+                    Some(serde_json::json!({
+                        "type": "enabled",
+                        "budget_tokens": budget,
+                    }))
+                } else {
+                    None
+                }
+            });
 
-    let output_config =
-        build_output_config(params.output_config.clone(), params.effort_value.as_deref());
+            // output_config.effort is the Anthropic-compat wire field. Only
+            // emit it for the Anthropic transport; emitting it for Codex is
+            // the historical cross-contamination this refactor fixes.
+            let output_config = if resolved.writes_output_config_effort() {
+                let mut object: serde_json::Map<String, serde_json::Value> = params
+                    .output_config
+                    .clone()
+                    .and_then(|value| match value {
+                        serde_json::Value::Object(map) => Some(map),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                object.insert(
+                    "effort".to_string(),
+                    serde_json::Value::String(resolved.level.clone()),
+                );
+                Some(serde_json::Value::Object(object))
+            } else {
+                // Preserve any non-effort keys the caller may have placed in
+                // output_config (e.g. future Anthropic flags) without letting
+                // effort leak onto the Codex wire.
+                params.output_config.clone().and_then(|value| match value {
+                    serde_json::Value::Object(map)
+                        if !map.contains_key("effort") && !map.is_empty() =>
+                    {
+                        Some(serde_json::Value::Object(map))
+                    }
+                    _ => None,
+                })
+            };
+
+            // reasoning_effort (Codex `reasoning.effort`) is only emitted for
+            // the Codex transport.
+            let reasoning_effort = if resolved.writes_reasoning_effort()
+                && resolved.level != crate::effort::ResolvedEffort::AUTO_LABEL
+            {
+                Some(resolved.level.clone())
+            } else {
+                None
+            };
+
+            (thinking, output_config, reasoning_effort)
+        }
+        None => {
+            // Legacy fallback path (no resolved_effort provided).
+            let thinking = params.thinking_enabled.and_then(|enabled| {
+                if enabled {
+                    let max_tokens_fallback = params
+                        .max_output_tokens
+                        .map(|n| n.min(u32::MAX as usize) as u32);
+                    let budget = crate::effort::resolve_thinking_budget(
+                        params.effort_value.as_deref(),
+                        max_tokens_fallback,
+                    );
+                    Some(serde_json::json!({
+                        "type": "enabled",
+                        "budget_tokens": budget,
+                    }))
+                } else {
+                    None
+                }
+            });
+            let output_config =
+                build_output_config(params.output_config.clone(), params.effort_value.as_deref());
+            let reasoning_effort = resolve_model_reasoning_effort(
+                params.model_reasoning_effort.as_deref(),
+                params.effort_value.as_deref(),
+            );
+            (thinking, output_config, reasoning_effort)
+        }
+    };
 
     let resolved_model = params
         .model
         .clone()
         .unwrap_or_else(allthecodes_types::models::default_fallback_model_id);
-    let model_reasoning_effort = resolve_model_reasoning_effort(
-        params.model_reasoning_effort.as_deref(),
-        params.effort_value.as_deref(),
-    );
 
     allthecodes_api::api::client::MessagesRequest {
         max_tokens: clamp_max_tokens_for_model(
@@ -229,7 +301,7 @@ pub(crate) fn build_messages_request(
         thinking,
         output_config,
         tool_choice: None,
-        reasoning_effort: model_reasoning_effort,
+        reasoning_effort,
         advisor_model: params.advisor_model.clone(),
     }
 }
@@ -495,6 +567,7 @@ mod tests {
             effort_value: None,
             output_config: None,
             model_reasoning_effort: None,
+            resolved_effort: None,
             advisor_model: None,
         }
     }

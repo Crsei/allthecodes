@@ -300,7 +300,7 @@ pub fn settings_schema() -> Value {
             "fotaModel": { "type": "string" },
             "effortLevel": {
                 "type": "string",
-                "description": "Thinking budget label (low|medium|high|xhigh|auto|max) or a positive integer token count."
+                "description": "Anthropic fixed thinking-budget label (low|medium|high|xhigh|auto|max) or a positive integer token count. Provider boundary: Anthropic only. Codex requests ignore this field; use authProfiles.<profile>.modelReasoningEffort for the Codex reasoning.effort channel."
             },
             "thinking": {
                 "type": ["object", "boolean", "string"],
@@ -311,16 +311,16 @@ pub fn settings_schema() -> Value {
                 "properties": {
                     "effort": {
                         "type": "string",
-                        "description": "Claude output effort. low/medium map to high; xhigh and any other non-empty value map to max."
+                        "description": "Claude output effort (Anthropic wire). low/medium map to high; xhigh and any other non-empty value map to max. Provider boundary: Anthropic only. Do not set this on Codex profiles — Use authProfiles.<profile>.modelReasoningEffort instead."
                     }
                 },
                 "additionalProperties": true,
-                "description": "Anthropic output_config passthrough. effort controls Claude-side reasoning strength."
+                "description": "Anthropic output_config passthrough. effort controls Claude-side reasoning strength. Provider boundary: Anthropic only. The /effort command stops writing here on Codex profiles."
             },
             "model_reasoning_effort": {
                 "type": "string",
                 "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-                "description": "Codex/OpenAI Responses reasoning effort. Directly maps to reasoning.effort for openai-codex requests."
+                "description": "Codex/OpenAI Responses reasoning effort. Directly maps to reasoning.effort for openai-codex requests. Provider boundary: Codex only. Per-profile version: authProfiles.<profile>.modelReasoningEffort. Root-level value remains readable for backward compatibility but active profile and per-turn override take precedence."
             },
             "fastMode": { "type": "boolean" },
             "fastModePerSessionOptIn": { "type": "boolean" },

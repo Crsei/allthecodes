@@ -9,6 +9,7 @@ use allthecodes_types::agent_events::AgentEvent;
 use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
 use allthecodes_types::brief::BriefMessagePayload;
 
+use crate::effort::ResolvedEffort;
 use crate::types::app_state::AppState;
 use crate::types::message::{AssistantMessage, Message, StreamEvent, Usage};
 use crate::types::state::AutoCompactTracking;
@@ -74,6 +75,12 @@ pub struct ModelCallParams {
     pub effort_value: Option<String>,
     pub output_config: Option<Value>,
     pub model_reasoning_effort: Option<String>,
+    /// Provider-aware resolved effort. When `Some`, the wire builder uses
+    /// this verbatim and ignores `effort_value`/`output_config`/
+    /// `model_reasoning_effort` for effort shaping. When `None`, callers
+    /// fall back to the legacy scalar fields (kept for compatibility while
+    /// migration is in progress).
+    pub resolved_effort: Option<ResolvedEffort>,
     pub advisor_model: Option<String>,
 }
 
@@ -90,6 +97,7 @@ impl std::fmt::Debug for ModelCallParams {
             .field("effort_value", &self.effort_value)
             .field("output_config", &self.output_config)
             .field("model_reasoning_effort", &self.model_reasoning_effort)
+            .field("resolved_effort", &self.resolved_effort)
             .field("advisor_model", &self.advisor_model)
             .finish()
     }

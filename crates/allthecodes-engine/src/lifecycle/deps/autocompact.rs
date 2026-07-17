@@ -223,6 +223,7 @@ impl QueryEngineDeps {
                     effort_value: None,
                     output_config: None,
                     model_reasoning_effort: None,
+                    resolved_effort: None,
                     advisor_model: None,
                 };
 
