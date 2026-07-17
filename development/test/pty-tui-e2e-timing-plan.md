@@ -5,7 +5,7 @@
 生效日期：2026-07-17
 作用范围：`crates/allthecodes/tests/pty_tui_e2e/` 全部测试、`crates/allthecodes/logs/`（运行产物）、`development/test/README.md`、`development/test/pty-tui-e2e-timing-plan.md`（索引登记）。可选：`.config/nextest.toml`、`scripts/cargo-build-test.sh`。
 
-## 实施状态（截至 2026-07-18，`b74b6a7a`）
+## 实施状态（截至 2026-07-18，`f0b743d5`）
 
 本计划的 Phase 1–3 及 review 修复已在 `allthecodes` 分支落地、fast-forward 合并并发布到 `origin/allthecodes`。下表区分“代码已落地”与“端到端阈值已验收”。
 
@@ -408,4 +408,4 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 - [x] `commands_core_info` 10-way 为 25/25 passed（real 17.85s）；首次完整回归唯一失败是 `mcp_help_no_args` 等待陈旧文本，`16626dc1` 改为断言当前稳定可见语义 `MCP servers` 后，目标测试 1/1、MCP 模块 19/19、最终完整套件 220/220 均通过。
 - [x] 最终完整结果：220 passed / 36 skipped / 0 failed，nextest summary 143.308s、命令 real 144.65s；较 4-thread 341.47s 基线再缩短约 57.6%。
 - [x] `cargo fmt --all --check`、`cargo clippy -p allthecodes --test pty_tui_e2e -- -D warnings`、`cargo build --workspace --release` 均 exit 0，且无新增 warning。
-- [x] README、测试索引和 `development/worktree-workflow-artifacts/2026-07-18-pty-timing-max-threads-10.html` 已更新并 ff 合并；推送与 worktree/分支清理在本计划状态提交后执行。
+- [x] README、测试索引和 `development/worktree-workflow-artifacts/2026-07-18-pty-timing-max-threads-10.html` 已更新并 ff 合并；`allthecodes` 已推送，`pty-timing-max-threads-10` worktree 与临时分支已清理。
