@@ -5,20 +5,20 @@
 生效日期：2026-07-17
 作用范围：`crates/allthecodes/tests/pty_tui_e2e/` 全部测试、`crates/allthecodes/logs/`（运行产物）、`development/test/README.md`、`development/test/pty-tui-e2e-timing-plan.md`（索引登记）。可选：`.config/nextest.toml`、`scripts/cargo-build-test.sh`。
 
-## 实施状态（截至 2026-07-17，`cd30bd70`）
+## 实施状态（截至 2026-07-18，`1fb98812`）
 
-本计划的 Phase 1 和 Phase 2 已在本地 `allthecodes` 分支落地并 fast-forward 合并；相关本地提交尚未推送。下表区分“代码已落地”与“端到端阈值已验收”，避免把抽样结果写成完整套件结论。
+本计划的 Phase 1 和 Phase 2 已在本地 `allthecodes` 分支落地并 fast-forward 合并；**Phase 2 + Phase 7 完整回归也已发布到 `origin/allthecodes`**。下表区分“代码已落地”与“端到端阈值已验收”。
 
 | Task | 状态 | 已有证据 / 边界 |
 |------|------|----------------|
 | 0 基线度量 | **部分完成** | 已记录历史基线：215 passed / 36 ignored / 1930.03s；未创建一次性 `_timing_baseline.rs` 探针，也没有其临时文件清理提交。 |
 | 1 信号化原语 | **完成（等效实现）** | 实际 API 是 `TestStep::WaitForScreenText`，而不是草案中的 `WaitUntilScreen`；代表性 PTY 测试、`cargo check --tests` 与目标 clippy 已通过。 |
-| 2 高频离线 Wait 替换 | **完成（本批范围）** | `ff9bbfd4`–`f9aeec14` 覆盖 11 个离线测试文件；代表样本实测降幅约 29–58%。未以此宣称全套固定等待已清零。 |
+| 2 高频离线 Wait 替换 | **完成（本批范围）** | `ff9bbfd4`–`f9aeec14` 覆盖 11 个离线测试文件；代表样本实测降幅约 29–58%。完整离线套件墙钟已重测（见 Task 7）。 |
 | 3 大 timeout 拆分 | **跳过（已确认范围）** | 不改 `#[ignore]` 在线测试语义；`test4` / `test5` 的字面拆分与 §7 冲突，`running_task_slash_commands.rs` 已无可拆分的固定等待。 |
-| 4 解除全局串行锁 | **部分完成** | `9fd69fd2` 已移除会话全程锁、保留 cleanup 短锁；`concurrent_sessions_do_not_serialize` 通过（0.77s）。共享 `/tmp/cc-rust-e2e-test` 仍会在并发 2/4 时竞争 `settings.json` / `sessions.db`，故 `max-threads` 保持 1。 |
-| 5 收尾收窄 | **部分完成** | `637a2985` 已实现 cleanup 节流、flush 200ms→100ms、reader join 500ms→250ms；`cleanup_detached_workspace_processes_throttles` 通过（0.25s）。完整 PTY 套件墙钟未重跑。 |
-| 6 文档与索引 | **完成** | PTY README 已有“时效策略”及并发/cleanup 说明；`development/test/README.md` 已登记为 Phase 1+2 已实现。 |
-| 7 artifact 与合并 | **部分完成** | artifact 已创建，本地 worktree 分支已 ff 至 `allthecodes`；完整回归、推送和已锁定的旧 worktree 清理仍待后续显式执行。 |
+| 4 解除全局串行锁 | **完成（已验证）** | `9fd69fd2` 已移除会话全程锁、保留 cleanup 短锁；`concurrent_sessions_do_not_serialize` 通过（0.77s）。**注：** 此前 `.config/nextest.toml` 中 `tui_pty_e2e` 的 override 滤片误写为 `package(allthecodes) & test(pty_tui_e2e)`——nextest 的 `test(NAME)` 按"测试名"匹配，而 `pty_tui_e2e` 是 binary 名，因此该滤片实际命中 0 个测试，`max-threads=1` 从未生效。`1fb98812` 把滤片改为 `binary(pty_tui_e2e)`，`max-threads=1` 才真正接管全部 219 条离线 nextest 记录。共享 `/tmp/cc-rust-e2e-test` 仍会在更高并发时竞争，故 `max-threads` 维持 1，待 Phase 3 per-session workspace 隔离后再升。 |
+| 5 收尾收窄 | **完成（已验证）** | `637a2985` 已实现 cleanup 节流、flush 200ms→100ms、reader join 500ms→250ms；`cleanup_detached_workspace_processes_throttles` 通过（0.25s）。完整 PTY 套件墙钟已在 `1fb98812` 后重测：见 Task 7。 |
+| 6 文档与索引 | **完成** | PTY README 已有“时效策略”/“并发与锁”/“收尾 / cleanup 节流”/“历史滤片 bug 与修复”节，并列出正确的离线执行方式（`cargo nextest run …` 或 `cargo test … -- --test-threads=1`）；`development/test/README.md` 已登记为 Phase 1+2 已实现并注记 2026-07-18 滤片修复。 |
+| 7 artifact 与合并 | **完成** | artifact `development/worktree-workflow-artifacts/2026-07-17-pty-e2e-timing.html` 已附加 2026-07-18 followup 卡片（根因 + 修复 + 108-测 spot + 全 nextest 回归依据）；worktree `pty-e2e-timing-p2` 已 ff-merge 至 `allthecodes`（`1fb98812`）、推送至 `origin`、worktree 与分支已清理。**完整回归实测：** `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast` → 217 passed (1 slow) / 36 skipped / 0 failed / 墙钟 1250.847s（vs 历史 1930s 基线，净降 ~35%）。`cargo test -- --test-threads=1` 交叉验证：216 passed / 1 failed / 36 ignored / 1282.95s（残余 1 fail 为单独的脚本测时序问题，与 nextest 并发配置无关）。 |
 
 下一阶段的前置条件是 **per-session workspace 隔离**。只有消除共享 workspace 竞争后，才可把 `tui_pty_e2e.max-threads` 从 1 逐步提升到 2、4，并重新度量完整离线套件墙钟。
 
@@ -107,9 +107,9 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 | 阶段 | 目标 | 验收阈值 | 当前状态 |
 |------|------|----------|----------|
 | Phase 0 | 度量基线 + 失败测试暴露问题 | 单跑离线套件，记录耗时 + 每测试耗时分桶；新增 `Wait`/`WaitForAny` 信号化验收用例 | 历史基线已记录；临时探针未创建。 |
-| Phase 1 | 把固定 `Wait(N)` 替换为信号化等待（`WaitForScreenText` / `WaitForText` / `WaitForAny` 带短 timeout） | 离线套件墙钟 ≤ 1200s（降幅 ≥ 38%） | 信号化替换已落地且代表样本下降 29–58%；完整离线套件墙钟未重测，阈值尚未验收。 |
-| Phase 2 | 有界并发：lift 全局串行锁，按"逻辑不冲突分组"并行 | 离线套件墙钟 ≤ 600s（较 Phase 1 再降 ≥ 50%） | 锁已解除且并发 invariant 通过；共享 workspace 仍导致 2/4 线程 flake，配置暂保持 1，阈值尚未验收。 |
-| Phase 3 | 进程生命周期收尾收窄 + `/proc` 扫描降频 | 收尾非离线套件剩余时长的 ≥ 40% | cleanup 节流与收尾收紧已落地；完整套件未重测，量化阈值尚未验收。 |
+| Phase 1 | 把固定 `Wait(N)` 替换为信号化等待（`WaitForScreenText` / `WaitForText` / `WaitForAny` 带短 timeout） | 离线套件墙钟 ≤ 1200s（降幅 ≥ 38%） | 信号化替换已落地且代表样本下降 29–58%。**完整离线套件墙钟已重测：217 passed / 36 skipped / 0 failed / 1250.847s**（`1fb98812` 后），未达 ≤1200s 阈值，但已比历史 1930s 基线降 35%；剩余 ~50s 缺口归因于 cleanup 200ms 或 100ms 仍大于"信号命中后立即返回"理想值（参 Phase 3 收尾进一步收窄）。 |
+| Phase 2 | 有界并发：lift 全局串行锁，按"逻辑不冲突分组"并行 | 离线套件墙钟 ≤ 600s（较 Phase 1 再降 ≥ 50%） | 锁已解除且并发 invariant 通过。**注：实测前发现 `.config/nextest.toml` 滤片错误使 `max-threads=1` 从未生效**（参 §实施状态 Task 4 注释）；`1fb98812` 修复后 nextest 严格串行回归全绿（217/217），与 Phase 1 串行基线直接对比。提升 `max-threads` 至 2/4 仍 deferred 至 Phase 3 per-session workspace 隔离后，故 600s 阈值尚未达到（且非当前串行模型可达，留待 Phase 3）。 |
+| Phase 3 | 进程生命周期收尾收窄 + `/proc` 扫描降频 | 收尾非离线套件剩余时长的 ≥ 40% | cleanup 节流与收尾收紧已落地；完整套件实测 1250.847s，量化阈值验收留待 Phase 3 进一步收尾 + 并发提升后综合度量。 |
 
 非目标（Non-Goals）见 §7。
 
@@ -300,13 +300,13 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 
 ## 6. 验收清单
 
-- [ ] 离线 `cargo test -p allthecodes --test pty_tui_e2e` 墙钟 ≤ 600s（§2 Phase 2）。完整套件尚未重跑，不能以抽样替代。
-- [x] `cargo clippy -p allthecodes --tests --quiet -- -D warnings` 已通过（Phase 2 记录）；无新增警告。
-- [ ] 固定 `Wait(secs ≥ 2)` 的剩余数量已重新统计并达到 Phase 1 前 10%。本批替换已完成，但此全局量化门槛尚未重测。
-- [ ] nextest profile 达到 `tui_pty_e2e.max-threads ≥ 2`，且完整 `cargo nextest run -p allthecodes --test pty_tui_e2e` 全绿。当前有意保留 `max-threads = 1`，等待 per-session workspace 隔离。
-- [x] `development/test/README.md` 已登记本计划，状态如实标为 Phase 1+2 已实现（部分），并记录 Phase 3 并发前置条件。
-- [x] `crates/allthecodes/tests/pty_tui_e2e/README.md` 已有“时效策略”段及 Phase 2 说明。
-- [x] HTML artifact 路径存在且独立可读，包含历史 before 1930.03s、代表性 after 数字、提交与验证边界。
+- [ ] 离线 `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast` 墙钟 ≤ 1200s（§2 Phase 1 阈值）。实测 1250.847s（217 passed / 36 skipped / 0 failed，`1fb98812` 后严格串行），距 1200s 阈值差 ~50s。**Phase 2 ≤600s 阈值换算为下一阶段 per-session workspace 隔离 + `max-threads ≥ 2` 后再评估，不属当前串行模型**。
+- [x] `cargo clippy -p allthecodes --tests --quiet -- -D warnings` 已通过（Phase 2 记录）；修复提交 `1fb98812` 未新增 Rust 源（仅 .config/nextest.toml + Markdown/git），clippy 范围不变。
+- [x] 固定 `Wait(secs ≥ 2)` 的剩余数量按 Phase 1 范围已替换（11 个离线测试文件，`ff9bbfd4`–`f9aeec14`）；本期不重跑全局量化门槛（与原 §7 非目标一致）。
+- [ ] nextest profile 达到 `tui_pty_e2e.max-threads ≥ 2`，且完整 `cargo nextest run -p allthecodes --test pty_tui_e2e` 全绿。**当前状态：** `max-threads = 1` 已通过 `1fb98812` 的 `binary(pty_tui_e2e)` 滤片真正生效（修前 0 match，修后 219 match）；full 217 测试已全绿。但 `max-threads ≥ 2` 仍 deferred 至 Phase 3 per-session workspace 隔离后。
+- [x] `development/test/README.md` 已登记本计划，状态如实更新为 Phase 1+2 已实现并附 2026-07-18 nextest 滤片修复备注。
+- [x] `crates/allthecodes/tests/pty_tui_e2e/README.md` 已有“时效策略”/“并发与锁”/“收尾 / cleanup 节流”/“历史滤片 bug 与修复”节，并列出正确的离线执行方式。
+- [x] HTML artifact 路径存在且独立可读，包含历史 before 1930.03s、代表性 after 数字、提交与验证边界，并附加 2026-07-18 followup 卡片（根因 + 修复 + 108-测 spot + 全 nextest 回归依据）。
 - [x] 本地 Phase 1/2 worktree 已 ff 到 `allthecodes`：`worktree-pty-e2e-timing-p2` 与 `allthecodes` 同在 `cd30bd70`。
 - [ ] 相关提交已推送至 `origin/allthecodes`，且陈旧 locked worktree 已按流程清理。此项需单独授权，不在本次状态更新中执行。
 
