@@ -9368,6 +9368,93 @@
         "title": "ProviderCreateRequest",
         "type": "object"
       },
+      "ProviderDetailResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "apiKeyConfigured": {
+            "type": "boolean"
+          },
+          "apiProvider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authSourceConfigured": {
+            "type": "boolean"
+          },
+          "availableModels": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "backend": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "baseUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "envKeys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "extra": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modelCapabilities": {
+            "additionalProperties": true,
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "modelReasoningEffort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtimeSupport": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "active",
+          "apiKeyConfigured",
+          "authSourceConfigured",
+          "envKeys",
+          "extra",
+          "id",
+          "runtimeSupport"
+        ],
+        "title": "ProviderDetailResponse",
+        "type": "object"
+      },
       "ProviderListResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -9597,6 +9684,275 @@
           "web_socket"
         ],
         "type": "string"
+      },
+      "ProviderReplaceRequest": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "apiProvider": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "availableModels": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "backend": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "baseUrl": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extra": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          },
+          "model": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modelCapabilities": {
+            "additionalProperties": true,
+            "default": null,
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "modelReasoningEffort": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secretUpdates": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderSecretUpdates"
+              }
+            ],
+            "default": {
+              "apiKey": {
+                "action": "keep"
+              },
+              "authSource": {
+                "action": "keep"
+              },
+              "env": {
+                "action": "keep"
+              }
+            }
+          }
+        },
+        "title": "ProviderReplaceRequest",
+        "type": "object"
+      },
+      "ProviderSecretUpdateForAnyValue": {
+        "oneOf": [
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "keep"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "set"
+                ],
+                "type": "string"
+              },
+              "value": true
+            },
+            "required": [
+              "action",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "clear"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ProviderSecretUpdateForMapOfString": {
+        "oneOf": [
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "keep"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "set"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "action",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "clear"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ProviderSecretUpdateForString": {
+        "oneOf": [
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "keep"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "set"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "clear"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ProviderSecretUpdates": {
+        "properties": {
+          "apiKey": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderSecretUpdate_for_String"
+              }
+            ],
+            "default": {
+              "action": "keep"
+            }
+          },
+          "authSource": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderSecretUpdate_for_AnyValue"
+              }
+            ],
+            "default": {
+              "action": "keep"
+            }
+          },
+          "env": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderSecretUpdate_for_Map_of_String"
+              }
+            ],
+            "default": {
+              "action": "keep"
+            }
+          }
+        },
+        "type": "object"
       },
       "ProviderSummary": {
         "properties": {
@@ -13985,7 +14341,7 @@
   "info": {
     "title": "allthecodes Web API",
     "version": "v1",
-    "x-allthecodes-protocol-digest": "eb5ae873ce113e5206cad0e58a714f3ae88f7f5b97044f0b5178562c8a7d685c"
+    "x-allthecodes-protocol-digest": "5d5f8f896f51ad62bcbc5fc027656065f6f40a0711e4a98a6333a34fbd804893"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -21235,6 +21591,42 @@
         },
         "x-allthecodes-serialization": "concurrent"
       },
+      "get": {
+        "operationId": "ProvidersDetail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderDetailResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      },
       "patch": {
         "operationId": "ProvidersUpdate",
         "parameters": [
@@ -21262,6 +21654,52 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "x-allthecodes-serialization": "concurrent"
+      },
+      "put": {
+        "operationId": "ProvidersReplace",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderReplaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderDetailResponse"
+                }
               }
             },
             "description": "OK"

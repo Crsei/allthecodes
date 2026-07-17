@@ -2,7 +2,7 @@
 
 Generated from `allthecodes-protocol` metadata.
 
-Protocol digest: `eb5ae873ce113e5206cad0e58a714f3ae88f7f5b97044f0b5178562c8a7d685c`.
+Protocol digest: `5d5f8f896f51ad62bcbc5fc027656065f6f40a0711e4a98a6333a34fbd804893`.
 
 | Operation | Method | Path | Transport | Params | Response | Stream events | Serialization | Errors | Experimental |
 |---|---|---|---|---|---|---|---|---|---|
@@ -162,6 +162,8 @@ Protocol digest: `eb5ae873ce113e5206cad0e58a714f3ae88f7f5b97044f0b5178562c8a7d68
 | `ProfilesExport` | `GET` | `/api/profiles/{id}/export` | - | - | `JsonValue` | - | `concurrent` | - | - |
 | `ProvidersList` | `GET` | `/api/providers` | - | - | `ProviderListResponse` | - | `concurrent` | - | - |
 | `ProvidersCreate` | `POST` | `/api/providers` | - | `ProviderCreateRequest` | `JsonValue` | - | `concurrent` | - | - |
+| `ProvidersDetail` | `GET` | `/api/providers/{id}` | - | - | `ProviderDetailResponse` | - | `concurrent` | - | - |
+| `ProvidersReplace` | `PUT` | `/api/providers/{id}` | - | `ProviderReplaceRequest` | `ProviderDetailResponse` | - | `concurrent` | - | - |
 | `ProvidersOpenaiCodexLocalStatus` | `GET` | `/api/providers/openai-codex/local-status` | - | - | `CodexLocalStatusResponse` | - | `concurrent` | - | - |
 | `ProvidersOpenaiCodexApplyLocal` | `POST` | `/api/providers/openai-codex/apply-local` | - | - | `CodexApplyLocalResponse` | - | `concurrent` | - | - |
 | `ProvidersUpdate` | `PATCH` | `/api/providers/{id}` | - | `ProviderUpdateRequest` | `JsonValue` | - | `concurrent` | - | - |

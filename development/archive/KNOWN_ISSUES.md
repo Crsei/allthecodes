@@ -1,6 +1,6 @@
 # cc-rust 当前问题汇总
 
-> 更新日期: 2026-07-16
+> 更新日期: 2026-07-18
 
 本文是当前开放问题、代码审查发现和文档状态问题的唯一活跃入口。已修复、已失效或只具历史价值的问题已迁移到：
 
@@ -28,6 +28,7 @@
 
 | ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
 | --- | --- | --- | --- | --- | --- |
+| PROVIDER-001 | 高 | Fixed | Rust TUI / provider profile | Rust TUI 缺少删除和管理 provider profile 的入口，Web `/api/profiles` 更新还会把完整 profile 重建为空配置；运行时只允许 Anthropic/OpenAI/Codex。 | 新增 `/providers` 配置与 preset 分区、创建/完整替换/激活/删除向导和非交互命令；TUI、provider API 与 profile API 统一使用无损原子存储。17 个静态 provider、Bedrock、Vertex 可从 active profile 构造运行时，Foundry 与未知/custom/ACP 保持可管理但拒绝激活；所有读取与快照隐藏秘密。 |
 
 当前无开放项。已关闭记录见 [archive/resolved-model-context-2026-05-07.md](resolved-model-context-2026-05-07.md)。
 
@@ -123,4 +124,3 @@
 | TESTISO-003 | 高 | Fixed | daemon Team Memory 请求被 `HTTP_PROXY` 接管 | Team Memory 向固定 loopback endpoint 的回环请求被系统 `HTTP_PROXY` 接管，引起错误超时分类，并把内部 secret 通过环境代理外泄。同时 daemon 新 submit 未清除上一次 abort 状态，导致 abort 后的 submit 继承取消态。 | 根因：内部 RPC 客户端未强制 `no_proxy()` + submit/abort 状态机缺互斥。规约：对所有 loopback / 内部 RPC 客户端强制 `no_proxy()`，secret-bearing 客户端禁止使用环境代理；submit 与 abort 必须互斥排序（旧 abort 先发生则新 submit 重置，新 abort 后发生则取消当前 submit）。代码修复 commit `71bb6768`。CLAUDE.md / AGENTS.md §「测试分层验证 SOP」第 4 条覆盖环境/代理隔离。 |
 | TESTISO-004 | 高 | Fixed | IPC `Optional<security>` 反序列化用非 Optional 结构 | `security: None` 序列化为 JSON `null`，legacy adapter 按非 Optional 结构反序列化触发 `InvalidPayload` panic；测试任务 panic 后接收端仍持 sender clone，造成无限等待（不会被测试 harness 自然超时）。 | 根因：协议 DTO 对可空字段未声明 `Option<T>` + adapter 转换在 pending 注册之后执行。规约：协议 DTO 对所有可空字段声明 `Option<T>`，反序列化对 missing / null 双兼容，非法非 null 仍 fail-closed；adapter 转换提前到 pending 注册之前；交互测试对每条接收路径加 5 秒接收边界，未来同类回归快速失败而非无限挂起。代码修复 commit `46b22cad`。 |
 | TESTISO-005 | 低 | Open | 单一巨型 PTY 套件绑架全仓验证 | 全仓 `cargo test --workspace` 把 `pty_tui_e2e`（251 项并发 PTY、约 32min/轮）与 daemon / IPC / types / protocol 等 crate 级测试捆在同一条命令里。任何 crate 级失败必须等到 PTY 跑完才暴露，单轮全仓验证返工成本极高（session 期末 5 轮约 160 分钟纯测试时间）。 | 主要整改是 SOP 层面，不需要改产品代码：CLAUDE.md / AGENTS.md §「测试分层验证 SOP」第 1、5 条强制「先分 crate 再单独 PTY」「一次任务 >2 轮全仓必须降级」。后续若 PTY 仍需进一步拆分独立 binary 由独立任务推进，本条作为「Open」防回归哨兵保留。 |
-
