@@ -4,7 +4,7 @@ use crate::script::{TestCase, TestKey, TestRunner, TestStep};
 use crate::tests::SCRIPTS_LOG_ROOT;
 use std::time::Duration;
 
-/// T01: `/mcp` no args displays help / config example.
+/// T01: `/mcp` no args opens the MCP server surface.
 ///
 /// All tests in this file are offline (no API key needed).
 #[test]
@@ -15,7 +15,7 @@ fn mcp_help_no_args() {
         .step(TestStep::SkipTrustGate)
         .step(TestStep::Command("mcp".into()))
         .step(TestStep::WaitForScreenText(
-            "list".into(),
+            "MCP servers".into(),
             Duration::from_secs(3),
         ))
         .step(TestStep::Snapshot("mcp_help".into()))
