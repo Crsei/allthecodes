@@ -334,3 +334,55 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 已执行：主分支前置计划 → Phase 1（Task 1/2）→ 文档与 artifact（Task 6/7）→ Phase 2（Task 4/5）→ 本地 ff 合并。
 
 后续顺序：per-session workspace 隔离 → `max-threads=2` 抽样与完整回归 → 评估 `max-threads=4` → 重新度量完整离线套件墙钟 → 在获得明确授权后推送与清理陈旧 worktree。
+
+## 10. 2026-07-18 review 修复计划
+
+> 本节是本轮 `pty-timing-review-fixes` 的主分支前置计划。代码、README、旧 artifact 修正和新 artifact 只在 `worktree/pty-timing-review-fixes` 中完成；本文件待 worktree ff 合并后再在主分支单独同步最终状态。
+
+### Task 8：修复首次 cleanup 被节流跳过
+
+**Files:**
+- Modify: `crates/allthecodes/tests/pty_tui_e2e/harness.rs`
+
+**问题:** `LAST_CLEANUP_SCAN` 以 `Instant::now()` 初始化，首次调用立即满足 `elapsed < CLEANUP_THROTTLE` 并返回。nextest 每个 test case 使用独立进程，导致推荐执行方式下每个测试唯一一次 cleanup 都可能不扫描 `/proc`。
+
+- [ ] 把节流状态改为 `Option<Instant>` 或等价状态机，保证首次调用扫描、窗口内后续调用跳过、窗口后恢复扫描。
+- [ ] 把测试收紧为“首次调用恰好扫描 1 次、随后窗口内调用跳过”，不再允许 `scans == 0` 通过。
+- [ ] 运行 cleanup targeted test、harness tests、fmt 和 clippy。
+
+### Task 9：隔离 nextest workspace 并恢复有界并发
+
+**Files:**
+- Modify: `crates/allthecodes/tests/pty_tui_e2e/harness.rs`
+- Modify: `.config/nextest.toml`
+
+**边界:** 保留显式 `E2E_WORKSPACE` 覆盖；默认 workspace 至少按 runner 进程 PID 隔离，使 nextest 并发 test case 不再共享 `settings.json` / `sessions.db`。普通 `cargo test` 仍要求 `--test-threads=1`，不把进程内多线程 libtest 宣称为已隔离。
+
+- [ ] 新增默认 workspace 唯一性/显式覆盖测试。
+- [ ] 先以 `max-threads=2` 跑 previously-flaky 子集，再评估 `max-threads=4`。
+- [ ] 只有并发完整离线套件 0 failed 时才保留提升后的 thread budget；否则回退到已验证的较低值。
+- [ ] 记录完整 nextest passed/skipped/failed 与墙钟，不以 spot run 代替最终门槛。
+
+### Task 10：关闭脚本时序失败和验证证据缺口
+
+**Files:**
+- Modify（如能复现并需要）: `crates/allthecodes/tests/pty_tui_e2e/script.rs`
+- Modify（如能复现并需要）: 对应 `script::tests`
+
+- [ ] 先单跑 `script::tests`，记录失败测试全名；不能复现时明确记录，不再只写“单独的脚本测时序问题”。
+- [ ] 完整 `cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1` 必须 exit 0，才关闭原 Task 7 的 libtest 回归门槛。
+- [ ] `cargo build --workspace --release` 必须 exit 0，补齐原 Task 7 缺失的 release build 证据。
+
+### Task 11：同步状态与 artifact
+
+**Files:**
+- Modify: `crates/allthecodes/tests/pty_tui_e2e/README.md`
+- Modify: `development/test/README.md`
+- Modify: `development/worktree-workflow-artifacts/2026-07-17-pty-e2e-timing.html`
+- Create: `development/worktree-workflow-artifacts/2026-07-18-pty-timing-review-fixes.html`
+- Modify（ff 合并后在主分支单独提交）: `development/test/pty-tui-e2e-timing-plan.md`
+
+- [ ] 旧 artifact 不再把 `216 passed / 1 failed` 标成成功；补齐原来“见下表”但缺失的全 nextest 结果，并删除“完整套件未跑”的过期陈述。
+- [ ] 统一 Task 4/5/7 顶部状态、任务正文、验收清单和执行顺序；只把达到原验收条件的项标为完成。
+- [ ] 区分 `show-config` 的 219 条归组记录与实际 executed passed 数，避免把 discovered/matched/executed 混写。
+- [ ] 新 artifact 记录计划路径、commit、精确命令、退出码、墙钟与残余边界。
