@@ -5,7 +5,7 @@
 生效日期：2026-07-17
 作用范围：`crates/allthecodes/tests/pty_tui_e2e/` 全部测试、`crates/allthecodes/logs/`（运行产物）、`development/test/README.md`、`development/test/pty-tui-e2e-timing-plan.md`（索引登记）。可选：`.config/nextest.toml`、`scripts/cargo-build-test.sh`。
 
-## 实施状态（截至 2026-07-18，`a9cd5cd9`）
+## 实施状态（截至 2026-07-18，`b74b6a7a`）
 
 本计划的 Phase 1–3 及 review 修复已在 `allthecodes` 分支落地、fast-forward 合并并发布到 `origin/allthecodes`。下表区分“代码已落地”与“端到端阈值已验收”。
 
@@ -15,10 +15,11 @@
 | 1 信号化原语 | **完成（等效实现）** | 实际 API 是 `TestStep::WaitForScreenText`，而不是草案中的 `WaitUntilScreen`；代表性 PTY 测试、`cargo check --tests` 与目标 clippy 已通过。 |
 | 2 高频离线 Wait 替换 | **完成（本批范围）** | `ff9bbfd4`–`f9aeec14` 覆盖 11 个离线测试文件；代表样本实测降幅约 29–58%。完整离线套件墙钟已重测（见 Task 7）。 |
 | 3 大 timeout 拆分 | **跳过（已确认范围）** | 不改 `#[ignore]` 在线测试语义；`test4` / `test5` 的字面拆分与 §7 冲突，`running_task_slash_commands.rs` 已无可拆分的固定等待。 |
-| 4 解除全局串行锁 | **完成（已验证）** | `9fd69fd2` 已移除会话全程锁、保留 cleanup 短锁；`concurrent_sessions_do_not_serialize` 通过。`1fb98812` 把 nextest override 修正为 `binary(pty_tui_e2e)`；`c64bf37c` 再把默认 workspace 按 runner PID 隔离，`54196b3d` 将完整回归证明过的 `max-threads=4` 正式启用。 |
+| 4 解除全局串行锁 | **完成（已验证）** | `9fd69fd2` 已移除会话全程锁、保留 cleanup 短锁；`concurrent_sessions_do_not_serialize` 通过。`1fb98812` 把 nextest override 修正为 `binary(pty_tui_e2e)`；`c64bf37c` 再把默认 workspace 按 runner PID 隔离，`54196b3d` 首次启用 `max-threads=4`，Task 12 已把完整回归证明过的预算提升到 10。 |
 | 5 收尾收窄 | **完成（已验证）** | `637a2985` 已实现 cleanup 节流、flush 200ms→100ms、reader join 500ms→250ms；`c64bf37c` 把节流状态改为 `Option<Instant>`，首次 cleanup 必定扫描，窗口内后续调用才跳过。harness tests 7/7 通过。 |
-| 6 文档与索引 | **完成** | PTY README 已同步 runner PID 隔离、4-way nextest、首次 cleanup 必扫和串行 libtest 边界；`development/test/README.md` 已登记为 Phase 1–3 完成。 |
+| 6 文档与索引 | **完成** | PTY README 已同步 runner PID 隔离、10-way nextest、首次 cleanup 必扫和串行 libtest 边界；`development/test/README.md` 已登记为 Phase 1–3 完成。 |
 | 7 artifact 与合并 | **完成** | 旧 artifact 已纠正失败着色和缺失结果；新 artifact 为 `development/worktree-workflow-artifacts/2026-07-18-pty-timing-review-fixes.html`。完整 nextest：220 passed / 36 skipped / 0 failed，real 341.47s；串行 libtest：220 passed / 36 ignored / 0 failed，real 1263.19s；release workspace build exit 0。review worktree 已 ff-merge 至 `allthecodes`（`a9cd5cd9`）。 |
+| 12 nextest 10-way | **完成（已验证）** | `0678ca05` 将 `tui_pty_e2e.max-threads` 提升到 10；最终完整回归 220 passed / 36 skipped / 0 failed，nextest summary 143.308s、real 144.65s，较 4-way 341.47s 再缩短约 57.6%。首次全跑暴露的陈旧 MCP 文本断言已由 `16626dc1` 修复；目标测试、MCP 模块、fmt、目标 clippy 与 release workspace build 均通过。 |
 
 当前边界：nextest 每个 test case 使用独立 runner 进程，PID workspace 隔离成立；普通 libtest 的 case 共用 runner PID，因此全套仍须 `--test-threads=1`。显式 `E2E_WORKSPACE` 覆盖保持不变。
 
@@ -50,7 +51,7 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 - 215 个 passed 测试 = 215 次串行 spawn + 渲染 + 断言 + 收尾。
 - 1930s / 215 ≈ **8.98s/test 平均墙钟**，与每个测试的固定 sleep 总量（见下）量级吻合，说明串行是主要瓶颈，而非单测本身慢到拖垮整体。
 
-**当前状态：** `9fd69fd2` 已移除该会话全程锁，改为短时 `cleanup_lock()`；`c64bf37c` 已按 nextest runner PID 隔离默认 workspace，`54196b3d` 在完整回归全绿后把 nextest 配置提升为 `max-threads = 4`。
+**当前状态：** `9fd69fd2` 已移除该会话全程锁，改为短时 `cleanup_lock()`；`c64bf37c` 已按 nextest runner PID 隔离默认 workspace，`54196b3d` 首次把 nextest 配置提升为 `max-threads = 4`，Task 12 的 10-way 完整回归全绿后已进一步提升为 `max-threads = 10`。
 
 ### 1.2 大量硬编码 `Wait(Duration::from_secs(N))` 等待
 
@@ -107,9 +108,9 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 | 阶段 | 目标 | 验收阈值 | 当前状态 |
 |------|------|----------|----------|
 | Phase 0 | 度量基线 + 失败测试暴露问题 | 单跑离线套件，记录耗时 + 每测试耗时分桶；新增 `Wait`/`WaitForAny` 信号化验收用例 | 历史基线已记录；临时探针未创建。 |
-| Phase 1 | 把固定 `Wait(N)` 替换为信号化等待（`WaitForScreenText` / `WaitForText` / `WaitForAny` 带短 timeout） | 离线套件墙钟 ≤ 1200s（降幅 ≥ 38%） | 信号化替换已落地且代表样本下降 29–58%；当前完整 nextest 为 340.329s，已满足阈值。 |
-| Phase 2 | 有界并发：lift 全局串行锁，按"逻辑不冲突分组"并行 | 离线套件墙钟 ≤ 600s（较 Phase 1 再降 ≥ 50%） | 会话全程锁已解除，override 使用 `binary(pty_tui_e2e)`，默认 workspace 按 runner PID 隔离；`max-threads=4` 完整回归 220/220，通过且墙钟 340.329s。 |
-| Phase 3 | 进程生命周期收尾收窄 + `/proc` 扫描降频 | 收尾非离线套件剩余时长的 ≥ 40% | flush/reader join 收紧、2 秒 throttle 和首次必扫均已落地；与 Phase 2 并发综合后，相对严格串行 1250.847s 降至 340.329s（约 72.8%）。 |
+| Phase 1 | 把固定 `Wait(N)` 替换为信号化等待（`WaitForScreenText` / `WaitForText` / `WaitForAny` 带短 timeout） | 离线套件墙钟 ≤ 1200s（降幅 ≥ 38%） | 信号化替换已落地且代表样本下降 29–58%；当前 10-way 完整 nextest 为 143.308s，已满足阈值。 |
+| Phase 2 | 有界并发：lift 全局串行锁，按"逻辑不冲突分组"并行 | 离线套件墙钟 ≤ 600s（较 Phase 1 再降 ≥ 50%） | 会话全程锁已解除，override 使用 `binary(pty_tui_e2e)`，默认 workspace 按 runner PID 隔离；`max-threads=10` 完整回归 220/220，通过且命令墙钟 144.65s。 |
+| Phase 3 | 进程生命周期收尾收窄 + `/proc` 扫描降频 | 收尾非离线套件剩余时长的 ≥ 40% | flush/reader join 收紧、2 秒 throttle 和首次必扫均已落地；与 10-way 并发综合后，相对严格串行 1250.847s 降至 144.65s（约 88.4%）。 |
 
 非目标（Non-Goals）见 §7。
 
@@ -389,7 +390,7 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 
 ## 11. 2026-07-18 提升 nextest 并发到 10
 
-> 本节是 `pty-timing-max-threads-10` 的主分支前置计划。配置、README 和 artifact 只在 `worktree/pty-timing-max-threads-10` 中修改；本文件待 worktree ff 合并后再在主分支单独同步最终状态。
+> **状态：完成。** `worktree/pty-timing-max-threads-10` 中的配置、断言、README 和 artifact 已 fast-forward 合并到主分支；本节已在主分支同步最终验收状态。
 
 ### Task 12：把 `tui_pty_e2e.max-threads` 从 4 提升到 10
 
@@ -402,9 +403,9 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 
 **验收边界:** nextest 每个 test case 已按 runner PID 隔离默认 workspace，因此可以提高进程级并发；普通 libtest 仍共用 runner PID，继续要求 `--test-threads=1`。显式 `E2E_WORKSPACE` 覆盖不改变。
 
-- [ ] 把 `.config/nextest.toml` 的 `tui_pty_e2e.max-threads` 改为 10，并同步注释。
-- [ ] 用 `cargo nextest show-config test-groups` 确认 `pty_tui_e2e` binary 仍归入 10-thread group。
-- [ ] 先跑 previously-flaky 的 `commands_core_info` 模块，再跑完整 `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast`；只有 0 failed 才保留 10。
-- [ ] 记录完整 passed/skipped/failed、nextest summary、命令 real time，并与 4-thread 341.47s 基线比较。
-- [ ] 运行 `cargo fmt --all --check`、目标 clippy 和 `cargo build --workspace --release`，不得新增 warning。
-- [ ] 更新 README、测试索引和独立 HTML artifact；ff 合并、推送并清理本轮 worktree/分支。
+- [x] `.config/nextest.toml` 的 `tui_pty_e2e.max-threads` 已改为 10，并同步注释（`0678ca05`）。
+- [x] `cargo nextest show-config test-groups` 已确认 `pty_tui_e2e` binary 仍归入 `tui_pty_e2e (max threads = 10)`。
+- [x] `commands_core_info` 10-way 为 25/25 passed（real 17.85s）；首次完整回归唯一失败是 `mcp_help_no_args` 等待陈旧文本，`16626dc1` 改为断言当前稳定可见语义 `MCP servers` 后，目标测试 1/1、MCP 模块 19/19、最终完整套件 220/220 均通过。
+- [x] 最终完整结果：220 passed / 36 skipped / 0 failed，nextest summary 143.308s、命令 real 144.65s；较 4-thread 341.47s 基线再缩短约 57.6%。
+- [x] `cargo fmt --all --check`、`cargo clippy -p allthecodes --test pty_tui_e2e -- -D warnings`、`cargo build --workspace --release` 均 exit 0，且无新增 warning。
+- [x] README、测试索引和 `development/worktree-workflow-artifacts/2026-07-18-pty-timing-max-threads-10.html` 已更新并 ff 合并；推送与 worktree/分支清理在本计划状态提交后执行。
