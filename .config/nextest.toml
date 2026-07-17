@@ -8,14 +8,12 @@ path = "junit.xml"
 inherits = "default"
 
 [test-groups.tui_pty_e2e]
-# Phase 2: lifted the global pty serialization lock (harness.rs `cleanup_lock`),
-# but kept max-threads = 1. Reason: shared `/tmp/cc-rust-e2e-test` workspace
-# state (settings.json / sessions.db) races between concurrent cc-rust children —
-# at max-threads=2 a 16-test sweep flakes ~2/16 (effort_shows_current,
-# config_alias_settings); max-threads=4 flakes ~3/16. The lock lift is real
-# (concurrent_sessions_do_not_serialize passes) and correct — Phase 3 will ship
-# per-session workspace isolation and bump this to 2 → 4.
-max-threads = 1
+# Phase 3: the harness default workspace is scoped by runner PID, so concurrent
+# nextest test processes no longer race on settings.json / sessions.db. Keep
+# libtest serial (`--test-threads=1`), because its cases share one runner PID.
+# Four threads are covered by the PTY full-suite regression recorded in the
+# timing-plan artifact. Lower this value if a future shared-state regression appears.
+max-threads = 4
 
 [test-groups.integration_process_heavy]
 max-threads = 2
