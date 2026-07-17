@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Provider Profile CRUD 交付记录</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.55; }
+    body { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1, h2 { line-height: 1.2; }
+    section { margin-top: 28px; }
+    code { padding: 0.1em 0.35em; border-radius: 4px; background: color-mix(in srgb, currentColor 10%, transparent); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; vertical-align: top; border-bottom: 1px solid color-mix(in srgb, currentColor 25%, transparent); padding: 8px; }
+    .pass { color: #16803a; font-weight: 700; }
+    .note { border-left: 4px solid #b7791f; padding: 8px 12px; background: color-mix(in srgb, #b7791f 10%, transparent); }
+  </style>
+</head>
+<body>
+  <h1>Provider Profile CRUD 与运行时支持交付记录</h1>
+  <p>日期：2026-07-18。分支：<code>worktree/provider-profile-crud</code>。</p>
+
+  <section>
+    <h2>任务目标</h2>
+    <ul>
+      <li>为 Rust TUI 增加 provider profile 的查看、创建、完整替换、激活和删除入口。</li>
+      <li>统一 TUI、命令与 Web API 的无损 profile 存储，避免重命名、替换和导入时丢失配置。</li>
+      <li>验证所有 provider profile 均可持久化 CRUD，并明确可激活与只可管理的运行时边界。</li>
+    </ul>
+    <p>计划文件：<code>development/tui/2026-07-18-provider-profile-crud-plan.md</code>。</p>
+  </section>
+
+  <section>
+    <h2>执行流程</h2>
+    <ol>
+      <li>在主分支单独提交计划，再创建隔离 worktree 与独立 Cargo target。</li>
+      <li>实现共享原子存储、provider 运行时构造、Web/协议/命令和 Rust TUI 管理界面。</li>
+      <li>生成 backend API 文档，在隔离的前端 worktree 验证 OpenAPI 与 frontend codegen。</li>
+      <li>按 fmt、clippy、非 PTY tests、定向 tests、release build 的顺序验证。</li>
+      <li>代码、文档与本 artifact 分别提交，最终 fast-forward 合并并清理 worktree。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>改动摘要</h2>
+    <table>
+      <thead><tr><th>区域</th><th>交付内容</th></tr></thead>
+      <tbody>
+        <tr><td>配置存储</td><td><code>ProviderProfileStore</code> 提供 list/get/create/update/replace/rename/delete/activate，原子写入、active 保护、秘密 keep/set/clear、递归脱敏。</td></tr>
+        <tr><td>Provider 矩阵</td><td>17 个静态 provider、Bedrock、Vertex 可从 active profile 构造；Foundry、未知/custom/ACP 可 CRUD 但拒绝激活。</td></tr>
+        <tr><td>Web/API</td><td>新增 <code>GET/PUT /api/providers/{id}</code>；PATCH 区分 missing/null/value；<code>/api/profiles</code> 改用共享 store。</td></tr>
+        <tr><td>命令与 TUI</td><td>新增 <code>/providers</code> 非交互命令和 CommandSurface；支持 quoted ID、preset、创建/替换向导、API key 遮罩/清除、激活和删除确认。</td></tr>
+        <tr><td>协议与文档</td><td>新增 detail/replace DTO 与路由 metadata，更新 backend routes/schema/OpenAPI 和 settings schema。</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>提交列表</h2>
+    <ul>
+      <li><code>1c421f79</code> — docs(tui): plan provider profile management</li>
+      <li><code>a028fe56</code> — feat(providers): add lossless profile management</li>
+      <li><code>229d0e40</code> — docs(providers): publish profile CRUD contracts</li>
+      <li>本文件所在提交 — 记录 worktree 流程与验证证据</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>验证依据</h2>
+    <table>
+      <thead><tr><th>检查</th><th>结果</th></tr></thead>
+      <tbody>
+        <tr><td><code>cargo fmt --all --check</code></td><td class="pass">通过</td></tr>
+        <tr><td><code>cargo clippy --workspace --all-targets -- -D warnings</code></td><td class="pass">通过</td></tr>
+        <tr><td><code>cargo test --workspace --exclude allthecodes --lib</code></td><td class="pass">通过</td></tr>
+        <tr><td>Provider store</td><td class="pass">5/5，通过 CRUD、秘密策略、active 保护、replace+rename 原子性和支持矩阵</td></tr>
+        <tr><td>Rust TUI command surface</td><td class="pass">43/43，通过；provider surface 2/2</td></tr>
+        <tr><td>Web library tests</td><td class="pass">293/293</td></tr>
+        <tr><td>Backend codegen freshness</td><td class="pass">routes、schema、OpenAPI 全部通过</td></tr>
+        <tr><td>前端隔离合同验证</td><td class="pass">OpenAPI generate/publish/lint/freshness 与当前 frontend codegen write/check 通过</td></tr>
+        <tr><td><code>surface_providers_open_content</code></td><td class="pass">1/1，13/13 PTY 步骤通过</td></tr>
+        <tr><td><code>cargo build --workspace --release</code></td><td class="pass">通过，6m17s，无 warning</td></tr>
+        <tr><td><code>git diff --check</code></td><td class="pass">通过</td></tr>
+      </tbody>
+    </table>
+    <p class="note">用户在完整 PTY 套件运行期间明确要求“跳过 PTY 测试”，因此该套件被中止且不作为最终门槛；仅保留此前已完成的 <code>/providers</code> 定向 PTY 证据。前端现有 <code>check-api-generated.mjs</code> 仍使用旧式 <code>codegen --check</code>，与后端当前要求显式 <code>--target</code> 的 CLI 不兼容；本任务使用受支持的显式 frontend target 完成等价 freshness 检查，未修改或提交前端仓库。</p>
+  </section>
+</body>
+</html>
