@@ -54,6 +54,7 @@
 | UI-010 | 中 | Fixed | Rust TUI prompt/resume/permissions/scroll | 用户反馈输入框未继承用户消息背景、运行中无法继续输入、`/resume` 缺少面板、permissions 弹窗窄终端下 `Always exact` 不完整、session 不默认显示底部且鼠标无法滚动。 | 已让 prompt 输入行整行使用用户消息背景；运行中输入保持可编辑，`Tab` 才显式排队并在当前 turn 结束后发送；`/resume` 空参数打开 session 面板；permission dialog 加宽并支持按钮换行；TUI 启动同步已恢复历史并默认定位底部；mouse capture 默认开启以支持滚轮滚动聊天记录，`CLAUDE_CODE_DISABLE_MOUSE=1` 可恢复终端原生选择。 |
 | UI-011 | 中 | Fixed | Rust TUI mouse focus + subagent task alias | 用户反馈鼠标滚轮应滚动聊天记录，输入框历史只应通过键盘上/下键切换；聊天框中要求调用 subagent 时模型可能发出上游 `Task` 工具名并显示调用失败。 | App 对滚轮事件统一滚动 session/transcript；prompt 历史只由键盘上/下键触发。Agent runtime 同时注册 `Agent` 和上游兼容 `Task` 工具名，`Task` 复用同一 subagent 实现。 |
 | UI-012 | 中 | Fixed | Rust TUI welcome logo | 0.1.13 logo 将九宫格与 `ALLTHECODES` tracker 分开，3×3 整格密度不足以清晰表达全部字母；后续运行态发现各逻辑列之间仍有固定空格，整体宽度过大。 | 已按 [integrated glyph plan](../tui/2026-07-16-allthecodes-tui-logo-integrated-glyph-plan.md) 改为九宫格内 6×6 子像素/half-block 多边形和五帧单色几何渐变，并按 [grid spacing plan](../tui/2026-07-16-tui-grid-spacing-tightening-plan.md) 删除列间固定空格、将外框和布局宽度收紧为 8 列；颜色阶段等待单色运行态确认。 |
+| UI-013 | 中 | Fixed | Rust TUI command panels | 会话区已有文本时打开斜杠命令列表或命令 surface，鼠标滚轮仍会滚动底层会话，文本会移动到面板下方并从未覆盖的单元格透出。 | 命令面板打开时滚轮不再修改会话 `scroll_offset`；command palette 与 prompt-adjacent command surface 绘制前都会清空占用矩形。回归测试覆盖两类面板的输入隔离与缓冲区遮挡。 |
 
 ## 6. 文档状态问题
 
