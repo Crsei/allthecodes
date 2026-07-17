@@ -362,6 +362,12 @@ expression: normalize_snapshot_text(rendered)
 │Example: /proactive                                                                                         │
 │About: Toggle proactive autonomous mode                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+## /providers
+┌ /providers arguments ──────────────────────────────────────────────────────────────────────────────────────┐
+│Usage: /providers                                                                                           │
+│Example: /providers                                                                                         │
+│About: List, inspect, create, replace, activate, or delete provider profiles                                │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ## /rate-limit-options
 ┌ /rate-limit-options arguments ─────────────────────────────────────────────────────────────────────────────┐
 │Usage: /rate-limit-options                                                                                  │

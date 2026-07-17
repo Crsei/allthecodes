@@ -4,7 +4,7 @@ use crate::ui::better_view_panel::BetterViewPanel;
 use crate::ui::command_surface::CommandSurfaceOutcome;
 use crate::ui::form_navigation::{FormOption, FormTab, TabbedFormEvent, TabbedFormState};
 use crate::ui::selection_surface::{SelectionItem, SelectionSurface, SelectionSurfaceEvent};
-use allthecodes_engine::effort::{effort_to_budget_tokens, normalize_output_effort_json};
+use allthecodes_engine::effort::{effort_to_budget_tokens, CapabilityProvenance, EffortTransport};
 use allthecodes_engine::types::app_state::AppState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +60,6 @@ impl ConfigSurface {
             .thinking_enabled
             .map(|enabled| enabled.to_string())
             .unwrap_or_else(|| "auto".to_string());
-        let current_effort = current_effort_value(state);
 
         Self {
             state: TabbedFormState::new(
@@ -152,7 +151,9 @@ impl ConfigSurface {
                         vec![FormOption::new("picker", "Reasoning effort")
                             .with_description(format!(
                                 "current effort={}; thinking={thinking}; fastMode={fast_mode}; use /effort to change",
-                                current_effort.as_deref().unwrap_or("auto")
+                                crate::startup_model::resolve_display_effort_label(state)
+                                    .as_deref()
+                                    .unwrap_or("auto")
                             ))
                             .disabled()],
                     ),
@@ -612,7 +613,9 @@ fn theme_item(
 }
 
 fn build_effort_picker(state: &AppState) -> SelectionSurface {
-    let current_effort = current_effort_value(state);
+    let transport = active_transport(state);
+    let (capability_provenance, resolved) = resolved_effort(state);
+    let current_effort = resolved.as_deref();
     let Some(capability) = capability_for_model(state, &state.main_loop_model) else {
         let mut picker = SelectionSurface::new(
             "Effort",
@@ -649,7 +652,7 @@ fn build_effort_picker(state: &AppState) -> SelectionSurface {
         return picker;
     }
 
-    let current = match current_effort.as_deref() {
+    let current = match current_effort {
         Some("max")
             if capability
                 .supported_reasoning_levels
@@ -668,11 +671,17 @@ fn build_effort_picker(state: &AppState) -> SelectionSurface {
         .default_reasoning_level
         .as_deref()
         .unwrap_or("model default");
+    let supported_phrase = match capability_provenance {
+        CapabilityProvenance::Bundled => "Bundled levels",
+        CapabilityProvenance::UserProfile => "Configured levels",
+        CapabilityProvenance::None => "Supported levels",
+    };
     let mut items = vec![effort_item(
         "auto",
         "Auto",
         format!("model default: {default}"),
         None,
+        transport,
     )];
     for level in &capability.supported_reasoning_levels {
         let label = match level.as_str() {
@@ -688,7 +697,15 @@ fn build_effort_picker(state: &AppState) -> SelectionSurface {
         } else {
             "supported"
         };
-        items.push(effort_item(level, label, description, current));
+        items.push(effort_item(level, label, description, current, transport));
+    }
+    if let Some(header_idx) = items.first().map(|_| 0) {
+        // Tag the first item with the supported-levels provenance so the
+        // caller surface can render the headline phrase (Bundled/Configured/
+        // Supported levels) without a separate query.
+        items[header_idx]
+            .search_terms
+            .push(supported_phrase.to_string());
     }
     let selected = current
         .and_then(|value| items.iter().position(|item| item.id == value))
@@ -698,19 +715,30 @@ fn build_effort_picker(state: &AppState) -> SelectionSurface {
     picker
 }
 
-fn current_effort_value(state: &AppState) -> Option<String> {
-    state
-        .effort_value
-        .clone()
-        .or_else(|| output_config_effort_value(state.settings.output_config.as_ref()))
-        .or_else(|| state.settings.model_reasoning_effort.clone())
-        .or_else(|| state.settings.effort_level.clone())
+/// Resolve the effective effort for the active profile via the central
+/// resolver so the picker shows the same value the wire builder will send.
+///
+/// Delegates to [`crate::startup_model::resolve_display_effort`] so the
+/// status line, `/effort` display, and picker share one resolution path
+/// (plan §3 phase D4).
+fn resolved_effort(state: &AppState) -> (CapabilityProvenance, Option<String>) {
+    match crate::startup_model::resolve_display_effort(state) {
+        Some(resolved) => (resolved.capability_provenance, Some(resolved.level)),
+        None => (CapabilityProvenance::None, None),
+    }
 }
 
-fn output_config_effort_value(output_config: Option<&serde_json::Value>) -> Option<String> {
-    output_config?
-        .get("effort")
-        .and_then(normalize_output_effort_json)
+/// The wire transport for the active profile's `api_provider`. Used to gate
+/// the misleading "X tokens" suffix to the Anthropic fixed-budget transport
+/// only; Codex and passthrough providers show the level alone.
+fn active_transport(state: &AppState) -> EffortTransport {
+    let api_provider = state
+        .settings
+        .active_auth_profile
+        .as_deref()
+        .and_then(|name| state.settings.auth_profiles.get(name))
+        .and_then(|profile| profile.api_provider.as_deref());
+    EffortTransport::from_api_provider(api_provider)
 }
 
 fn effort_item(
@@ -718,11 +746,19 @@ fn effort_item(
     label: impl Into<String>,
     description: impl Into<String>,
     current: Option<&str>,
+    transport: EffortTransport,
 ) -> SelectionItem {
     let id = id.into();
     let mut details = vec![description.into()];
-    if let Some(tokens) = effort_to_budget_tokens(&id) {
-        details.push(format!("{tokens} tokens"));
+    // Token text is meaningful only for the Anthropic fixed-budget transport,
+    // where it represents the local `thinking.budget_tokens` request cap. For
+    // Codex (`reasoning.effort`) and passthrough transports the upstream
+    // server controls the actual budget, so showing "X tokens" here would be
+    // a false claim.
+    if transport == EffortTransport::Anthropic {
+        if let Some(tokens) = effort_to_budget_tokens(&id) {
+            details.push(format!("local request budget: {tokens} tokens"));
+        }
     }
     if current == Some(id.as_str()) {
         details.push("current".to_string());
@@ -740,12 +776,17 @@ fn effort_item(
     }
 }
 
+/// Format the current effort line in the model tab.
+///
+/// Token-count text is intentionally omitted here. With the transport-aware
+/// resolver, the model tab does not know which wire transport a level came
+/// from, and a fixed `(N tokens)` suffix is wrong for the Codex
+/// `reasoning.effort` and passthrough transports (plan §3 phase D2). The
+/// effort picker's per-item descriptions already carry the localized
+/// "local request budget: N tokens" line for the Anthropic fixed-budget case.
 fn format_effort(value: Option<&str>) -> String {
     value
-        .map(|value| match effort_to_budget_tokens(value) {
-            Some(tokens) => format!("{value} ({tokens} tokens)"),
-            None => value.to_string(),
-        })
+        .map(|value| value.to_string())
         .unwrap_or_else(|| "not set".to_string())
 }
 

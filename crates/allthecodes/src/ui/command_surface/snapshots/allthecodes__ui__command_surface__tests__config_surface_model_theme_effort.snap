@@ -23,7 +23,7 @@ expression: "rendered.join(\"\\n\\n\")"
 ┌ Config ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
 │ Sections                                 Model                                                                                           │
-│   Status                                 Current effort: medium (10240 tokens)                                                           │
+│   Status                                 Current effort: medium                                                                          │
 │ > Model                                  Model / Filter...                                                                               │
 │   Theme                                    gpt-5.2 (gpt-5.2) - ctx=272k; default effort=medium; search; parallel tools                   │
 │   Usage                                    gpt-5.3-codex (gpt-5.3-codex) - ctx=272k; default effort=medium; search; parallel tools       │
@@ -115,11 +115,11 @@ expression: "rendered.join(\"\\n\\n\")"
 │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
 │ Sections                                 Effort                                                                                          │
 │   Status                                 Effort / Filter...                                                                              │
-│   Model                                    Auto - model default: medium; 10240 tokens                                                    │
-│   Theme                                    Low - supported; 4096 tokens                                                                  │
-│   Usage                                  > Medium - supported; default; 10240 tokens; current                                            │
-│   Output                                   High - supported; 24576 tokens                                                                │
-│   Language                                 Extra high - supported; 32768 tokens                                                          │
+│   Model                                    Auto - model default: medium                                                                  │
+│   Theme                                    Low - supported                                                                               │
+│   Usage                                  > Medium - supported; default; current                                                          │
+│   Output                                   High - supported                                                                              │
+│   Language                                 Extra high - supported                                                                        │
 │ > Thinking                                                                                                                               │
 │   Safety                                                                                                                                 │
 │   Config                                                                                                                                 │

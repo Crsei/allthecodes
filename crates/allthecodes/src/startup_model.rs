@@ -120,6 +120,74 @@ pub(crate) fn settings_effort_value(
     output_config_effort(settings.output_config.as_ref()).or_else(|| settings.effort_level.clone())
 }
 
+/// Resolve the canonical effort label to display for `state`, using the
+/// central `allthecodes_engine::effort::resolve_effort_for_state` resolver so
+/// the status line, `/effort` display, and picker all agree.
+///
+/// Returns the resolved level (e.g. "low", "high", "xhigh", "max", or the
+/// bundled default) or `None` if the state has no effort metadata at all.
+/// This intentionally routes through the transport-aware resolver so a Codex
+/// profile with a stale `output_config.effort` cannot masquerade as the
+/// active level (plan §3 phase D4 / §3.1).
+pub(crate) fn resolve_display_effort_label(
+    state: &allthecodes_engine::types::app_state::AppState,
+) -> Option<String> {
+    resolve_display_effort(state).map(|resolved| resolved.level)
+}
+
+/// Full transport-aware effort resolution for the TUI.
+///
+/// Returns the `ResolvedEffort` so callers (status line, `/effort` display,
+/// effort picker) can read both the canonical level and the upstream
+/// capability provenance / wire transport from a single source of truth.
+/// See plan §3 phase D4.
+pub(crate) fn resolve_display_effort(
+    state: &allthecodes_engine::types::app_state::AppState,
+) -> Option<allthecodes_engine::effort::ResolvedEffort> {
+    use allthecodes_engine::effort::{resolve_effort_for_state, CapabilityProvenance};
+
+    let active = state.settings.active_auth_profile.as_deref();
+    let profile = active.and_then(|name| state.settings.auth_profiles.get(name));
+    let api_provider = profile.and_then(|p| p.api_provider.as_deref());
+    let profile_effort = profile.and_then(|p| p.model_reasoning_effort.as_deref());
+    let output_config_effort_value = output_config_effort(state.settings.output_config.as_ref());
+    let effort_level = state.settings.effort_level.clone();
+    let effort_value = state.effort_value.clone();
+    let capability = state
+        .settings
+        .model_capabilities
+        .get(&state.main_loop_model)
+        .or_else(|| {
+            profile
+                .and_then(|p| p.model_capabilities.as_ref())
+                .and_then(|caps| caps.get(&state.main_loop_model))
+        });
+    let capability_provenance = if profile
+        .and_then(|p| p.model_capabilities.as_ref())
+        .and_then(|caps| caps.get(&state.main_loop_model))
+        .is_some()
+    {
+        CapabilityProvenance::UserProfile
+    } else if state
+        .settings
+        .model_capabilities
+        .contains_key(&state.main_loop_model)
+    {
+        CapabilityProvenance::Bundled
+    } else {
+        CapabilityProvenance::None
+    };
+    Some(resolve_effort_for_state(
+        api_provider,
+        profile_effort,
+        output_config_effort_value.as_deref(),
+        effort_level.as_deref(),
+        effort_value.as_deref(),
+        capability,
+        capability_provenance,
+    ))
+}
+
 pub(crate) fn check_startup_available(
     model: &str,
     available: &[String],

@@ -657,13 +657,19 @@ fn effort_command_opens_thinking_picker() {
 fn effort_command_maps_settings_output_config_effort() {
     let mut state = AppState::default();
     add_codex_profile(&mut state, "gpt-5.5");
+    // Codex transport must NOT consult `output_config.effort` (plan §3.1).
+    // Setting it to any value -- including 'low', which the legacy
+    // Anthropic-collapse previously re-mapped to 'high' -- must not shift the
+    // Codex picker off the resolved Codex baseline. With no profile baseline
+    // set, the picker falls back to the bundled default for gpt-5.5
+    // (`medium`) in all three subcases.
     state.settings.output_config = Some(serde_json::json!({"effort": "low"}));
     let cwd = std::env::current_dir().expect("current dir");
     let mut surface =
         CommandSurface::for_slash_command("effort", "", &state, &cwd).expect("surface");
     assert_eq!(
         surface.handle_key(key(KeyCode::Enter)),
-        CommandSurfaceOutcome::Submit("/effort high".to_string())
+        CommandSurfaceOutcome::Submit("/effort medium".to_string())
     );
 
     state.settings.output_config = Some(serde_json::json!({"effort": "xhigh"}));
@@ -671,7 +677,7 @@ fn effort_command_maps_settings_output_config_effort() {
         CommandSurface::for_slash_command("effort", "", &state, &cwd).expect("surface");
     assert_eq!(
         surface.handle_key(key(KeyCode::Enter)),
-        CommandSurfaceOutcome::Submit("/effort xhigh".to_string())
+        CommandSurfaceOutcome::Submit("/effort medium".to_string())
     );
 
     state.settings.output_config = Some(serde_json::json!({"effort": "ultra"}));
@@ -679,7 +685,32 @@ fn effort_command_maps_settings_output_config_effort() {
         CommandSurface::for_slash_command("effort", "", &state, &cwd).expect("surface");
     assert_eq!(
         surface.handle_key(key(KeyCode::Enter)),
-        CommandSurfaceOutcome::Submit("/effort xhigh".to_string())
+        CommandSurfaceOutcome::Submit("/effort medium".to_string())
+    );
+}
+
+#[test]
+fn effort_command_codex_profile_baseline_wins_over_output_config_effort() {
+    let mut state = AppState::default();
+    add_codex_profile(&mut state, "gpt-5.5");
+    // Codex profile baseline (`modelReasoningEffort`) must win deterministically
+    // over the legacy `output_config.effort` field, since Codex transport does
+    // not consume `output_config.effort` at all (plan §3.1, §6 acceptance #1).
+    state
+        .settings
+        .auth_profiles
+        .get_mut("codex")
+        .expect("codex profile")
+        .model_reasoning_effort = Some("low".into());
+    state.settings.output_config = Some(serde_json::json!({"effort": "high"}));
+    let cwd = std::env::current_dir().expect("current dir");
+    let mut surface =
+        CommandSurface::for_slash_command("effort", "", &state, &cwd).expect("surface");
+    let rendered = surface.render();
+    assert!(rendered.contains("Low - supported"));
+    assert_eq!(
+        surface.handle_key(key(KeyCode::Enter)),
+        CommandSurfaceOutcome::Submit("/effort low".to_string())
     );
 }
 

@@ -99,11 +99,10 @@ impl App {
     ) {
         let permission_mode = state.tool_permission_context.mode.as_str().to_string();
         let sandbox = sandbox_label(&state.settings.sandbox);
-        let effort = state
-            .effort_value
-            .clone()
-            .or_else(|| output_config_effort(state.settings.output_config.as_ref()))
-            .or_else(|| state.settings.effort_level.clone())
+        // Display label routes through the transport-aware central resolver so
+        // the status line never shows a Codex-side `output_config.effort` that
+        // the resolver would not actually send on the wire (plan §3 phase D4).
+        let effort = crate::startup_model::resolve_display_effort_label(state)
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         let remote_indicator = remote_indicator_label(state);
@@ -220,12 +219,6 @@ fn remote_indicator_label(
     }
 
     Some("attention".to_string())
-}
-
-fn output_config_effort(output_config: Option<&serde_json::Value>) -> Option<String> {
-    output_config?
-        .get("effort")
-        .and_then(allthecodes_engine::effort::normalize_output_effort_json)
 }
 
 fn sandbox_label(settings: &allthecodes_config::settings::SandboxSettings) -> String {
