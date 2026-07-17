@@ -7,7 +7,7 @@
 
 ## 实施状态（截至 2026-07-18，`a9cd5cd9`）
 
-本计划的 Phase 1–3 及 review 修复已在 `allthecodes` 分支落地并 fast-forward 合并。下表区分“代码已落地”与“端到端阈值已验收”。
+本计划的 Phase 1–3 及 review 修复已在 `allthecodes` 分支落地、fast-forward 合并并发布到 `origin/allthecodes`。下表区分“代码已落地”与“端到端阈值已验收”。
 
 | Task | 状态 | 已有证据 / 边界 |
 |------|------|----------------|
@@ -308,7 +308,7 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 - [x] `crates/allthecodes/tests/pty_tui_e2e/README.md` 已有“时效策略”/“并发与锁”/“收尾 / cleanup 节流”/“历史滤片 bug 与修复”节，并列出正确的离线执行方式。
 - [x] 两份 HTML artifact 已用 HTML5 兼容解析器读取通过；旧 artifact 保留历史并纠正失败结果，新 artifact 记录当前命令、退出码、墙钟和边界。
 - [x] review worktree 已 ff 到 `allthecodes`：主分支当前包含 `a9cd5cd9`。
-- [ ] 本轮提交推送与 `worktree/pty-timing-review-fixes` 清理待本次计划状态提交后执行。
+- [x] 本轮提交已推送至 `origin/allthecodes`；`.worktrees/pty-timing-review-fixes` 与 `worktree/pty-timing-review-fixes` 分支均已删除。
 
 ## 7. 非目标
 
@@ -333,7 +333,7 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 
 已执行：主分支前置计划 → Phase 1（Task 1/2）→ Phase 2（Task 4/5）→ override 滤片修复 → Phase 3 runner workspace 隔离 → 2/4 线程抽样 → 4-way 完整 nextest → 串行 libtest → fmt/clippy/release build → 文档与 artifact → ff 合并。
 
-剩余交付动作：提交本节最终状态 → 推送 `allthecodes` → 删除本轮 worktree 与分支。
+交付已完成：最终状态已提交并推送，`pty-timing-review-fixes` worktree 与临时分支已清理。
 
 ## 10. 2026-07-18 review 修复计划
 
