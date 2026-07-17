@@ -95,6 +95,25 @@ fn command_aliases_render_without_gap_before_details() {
 }
 
 #[test]
+fn command_palette_clears_the_underlying_buffer() {
+    let mut palette = CommandPalette::new();
+    palette.sync_from_input("/definitely-unknown-command", Path::new("/repo"));
+    assert!(palette.active());
+
+    let area = Rect::new(0, 0, 40, 6);
+    let mut buf = Buffer::empty(area);
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            buf[(x, y)].set_symbol("x");
+        }
+    }
+
+    palette.render(area, &mut buf, &Theme::default());
+
+    assert_eq!(buf[(area.x + 1, area.y + area.height - 2)].symbol(), " ");
+}
+
+#[test]
 fn command_palette_selected_row_uses_theme_selected() {
     let mut palette = CommandPalette::new();
     palette.sync_from_input("/", Path::new("/repo"));

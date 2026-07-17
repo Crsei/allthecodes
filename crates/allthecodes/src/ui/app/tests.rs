@@ -1429,6 +1429,47 @@ fn mouse_wheel_scrolls_prompt_messages() {
 }
 
 #[test]
+fn mouse_wheel_does_not_scroll_messages_behind_command_palette() {
+    let mut app = App::new();
+    app.conversation.set_scroll_offset(10);
+    app.prompt.input = "/".to_string();
+    app.prompt.cursor_position = 1;
+    app.sync_command_palette();
+    assert!(app.command_palette.active());
+
+    assert_eq!(
+        send_mouse(&mut app, MouseEventKind::ScrollUp),
+        AppAction::None
+    );
+    assert_eq!(app.conversation.scroll_offset(), 10);
+    assert_eq!(
+        send_mouse(&mut app, MouseEventKind::ScrollDown),
+        AppAction::None
+    );
+    assert_eq!(app.conversation.scroll_offset(), 10);
+}
+
+#[test]
+fn mouse_wheel_does_not_scroll_messages_behind_command_surface() {
+    let mut app = App::new();
+    app.conversation.set_scroll_offset(10);
+    app.open_command_surface(CommandSurface::Model(
+        crate::ui::command_surface::ModelSurface::new(&AppState::default()),
+    ));
+
+    assert_eq!(
+        send_mouse(&mut app, MouseEventKind::ScrollUp),
+        AppAction::None
+    );
+    assert_eq!(app.conversation.scroll_offset(), 10);
+    assert_eq!(
+        send_mouse(&mut app, MouseEventKind::ScrollDown),
+        AppAction::None
+    );
+    assert_eq!(app.conversation.scroll_offset(), 10);
+}
+
+#[test]
 fn tick_marks_dirty_for_streaming_thinking_animation() {
     let mut app = App::new();
     app.is_streaming = true;

@@ -629,6 +629,18 @@ impl App {
     }
 
     pub fn handle_mouse_event(&mut self, mouse: MouseEvent) -> AppAction {
+        if matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) && (self.command_palette.active() || self.overlays.command_surface.is_some())
+        {
+            // Command panels are modal with respect to the session behind
+            // them. Do not let wheel input move conversation text underneath
+            // an open palette or command surface.
+            self.dirty = true;
+            return AppAction::None;
+        }
+
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.update_mouse_focus(mouse);

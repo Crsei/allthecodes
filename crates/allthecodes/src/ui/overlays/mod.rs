@@ -201,6 +201,7 @@ pub fn render_prompt_adjacent_lines(
         x: area.x,
         ..centered
     };
+    Clear.render(overlay, buf);
     Paragraph::new(lines)
         .style(style)
         .wrap(Wrap { trim: false })
@@ -281,5 +282,41 @@ mod tests {
             .expect("title row");
         assert!(lines.iter().any(|line| line.contains("body")));
         assert!(title_row < prompt_area.y as usize);
+    }
+
+    #[test]
+    fn prompt_adjacent_lines_clear_the_underlying_buffer() {
+        let area = Rect::new(0, 0, 160, 24);
+        let prompt_area = Rect::new(0, 20, 160, 3);
+        let mut buffer = Buffer::empty(area);
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                buffer[(x, y)].set_symbol("x");
+            }
+        }
+
+        render_prompt_adjacent_lines(
+            vec![Line::from("panel")],
+            area,
+            prompt_area,
+            PanelSizePreset::BetterViewPanel.spec(),
+            &mut buffer,
+            Style::default(),
+        );
+
+        let resolved = PanelSizePreset::BetterViewPanel
+            .spec()
+            .resolve_prompt_adjacent_rect(area, prompt_area, 1)
+            .expect("overlay rect");
+        let overlay = Rect {
+            x: area.x,
+            ..resolved
+        };
+        assert_eq!(buffer[(overlay.x, overlay.y)].symbol(), "p");
+        assert_eq!(
+            buffer[(overlay.x + overlay.width - 1, overlay.y)].symbol(),
+            " ",
+            "the command surface must erase session text behind unused cells"
+        );
     }
 }

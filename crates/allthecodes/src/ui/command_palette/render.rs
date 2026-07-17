@@ -5,7 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 use crate::ui::keyboard_shortcut::{render_shortcut_hints, ShortcutHint};
 use crate::ui::selection_surface::SelectionSurface;
@@ -28,6 +28,7 @@ impl CommandPalette {
             return;
         }
 
+        Clear.render(area, buf);
         let block = Block::default()
             .borders(Borders::ALL)
             .title(if self.edit_target_picker.is_some() {
