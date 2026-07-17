@@ -15,12 +15,20 @@ use std::time::{Duration, Instant};
 
 // ─── 路径与配置 ──────────────────────────────────────────────────────
 
-/// 测试工作区目录。优先使用 `E2E_WORKSPACE` 环境变量。
+fn resolve_workspace_path(explicit: Option<&str>, runner_pid: u32) -> String {
+    explicit
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("/tmp/cc-rust-e2e-test-{runner_pid}"))
+}
+
+/// 测试工作区目录。优先使用 `E2E_WORKSPACE` 环境变量；默认按 runner 进程
+/// PID 隔离。nextest 每个 test case 使用独立进程，因此并发 test case 不再共享
+/// `settings.json` / `sessions.db`。libtest 同一进程内仍须使用 `--test-threads=1`。
 pub fn workspace() -> &'static str {
     static WS: OnceLock<String> = OnceLock::new();
     WS.get_or_init(|| {
-        let dir =
-            std::env::var("E2E_WORKSPACE").unwrap_or_else(|_| "/tmp/cc-rust-e2e-test".to_string());
+        let explicit = std::env::var("E2E_WORKSPACE").ok();
+        let dir = resolve_workspace_path(explicit.as_deref(), std::process::id());
         std::fs::create_dir_all(&dir).ok();
         dir
     })
@@ -115,7 +123,17 @@ pub static CLEANUP_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Phase-2 Task 5：find_detached_workspace_processes 实际触发次数（测试用）。
 pub static FIND_DETACHED_SCAN_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-static LAST_CLEANUP_SCAN: OnceLock<std::sync::Mutex<Instant>> = OnceLock::new();
+static LAST_CLEANUP_SCAN: OnceLock<std::sync::Mutex<Option<Instant>>> = OnceLock::new();
+
+fn cleanup_scan_is_due(last_scan: &mut Option<Instant>, now: Instant) -> bool {
+    if last_scan.is_some_and(|previous| now.saturating_duration_since(previous) < CLEANUP_THROTTLE)
+    {
+        return false;
+    }
+
+    *last_scan = Some(now);
+    true
+}
 
 // ─── PtySession ──────────────────────────────────────────────────────
 
@@ -1070,14 +1088,14 @@ fn cleanup_detached_workspace_processes() {
     // Phase 2：仅在 cleanup 短临界区持锁；不再包住整个会话。
     let _guard = cleanup_lock();
     // Phase 2 Task 5：节流 — 若距上次扫描不足 CLEANUP_THROTTLE，跳过 /proc 扫描。
-    let last = LAST_CLEANUP_SCAN.get_or_init(|| std::sync::Mutex::new(Instant::now()));
-    {
-        let mut g = last.lock().expect("last cleanup scan poisoned");
-        if g.elapsed() < CLEANUP_THROTTLE {
-            CLEANUP_SKIP_COUNT.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        *g = Instant::now();
+    let last = LAST_CLEANUP_SCAN.get_or_init(|| std::sync::Mutex::new(None));
+    let scan_is_due = {
+        let mut last_scan = last.lock().expect("last cleanup scan poisoned");
+        cleanup_scan_is_due(&mut last_scan, Instant::now())
+    };
+    if !scan_is_due {
+        CLEANUP_SKIP_COUNT.fetch_add(1, Ordering::Relaxed);
+        return;
     }
     let targets = find_detached_workspace_processes();
     if targets.is_empty() {
@@ -1185,6 +1203,40 @@ fn workspace_process_is_alive(pid: libc::pid_t) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_path_preserves_explicit_override() {
+        assert_eq!(
+            resolve_workspace_path(Some("/tmp/custom-pty-workspace"), 1234),
+            "/tmp/custom-pty-workspace"
+        );
+    }
+
+    #[test]
+    fn default_workspace_path_is_scoped_by_runner_pid() {
+        let first = resolve_workspace_path(None, 1234);
+        let second = resolve_workspace_path(None, 5678);
+
+        assert_eq!(first, "/tmp/cc-rust-e2e-test-1234");
+        assert_eq!(second, "/tmp/cc-rust-e2e-test-5678");
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn cleanup_throttle_scans_first_call_then_throttles() {
+        let start = Instant::now();
+        let mut last_scan = None;
+
+        assert!(cleanup_scan_is_due(&mut last_scan, start));
+        assert!(!cleanup_scan_is_due(
+            &mut last_scan,
+            start + Duration::from_millis(50)
+        ));
+        assert!(cleanup_scan_is_due(
+            &mut last_scan,
+            start + CLEANUP_THROTTLE
+        ));
+    }
 
     /// Phase-2 Task 4 Step 1：验证 `PtySession::spawn` 不再被全局 lock 串行化。
     ///
