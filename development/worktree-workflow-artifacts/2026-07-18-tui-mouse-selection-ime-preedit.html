@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust TUI 鼠标选择、IME 光标与 UTF-8 稳定性修复</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.55; max-width: 980px; margin: 2rem auto; padding: 0 1rem; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { padding: .1rem .25rem; background: CanvasText; color: Canvas; border-radius: .2rem; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { border: 1px solid GrayText; padding: .45rem .6rem; text-align: left; vertical-align: top; }
+    th { background: color-mix(in srgb, CanvasText 12%, Canvas); }
+    .pending { color: #b35c00; }
+    .pass { color: #16733a; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Rust TUI 鼠标选择、IME 光标与 UTF-8 稳定性修复</h1>
+    <p><strong>任务计划：</strong> <code>development/tui/2026-07-18-tui-mouse-selection-ime-preedit-fix-plan.md</code></p>
+    <p><strong>工作树：</strong> <code>.worktrees/tui-mouse-selection-ime-preedit</code>；<strong>分支：</strong> <code>worktree/tui-mouse-selection-ime-preedit</code></p>
+    <p><strong>基线：</strong> <code>45eac122</code>。代码验证已完成；实现 commit 为 <code>aeb9b984</code>，文档收口随后单独提交。</p>
+
+    <h2>任务目标</h2>
+    <ul>
+      <li>默认保留终端原生鼠标拖选/复制，TUI wheel/scrollbar capture 改为显式 opt-in。</li>
+      <li>让真实终端 cursor 跟随当前 editable surface 的 caret，为 IME preedit 提供物理锚点。</li>
+      <li>提供多行 prompt、Shift+Enter、显示列布局、CJK/combining/grapheme 安全和 hanging indent。</li>
+      <li>消除 compact/tool-result preview 的任意 UTF-8 字节切片，并在 query panic 后恢复 TUI 状态。</li>
+    </ul>
+
+    <h2>实施内容</h2>
+    <table>
+      <thead><tr><th>范围</th><th>落点</th><th>结果</th></tr></thead>
+      <tbody>
+        <tr><td>Mouse / terminal</td><td><code>allthecodes-commands/src/terminal_env.rs</code>、<code>ui/tui.rs</code>、<code>terminal_guard.rs</code>、<code>tui/export.rs</code></td><td>默认 capture=false；enable/disable 优先级、focus event、编辑器切换和退出恢复共用 effective 状态。</td></tr>
+        <tr><td>Prompt / cursor</td><td><code>ui/prompt_input.rs</code>、<code>ui/app/{domain,input,render,tests}.rs</code></td><td>多行 hard/soft visual lines、viewport、显示列 caret、真实 Frame cursor、terminal focus 和 owner 优先级。</td></tr>
+        <tr><td>Editable overlays</td><td>history search、command surfaces、question/permission dialogs、selection surface</td><td>可编辑 overlay 覆盖 prompt owner；只读 surface 不声明 cursor；长 Unicode 值按显示列定位。</td></tr>
+        <tr><td>Message layout</td><td><code>ui/messages/wrap.rs</code></td><td>grapheme wrapping、用户消息 hanging indent，并覆盖窄终端宽 grapheme 边界。</td></tr>
+        <tr><td>Compact / query</td><td><code>allthecodes-compact/src/{utf8_preview,microcompact,tool_result_budget}.rs</code>、<code>ui/tui/engine_events.rs</code></td><td>共享 Unicode scalar head/tail helper；Blocks join 长度一致；panic 产生可见 Failed 和恰好一次 Done。</td></tr>
+        <tr><td>Documentation</td><td><code>development/archive/debug/tui-command-init-status-fix-2026-05-22.md</code>、<code>development/archive/KNOWN_ISSUES.md</code></td><td>当前 allthecodes 文档改用 <code>ALLTHECODES_*</code> 约定；上游 Anthropic 原始参考文档未改写。</td></tr>
+      </tbody>
+    </table>
+
+    <h2>验证记录</h2>
+    <table>
+      <thead><tr><th>检查</th><th>状态</th><th>证据</th></tr></thead>
+      <tbody>
+        <tr><td>fmt / diff check</td><td class="pass">Pass</td><td><code>cargo fmt --all --check</code> 和 <code>git diff --check</code> 均 exit 0。</td></tr>
+        <tr><td>compact focused tests</td><td class="pass">58 passed</td><td><code>cargo test -p allthecodes-compact</code>；UTF-8、Blocks、budget、microcompact 边界通过。</td></tr>
+        <tr><td>TUI focused tests</td><td class="pass">Pass</td><td>PromptInput 20、App 98、message wrap 4、engine events 2、terminal env 16、terminal setup 14 全部通过。</td></tr>
+        <tr><td>workspace clippy</td><td class="pass">Pass</td><td><code>cargo clippy --workspace --all-targets -- -D warnings</code> exit 0，无 warning。</td></tr>
+        <tr><td>non-PTY workspace tests</td><td class="pass">Pass</td><td><code>cargo test --workspace --exclude allthecodes --lib</code> exit 0；既有 ignored 测试保持 ignored。</td></tr>
+        <tr><td>PTY regression filters</td><td class="pass">41 passed</td><td>command surface 39、terminal setup 1、startup prompt 1，均使用单线程；不宣称证明 OS IME。</td></tr>
+        <tr><td>release build</td><td class="pass">Pass</td><td><code>cargo build -p allthecodes --release</code> exit 0，5 分 08 秒。</td></tr>
+        <tr><td>真实桌面 IME preedit / 候选窗</td><td class="pending">Evidence pending</td><td>PTY 不能证明真实 IME composition；需要在实际终端和输入法中人工验证，不能由自动化测试代称。</td></tr>
+        <tr><td>跨平台终端人工验证</td><td class="pending">Evidence pending</td><td>当前记录不声称 Linux/macOS/Windows、tmux/zellij/SSH 的完整覆盖。</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Commit 列表</h2>
+    <p>实现 commit：<code>aeb9b984 fix(tui): complete input and UTF-8 stability fixes</code>。本 artifact 与计划随后单独做文档收口提交，并在主分支执行 <code>ff-only</code> 合并；不主动 push。</p>
+
+    <h2>边界与后续</h2>
+    <p>本任务不新增应用内跨消息选择模型，也不把 PTY 测试描述成 IME 已验证。终端原生拖选由 capture=false 提供；需要 TUI wheel/scrollbar 时使用 <code>ALLTHECODES_ENABLE_MOUSE_CAPTURE=1</code>，<code>ALLTHECODES_DISABLE_MOUSE=1</code> 具有最高关闭优先级。</p>
+  </main>
+</body>
+</html>

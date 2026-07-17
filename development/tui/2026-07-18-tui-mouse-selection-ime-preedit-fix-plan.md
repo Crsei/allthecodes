@@ -1,7 +1,9 @@
 # Rust TUI 输入交互与 UTF-8 压缩稳定性修复计划
 
 日期：2026-07-18
-状态：待实施
+状态：代码与文档实施完成，自动化分层验证通过；真实桌面 IME 证据待人工验证
+
+实施记录（2026-07-18）：已在 `worktree/tui-mouse-selection-ime-preedit` 完成计划中的代码、测试夹具、配置文案、归档文档和 HTML artifact 收口。实现覆盖默认 native mouse selection、真实 terminal cursor/owner/focus、多行 PromptInput 与显示列布局、用户消息 hanging indent、UTF-8 安全 compact/tool-result preview、query panic 可见失败与单次 `Done`，以及 editor/export 的 mouse/focus 状态恢复。自动化分层验证已全部以 exit 0 完成；真实桌面 IME preedit/候选窗口仍为 `Evidence pending`，PTY 不作为该项证据。
 
 ## 1. 目标
 
@@ -416,15 +418,33 @@ export CARGO_TARGET_DIR=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/atc-tu
 完整 `cargo test --workspace` 不作为第一轮；只有 targeted 证据无法覆盖集成边界时才进入最终层，并遵守单任务最多
 两次的仓库限制。
 
+### 7.1 实际验证结果（2026-07-18）
+
+以下命令均在独立 target
+`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/atc-tui-mouse-selection-ime-preedit`
+下执行并以 exit 0 结束：
+
+- `cargo fmt --all --check`：通过；最终 `git diff --check`：通过。
+- `cargo test -p allthecodes-compact`：58 passed，0 failed；覆盖 UTF-8 head/tail、Blocks join、budget 和 microcompact。
+- TUI 定向测试：PromptInput 20 passed、App 98 passed、message wrap 4 passed、query engine events 2 passed、
+  terminal env 16 passed、terminal setup 14 passed。
+- `cargo clippy --workspace --all-targets -- -D warnings`：通过，无新增 warning。
+- `cargo test --workspace --exclude allthecodes --lib`：exit 0；非-PTY workspace library tests 全部通过，既有 ignored
+  测试保持 ignored。
+- PTY：`tests::commands_surface` 39 passed（`--test-threads=1`），覆盖 overlay/picker/permission surface 与 prompt
+  恢复；`tests::commands_core_info::terminal_setup_command` 和 `welcome::shows_prompt_on_startup` 各 1 passed。
+- `cargo build -p allthecodes --release`：通过，exit 0（5 分 08 秒）。
+
+定向单元测试证明了真实 cursor 的 frame 坐标、CJK/combining/grapheme 显示列、多行 hard/soft wrap、focus/owner
+优先级和 UTF-8 截断边界。现有 PTY 套件没有真实桌面 IME composition 事件，也没有把 OS preedit 当作可自动化输入；
+默认/opt-in mouse 的配置矩阵由 commands 单测和 terminal-setup PTY 覆盖，但真实终端拖选、滚轮和 IME 候选窗仍需人工记录。
+
 ## 8. 提交与完成标准
 
-计划文件按主分支前置流程单独提交。后续实现全部在 worktree 中完成，建议提交边界：
+计划文件已在主分支前置提交。实现已在 worktree 内完成并形成以下提交边界：
 
-1. `fix(compact): make tool result previews UTF-8 safe`
-2. `fix(tui): support aligned multiline prompt input`
-3. `fix(tui): restore native selection and IME cursor placement`
-4. `fix(tui): recover query state after unexpected panic`
-5. `docs(workflow): record TUI input and compact stability fixes`
+1. `aeb9b984 fix(tui): complete input and UTF-8 stability fixes`：代码、测试、依赖和归档说明。
+2. 当前文档收口提交：本计划与 HTML artifact 的实际验证结果、边界和 commit 记录。
 
 完成必须同时满足：
 
