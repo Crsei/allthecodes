@@ -1,27 +1,64 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
 
 const USER_INPUT_BACKGROUND: Color = Color::Rgb(31, 35, 42);
+const PROMPT_PREFIX: &str = "> ";
+const PROMPT_PREFIX_WIDTH: usize = 2;
+const INPUT_VERTICAL_PADDING: u16 = 2;
+pub const MAX_VISIBLE_INPUT_LINES: usize = 8;
 
-/// A single-line text input widget with cursor support.
+/// One display row of the prompt text. `start..end` is always a UTF-8
+/// character-boundary range in the original input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptInputVisualLine {
+    pub start: usize,
+    pub end: usize,
+    pub display_width: usize,
+}
+
+/// The single layout result consumed by both prompt rendering and the real
+/// terminal cursor. Keeping the caret and viewport in this value prevents the
+/// IME anchor from drifting away from the cell containing the rendered text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptInputLayout {
+    pub visual_lines: Vec<PromptInputVisualLine>,
+    pub viewport_start: usize,
+    pub caret_visual_line: usize,
+    pub caret_display_column: usize,
+    pub text_width: usize,
+    pub cursor_position: Option<Position>,
+}
+
+impl PromptInputLayout {
+    pub fn visual_height(&self) -> usize {
+        self.visual_lines.len()
+    }
+
+    pub fn cursor_position(&self) -> Option<Position> {
+        self.cursor_position
+    }
+}
+
+/// A multiline text input widget with UTF-8-safe editing and display-column
+/// layout.
 ///
-/// Handles common editing key bindings (arrows, home/end, ctrl shortcuts)
-/// and returns `Some(text)` from [`handle_key`] when the user presses Enter.
-///
-/// Supports ghost suffix rendering: dimmed text shown after the cursor that
-/// represents the active completion candidate.
+/// The input keeps a byte cursor because the rest of the completion and vim
+/// integrations use byte ranges. Every editing operation preserves the
+/// invariant that the cursor is on a character boundary. Rendering uses the
+/// same visual-line layout that produces the physical terminal cursor, so
+/// CJK, combining marks, wrapping, and vertical scrolling share one source of
+/// truth.
 pub struct PromptInput {
     /// Current input text.
     pub input: String,
     /// Byte-offset cursor position within `input`.
-    ///
-    /// Always kept on a char boundary.
     pub cursor_position: usize,
     /// Whether this widget is focused / accepting input.
     pub is_active: bool,
@@ -31,6 +68,8 @@ pub struct PromptInput {
     ghost_suffix: Option<String>,
     /// Whether to show the ghost suffix.
     show_ghost: bool,
+    /// Display column retained while moving vertically through visual rows.
+    desired_vertical_column: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -49,16 +88,14 @@ impl PromptInput {
             large_paste_notice: None,
             ghost_suffix: None,
             show_ghost: false,
+            desired_vertical_column: None,
         }
     }
 
-    /// Set the ghost suffix text (dimmed text shown after the cursor).
-    /// Pass `None` to clear.
     pub fn set_ghost_suffix(&mut self, text: Option<String>) {
         self.ghost_suffix = text;
     }
 
-    /// Set whether to show the ghost suffix.
     pub fn set_show_ghost(&mut self, show: bool) {
         self.show_ghost = show;
     }
@@ -73,6 +110,21 @@ impl PromptInput {
         self.show_ghost
     }
 
+    /// Return the number of rows needed by the prompt, including its two-row
+    /// top/bottom breathing room. The cap prevents a paste from consuming the
+    /// entire conversation pane.
+    pub fn preferred_height(&self, width: u16, _context: PromptInputRenderContext<'_>) -> u16 {
+        if width < 4 {
+            return 0;
+        }
+        let layout = self.layout(Rect::new(0, 0, width, u16::MAX));
+        layout
+            .visual_height()
+            .min(MAX_VISIBLE_INPUT_LINES)
+            .saturating_add(usize::from(INPUT_VERTICAL_PADDING))
+            .max(3) as u16
+    }
+
     /// Handle a key event. Returns `Some(submitted_text)` when the user
     /// presses Enter with a non-empty input, clearing the internal buffer.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<String> {
@@ -81,76 +133,88 @@ impl PromptInput {
         }
 
         match (key.modifiers, key.code) {
-            // ── Submit ──────────────────────────────────────────────
-            (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::SHIFT, KeyCode::Enter) => {
-                let text = self.input.trim().to_string();
-                if text.is_empty() {
+            // Enter submits; the terminal's IME consumes composition Enter
+            // before it reaches this handler, while Shift+Enter is the
+            // explicit multiline insertion binding.
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                if self.input.trim().is_empty() {
                     return None;
                 }
+                let text = self.input.clone();
                 self.input.clear();
                 self.cursor_position = 0;
                 self.large_paste_notice = None;
+                self.desired_vertical_column = None;
                 return Some(text);
             }
+            (KeyModifiers::SHIFT, KeyCode::Enter) => {
+                self.insert_text_internal("\n");
+            }
 
-            // ── Ctrl shortcuts ──────────────────────────────────────
+            // Ctrl shortcuts
             (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-                // Clear entire line
                 self.input.clear();
                 self.cursor_position = 0;
+                self.reset_vertical_column();
             }
             (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                // Move to start of line (select-all semantics are tricky in
-                // a terminal; we just move the cursor to the beginning).
                 self.cursor_position = 0;
+                self.reset_vertical_column();
             }
             (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
-                // Move to end of line
                 self.cursor_position = self.input.len();
+                self.reset_vertical_column();
             }
             (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
-                // Delete word backwards
                 self.delete_word_backwards();
+                self.reset_vertical_column();
             }
             (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
-                // Kill to end of line
-                self.input.truncate(self.cursor_position);
+                let end = self.current_visual_line_end();
+                self.input.drain(self.cursor_position..end);
+                self.reset_vertical_column();
             }
 
-            // ── Navigation ──────────────────────────────────────────
+            // Horizontal navigation. Home/End are line-local in multiline
+            // input; Ctrl+A/Ctrl+E retain whole-buffer semantics above.
             (_, KeyCode::Left) => {
                 self.move_cursor_left();
+                self.reset_vertical_column();
             }
             (_, KeyCode::Right) => {
                 self.move_cursor_right();
+                self.reset_vertical_column();
             }
             (_, KeyCode::Home) => {
-                self.cursor_position = 0;
+                self.cursor_position = self.current_visual_line_start();
+                self.reset_vertical_column();
             }
             (_, KeyCode::End) => {
-                self.cursor_position = self.input.len();
+                self.cursor_position = self.current_visual_line_end();
+                self.reset_vertical_column();
             }
 
-            // ── Deletion ────────────────────────────────────────────
+            // Deletion
             (_, KeyCode::Backspace) => {
                 if self.cursor_position > 0 {
-                    // Find the previous char boundary
-                    let prev = self.prev_char_boundary();
+                    let prev = self.prev_grapheme_boundary();
                     self.input.drain(prev..self.cursor_position);
                     self.cursor_position = prev;
                 }
+                self.reset_vertical_column();
             }
             (_, KeyCode::Delete) => {
                 if self.cursor_position < self.input.len() {
-                    let next = self.next_char_boundary();
+                    let next = self.next_grapheme_boundary();
                     self.input.drain(self.cursor_position..next);
                 }
+                self.reset_vertical_column();
             }
 
-            // ── Character input ─────────────────────────────────────
+            // Character input, including committed Unicode text from an IME.
             (_, KeyCode::Char(c)) => {
-                self.input.insert(self.cursor_position, c);
-                self.cursor_position += c.len_utf8();
+                let mut encoded = [0_u8; 4];
+                self.insert_text_internal(c.encode_utf8(&mut encoded));
             }
 
             _ => {}
@@ -159,22 +223,53 @@ impl PromptInput {
         None
     }
 
-    /// Insert `text` at the current cursor position and advance the
-    /// cursor past it. Used by voice dictation (issue #13) so
-    /// transcribed text lands wherever the user was typing instead of
-    /// being appended at the end.
+    /// Move through the visual rows produced for `width`. Returns false at a
+    /// vertical edge so App can fall back to prompt history there.
+    pub fn move_cursor_vertical(&mut self, width: u16, direction: i8) -> bool {
+        let lines = visual_lines_for_width(&self.input, text_width_for_area(width));
+        if lines.is_empty() {
+            return false;
+        }
+        let current = visual_line_index_for_cursor(&self.input, &lines, self.cursor_position);
+        let target = if direction < 0 {
+            current.checked_sub(1)
+        } else if direction > 0 {
+            (current + 1 < lines.len()).then_some(current + 1)
+        } else {
+            Some(current)
+        };
+        let Some(target) = target else {
+            return false;
+        };
+
+        let current_column = display_width_between(
+            &self.input,
+            lines[current].start,
+            self.cursor_position.min(lines[current].end),
+        );
+        let desired = self.desired_vertical_column.unwrap_or(current_column);
+        self.cursor_position = byte_offset_at_display_column(&self.input, &lines[target], desired);
+        self.desired_vertical_column = Some(desired);
+        true
+    }
+
+    pub fn reset_vertical_navigation(&mut self) {
+        self.reset_vertical_column();
+    }
+
+    /// Insert text at the current cursor position. Used by voice dictation
+    /// and other non-keyboard input paths.
     pub fn insert_str(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
-        self.input.insert_str(self.cursor_position, text);
-        self.cursor_position += text.len();
+        self.insert_text_internal(text);
     }
 
-    /// Insert pasted text and remember a compact UI notice for large pastes.
+    /// Insert pasted text, normalizing all common terminal newline forms.
     pub fn paste_text(&mut self, text: &str) {
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        self.insert_str(&normalized);
+        self.insert_text_internal(&normalized);
         self.large_paste_notice = large_paste_notice(&normalized);
     }
 
@@ -187,17 +282,11 @@ impl PromptInput {
         self.large_paste_notice.as_deref()
     }
 
-    /// Render the prompt input widget.
-    ///
-    /// Shows a "> " prompt prefix followed by the input text with a visible
-    /// cursor indicator. The visible window scrolls horizontally when the
-    /// cursor would move off-screen.
     #[cfg(test)]
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
-        self.render_with_context(area, buf, theme, PromptInputRenderContext::default());
+    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme) -> PromptInputLayout {
+        self.render_with_context(area, buf, theme, PromptInputRenderContext::default())
     }
 
-    /// Render the prompt input widget with a dim inline hint after the text.
     #[cfg(test)]
     pub fn render_with_hint(
         &self,
@@ -205,7 +294,7 @@ impl PromptInput {
         buf: &mut Buffer,
         theme: &Theme,
         hint: Option<&str>,
-    ) {
+    ) -> PromptInputLayout {
         self.render_with_context(
             area,
             buf,
@@ -215,214 +304,440 @@ impl PromptInput {
                 placeholder: None,
                 mode_indicator: None,
             },
-        );
+        )
     }
 
+    /// Render the prompt and return the exact layout used for the physical
+    /// cursor. The application calls `Frame::set_cursor_position` with the
+    /// returned position only when this surface owns the terminal cursor.
     pub fn render_with_context(
         &self,
         area: Rect,
         buf: &mut Buffer,
         theme: &Theme,
         context: PromptInputRenderContext<'_>,
-    ) {
+    ) -> PromptInputLayout {
+        let layout = self.layout(area);
         if area.height == 0 || area.width < 4 {
-            return;
+            return layout;
         }
 
         fill_input_background(area, buf);
-        let text_y = input_text_y(area);
+        let text_y = area.y.saturating_add(1);
+        let visible_end = (layout.viewport_start + visible_line_count(&layout, area))
+            .min(layout.visual_lines.len());
 
-        let prompt_str = "> ";
-        let prompt_span = Span::styled(prompt_str, with_input_background(theme.prompt));
-        let prompt_width = 2u16; // "> " is always 2 columns
+        for visual_index in layout.viewport_start..visible_end {
+            let row = visual_index.saturating_sub(layout.viewport_start) as u16;
+            let y = text_y.saturating_add(row);
+            if y >= area.y.saturating_add(area.height).saturating_sub(1) {
+                break;
+            }
+            let visual = &layout.visual_lines[visual_index];
+            let text = &self.input[visual.start..visual.end];
+            let mut spans = Vec::new();
 
-        let mode_width = context
-            .mode_indicator
-            .map(|label| UnicodeWidthStr::width(label) + 3)
-            .unwrap_or(0);
-        let available_width =
-            (area.width.saturating_sub(prompt_width) as usize).saturating_sub(mode_width);
+            // The prefix is a separate cell region. Every wrapped and hard
+            // continuation starts at the same text origin (`x + 2`).
+            let prefix = if visual_index == 0 {
+                PROMPT_PREFIX
+            } else {
+                "  "
+            };
+            spans.push(Span::styled(prefix, with_input_background(theme.prompt)));
 
-        if self.input.is_empty() {
-            let mut spans = vec![prompt_span];
-            if self.is_active {
-                spans.push(Span::styled(
-                    " ",
-                    Style::default().fg(Color::Black).bg(Color::White),
-                ));
+            if self.input.is_empty() && visual_index == 0 {
                 if let Some(placeholder) = context.placeholder {
                     spans.push(Span::styled(
-                        format!(" {placeholder}"),
+                        placeholder.to_string(),
                         with_input_background(theme.dim),
                     ));
                 }
-            }
-            push_mode_indicator(&mut spans, context.mode_indicator, theme);
-            buf.set_line(area.x, text_y, &Line::from(spans), area.width);
-            return;
-        }
-
-        let preview = input_preview(&self.input, available_width);
-        let render_text = preview.as_deref().unwrap_or(&self.input);
-        let render_cursor_position = if preview.is_some() {
-            render_text.len()
-        } else {
-            self.cursor_position
-        };
-
-        // Compute the visible window of the input text. We track the cursor
-        // as a *character* offset for display purposes.
-        let char_cursor = render_text[..render_cursor_position].chars().count();
-        let input_chars: Vec<char> = render_text.chars().collect();
-
-        // Determine scroll offset so the cursor is always visible.
-        let scroll = if available_width > 0 && char_cursor >= available_width {
-            char_cursor - available_width + 1
-        } else {
-            0
-        };
-
-        let visible_end = (scroll + available_width).min(input_chars.len());
-        let visible_text: String = input_chars[scroll..visible_end].iter().collect();
-
-        // Build the cursor position within the visible region.
-        let cursor_in_visible = char_cursor.saturating_sub(scroll).min(visible_text.len());
-
-        // Split visible text around the cursor to insert styling.
-        let before_cursor: String = visible_text.chars().take(cursor_in_visible).collect();
-        let cursor_char: String = visible_text
-            .chars()
-            .nth(cursor_in_visible)
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| " ".to_string());
-        let after_cursor: String = visible_text.chars().skip(cursor_in_visible + 1).collect();
-
-        let mut spans = vec![prompt_span];
-
-        if self.is_active {
-            spans.push(Span::styled(
-                before_cursor,
-                Style::default().bg(USER_INPUT_BACKGROUND),
-            ));
-            spans.push(Span::styled(
-                cursor_char,
-                Style::default().fg(Color::Black).bg(Color::White),
-            ));
-            spans.push(Span::styled(
-                after_cursor,
-                Style::default().bg(USER_INPUT_BACKGROUND),
-            ));
-            // Ghost suffix: dimmed text after cursor showing completion
-            if self.show_ghost {
-                if let Some(suffix) = &self.ghost_suffix {
-                    if !suffix.is_empty() && cursor_in_visible >= visible_text.len() {
+            } else if self.is_active {
+                spans.push(Span::styled(
+                    text.to_string(),
+                    with_input_background(Style::default()),
+                ));
+                if self.show_ghost
+                    && visual_index == layout.caret_visual_line
+                    && self.cursor_position == self.input.len()
+                {
+                    if let Some(suffix) = self.ghost_suffix.as_deref().filter(|s| !s.is_empty()) {
                         spans.push(Span::styled(
-                            suffix.clone(),
+                            suffix.to_string(),
+                            with_input_background(theme.dim),
+                        ));
+                    }
+                    if let Some(hint) = context.hint.filter(|hint| !hint.is_empty()) {
+                        spans.push(Span::styled(
+                            format!(" {hint}"),
+                            with_input_background(theme.dim),
+                        ));
+                    }
+                } else if visual_index == layout.caret_visual_line
+                    && self.cursor_position == self.input.len()
+                {
+                    if let Some(hint) = context.hint.filter(|hint| !hint.is_empty()) {
+                        spans.push(Span::styled(
+                            format!(" {hint}"),
                             with_input_background(theme.dim),
                         ));
                     }
                 }
-            }
-            if let Some(hint) = context
-                .hint
-                .filter(|_| cursor_in_visible >= visible_text.len())
-            {
+            } else {
                 spans.push(Span::styled(
-                    format!(" {hint}"),
+                    text.to_string(),
                     with_input_background(theme.dim),
                 ));
             }
-        } else {
-            spans.push(Span::styled(visible_text, with_input_background(theme.dim)));
-        }
-        push_mode_indicator(&mut spans, context.mode_indicator, theme);
 
-        let line = Line::from(spans);
-        buf.set_line(area.x, text_y, &line, area.width);
+            buf.set_line(area.x, y, &Line::from(spans), area.width);
+        }
+
+        if let Some(label) = context.mode_indicator.filter(|label| !label.is_empty()) {
+            let label = format!("[{label}]");
+            let label_width = UnicodeWidthStr::width(label.as_str()) as u16;
+            let x = area
+                .x
+                .saturating_add(area.width.saturating_sub(label_width));
+            buf.set_line(
+                x,
+                area.y,
+                &Line::from(Span::styled(label, with_input_background(theme.dim))),
+                label_width.min(area.width),
+            );
+        }
+
+        layout
     }
 
-    // ── Private helpers ─────────────────────────────────────────────
+    /// Compute the layout without mutating the input. `render_with_context`
+    /// and the vertical editor use the same `visual_lines_for_width` helper.
+    pub fn layout(&self, area: Rect) -> PromptInputLayout {
+        let text_width = text_width_for_area(area.width);
+        let visual_lines = visual_lines_for_width(&self.input, text_width);
+        let caret_visual_line = visual_line_index_for_cursor(
+            &self.input,
+            &visual_lines,
+            self.cursor_position.min(self.input.len()),
+        );
+        let caret_line =
+            visual_lines
+                .get(caret_visual_line)
+                .cloned()
+                .unwrap_or(PromptInputVisualLine {
+                    start: 0,
+                    end: 0,
+                    display_width: 0,
+                });
+        let caret_display_column = display_width_between(
+            &self.input,
+            caret_line.start,
+            self.cursor_position
+                .min(caret_line.end)
+                .max(caret_line.start),
+        );
+        let max_rows = visible_line_count_for_area(area);
+        let viewport_start =
+            viewport_start_for_caret(caret_visual_line, visual_lines.len(), max_rows);
+        let cursor_position = if area.height == 0 || area.width < 4 {
+            None
+        } else {
+            let row = caret_visual_line.saturating_sub(viewport_start);
+            let x = area
+                .x
+                .saturating_add(PROMPT_PREFIX_WIDTH as u16)
+                .saturating_add(caret_display_column.min(u16::MAX as usize) as u16);
+            let y = area.y.saturating_add(1).saturating_add(row as u16);
+            let right = area.x.saturating_add(area.width);
+            let bottom = area.y.saturating_add(area.height.saturating_sub(1));
+            (x < right && y < bottom).then_some(Position { x, y })
+        };
+
+        PromptInputLayout {
+            visual_lines,
+            viewport_start,
+            caret_visual_line,
+            caret_display_column,
+            text_width,
+            cursor_position,
+        }
+    }
+
+    fn insert_text_internal(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.input.insert_str(self.cursor_position, text);
+        self.cursor_position += text.len();
+        self.reset_vertical_column();
+    }
+
+    fn reset_vertical_column(&mut self) {
+        self.desired_vertical_column = None;
+    }
 
     fn move_cursor_left(&mut self) {
         if self.cursor_position > 0 {
-            self.cursor_position = self.prev_char_boundary();
+            self.cursor_position = self.prev_grapheme_boundary();
         }
     }
 
     fn move_cursor_right(&mut self) {
         if self.cursor_position < self.input.len() {
-            self.cursor_position = self.next_char_boundary();
+            self.cursor_position = self.next_grapheme_boundary();
         }
     }
 
-    /// Find the byte offset of the previous character boundary.
-    fn prev_char_boundary(&self) -> usize {
-        let mut pos = self.cursor_position;
+    fn prev_grapheme_boundary(&self) -> usize {
+        let pos = self.cursor_position.min(self.input.len());
         if pos == 0 {
             return 0;
         }
-        pos -= 1;
-        while pos > 0 && !self.input.is_char_boundary(pos) {
-            pos -= 1;
-        }
-        pos
+        self.input[..pos]
+            .grapheme_indices(true)
+            .next_back()
+            .map(|(start, _)| start)
+            .unwrap_or(0)
     }
 
-    /// Find the byte offset of the next character boundary.
-    fn next_char_boundary(&self) -> usize {
-        let mut pos = self.cursor_position;
+    fn next_grapheme_boundary(&self) -> usize {
+        let pos = self.cursor_position.min(self.input.len());
         if pos >= self.input.len() {
             return self.input.len();
         }
-        pos += 1;
-        while pos < self.input.len() && !self.input.is_char_boundary(pos) {
-            pos += 1;
-        }
-        pos
+        self.input[pos..]
+            .grapheme_indices(true)
+            .nth(1)
+            .map(|(offset, _)| pos + offset)
+            .unwrap_or(self.input.len())
     }
 
-    /// Delete the word before the cursor (Ctrl+W behaviour).
+    fn current_visual_line_start(&self) -> usize {
+        let lines = visual_lines_for_width(&self.input, usize::MAX / 4);
+        lines
+            .iter()
+            .find(|line| self.cursor_position <= line.end)
+            .map(|line| line.start)
+            .unwrap_or(0)
+    }
+
+    fn current_visual_line_end(&self) -> usize {
+        let lines = visual_lines_for_width(&self.input, usize::MAX / 4);
+        lines
+            .iter()
+            .find(|line| self.cursor_position <= line.end)
+            .map(|line| line.end)
+            .unwrap_or(self.input.len())
+    }
+
     fn delete_word_backwards(&mut self) {
         if self.cursor_position == 0 {
             return;
         }
-        let bytes = self.input.as_bytes();
         let mut end = self.cursor_position;
-        // Skip trailing whitespace
-        while end > 0 && bytes[end - 1] == b' ' {
-            end -= 1;
-        }
-        // Skip non-whitespace (the word)
-        let start = {
-            let mut s = end;
-            while s > 0 && bytes[s - 1] != b' ' {
-                s -= 1;
+        while end > 0 {
+            let Some((start, ch)) = self.input[..end].char_indices().next_back() else {
+                break;
+            };
+            if !ch.is_whitespace() {
+                break;
             }
-            s
-        };
-        self.input.drain(start..self.cursor_position);
-        self.cursor_position = start;
+            end = start;
+        }
+        while end > 0 {
+            let Some((start, ch)) = self.input[..end].char_indices().next_back() else {
+                break;
+            };
+            if ch.is_whitespace() {
+                break;
+            }
+            end = start;
+        }
+        self.input.drain(end..self.cursor_position);
+        self.cursor_position = end;
     }
 }
 
-fn input_preview(input: &str, available_width: usize) -> Option<String> {
-    let char_count = input.chars().count();
-    let line_count = input.lines().count().max(1);
-    let is_large = line_count > 1 || char_count > available_width.saturating_mul(2).max(80);
-    if !is_large {
-        return None;
+fn text_width_for_area(width: u16) -> usize {
+    // The text owns every cell after the `> ` prefix. If the caret lands
+    // immediately after a row that exactly fills this width, the visual-line
+    // builder adds an empty sentinel row; reserving a column here would make
+    // ordinary input wrap one cell too early and would make the rendered text
+    // disagree with the terminal's cell coordinates.
+    usize::from(width.saturating_sub(PROMPT_PREFIX_WIDTH as u16)).max(1)
+}
+
+fn visible_line_count_for_area(area: Rect) -> usize {
+    usize::from(area.height.saturating_sub(INPUT_VERTICAL_PADDING)).max(1)
+}
+
+fn visible_line_count(layout: &PromptInputLayout, area: Rect) -> usize {
+    visible_line_count_for_area(area).min(layout.visual_lines.len().max(1))
+}
+
+fn viewport_start_for_caret(caret: usize, total: usize, max_rows: usize) -> usize {
+    if total <= max_rows.max(1) {
+        return 0;
+    }
+    caret
+        .saturating_add(1)
+        .saturating_sub(max_rows.max(1))
+        .min(total - 1)
+}
+
+fn visual_lines_for_width(input: &str, width: usize) -> Vec<PromptInputVisualLine> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut segment_start = 0;
+
+    loop {
+        let segment_end = input[segment_start..]
+            .find('\n')
+            .map(|offset| segment_start + offset)
+            .unwrap_or(input.len());
+        append_wrapped_segment(input, segment_start, segment_end, width, &mut lines);
+
+        if segment_end == input.len() {
+            // A caret after a line that exactly fills the viewport belongs to
+            // the next empty visual row. Without this sentinel row the
+            // cursor would be placed at the frame's right edge and Ratatui
+            // would hide it as out of bounds.
+            if lines
+                .last()
+                .is_some_and(|line| line.end == input.len() && line.display_width >= width)
+            {
+                lines.push(PromptInputVisualLine {
+                    start: input.len(),
+                    end: input.len(),
+                    display_width: 0,
+                });
+            }
+            break;
+        }
+        segment_start = segment_end + 1;
+        if segment_start == input.len() {
+            lines.push(PromptInputVisualLine {
+                start: segment_start,
+                end: segment_start,
+                display_width: 0,
+            });
+            break;
+        }
     }
 
-    let max_preview = available_width.saturating_sub(24).clamp(16, 96);
-    let first_line = input.lines().next().unwrap_or(input).trim();
-    let mut preview: String = first_line.chars().take(max_preview).collect();
-    if first_line.chars().count() > max_preview || line_count > 1 {
-        preview.push_str("...");
+    if lines.is_empty() {
+        lines.push(PromptInputVisualLine {
+            start: 0,
+            end: 0,
+            display_width: 0,
+        });
     }
-    Some(format!(
-        "[{} chars, {} lines pasted] {}",
-        char_count, line_count, preview
-    ))
+    lines
+}
+
+fn append_wrapped_segment(
+    input: &str,
+    start: usize,
+    end: usize,
+    width: usize,
+    lines: &mut Vec<PromptInputVisualLine>,
+) {
+    if start == end {
+        lines.push(PromptInputVisualLine {
+            start,
+            end,
+            display_width: 0,
+        });
+        return;
+    }
+
+    let mut line_start = start;
+    let mut current_width = 0usize;
+    for (relative, grapheme) in input[start..end].grapheme_indices(true) {
+        let absolute = start + relative;
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if current_width > 0 && current_width.saturating_add(grapheme_width) > width {
+            lines.push(PromptInputVisualLine {
+                start: line_start,
+                end: absolute,
+                display_width: current_width,
+            });
+            line_start = absolute;
+            current_width = 0;
+        }
+        // Never split a grapheme cluster or place half of a wide cluster at
+        // the right edge. A cluster wider than the available row is kept as
+        // one visual line; the cursor visibility check will reject a cell
+        // that cannot fit in an extremely narrow frame.
+        current_width = current_width.saturating_add(grapheme_width);
+        if current_width >= width {
+            let end_offset = absolute + grapheme.len();
+            lines.push(PromptInputVisualLine {
+                start: line_start,
+                end: end_offset,
+                display_width: current_width,
+            });
+            line_start = end_offset;
+            current_width = 0;
+        }
+    }
+
+    if line_start < end || current_width == 0 && lines.last().is_none_or(|line| line.end < end) {
+        lines.push(PromptInputVisualLine {
+            start: line_start,
+            end,
+            display_width: display_width_between(input, line_start, end),
+        });
+    }
+}
+
+fn visual_line_index_for_cursor(
+    input: &str,
+    lines: &[PromptInputVisualLine],
+    cursor: usize,
+) -> usize {
+    if lines.is_empty() {
+        return 0;
+    }
+    let cursor = cursor.min(input.len());
+    for (index, line) in lines.iter().enumerate() {
+        if cursor < line.end {
+            return index;
+        }
+        if cursor == line.end {
+            let next_starts_at_cursor = lines
+                .get(index + 1)
+                .is_some_and(|next| next.start == cursor);
+            if !next_starts_at_cursor {
+                return index;
+            }
+        }
+    }
+    lines.len() - 1
+}
+
+fn display_width_between(input: &str, start: usize, end: usize) -> usize {
+    input
+        .get(start.min(input.len())..end.min(input.len()))
+        .map(UnicodeWidthStr::width)
+        .unwrap_or(0)
+}
+
+fn byte_offset_at_display_column(
+    input: &str,
+    line: &PromptInputVisualLine,
+    desired_column: usize,
+) -> usize {
+    let mut column = 0usize;
+    for (relative, grapheme) in input[line.start..line.end].grapheme_indices(true) {
+        let width = UnicodeWidthStr::width(grapheme);
+        if column.saturating_add(width) > desired_column {
+            return line.start + relative;
+        }
+        column = column.saturating_add(width);
+    }
+    line.end
 }
 
 fn large_paste_notice(text: &str) -> Option<String> {
@@ -432,22 +747,8 @@ fn large_paste_notice(text: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "Pasted {} chars across {} lines; preview is truncated in the UI only.",
-        char_count, line_count
+        "Pasted {char_count} chars across {line_count} lines; the full text remains editable."
     ))
-}
-
-fn push_mode_indicator(
-    spans: &mut Vec<Span<'static>>,
-    mode_indicator: Option<&str>,
-    theme: &Theme,
-) {
-    if let Some(label) = mode_indicator.filter(|label| !label.is_empty()) {
-        spans.push(Span::styled(
-            format!("  [{label}]"),
-            with_input_background(theme.dim),
-        ));
-    }
 }
 
 fn fill_input_background(area: Rect, buf: &mut Buffer) {
@@ -458,14 +759,6 @@ fn fill_input_background(area: Rect, buf: &mut Buffer) {
                 cell.set_style(style);
             }
         }
-    }
-}
-
-fn input_text_y(area: Rect) -> u16 {
-    if area.height >= 3 {
-        area.y.saturating_add(1)
-    } else {
-        area.y
     }
 }
 
@@ -485,135 +778,184 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
-    fn render_to_string(
-        input: &PromptInput,
-        width: u16,
-        context: PromptInputRenderContext<'_>,
-    ) -> String {
-        let area = Rect::new(0, 0, width, 1);
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    fn render_to_lines(input: &PromptInput, width: u16, height: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        input.render_with_context(area, &mut buf, &Theme::default(), context);
-        (0..width).map(|x| buf[(x, 0)].symbol()).collect()
-    }
-
-    #[test]
-    fn prompt_input_resolves_placeholder_and_mode_indicator() {
-        let input = PromptInput::new();
-        let rendered = render_to_string(
-            &input,
-            60,
-            PromptInputRenderContext {
-                hint: None,
-                placeholder: Some("Message allthecodes"),
-                mode_indicator: Some("INS"),
-            },
-        );
-
-        assert!(rendered.starts_with(">"));
-        assert!(rendered.contains("Message allthecodes"));
-        assert!(rendered.contains("[INS]"));
-    }
-
-    #[test]
-    fn prompt_input_large_paste_is_ui_preview_only() {
-        let mut input = PromptInput::new();
-        let pasted = ["alpha beta gamma"; 60].join("\n");
-        input.paste_text(&pasted);
-
-        assert_eq!(input.input, pasted);
-        assert!(input.large_paste_notice().is_some());
-
-        let rendered = render_to_string(
-            &input,
-            80,
-            PromptInputRenderContext {
-                hint: None,
-                placeholder: None,
-                mode_indicator: Some("INS"),
-            },
-        );
-        assert!(rendered.contains("chars"));
-        assert!(rendered.contains("lines pasted"));
-    }
-
-    #[test]
-    fn prompt_input_tiny_width_with_mode_indicator_does_not_panic() {
-        let mut input = PromptInput::new();
-        input.insert_str("hello");
-
-        let rendered = render_to_string(
-            &input,
-            4,
-            PromptInputRenderContext {
-                hint: None,
-                placeholder: None,
-                mode_indicator: Some("INSERT"),
-            },
-        );
-
-        assert!(rendered.starts_with(">"));
-    }
-
-    #[test]
-    fn ghost_accessors_and_legacy_render_helpers_are_exercised() {
-        let mut input = PromptInput::new();
-        input.insert_str("/he");
-        input.set_ghost_suffix(Some("lp".to_string()));
-        input.set_show_ghost(true);
-
-        assert_eq!(input.ghost_suffix(), Some("lp"));
-        assert!(input.show_ghost());
-
-        let area = Rect::new(0, 0, 20, 1);
-        let mut buf = Buffer::empty(area);
-        input.render(area, &mut buf, &Theme::default());
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.contains("/he"));
-
-        let mut hint_buf = Buffer::empty(area);
-        input.render_with_hint(area, &mut hint_buf, &Theme::default(), Some("hint"));
-        let hinted: String = (0..area.width).map(|x| hint_buf[(x, 0)].symbol()).collect();
-        assert!(hinted.contains("/he"));
-    }
-
-    #[test]
-    fn large_paste_notice_can_be_taken_for_chrome() {
-        let mut input = PromptInput::new();
-        input.paste_text(&["line"; 12].join("\n"));
-
-        assert!(input.large_paste_notice().is_some());
-        assert!(input.take_large_paste_notice().is_some());
-        assert!(input.large_paste_notice().is_none());
-    }
-
-    #[test]
-    fn prompt_input_paints_user_message_background_across_row() {
-        let mut input = PromptInput::new();
-        input.insert_str("hello");
-        let area = Rect::new(0, 0, 24, 3);
-        let mut buf = Buffer::empty(area);
-
         input.render_with_context(
             area,
             &mut buf,
             &Theme::default(),
             PromptInputRenderContext {
-                hint: None,
-                placeholder: None,
+                hint: Some("hint"),
+                placeholder: Some("Message allthecodes"),
                 mode_indicator: Some("INS"),
             },
         );
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
 
-        for y in 0..3 {
-            assert_eq!(buf[(0, y)].style().bg, Some(USER_INPUT_BACKGROUND));
-            assert_eq!(buf[(23, y)].style().bg, Some(USER_INPUT_BACKGROUND));
-        }
+    #[test]
+    fn prompt_input_resolves_placeholder_and_mode_indicator() {
+        let input = PromptInput::new();
+        let rendered = render_to_lines(&input, 60, 3).join("\n");
+        assert!(rendered.contains("[INS]"));
+        assert!(rendered.contains("> Message allthecodes"));
+    }
 
-        let top: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        let middle: String = (0..area.width).map(|x| buf[(x, 1)].symbol()).collect();
-        let bottom: String = (0..area.width).map(|x| buf[(x, 2)].symbol()).collect();
-        assert!(top.trim().is_empty());
-        assert!(middle.contains("hello"));
-        assert!(bottom.trim().is_empty());
+    #[test]
+    fn ghost_suffix_and_hint_use_the_same_rendered_input_row() {
+        let mut input = PromptInput::new();
+        input.insert_str("hello");
+        input.set_ghost_suffix(Some(" world".to_string()));
+        input.set_show_ghost(true);
+        assert_eq!(input.ghost_suffix(), Some(" world"));
+        assert!(input.show_ghost());
+
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let layout = input.render_with_hint(area, &mut buf, &Theme::default(), Some("hint"));
+        let rendered: String = (0..area.width).map(|x| buf[(x, 1)].symbol()).collect();
+        assert!(rendered.contains("hello world hint"));
+        assert_eq!(layout.visual_height(), 1);
+    }
+
+    #[test]
+    fn shift_enter_inserts_newline_and_enter_submits_full_text() {
+        let mut input = PromptInput::new();
+        input.insert_str("first");
+        assert_eq!(
+            input.handle_key(key(KeyCode::Enter, KeyModifiers::SHIFT)),
+            None
+        );
+        input.insert_str("second");
+        assert_eq!(input.input, "first\nsecond");
+        assert_eq!(
+            input.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            Some("first\nsecond".to_string())
+        );
+    }
+
+    #[test]
+    fn multiline_rows_share_the_same_text_origin() {
+        let mut input = PromptInput::new();
+        input.insert_str("first\nsecond");
+        let lines = render_to_lines(&input, 40, 4);
+        let first = lines
+            .iter()
+            .position(|line| line.contains("first"))
+            .unwrap();
+        let second = lines
+            .iter()
+            .position(|line| line.contains("second"))
+            .unwrap();
+        assert_eq!(lines[first].find("first"), lines[second].find("second"));
+    }
+
+    #[test]
+    fn exact_width_input_gets_an_empty_caret_row() {
+        let mut input = PromptInput::new();
+        input.insert_str("abcd");
+        let layout = input.layout(Rect::new(0, 0, 6, 4));
+        assert_eq!(layout.visual_lines.len(), 2);
+        assert_eq!(layout.caret_visual_line, 1);
+        assert_eq!(layout.cursor_position(), Some(Position { x: 2, y: 2 }));
+    }
+
+    #[test]
+    fn wrapped_and_hard_continuations_keep_prompt_prefix_width() {
+        let mut input = PromptInput::new();
+        input.insert_str("abcd\nefghij");
+        let lines = render_to_lines(&input, 8, 5);
+        let first_columns = lines
+            .iter()
+            .filter_map(|line| line.find('a').or_else(|| line.find('e')))
+            .collect::<Vec<_>>();
+        assert!(first_columns.iter().all(|column| *column == 2));
+    }
+
+    #[test]
+    fn cursor_moves_over_combining_cluster_as_one_editing_unit() {
+        let mut input = PromptInput::new();
+        input.insert_str("e\u{301}x");
+        input.cursor_position = input.input.len();
+        assert_eq!(
+            input.handle_key(key(KeyCode::Left, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(&input.input[..input.cursor_position], "e\u{301}");
+        assert_eq!(
+            input.handle_key(key(KeyCode::Left, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(input.cursor_position, 0);
+    }
+
+    #[test]
+    fn layout_uses_display_columns_for_cjk_and_combining_marks() {
+        let mut input = PromptInput::new();
+        input.insert_str("你a\u{301}");
+        input.cursor_position = "你".len();
+        let layout = input.layout(Rect::new(10, 4, 30, 4));
+        assert_eq!(layout.caret_display_column, 2);
+        input.cursor_position = input.input.len();
+        let combining_layout = input.layout(Rect::new(10, 4, 30, 4));
+        assert_eq!(combining_layout.caret_display_column, 3);
+        assert!(combining_layout.cursor_position().is_some());
+    }
+
+    #[test]
+    fn viewport_keeps_caret_visible_after_soft_wrap() {
+        let mut input = PromptInput::new();
+        input.insert_str("abcdefghijklmno");
+        input.cursor_position = input.input.len();
+        let layout = input.layout(Rect::new(0, 0, 8, 4));
+        assert!(layout.caret_visual_line >= layout.viewport_start);
+        assert!(layout.cursor_position().is_some());
+    }
+
+    #[test]
+    fn vertical_navigation_preserves_display_column_and_falls_back_at_edges() {
+        let mut input = PromptInput::new();
+        input.insert_str("12345\n12\n12345");
+        input.cursor_position = input.input.find('\n').unwrap();
+        assert!(input.move_cursor_vertical(20, 1));
+        assert_eq!(&input.input[..input.cursor_position], "12345\n12");
+        assert!(input.move_cursor_vertical(20, 1));
+        assert_eq!(&input.input[..input.cursor_position], "12345\n12\n12345");
+        assert!(!input.move_cursor_vertical(20, 1));
+    }
+
+    #[test]
+    fn paste_normalizes_newlines_without_collapsing_small_multiline_text() {
+        let mut input = PromptInput::new();
+        input.paste_text("a\r\nb\rc");
+        assert_eq!(input.input, "a\nb\nc");
+        assert!(input.large_paste_notice().is_none());
+    }
+
+    #[test]
+    fn large_paste_notice_does_not_replace_editable_text() {
+        let mut input = PromptInput::new();
+        let pasted = ["中文内容"; 200].join("\n");
+        input.paste_text(&pasted);
+        assert_eq!(input.input, pasted);
+        assert!(input.large_paste_notice().is_some());
+        assert!(input.take_large_paste_notice().is_some());
+    }
+
+    #[test]
+    fn tiny_width_is_safe_and_does_not_claim_a_cursor_outside_the_frame() {
+        let mut input = PromptInput::new();
+        input.insert_str("hello");
+        let area = Rect::new(0, 0, 4, 3);
+        let mut buf = Buffer::empty(area);
+        let layout = input.render(area, &mut buf, &Theme::default());
+        assert!(layout.cursor_position().is_none() || layout.cursor_position().unwrap().x < 4);
     }
 }

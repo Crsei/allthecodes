@@ -152,6 +152,9 @@ impl SelectionSurface {
         let search = SearchBox::new(&self.filter)
             .placeholder("Filter...")
             .borderless(true)
+            // The owning App frame places the real terminal cursor at the
+            // filter cell. Do not render a second pipe cursor in the buffer.
+            .terminal_focused(false)
             .render();
         let mut lines = vec![format!("{} {}", self.title, search)];
         let mut rendered_rows = 0usize;

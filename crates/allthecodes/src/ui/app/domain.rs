@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use allthecodes_types::message::Message;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 
 use crate::ui::history_search_dialog::HistorySearchEntry;
 use crate::ui::messages::MessageRenderContext;
@@ -27,6 +27,30 @@ impl ProactiveUiStatus {
 pub struct KairosUiStatus {
     pub label: String,
     pub includes_proactive: bool,
+}
+
+/// The one editable surface that is allowed to own the physical terminal
+/// cursor for a rendered frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalCursorOwner {
+    Prompt,
+    HistorySearch,
+    Picker,
+    PermissionInput,
+    QuestionInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TerminalCursorPlacement {
+    pub(crate) owner: Option<TerminalCursorOwner>,
+    pub(crate) position: Option<Position>,
+}
+
+impl TerminalCursorPlacement {
+    pub(crate) const HIDDEN: Self = Self {
+        owner: None,
+        position: None,
+    };
 }
 
 impl KairosUiStatus {

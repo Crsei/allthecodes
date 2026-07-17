@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use allthecodes_types::message::{ContentBlock, Message, MessageContent, ToolResultContent};
 
+use super::utf8_preview::{char_count, head_tail_chars};
+
 /// A record of a tool result that was replaced with a truncated preview.
 #[derive(Debug)]
 pub struct ReplacementRecord {
@@ -101,16 +103,7 @@ pub async fn apply_tool_result_budget(
 
 /// Get the character length of tool result content.
 fn tool_result_content_len(content: &ToolResultContent) -> usize {
-    match content {
-        ToolResultContent::Text(s) => s.len(),
-        ToolResultContent::Blocks(blocks) => blocks
-            .iter()
-            .map(|b| match b {
-                ContentBlock::Text { text } => text.len(),
-                _ => 0,
-            })
-            .sum(),
-    }
+    char_count(&extract_tool_result_text(content))
 }
 
 /// Extract the full text from tool result content.
@@ -145,17 +138,11 @@ async fn save_to_disk(tool_use_id: &str, content: &str) -> Result<String, std::i
 
 /// Create a preview string for a budgeted tool result.
 fn make_preview(full_text: &str, original_len: usize, file_path: &str) -> String {
-    let head_len = PREVIEW_HEAD_CHARS.min(full_text.len());
-    let tail_len = PREVIEW_TAIL_CHARS.min(full_text.len().saturating_sub(head_len));
-
-    let head = &full_text[..head_len];
-    let tail = if tail_len > 0 {
-        &full_text[full_text.len() - tail_len..]
-    } else {
-        ""
-    };
-
-    let omitted = original_len.saturating_sub(head_len + tail_len);
+    let (head, tail, omitted_from_text) =
+        head_tail_chars(full_text, PREVIEW_HEAD_CHARS, PREVIEW_TAIL_CHARS);
+    let omitted = original_len
+        .saturating_sub(char_count(&head).saturating_add(char_count(&tail)))
+        .max(omitted_from_text);
 
     format!(
         "{head}\n\n[... {omitted} characters omitted. Full output saved to: {file_path} ...]\n\n{tail}"
@@ -164,21 +151,13 @@ fn make_preview(full_text: &str, original_len: usize, file_path: &str) -> String
 
 /// Truncate content in place when we can't save to disk.
 fn truncate_in_place(text: &str, max_size: usize) -> String {
-    if text.len() <= max_size {
+    if char_count(text) <= max_size {
         return text.to_string();
     }
 
     let head_len = PREVIEW_HEAD_CHARS.min(max_size / 2);
     let tail_len = PREVIEW_TAIL_CHARS.min(max_size.saturating_sub(head_len) / 2);
-
-    let head = &text[..head_len];
-    let tail = if tail_len > 0 && text.len() > tail_len {
-        &text[text.len() - tail_len..]
-    } else {
-        ""
-    };
-
-    let omitted = text.len().saturating_sub(head_len + tail_len);
+    let (head, tail, omitted) = head_tail_chars(text, head_len, tail_len);
     format!("{head}\n\n[... {omitted} characters omitted (truncated in place) ...]\n\n{tail}")
 }
 
@@ -210,5 +189,24 @@ mod tests {
         let record = &state.replacements["tu_big"];
         assert_eq!(record.original_size, 5000);
         assert!(!record.file_path.is_empty());
+    }
+
+    #[test]
+    fn unicode_preview_and_in_place_truncate_keep_scalar_boundaries() {
+        let text = format!(
+            "{}中{}🙂e\u{301}{}端{}{}",
+            "a".repeat(PREVIEW_HEAD_CHARS.saturating_sub(1)),
+            "b".repeat(700),
+            "c".repeat(700),
+            "d".repeat(700),
+            "z".repeat(PREVIEW_TAIL_CHARS.saturating_sub(1)),
+        );
+        let preview = make_preview(&text, char_count(&text), "/tmp/result.txt");
+        let truncated = truncate_in_place(&text, 1000);
+
+        assert!(preview.contains("characters omitted"));
+        assert!(truncated.contains("truncated in place"));
+        assert!(std::str::from_utf8(preview.as_bytes()).is_ok());
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }
 }

@@ -8,10 +8,11 @@
 //! |                             | `0` turns them off. Default is on (we already use  |
 //! |                             | them) so this is a way to opt out on terminals     |
 //! |                             | that behave badly.                                 |
-//! | `ALLTHECODES_ENABLE_MOUSE_CAPTURE` | `0` turns off TUI mouse capture for wheel |
-//! |                                    | events. Default is on for session scroll. |
-//! | `ALLTHECODES_DISABLE_MOUSE`        | Legacy override. `1` keeps native terminal |
-//! |                                    | mouse handling enabled.                    |
+//! | `ALLTHECODES_ENABLE_MOUSE_CAPTURE` | `1` opts into TUI mouse capture for wheel |
+//! |                                    | and scrollbar events. Default is off so   |
+//! |                                    | native selection/copy remains available.  |
+//! | `ALLTHECODES_DISABLE_MOUSE`        | Legacy override. `1` disables capture;  |
+//! |                                    | `0` keeps the old capture behavior.       |
 //! | `ALLTHECODES_SCROLL_SPEED`  | Lines per PageUp / PageDown scroll step. Integer,  |
 //! |                             | clamped to `[1, 50]`. Default: 5.                  |
 //!
@@ -28,8 +29,9 @@ pub struct TerminalEnvConfig {
     /// here so users on broken terminals can turn them off.
     pub sync_updates: bool,
     /// Whether to skip crossterm mouse capture so native terminal text
-    /// selection/copy keeps working. This defaults to false so wheel scrolling
-    /// works without extra setup; users can still opt out with the env flags.
+    /// selection/copy keeps working. This defaults to true; capture is an
+    /// explicit opt-in because crossterm capture prevents ordinary terminal
+    /// drag selection.
     pub disable_mouse: bool,
     /// Lines per scroll step for PageUp / PageDown and related keys.
     pub scroll_speed: u16,
@@ -39,7 +41,7 @@ impl Default for TerminalEnvConfig {
     fn default() -> Self {
         Self {
             sync_updates: true,
-            disable_mouse: false,
+            disable_mouse: true,
             scroll_speed: Self::DEFAULT_SCROLL_SPEED,
         }
     }
@@ -49,6 +51,11 @@ impl TerminalEnvConfig {
     /// The TUI runner honors the mouse-capture env flags when deciding
     /// whether to enable crossterm mouse capture.
     pub const DISABLE_MOUSE_RUNTIME_SUPPORTED: bool = true;
+
+    /// Whether crossterm should receive mouse events for this configuration.
+    pub const fn mouse_capture_enabled(self) -> bool {
+        !self.disable_mouse
+    }
     /// Default scroll speed when no override is set. Exposed publicly
     /// so `/terminal-setup` / tests can surface the same number that
     /// `Default::default()` seeds.
@@ -191,10 +198,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_sensible() {
+    fn defaults_preserve_native_selection() {
         let cfg = TerminalEnvConfig::default();
         assert!(cfg.sync_updates);
-        assert!(!cfg.disable_mouse);
+        assert!(cfg.disable_mouse);
+        assert!(!cfg.mouse_capture_enabled());
         assert_eq!(cfg.scroll_speed, TerminalEnvConfig::DEFAULT_SCROLL_SPEED);
     }
 
@@ -228,8 +236,21 @@ mod tests {
             let cfg =
                 TerminalEnvConfig::from_pairs(vec![("ALLTHECODES_ENABLE_MOUSE_CAPTURE", value)]);
             assert!(
-                !cfg.disable_mouse,
+                cfg.mouse_capture_enabled(),
                 "value {:?} should enable mouse capture",
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn enable_mouse_capture_false_preserves_native_selection() {
+        for value in ["0", "false", "NO", "off"] {
+            let cfg =
+                TerminalEnvConfig::from_pairs(vec![("ALLTHECODES_ENABLE_MOUSE_CAPTURE", value)]);
+            assert!(
+                cfg.disable_mouse,
+                "value {:?} should disable mouse capture",
                 value
             );
         }

@@ -95,7 +95,7 @@ API error provider=anthropic status=403 type=new_api_error: 用户额度不足
 - 滚动条包含顶部/底部箭头、轨道和当前位置滑块，用于提示还有隐藏内容。
 - 鼠标点击顶部/底部箭头按行滚动。
 - 鼠标点击或拖动中间轨道会按位置跳转 session 内容。
-- 鼠标捕获默认开启，滚轮无需额外设置即可发送到 TUI 并滚动聊天记录；如需恢复终端原生拖选，设置 `CLAUDE_CODE_DISABLE_MOUSE=1`。
+- 当前 allthecodes 默认保留终端原生拖选；需要让 TUI 接收滚轮和滚动条事件时，显式设置 `ALLTHECODES_ENABLE_MOUSE_CAPTURE=1`。
 - TUI 启动时会把 `QueryEngine` 中已恢复的 session history 同步到 App，并默认定位到最底部。
 - 修复 virtual scroll overscan 下的 skip 计算：每条消息按自己的 visual offset 决定跳过行数，避免默认 bottom 或滚动到底部时仍显示旧内容。
 - 保留既有键盘滚动和 transcript 滚动行为。
@@ -125,7 +125,7 @@ API error provider=anthropic status=403 type=new_api_error: 用户额度不足
 - 消息选择模式现在会从 assistant 文本、tool result 文本和 connector 文本中提取代码路径引用，支持 `path=...`、普通相对路径和可选 `:line` 行号。
 - 选中包含代码路径的消息后按 `o` 会通过 `$VISUAL` 或 `$EDITOR` 打开对应文件；`code`/`code-insiders`/`codium` 使用 `-g path:line`，常见终端编辑器使用 `+line path`。
 - 选中消息的 header 显示 `o open`，和已有复制动作一起作为消息动作入口。
-- TUI 默认启用 mouse capture 以支持滚轮和滚动条；滚轮统一滚动聊天记录，输入框历史只通过键盘上/下键切换。需要终端原生拖选时设置 `CLAUDE_CODE_DISABLE_MOUSE=1` 或 `CLAUDE_CODE_ENABLE_MOUSE_CAPTURE=0`，部分终端仍可用 Shift+拖选临时绕过应用鼠标捕获。
+- TUI 默认不启用 mouse capture，以保留终端原生拖选；设置 `ALLTHECODES_ENABLE_MOUSE_CAPTURE=1` 后，滚轮统一滚动聊天记录，输入框历史只通过键盘上/下键切换。`ALLTHECODES_DISABLE_MOUSE=1` 始终关闭捕获，部分终端仍可用 Shift+拖选临时绕过应用鼠标捕获。
 - 工具/任务展示统一以缩进后的 `●` 开始，避免和正文混在同一视觉层级。
 - 工具 compact line、后台任务行、任务 header 和回合结束消息都会显示 `worked for ...`，便于确认本轮或单个任务的运行耗时。
 
@@ -142,7 +142,7 @@ API error provider=anthropic status=403 type=new_api_error: 用户额度不足
 ### 2026-05-22 回归修复：滚轮与输入历史分离
 
 - 用户反馈对话内容无法选中/复制后，确认 mouse capture 会影响终端原生拖选；同时用户要求保留鼠标滚轮滚动聊天记录。
-- 最终策略保持 mouse capture 默认开启，保证鼠标滚轮可直接滚动聊天记录；需要终端原生拖选时继续使用 `CLAUDE_CODE_DISABLE_MOUSE=1` 或终端的 Shift+拖选能力。
+- 当前策略以终端原生拖选为默认；需要鼠标滚轮和滚动条直接由 TUI 处理时使用 `ALLTHECODES_ENABLE_MOUSE_CAPTURE=1`，并可用 `ALLTHECODES_DISABLE_MOUSE=1` 强制关闭捕获。
 - 修复输入框区域滚轮误触 prompt history 的问题：滚轮事件不再根据 prompt/message 区域分流到输入历史，而是统一进入 session/transcript scroll。
 - 输入历史的唯一交互入口为键盘上/下键；这避免滚轮查看聊天记录时覆盖输入框草稿。
 - 同次修复还保留对话内容与输入框之间的空行，以及工具/任务展示之间的空行。

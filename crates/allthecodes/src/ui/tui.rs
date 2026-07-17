@@ -15,7 +15,9 @@ use std::time::Duration;
 use allthecodes_engine::types::config::QuerySource;
 use allthecodes_engine::types::tool::PermissionMode;
 use allthecodes_types::callbacks::PermissionResponsePayload;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
+use crossterm::event::{
+    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
+};
 use crossterm::terminal::{
     self, BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen,
     LeaveAlternateScreen,
@@ -271,19 +273,13 @@ pub async fn run_tui(
 ) -> anyhow::Result<()> {
     // ── Setup terminal ─────────────────────────────────────────────
     let terminal_env = super::terminal_env::TerminalEnvConfig::from_env();
-    let mouse_capture_enabled = !terminal_env.disable_mouse;
+    let mouse_capture_enabled = terminal_env.mouse_capture_enabled();
 
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableFocusChange)?;
     if mouse_capture_enabled {
-        execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            cursor::Hide
-        )?;
-    } else {
-        execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+        execute!(stdout, EnableMouseCapture)?;
     }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -629,7 +625,7 @@ pub async fn run_tui(
                                 );
                             }
                             AppAction::ExportTranscript(body) => {
-                                match export_to_editor(&body).await {
+                                match export_to_editor(&body, mouse_capture_enabled).await {
                                     Ok(path) => add_system_info(
                                         &mut app,
                                         &format!(
@@ -657,7 +653,7 @@ pub async fn run_tui(
                             }
                             AppAction::OpenPath(reference) => {
                                 let cwd = app.cwd().to_string();
-                                match open_reference_in_editor(&reference, &cwd).await {
+                                match open_reference_in_editor(&reference, &cwd, mouse_capture_enabled).await {
                                     Ok(path) => add_system_info(
                                         &mut app,
                                         &format!("Opened {}", path.display()),
@@ -684,7 +680,12 @@ pub async fn run_tui(
                     Event::Paste(text) => {
                         let _ = app.handle_paste_event(text);
                     }
-                    _ => {}
+                    Event::FocusGained => {
+                        app.set_terminal_focus(true);
+                    }
+                    Event::FocusLost => {
+                        app.set_terminal_focus(false);
+                    }
                 }
             }
 
@@ -778,8 +779,24 @@ pub async fn run_tui(
                         }
                         app.add_notification(notification);
                     }
+                    EngineEvent::Failed { draft, message } => {
+                        app.set_streaming(false);
+                        streaming_state.clear();
+                        clear_terminal_progress(
+                            &mut terminal_progress,
+                            terminal.backend_mut(),
+                        );
+                        if let Some(draft) = draft {
+                            app.restore_prompt_text(draft);
+                        }
+                        add_system_error(
+                            &mut app,
+                            &format!("Query task failed unexpectedly: {message}"),
+                        );
+                    }
                     EngineEvent::Done => {
                         app.set_streaming(false);
+                        streaming_state.clear();
                         clear_terminal_progress(
                             &mut terminal_progress,
                             terminal.backend_mut(),
@@ -834,7 +851,8 @@ pub async fn run_tui(
                     chrono::Utc::now(),
                 );
                 if decision == proactive::ProactiveTickDecision::Submit {
-                    let prompt = proactive_tick_driver.build_prompt(chrono::Local::now(), true);
+                    let prompt = proactive_tick_driver
+                        .build_prompt(chrono::Local::now(), app.terminal_focus());
                     app.set_streaming(true);
                     engine.reset_abort();
                     spawn_engine_query_with_source(
@@ -876,12 +894,18 @@ pub async fn run_tui(
     if mouse_capture_enabled {
         execute!(
             terminal.backend_mut(),
+            DisableFocusChange,
             DisableMouseCapture,
             LeaveAlternateScreen,
             cursor::Show
         )?;
     } else {
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
+        execute!(
+            terminal.backend_mut(),
+            DisableFocusChange,
+            LeaveAlternateScreen,
+            cursor::Show
+        )?;
     }
     terminal.show_cursor()?;
 

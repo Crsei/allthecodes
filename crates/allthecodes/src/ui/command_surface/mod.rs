@@ -59,6 +59,23 @@ pub enum CommandSurfaceTarget {
     Effort,
 }
 
+/// A semantic description of the one free-text field, if any, owned by a
+/// command surface. Read-only list surfaces return `None`; this prevents the
+/// renderer from mistaking command examples such as `/tasks` for an input
+/// caret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CommandSurfaceCursorAnchor {
+    /// The rendered row contains `marker` followed by the visible value.
+    Search {
+        marker: String,
+        value: String,
+    },
+    Field {
+        marker: String,
+        value: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandSurface {
     Agents(AgentsSurface),
@@ -215,6 +232,31 @@ impl CommandSurface {
             Self::Tasks(surface) => surface.handle_key(key),
             Self::Team(surface) => surface.handle_key(key),
             Self::LspRecommendation(surface) => surface.handle_key(key),
+        }
+    }
+
+    pub(crate) fn cursor_anchor(&self) -> Option<CommandSurfaceCursorAnchor> {
+        match self {
+            Self::Agents(surface) => surface.cursor_anchor(),
+            Self::Config(surface) => surface.cursor_anchor(),
+            Self::Model(surface) => surface.cursor_anchor(),
+            Self::Plugin(surface) => surface.cursor_anchor(),
+            Self::Providers(surface) => surface.cursor_anchor(),
+            Self::Skills(surface) => surface.cursor_anchor(),
+            Self::Hooks(_)
+            | Self::Diff(_)
+            | Self::Kairos(_)
+            | Self::Login(_)
+            | Self::Mcp(_)
+            | Self::Memory(_)
+            | Self::Permissions(_)
+            | Self::Remote(_)
+            | Self::Resume(_)
+            | Self::Sandbox(_)
+            | Self::Subagents(_)
+            | Self::Tasks(_)
+            | Self::Team(_)
+            | Self::LspRecommendation(_) => None,
         }
     }
 }

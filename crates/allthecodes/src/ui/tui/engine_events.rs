@@ -23,7 +23,9 @@ use allthecodes_types::permission_events::{
 };
 use allthecodes_types::sdk::SdkMessage;
 use allthecodes_types::tool_operation::OperationStatus;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
@@ -43,7 +45,7 @@ impl StreamingState {
         }
     }
 
-    fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         self.blocks.clear();
         self.active = false;
     }
@@ -90,6 +92,13 @@ pub(super) enum EngineEvent {
     HookPermissionDecision(HookPermissionDecisionEvent),
     PermissionDecisionDebug(PermissionDecisionDebugEvent),
     PermissionAutoReview(PermissionAutoReviewEvent),
+    /// The query future unwound unexpectedly. The prompt is carried so the
+    /// UI can restore the submitted draft before the completion event clears
+    /// the busy state.
+    Failed {
+        draft: Option<String>,
+        message: String,
+    },
     /// The engine query task has completed (stream exhausted).
     Done,
 }
@@ -295,19 +304,51 @@ pub(super) fn spawn_engine_query_with_source(
     source: QuerySource,
     tx: mpsc::UnboundedSender<EngineEvent>,
 ) {
+    let restore_draft = matches!(&source, QuerySource::ReplMainThread);
     tokio::spawn(async move {
-        let overrides = chat_mode_submit_overrides(&engine);
-        let stream = engine.submit_message_with_overrides(&prompt, source, overrides);
-        futures::pin_mut!(stream);
+        let draft = restore_draft.then(|| prompt.clone());
+        let query_prompt = prompt.clone();
+        let sdk_tx = tx.clone();
+        run_query_with_panic_recovery(prompt, draft, tx, async move {
+            let overrides = chat_mode_submit_overrides(&engine);
+            let stream = engine.submit_message_with_overrides(&query_prompt, source, overrides);
+            futures::pin_mut!(stream);
 
-        while let Some(msg) = stream.next().await {
-            if tx.send(EngineEvent::Sdk(Box::new(msg))).is_err() {
-                break; // receiver dropped (app exited)
+            while let Some(msg) = stream.next().await {
+                if sdk_tx.send(EngineEvent::Sdk(Box::new(msg))).is_err() {
+                    break; // receiver dropped (app exited)
+                }
             }
-        }
-
-        let _ = tx.send(EngineEvent::Done);
+        })
+        .await;
     });
+}
+
+async fn run_query_with_panic_recovery<F>(
+    _prompt: String,
+    draft: Option<String>,
+    tx: mpsc::UnboundedSender<EngineEvent>,
+    work: F,
+) where
+    F: std::future::Future<Output = ()> + Send,
+{
+    if let Err(payload) = AssertUnwindSafe(work).catch_unwind().await {
+        let _ = tx.send(EngineEvent::Failed {
+            draft,
+            message: panic_payload_message(payload),
+        });
+    }
+    let _ = tx.send(EngineEvent::Done);
+}
+
+fn panic_payload_message(payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "query task panicked with a non-string payload".to_string()
+    }
 }
 
 fn chat_mode_submit_overrides(engine: &QueryEngine) -> SubmitMessageOverrides {
@@ -743,4 +784,37 @@ fn current_time_ms() -> u64 {
 /// Current UTC timestamp in seconds.
 pub(super) fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn panic_recovery_emits_one_failure_then_one_done() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_query_with_panic_recovery("draft".to_string(), Some("draft".to_string()), tx, async {
+            panic!("controlled query panic");
+        })
+        .await;
+
+        match rx.recv().await {
+            Some(EngineEvent::Failed { draft, message }) => {
+                assert_eq!(draft.as_deref(), Some("draft"));
+                assert!(message.contains("controlled query panic"));
+            }
+            _ => panic!("expected visible failure event"),
+        }
+        assert!(matches!(rx.recv().await, Some(EngineEvent::Done)));
+        assert!(rx.try_recv().is_err(), "Done must be emitted exactly once");
+    }
+
+    #[tokio::test]
+    async fn normal_query_completion_emits_done_without_failure() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_query_with_panic_recovery("draft".to_string(), None, tx, async {}).await;
+
+        assert!(matches!(rx.recv().await, Some(EngineEvent::Done)));
+        assert!(rx.try_recv().is_err());
+    }
 }

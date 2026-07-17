@@ -54,14 +54,14 @@ use super::transcript::{TranscriptState, ViewMode};
 use super::vim::VimState;
 use app_event::AppEvent;
 use domain::{
-    ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiStore, VerificationUiSummary,
+    ConversationStore, PromptQueueStore, RenderLayoutStore, SessionUiStore, TerminalCursorOwner,
+    TerminalCursorPlacement, VerificationUiSummary,
 };
 use overlays::OverlayState;
 use runtime_state::RuntimeViewState;
 
 pub use domain::ProactiveUiStatus;
 
-#[cfg(test)]
 pub(crate) use overlays::ActiveOverlay;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +281,9 @@ pub struct App {
     // Transcript / focus view + terminal env (issue #12)
     /// Which view the user is currently in; cycled with `Ctrl+O`.
     view_mode: ViewMode,
+    /// Whether the terminal currently has keyboard focus. A lost terminal
+    /// focus must not leave a stale IME anchor visible in the pane.
+    terminal_focus: bool,
     /// Extra state only used in transcript/focus modes.
     transcript_state: TranscriptState,
     /// Env-driven terminal config: `ALLTHECODES_NO_FLICKER`,
@@ -362,6 +365,7 @@ impl App {
             status_line_runner: StatusLineRunner::new(),
             session_usage: SessionUsageSnapshot::default(),
             view_mode: ViewMode::default(),
+            terminal_focus: true,
             transcript_state: TranscriptState::default(),
             terminal_env: TerminalEnvConfig::default(),
             voice: None,
@@ -708,6 +712,73 @@ impl App {
     pub fn set_terminal_env(&mut self, cfg: TerminalEnvConfig) {
         self.terminal_env = cfg;
         self.dirty = true;
+    }
+
+    pub fn set_terminal_focus(&mut self, focused: bool) {
+        if self.terminal_focus != focused {
+            self.terminal_focus = focused;
+            self.dirty = true;
+        }
+    }
+
+    pub fn terminal_focus(&self) -> bool {
+        self.terminal_focus
+    }
+
+    pub(crate) fn terminal_cursor_owner(&self) -> Option<TerminalCursorOwner> {
+        if !self.terminal_focus || self.view_mode != ViewMode::Prompt {
+            return None;
+        }
+
+        match self.overlays.active_overlay() {
+            Some(ActiveOverlay::Question) => self
+                .overlays
+                .question_dialog
+                .as_ref()
+                .filter(|dialog| dialog.allows_free_text())
+                .map(|_| TerminalCursorOwner::QuestionInput),
+            Some(ActiveOverlay::Permission) => self
+                .overlays
+                .permission_dialog
+                .as_ref()
+                .filter(|dialog| dialog.is_typing_feedback())
+                .map(|_| TerminalCursorOwner::PermissionInput),
+            Some(ActiveOverlay::HistorySearch) => Some(TerminalCursorOwner::HistorySearch),
+            Some(ActiveOverlay::CommandSurface) => self
+                .overlays
+                .command_surface
+                .as_ref()
+                .filter(|surface| surface.cursor_anchor().is_some())
+                .map(|_| TerminalCursorOwner::Picker),
+            Some(ActiveOverlay::AgentTree) | Some(ActiveOverlay::BypassPermissions) => None,
+            None if self.command_palette.edit_target_picker_active() => None,
+            None if self.prompt.is_active => Some(TerminalCursorOwner::Prompt),
+            None => None,
+        }
+    }
+
+    pub(crate) fn terminal_cursor_placement(
+        &self,
+        prompt: Option<ratatui::layout::Position>,
+        history_search: Option<ratatui::layout::Position>,
+        picker: Option<ratatui::layout::Position>,
+        permission_input: Option<ratatui::layout::Position>,
+        question_input: Option<ratatui::layout::Position>,
+    ) -> TerminalCursorPlacement {
+        let owner = self.terminal_cursor_owner();
+        let position = match owner {
+            Some(TerminalCursorOwner::Prompt) => prompt,
+            Some(TerminalCursorOwner::HistorySearch) => history_search,
+            Some(TerminalCursorOwner::Picker) => picker,
+            Some(TerminalCursorOwner::PermissionInput) => permission_input,
+            Some(TerminalCursorOwner::QuestionInput) => question_input,
+            None => None,
+        };
+        if position.is_some() {
+            TerminalCursorPlacement { owner, position }
+        } else {
+            TerminalCursorPlacement::HIDDEN
+        }
     }
 
     /// Current terminal-env config (read by the TUI runner to decide

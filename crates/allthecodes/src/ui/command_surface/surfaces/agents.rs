@@ -26,7 +26,7 @@ use crate::ui::agents::utils::{get_agent_source_display_name, selection_marker};
 use crate::ui::agents::validate_agent::{render_validation_result, validate_agent_definition};
 use crate::ui::better_view_panel::{plain_row, selected_row, BetterViewPanel};
 use crate::ui::command_surface::adapters::agents::{agent_entry_to_ui, agent_source_tabs};
-use crate::ui::command_surface::{cycle_index, CommandSurfaceOutcome};
+use crate::ui::command_surface::{cycle_index, CommandSurfaceCursorAnchor, CommandSurfaceOutcome};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentsSurface {
@@ -337,6 +337,26 @@ impl AgentsSurface {
                 _ => CommandSurfaceOutcome::None,
             },
         }
+    }
+
+    pub(crate) fn cursor_anchor(&self) -> Option<CommandSurfaceCursorAnchor> {
+        let AgentsSurfaceMode::Create(create) = &self.mode else {
+            return None;
+        };
+        if !is_text_step(create.step) {
+            return None;
+        }
+        let value = match create.step {
+            2 => create.data.generation_goal.as_deref().unwrap_or_default(),
+            3 => create.data.agent_type.as_deref().unwrap_or_default(),
+            4 => create.data.system_prompt.as_deref().unwrap_or_default(),
+            5 => create.data.when_to_use.as_deref().unwrap_or_default(),
+            _ => return None,
+        };
+        Some(CommandSurfaceCursorAnchor::Field {
+            marker: "input: ".to_string(),
+            value: value.to_string(),
+        })
     }
 
     fn handle_detail_key(
@@ -823,7 +843,7 @@ fn render_create_method_step(method: Option<AgentCreationMethod>) -> String {
 }
 
 fn render_text_field(label: &str, value: &str) -> String {
-    format!("{label}\n> {value}")
+    format!("{label}\ninput: {value}")
 }
 
 fn is_text_step(step: usize) -> bool {

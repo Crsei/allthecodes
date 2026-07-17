@@ -209,6 +209,7 @@ impl App {
                         self.command_palette.close();
                         self.prompt.input.clear();
                         self.prompt.cursor_position = 0;
+                        self.prompt.reset_vertical_navigation();
                         return AppAction::Submit(command);
                     }
 
@@ -223,6 +224,7 @@ impl App {
                     if let Some(command_input) = self.command_palette.selected_command_input() {
                         self.prompt.input = command_input;
                         self.prompt.cursor_position = self.prompt.input.len();
+                        self.prompt.reset_vertical_navigation();
                         self.command_palette.close();
                         return AppAction::None;
                     }
@@ -292,6 +294,30 @@ impl App {
         // Transcript / focus modes take over all remaining keystrokes.
         if self.view_mode.is_transcript_like() {
             return self.handle_transcript_key(key);
+        }
+
+        // Prompt Up/Down is first a visual-line movement. Only when the
+        // caret is already at the corresponding multiline edge should the
+        // key fall through to prompt history below.
+        if self.prompt.is_active && !self.is_streaming && key.modifiers.is_empty() {
+            let prompt_width = self
+                .render_layout
+                .prompt_area
+                .map(|area| area.width)
+                .unwrap_or(80);
+            let direction = match key.code {
+                KeyCode::Up => Some(-1),
+                KeyCode::Down => Some(1),
+                _ => None,
+            };
+            if let Some(direction) = direction {
+                if self.prompt.move_cursor_vertical(prompt_width, direction) {
+                    self.history_index = None;
+                    self.saved_input.clear();
+                    self.sync_command_palette();
+                    return AppAction::None;
+                }
+            }
         }
 
         match (key.modifiers, key.code) {
@@ -416,6 +442,7 @@ impl App {
                 if range.end <= self.prompt.input.len() {
                     self.prompt.input.replace_range(range.clone(), insert);
                     self.prompt.cursor_position = range.start + insert.len();
+                    self.prompt.reset_vertical_navigation();
                 }
             }
             self.completion_state.close();
@@ -525,6 +552,7 @@ impl App {
                 self.prompt.input = text;
                 self.prompt.cursor_position = self.prompt.input.len();
                 self.prompt.is_active = true;
+                self.prompt.reset_vertical_navigation();
                 self.sync_command_palette();
                 AppAction::None
             }
@@ -551,6 +579,7 @@ impl App {
                     self.prompt.input = text;
                     self.prompt.cursor_position = self.prompt.input.len();
                     self.prompt.is_active = true;
+                    self.prompt.reset_vertical_navigation();
                     self.sync_command_palette();
                 }
                 AppAction::LspRecommendationResponse {
@@ -579,6 +608,7 @@ impl App {
                 self.prompt.input = prompt;
                 self.prompt.cursor_position = self.prompt.input.len();
                 self.prompt.is_active = true;
+                self.prompt.reset_vertical_navigation();
                 self.history_index = None;
                 self.saved_input.clear();
                 self.sync_command_palette();
@@ -835,6 +865,7 @@ impl App {
         if let Some(idx) = self.history_index {
             self.prompt.input = self.session_ui.history[idx].display.clone();
             self.prompt.cursor_position = self.prompt.input.len();
+            self.prompt.reset_vertical_navigation();
         }
     }
 
@@ -844,21 +875,24 @@ impl App {
                 self.history_index = Some(idx + 1);
                 self.prompt.input = self.session_ui.history[idx + 1].display.clone();
                 self.prompt.cursor_position = self.prompt.input.len();
+                self.prompt.reset_vertical_navigation();
             } else {
                 self.history_index = None;
                 self.prompt.input = self.saved_input.clone();
                 self.prompt.cursor_position = self.prompt.input.len();
+                self.prompt.reset_vertical_navigation();
             }
         }
     }
 
     pub(super) fn take_prompt_submission(&mut self) -> Option<String> {
-        let text = self.prompt.input.trim().to_string();
-        if text.is_empty() {
+        if self.prompt.input.trim().is_empty() {
             return None;
         }
+        let text = self.prompt.input.clone();
         self.prompt.input.clear();
         self.prompt.cursor_position = 0;
+        self.prompt.reset_vertical_navigation();
         Some(text)
     }
 
@@ -866,6 +900,7 @@ impl App {
         self.prompt.input = text;
         self.prompt.cursor_position = self.prompt.input.len();
         self.prompt.is_active = true;
+        self.prompt.reset_vertical_navigation();
         self.sync_command_palette();
         self.dirty = true;
     }
@@ -1003,6 +1038,16 @@ impl App {
             "history:previous" => {
                 if self.view_mode == ViewMode::Prompt && self.prompt.is_active && !self.is_streaming
                 {
+                    let prompt_width = self
+                        .render_layout
+                        .prompt_area
+                        .map(|area| area.width)
+                        .unwrap_or(80);
+                    if self.prompt.move_cursor_vertical(prompt_width, -1) {
+                        self.history_index = None;
+                        self.saved_input.clear();
+                        return Some(AppAction::None);
+                    }
                     self.history_up();
                     return Some(AppAction::None);
                 }
@@ -1011,6 +1056,16 @@ impl App {
             "history:next" => {
                 if self.view_mode == ViewMode::Prompt && self.prompt.is_active && !self.is_streaming
                 {
+                    let prompt_width = self
+                        .render_layout
+                        .prompt_area
+                        .map(|area| area.width)
+                        .unwrap_or(80);
+                    if self.prompt.move_cursor_vertical(prompt_width, 1) {
+                        self.history_index = None;
+                        self.saved_input.clear();
+                        return Some(AppAction::None);
+                    }
                     self.history_down();
                     return Some(AppAction::None);
                 }
@@ -1025,6 +1080,7 @@ impl App {
             "chat:clearInput" => {
                 self.prompt.input.clear();
                 self.prompt.cursor_position = 0;
+                self.prompt.reset_vertical_navigation();
                 self.dirty = true;
                 return Some(AppAction::None);
             }
@@ -1267,11 +1323,13 @@ impl App {
                 if start <= end && end <= self.prompt.input.len() {
                     self.prompt.input.drain(start..end);
                     self.prompt.cursor_position = start.min(self.prompt.input.len());
+                    self.prompt.reset_vertical_navigation();
                 }
                 Some(AppAction::None)
             }
             VimAction::MoveCursor(pos) => {
                 self.prompt.cursor_position = pos.min(self.prompt.input.len());
+                self.prompt.reset_vertical_navigation();
                 Some(AppAction::None)
             }
             VimAction::Yank { .. } | VimAction::YankLine | VimAction::Undo => Some(AppAction::None),
@@ -1282,6 +1340,7 @@ impl App {
             VimAction::DeleteLine => {
                 self.prompt.input.clear();
                 self.prompt.cursor_position = 0;
+                self.prompt.reset_vertical_navigation();
                 Some(AppAction::None)
             }
             VimAction::Submit => Some(

@@ -5,6 +5,8 @@ use allthecodes_types::message::{
 use allthecodes_utils::tokens;
 use uuid::Uuid;
 
+use super::utf8_preview::{char_count, head_tail_chars};
+
 /// Result of microcompaction.
 #[derive(Debug)]
 pub struct MicrocompactResult {
@@ -147,7 +149,7 @@ fn compact_tool_result_message(msg: Message) -> (Message, u64, Vec<String>) {
                     let original_len = tool_result_content_len(content);
                     if original_len > SIZE_THRESHOLD_CHARS {
                         let summary = make_tool_result_summary(content, original_len);
-                        let new_len = summary.len();
+                        let new_len = char_count(&summary);
                         *content = ToolResultContent::Text(summary);
                         // Rough token estimate: ~4 chars per token
                         let chars_saved = original_len.saturating_sub(new_len);
@@ -196,24 +198,15 @@ fn extend_unique(target: &mut Vec<String>, values: Vec<String>) {
     }
 }
 
-/// Get the character length of a ToolResultContent.
+/// Get the Unicode scalar length of a ToolResultContent. Text blocks are
+/// joined with the same newlines used by the preview, so those separators are
+/// included in the budget.
 fn tool_result_content_len(content: &ToolResultContent) -> usize {
-    match content {
-        ToolResultContent::Text(s) => s.len(),
-        ToolResultContent::Blocks(blocks) => blocks
-            .iter()
-            .map(|b| match b {
-                ContentBlock::Text { text } => text.len(),
-                _ => 0,
-            })
-            .sum(),
-    }
+    char_count(&tool_result_text(content))
 }
 
-/// Create a summary string for a tool result, preserving the first and last
-/// portions of the content.
-fn make_tool_result_summary(content: &ToolResultContent, original_len: usize) -> String {
-    let full_text = match content {
+fn tool_result_text(content: &ToolResultContent) -> String {
+    match content {
         ToolResultContent::Text(s) => s.clone(),
         ToolResultContent::Blocks(blocks) => blocks
             .iter()
@@ -223,23 +216,21 @@ fn make_tool_result_summary(content: &ToolResultContent, original_len: usize) ->
             })
             .collect::<Vec<_>>()
             .join("\n"),
-    };
+    }
+}
 
-    let preview_len = 200.min(full_text.len());
-    let tail_len = 100.min(full_text.len().saturating_sub(preview_len));
-
-    let head = &full_text[..preview_len];
-    let tail = if tail_len > 0 {
-        &full_text[full_text.len() - tail_len..]
-    } else {
-        ""
-    };
+/// Create a summary string for a tool result, preserving the first and last
+/// portions of the content without ever slicing through UTF-8.
+fn make_tool_result_summary(content: &ToolResultContent, original_len: usize) -> String {
+    let full_text = tool_result_text(content);
+    let (head, tail, omitted_from_text) = head_tail_chars(&full_text, 200, 100);
+    let omitted = original_len
+        .saturating_sub(char_count(&head).saturating_add(char_count(&tail)))
+        .max(omitted_from_text);
 
     format!(
         "{}\n\n[... {} characters omitted (microcompacted) ...]\n\n{}",
-        head,
-        original_len - preview_len - tail_len,
-        tail
+        head, omitted, tail
     )
 }
 
@@ -350,5 +341,71 @@ mod tests {
         assert_eq!(metadata.tokens_saved, result.tokens_freed);
         assert_eq!(metadata.compacted_tool_ids, vec!["tu_old"]);
         assert!(metadata.cleared_attachment_uuids.is_empty());
+    }
+
+    #[test]
+    fn test_unicode_boundaries_and_block_joining_do_not_panic() {
+        let large_content = format!(
+            "{}中{}端{}🙂e\u{301}{}{}",
+            "a".repeat(199),
+            "b".repeat(700),
+            "c".repeat(700),
+            "d".repeat(700),
+            "z".repeat(199),
+        );
+        let mut messages = vec![
+            make_assistant(),
+            create_tool_result_message("tu_unicode", &large_content, false),
+        ];
+        for i in 0..KEEP_RECENT_TOOL_RESULTS + 1 {
+            messages.push(make_assistant());
+            messages.push(create_tool_result_message(
+                &format!("tu_recent_{i}"),
+                "small result",
+                false,
+            ));
+        }
+
+        let result = microcompact_messages(messages);
+        let summary = result
+            .messages
+            .iter()
+            .find_map(|message| match message {
+                Message::User(user) => match &user.content {
+                    MessageContent::Blocks(blocks) => blocks.iter().find_map(|block| match block {
+                        ContentBlock::ToolResult { content, .. } => match content {
+                            ToolResultContent::Text(text) if text.contains("microcompacted") => {
+                                Some(text.clone())
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    }),
+                    MessageContent::Text(_) => None,
+                },
+                _ => None,
+            })
+            .expect("unicode result should be compacted");
+        assert!(std::str::from_utf8(summary.as_bytes()).is_ok());
+        assert_eq!(result.compacted_tool_ids, vec!["tu_unicode"]);
+    }
+
+    #[test]
+    fn block_text_lengths_include_join_newlines() {
+        let content = ToolResultContent::Blocks(vec![
+            ContentBlock::Text {
+                text: "你".repeat(600),
+            },
+            ContentBlock::Text {
+                text: "🙂".repeat(600),
+            },
+        ]);
+
+        assert_eq!(tool_result_content_len(&content), 1201);
+        let summary = make_tool_result_summary(&content, tool_result_content_len(&content));
+        assert!(summary.contains("microcompacted"));
+        assert!(summary.contains('你'));
+        assert!(summary.contains('🙂'));
+        assert!(std::str::from_utf8(summary.as_bytes()).is_ok());
     }
 }

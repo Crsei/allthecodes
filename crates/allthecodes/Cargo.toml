@@ -101,6 +101,7 @@ syntect = { workspace = true, optional = true }
 # Text rendering
 textwrap = { workspace = true }
 unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
 strip-ansi-escapes = { workspace = true }
 
 # Markdown

@@ -1,18 +1,18 @@
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::App;
 use crate::ui::agents::agents_menu::AgentsMenuState;
 use crate::ui::app::ProactiveUiStatus;
 use crate::ui::bottom_pane::BottomPaneHeights;
 use crate::ui::command_palette::CommandPalette;
-use crate::ui::command_surface::CommandSurface;
+use crate::ui::command_surface::{CommandSurface, CommandSurfaceCursorAnchor};
 use crate::ui::history_search_dialog::HistorySearchDialog;
 use crate::ui::messages::{render_messages, MessageListViewModel, MessageRenderOptions};
 use crate::ui::notifications::in_app::{NotificationPriority, NotificationTone};
@@ -120,7 +120,9 @@ impl App {
         } else {
             0
         };
-        let input_height = 3u16;
+        let input_height = self
+            .prompt
+            .preferred_height(size.width, PromptInputRenderContext::default());
         let status_height = if custom_lines.is_empty() {
             1u16
         } else {
@@ -301,7 +303,7 @@ impl App {
         };
         let placeholder = self.prompt_placeholder();
         let mode_indicator = self.prompt_mode_indicator();
-        self.prompt.render_with_context(
+        let prompt_layout = self.prompt.render_with_context(
             bottom_chunks.input,
             frame.buffer_mut(),
             &self.theme,
@@ -381,6 +383,41 @@ impl App {
                 frame.buffer_mut(),
                 &self.theme,
             );
+        }
+
+        // The prompt and every editable overlay derive their physical cursor
+        // from the same rendered frame. Read-only surfaces intentionally
+        // return no position, so Ratatui hides the cursor for that frame.
+        let history_cursor = self
+            .overlays
+            .history_search_dialog
+            .as_ref()
+            .and_then(|dialog| {
+                find_history_search_cursor(frame.buffer_mut(), size, dialog.query())
+            });
+        let picker_cursor = self
+            .overlays
+            .command_surface
+            .as_ref()
+            .and_then(|surface| surface.cursor_anchor())
+            .and_then(|anchor| find_command_surface_cursor(frame.buffer_mut(), size, &anchor));
+        let permission_cursor = self.overlays.permission_dialog.as_ref().and_then(|dialog| {
+            dialog.cursor_position(size, Some(bottom_chunks.input), &self.theme)
+        });
+        let question_cursor = self
+            .overlays
+            .question_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.cursor_position(size, Some(bottom_chunks.input)));
+        let placement = self.terminal_cursor_placement(
+            prompt_layout.cursor_position(),
+            history_cursor,
+            picker_cursor,
+            permission_cursor,
+            question_cursor,
+        );
+        if let Some(position) = placement.position {
+            frame.set_cursor_position(position);
         }
 
         self.capture_render_snapshot(frame);
@@ -1033,6 +1070,134 @@ fn render_session_scrollbar(
             if in_thumb { "█" } else { "│" },
             if in_thumb { thumb_style } else { track_style },
         );
+    }
+}
+
+fn find_history_search_cursor(buf: &Buffer, area: Rect, query: &str) -> Option<Position> {
+    find_cursor_after_marker(buf, area, "filter=", query, &[" matches="])
+}
+
+fn find_command_surface_cursor(
+    buf: &Buffer,
+    area: Rect,
+    anchor: &CommandSurfaceCursorAnchor,
+) -> Option<Position> {
+    match anchor {
+        CommandSurfaceCursorAnchor::Search { marker, value } => find_cursor_after_marker(
+            buf,
+            area,
+            marker,
+            value,
+            &[" matches=", " visible=", " total="],
+        ),
+        CommandSurfaceCursorAnchor::Field { marker, value } => {
+            find_cursor_after_marker(buf, area, marker, value, &[])
+        }
+    }
+}
+
+fn find_cursor_after_marker(
+    buf: &Buffer,
+    area: Rect,
+    marker: &str,
+    value: &str,
+    stops: &[&str],
+) -> Option<Position> {
+    // Overlays are painted on top of the conversation. Search from the
+    // prompt upward so an identical marker in an older message cannot steal
+    // the physical cursor from the active surface.
+    for y in (area.y..area.y.saturating_add(area.height)).rev() {
+        let line = buffer_row_text(buf, area, y);
+        let Some(marker_start) = line.find(marker) else {
+            continue;
+        };
+        let value_start = marker_start + marker.len();
+        let visible_value = visible_value_after_marker(&line, value_start, value, stops);
+        return position_after_text(area, y, &line[..value_start], &visible_value);
+    }
+    None
+}
+
+fn visible_value_after_marker(
+    line: &str,
+    value_start: usize,
+    value: &str,
+    stops: &[&str],
+) -> String {
+    // An empty value means the caret is immediately after the marker; do not
+    // mistake a placeholder or panel padding for user input.
+    if value.is_empty() {
+        return String::new();
+    }
+
+    let remainder = &line[value_start..];
+    let stop_end = stops
+        .iter()
+        .filter_map(|stop| remainder.find(stop))
+        .min()
+        .unwrap_or(remainder.len());
+    let mut visible = remainder[..stop_end].trim_end_matches(' ');
+    // BetterViewPanel rows usually end with a right border after the value.
+    // Strip only that terminal border and its padding; preserve spaces that
+    // are part of a value in the middle of the row.
+    if let Some(without_border) = visible.strip_suffix('│') {
+        visible = without_border.trim_end_matches(' ');
+    }
+
+    if visible.starts_with(value) {
+        value.to_string()
+    } else {
+        visible.to_string()
+    }
+}
+
+fn position_after_text(area: Rect, y: u16, prefix: &str, value: &str) -> Option<Position> {
+    let right = area.x.saturating_add(area.width);
+    let x = area
+        .x
+        .saturating_add(UnicodeWidthStr::width(prefix) as u16)
+        .saturating_add(UnicodeWidthStr::width(value) as u16);
+    if y >= area.y.saturating_add(area.height) || right <= area.x || x >= right {
+        return None;
+    }
+    Some(Position { x, y })
+}
+
+fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+    (area.x..area.x.saturating_add(area.width))
+        .map(|x| buf[(x, y)].symbol())
+        .collect()
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_scan_prefers_the_overlay_row() {
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        buf.set_string(1, 0, "old message filter=old", Style::default());
+        buf.set_string(1, 4, "overlay filter=new matches=1", Style::default());
+
+        let position = find_cursor_after_marker(&buf, area, "filter=", "new", &[" matches="])
+            .expect("overlay cursor");
+        assert_eq!(position.y, 4);
+        assert_eq!(
+            position.x,
+            1 + UnicodeWidthStr::width("overlay filter=new") as u16
+        );
+    }
+
+    #[test]
+    fn field_cursor_uses_visible_value_without_panel_padding() {
+        let area = Rect::new(0, 0, 32, 2);
+        let mut buf = Buffer::empty(area);
+        buf.set_string(0, 0, "│ input: abc              │", Style::default());
+
+        let position =
+            find_cursor_after_marker(&buf, area, "input: ", "abc", &[]).expect("field cursor");
+        assert_eq!(position, Position { x: 12, y: 0 });
     }
 }
 

@@ -3,7 +3,7 @@
 use allthecodes_types::callbacks::AskUserRequestPayload;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
@@ -15,6 +15,8 @@ use crate::ui::permissions::ask_user_question_permission_request::submit_questio
 use crate::ui::permissions::ask_user_question_permission_request::use_multiple_choice_state::MultipleChoiceState;
 use crate::ui::panel_layout::PanelSizePreset;
 use crate::ui::theme::Theme;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestionDialog {
@@ -67,10 +69,10 @@ impl QuestionDialog {
             (_, KeyCode::Delete) => self.delete(),
             (_, KeyCode::Left) => self.cursor = self.cursor.saturating_sub(1),
             (_, KeyCode::Right) => {
-                self.cursor = (self.cursor + 1).min(self.answer.chars().count());
+                self.cursor = (self.cursor + 1).min(self.answer.graphemes(true).count());
             }
             (_, KeyCode::Home) => self.cursor = 0,
-            (_, KeyCode::End) => self.cursor = self.answer.chars().count(),
+            (_, KeyCode::End) => self.cursor = self.answer.graphemes(true).count(),
             (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(ch))
                 if self.request.allow_free_text =>
             {
@@ -81,11 +83,47 @@ impl QuestionDialog {
         None
     }
 
+    pub fn allows_free_text(&self) -> bool {
+        self.request.allow_free_text
+    }
+
+    /// Return the physical cursor cell for the free-text answer field. The
+    /// rendered header and this coordinate intentionally share the same
+    /// `Answer: ` prefix; no pipe character is drawn into the buffer.
+    pub fn cursor_position(&self, area: Rect, prompt_area: Option<Rect>) -> Option<Position> {
+        if !self.request.allow_free_text {
+            return None;
+        }
+        let dialog_area = self.dialog_area(area, prompt_area)?;
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(dialog_area);
+        if inner.width == 0 || inner.height == 0 {
+            return None;
+        }
+        let chunks = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+        let answer_width = usize::from(chunks[0].width)
+            .saturating_sub(UnicodeWidthStr::width("Answer: "))
+            .saturating_sub(1);
+        let (_, cursor_column) =
+            answer_preview_with_cursor(&self.answer, self.cursor, answer_width);
+        let x = chunks[0]
+            .x
+            .saturating_add(UnicodeWidthStr::width("Answer: ") as u16)
+            .saturating_add(cursor_column.min(u16::MAX as usize) as u16);
+        let y = chunks[0].y.saturating_add(1);
+        let right = chunks[0].x.saturating_add(chunks[0].width);
+        (x < right && y < chunks[0].y.saturating_add(chunks[0].height)).then_some(Position { x, y })
+    }
+
     pub fn render(&self, area: Rect, prompt_area: Option<Rect>, buf: &mut Buffer, theme: &Theme) {
-        let spec = PanelSizePreset::QuestionDialog.spec();
-        let dialog_area = spec
-            .resolve_prompt_or_centered_rect(area, prompt_area, spec.max_height)
-            .unwrap_or(Rect::new(area.x, area.y, area.width, area.height));
+        let Some(dialog_area) = self.dialog_area(area, prompt_area) else {
+            return;
+        };
 
         Widget::render(Clear, dialog_area, buf);
 
@@ -106,6 +144,10 @@ impl QuestionDialog {
             Constraint::Length(2),
         ])
         .split(inner);
+        let answer_width = usize::from(chunks[0].width)
+            .saturating_sub(UnicodeWidthStr::width("Answer: "))
+            .saturating_sub(1);
+        let (answer_text, _) = answer_preview_with_cursor(&self.answer, self.cursor, answer_width);
 
         let header = vec![
             Line::from(vec![
@@ -117,10 +159,7 @@ impl QuestionDialog {
             ]),
             Line::from(vec![
                 Span::styled("Answer: ", theme.dim),
-                Span::styled(
-                    truncate(&self.answer_preview(), chunks[0].width as usize),
-                    theme.warning,
-                ),
+                Span::styled(answer_text, theme.warning),
             ]),
         ];
         Widget::render(Paragraph::new(header), chunks[0], buf);
@@ -181,20 +220,10 @@ impl QuestionDialog {
             .collect()
     }
 
-    fn answer_with_cursor(&self) -> String {
-        let mut chars = self.answer.chars().collect::<Vec<_>>();
-        let cursor = self.cursor.min(chars.len());
-        chars.insert(cursor, '|');
-        chars.into_iter().collect()
-    }
-
-    fn answer_preview(&self) -> String {
-        if self.request.allow_free_text {
-            self.answer_with_cursor()
-        } else {
-            self.selected_choice_text()
-                .unwrap_or_else(|| "<select a choice>".to_string())
-        }
+    fn dialog_area(&self, area: Rect, prompt_area: Option<Rect>) -> Option<Rect> {
+        let spec = PanelSizePreset::QuestionDialog.spec();
+        spec.resolve_prompt_or_centered_rect(area, prompt_area, spec.max_height)
+            .or_else(|| (area.width > 0 && area.height > 0).then_some(area))
     }
 
     fn selected_choice_text(&self) -> Option<String> {
@@ -225,52 +254,175 @@ impl QuestionDialog {
     }
 
     fn insert(&mut self, ch: char) {
-        let mut chars = self.answer.chars().collect::<Vec<_>>();
-        let cursor = self.cursor.min(chars.len());
-        chars.insert(cursor, ch);
-        self.answer = chars.into_iter().collect();
-        self.cursor = cursor + 1;
+        let cursor = self.cursor.min(self.answer.graphemes(true).count());
+        let byte_offset = self
+            .answer
+            .grapheme_indices(true)
+            .nth(cursor)
+            .map(|(offset, _)| offset)
+            .unwrap_or(self.answer.len());
+        self.answer.insert(byte_offset, ch);
+        self.cursor = self.answer[..byte_offset + ch.len_utf8()]
+            .graphemes(true)
+            .count();
     }
 
     fn backspace(&mut self) {
         if self.cursor == 0 {
             return;
         }
-        let mut chars = self.answer.chars().collect::<Vec<_>>();
-        let idx = self.cursor.saturating_sub(1);
-        if idx < chars.len() {
-            chars.remove(idx);
-            self.answer = chars.into_iter().collect();
+        let ranges = self.answer.grapheme_indices(true).collect::<Vec<_>>();
+        let idx = self
+            .cursor
+            .saturating_sub(1)
+            .min(ranges.len().saturating_sub(1));
+        if let Some((start, _)) = ranges.get(idx) {
+            let end = ranges
+                .get(idx + 1)
+                .map(|(offset, _)| *offset)
+                .unwrap_or(self.answer.len());
+            self.answer.drain(*start..end);
             self.cursor = idx;
         }
     }
 
     fn delete(&mut self) {
-        let mut chars = self.answer.chars().collect::<Vec<_>>();
-        if self.cursor < chars.len() {
-            chars.remove(self.cursor);
-            self.answer = chars.into_iter().collect();
+        let ranges = self.answer.grapheme_indices(true).collect::<Vec<_>>();
+        if let Some((start, _)) = ranges.get(self.cursor) {
+            let end = ranges
+                .get(self.cursor + 1)
+                .map(|(offset, _)| *offset)
+                .unwrap_or(self.answer.len());
+            self.answer.drain(*start..end);
         }
     }
 }
 
-fn truncate(input: &str, max_chars: usize) -> String {
-    if input.chars().count() <= max_chars {
+fn truncate(input: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(input) <= max_width {
         input.to_string()
-    } else if max_chars <= 3 {
-        input.chars().take(max_chars).collect()
     } else {
-        input
-            .chars()
-            .take(max_chars.saturating_sub(3))
-            .collect::<String>()
-            + "..."
+        let (content_width, suffix) = if max_width > 3 {
+            (max_width - 3, "...")
+        } else {
+            (max_width, "")
+        };
+        let mut width = 0usize;
+        let mut output = String::new();
+        for grapheme in input.graphemes(true) {
+            let ch_width = UnicodeWidthStr::width(grapheme);
+            if width.saturating_add(ch_width) > content_width {
+                break;
+            }
+            output.push_str(grapheme);
+            width = width.saturating_add(ch_width);
+        }
+        output.push_str(suffix);
+        output
     }
+}
+
+/// Render a horizontally windowed answer while keeping the scalar caret
+/// visible. The returned column is measured in terminal cells from the start
+/// of the answer field, so the drawing path and [`QuestionDialog::cursor_position`]
+/// share the same truncation decision for long answers.
+fn answer_preview_with_cursor(answer: &str, cursor: usize, max_width: usize) -> (String, usize) {
+    let graphemes = answer
+        .graphemes(true)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let widths = graphemes
+        .iter()
+        .map(|grapheme| UnicodeWidthStr::width(grapheme.as_str()))
+        .collect::<Vec<_>>();
+    let cursor = cursor.min(graphemes.len());
+    let total_width = widths.iter().sum::<usize>();
+    if total_width <= max_width {
+        return (answer.to_string(), widths[..cursor].iter().sum::<usize>());
+    }
+    if max_width == 0 {
+        return (String::new(), 0);
+    }
+
+    // Reserve room for one marker on a short field and both markers when the
+    // caret is in the middle. A marker is only emitted if the corresponding
+    // side is still hidden after the window is selected.
+    let has_left = cursor > 0;
+    let has_right = cursor < graphemes.len();
+    let marker_slots = if max_width >= 6 && has_left && has_right {
+        2
+    } else if max_width >= 6 && (has_left || has_right) {
+        1
+    } else {
+        0
+    };
+    let content_width = max_width.saturating_sub(marker_slots * 3);
+    let (reserve_prefix, reserve_suffix) = match marker_slots {
+        2 => (true, true),
+        1 if has_left && has_right => {
+            let left = widths[..cursor].iter().sum::<usize>();
+            let right = widths[cursor..].iter().sum::<usize>();
+            (left >= right, left < right)
+        }
+        1 => (has_left, has_right),
+        _ => (false, false),
+    };
+
+    let mut start = cursor;
+    let mut end = cursor;
+    let mut used_width = 0usize;
+    while start > 0 || end < graphemes.len() {
+        let left_width = start
+            .checked_sub(1)
+            .and_then(|index| widths.get(index).copied());
+        let right_width = widths.get(end).copied();
+        let can_take_left =
+            left_width.is_some_and(|width| used_width.saturating_add(width) <= content_width);
+        let can_take_right =
+            right_width.is_some_and(|width| used_width.saturating_add(width) <= content_width);
+        if !can_take_left && !can_take_right {
+            break;
+        }
+
+        let take_left = match (can_take_left, can_take_right) {
+            (true, false) => true,
+            (false, true) => false,
+            (true, true) => {
+                let left = left_width.unwrap_or(0);
+                let right = right_width.unwrap_or(0);
+                left <= right
+            }
+            (false, false) => false,
+        };
+        if take_left {
+            start -= 1;
+            used_width = used_width.saturating_add(left_width.unwrap_or(0));
+        } else {
+            used_width = used_width.saturating_add(right_width.unwrap_or(0));
+            end += 1;
+        }
+    }
+
+    let show_prefix = reserve_prefix && start > 0;
+    let show_suffix = reserve_suffix && end < graphemes.len();
+    let mut output = String::new();
+    if show_prefix {
+        output.push_str("...");
+    }
+    for grapheme in &graphemes[start..end] {
+        output.push_str(grapheme);
+    }
+    if show_suffix {
+        output.push_str("...");
+    }
+    let cursor_column =
+        usize::from(show_prefix) * 3 + widths[start..cursor.min(end)].iter().sum::<usize>();
+    (output, cursor_column)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::QuestionDialog;
+    use super::{answer_preview_with_cursor, QuestionDialog};
     use allthecodes_types::callbacks::AskUserRequestPayload;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::buffer::Buffer;
@@ -374,6 +526,26 @@ mod tests {
 
         let title_row = row_containing(&buffer, area, "Need Input").expect("title row");
         assert!(title_row < prompt_area.y);
+    }
+
+    #[test]
+    fn long_answer_preview_keeps_a_display_column_cursor() {
+        let answer = "ab你中文defgh";
+        let (preview, cursor_column) = answer_preview_with_cursor(answer, 4, 8);
+
+        assert!(unicode_width::UnicodeWidthStr::width(preview.as_str()) <= 8);
+        assert!(cursor_column <= unicode_width::UnicodeWidthStr::width(preview.as_str()));
+        assert!(preview.contains("你"));
+    }
+
+    #[test]
+    fn answer_preview_cursor_is_stable_at_each_caret_edge() {
+        let answer = "你abc中文";
+        for cursor in 0..=answer.chars().count() {
+            let (preview, cursor_column) = answer_preview_with_cursor(answer, cursor, 7);
+            assert!(unicode_width::UnicodeWidthStr::width(preview.as_str()) <= 7);
+            assert!(cursor_column <= unicode_width::UnicodeWidthStr::width(preview.as_str()));
+        }
     }
 
     fn row_containing(buffer: &Buffer, area: Rect, needle: &str) -> Option<u16> {

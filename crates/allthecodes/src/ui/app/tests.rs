@@ -414,6 +414,106 @@ fn app_overlay_priority_falls_back_through_all_overlays() {
 }
 
 #[test]
+fn terminal_cursor_owner_tracks_editable_surface_and_focus() {
+    let mut app = App::new();
+    assert_eq!(
+        app.terminal_cursor_owner(),
+        Some(TerminalCursorOwner::Prompt)
+    );
+
+    app.set_terminal_focus(false);
+    assert_eq!(app.terminal_cursor_owner(), None);
+    app.set_terminal_focus(true);
+
+    app.open_history_search();
+    assert_eq!(
+        app.terminal_cursor_owner(),
+        Some(TerminalCursorOwner::HistorySearch)
+    );
+    app.overlays.history_search_dialog = None;
+
+    app.open_command_surface(CommandSurface::Model(
+        crate::ui::command_surface::ModelSurface::new(&AppState::default()),
+    ));
+    assert_eq!(
+        app.terminal_cursor_owner(),
+        Some(TerminalCursorOwner::Picker)
+    );
+    app.overlays.command_surface = None;
+
+    app.show_permission_dialog("Bash", r#"{"command":"echo ok"}"#, "Run command?");
+    assert_eq!(app.terminal_cursor_owner(), None);
+    assert_eq!(send_key(&mut app, KeyCode::Tab), AppAction::None);
+    assert_eq!(
+        app.terminal_cursor_owner(),
+        Some(TerminalCursorOwner::PermissionInput)
+    );
+    app.dismiss_permission_dialog();
+
+    app.show_question_dialog(
+        "q-1",
+        AskUserRequestPayload {
+            question: "Notes?".to_string(),
+            choices: Vec::new(),
+            allow_free_text: true,
+        },
+    );
+    assert_eq!(
+        app.terminal_cursor_owner(),
+        Some(TerminalCursorOwner::QuestionInput)
+    );
+    app.overlays.clear_question();
+
+    app.open_command_surface(CommandSurface::Tasks(
+        crate::ui::command_surface::TasksSurface::from_items(vec![]),
+    ));
+    assert_eq!(app.terminal_cursor_owner(), None);
+}
+
+#[test]
+fn render_places_real_cursor_at_prompt_caret() {
+    let mut app = App::new();
+    app.prompt.input = "你a".to_string();
+    app.prompt.cursor_position = "你".len();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+
+    let prompt_area = app.render_layout.prompt_area.expect("prompt area");
+    let expected = app
+        .prompt
+        .layout(prompt_area)
+        .cursor_position()
+        .expect("prompt cursor");
+    assert_eq!(
+        terminal.get_cursor_position().expect("cursor position"),
+        expected
+    );
+}
+
+#[test]
+fn cursor_placement_hides_when_focus_is_lost_or_view_is_read_only() {
+    let mut app = App::new();
+    let prompt = Some(ratatui::layout::Position { x: 2, y: 3 });
+    let hidden = app.terminal_cursor_placement(prompt, None, None, None, None);
+    assert_eq!(hidden.owner, Some(TerminalCursorOwner::Prompt));
+    assert_eq!(hidden.position, prompt);
+
+    app.set_terminal_focus(false);
+    assert_eq!(
+        app.terminal_cursor_placement(prompt, None, None, None, None),
+        TerminalCursorPlacement::HIDDEN
+    );
+
+    app.set_terminal_focus(true);
+    app.cycle_view_mode();
+    assert_eq!(
+        app.terminal_cursor_placement(prompt, None, None, None, None),
+        TerminalCursorPlacement::HIDDEN
+    );
+}
+
+#[test]
 fn app_owns_queued_prompt_fifo() {
     let mut app = App::new();
 

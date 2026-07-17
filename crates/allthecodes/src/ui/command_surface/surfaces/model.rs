@@ -1,7 +1,9 @@
 use crossterm::event::KeyEvent;
 
 use crate::ui::better_view_panel::BetterViewPanel;
-use crate::ui::command_surface::{CommandSurfaceOutcome, CommandSurfaceTarget};
+use crate::ui::command_surface::{
+    CommandSurfaceCursorAnchor, CommandSurfaceOutcome, CommandSurfaceTarget,
+};
 use crate::ui::selection_surface::{SelectionSurface, SelectionSurfaceEvent};
 use allthecodes_engine::types::app_state::AppState;
 
@@ -37,5 +39,12 @@ impl ModelSurface {
             SelectionSurfaceEvent::Closed => CommandSurfaceOutcome::Close,
             SelectionSurfaceEvent::None => CommandSurfaceOutcome::None,
         }
+    }
+
+    pub(crate) fn cursor_anchor(&self) -> Option<CommandSurfaceCursorAnchor> {
+        Some(CommandSurfaceCursorAnchor::Search {
+            marker: format!("{} / ", self.picker.title),
+            value: self.picker.filter.clone(),
+        })
     }
 }

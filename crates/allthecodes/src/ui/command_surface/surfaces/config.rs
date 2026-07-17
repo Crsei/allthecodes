@@ -1,7 +1,7 @@
 use crossterm::event::KeyEvent;
 
 use crate::ui::better_view_panel::BetterViewPanel;
-use crate::ui::command_surface::CommandSurfaceOutcome;
+use crate::ui::command_surface::{CommandSurfaceCursorAnchor, CommandSurfaceOutcome};
 use crate::ui::form_navigation::{FormOption, FormTab, TabbedFormEvent, TabbedFormState};
 use crate::ui::selection_surface::{SelectionItem, SelectionSurface, SelectionSurfaceEvent};
 use allthecodes_engine::effort::{effort_to_budget_tokens, CapabilityProvenance, EffortTransport};
@@ -316,6 +316,19 @@ impl ConfigSurface {
             },
             _ => CommandSurfaceOutcome::None,
         }
+    }
+
+    pub(crate) fn cursor_anchor(&self) -> Option<CommandSurfaceCursorAnchor> {
+        let picker = match self.active_tab_id() {
+            Some("model") => &self.model_picker,
+            Some("theme") => &self.theme_picker,
+            Some("thinking") if self.effort_picker_enabled => &self.effort_picker,
+            _ => return None,
+        };
+        Some(CommandSurfaceCursorAnchor::Search {
+            marker: format!("{} / ", picker.title),
+            value: picker.filter.clone(),
+        })
     }
 
     fn active_tab_id(&self) -> Option<&str> {

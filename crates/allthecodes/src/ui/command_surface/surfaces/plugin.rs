@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::ui::better_view_panel::BetterViewPanel;
-use crate::ui::command_surface::CommandSurfaceOutcome;
+use crate::ui::command_surface::{CommandSurfaceCursorAnchor, CommandSurfaceOutcome};
 use crate::ui::selection_surface::{SelectionItem, SelectionSurface, SelectionSurfaceEvent};
 use allthecodes_plugins::{PluginEntry, PluginSource, PluginStatus};
 
@@ -58,6 +58,13 @@ impl PluginSurface {
                 SelectionSurfaceEvent::None => CommandSurfaceOutcome::None,
             },
         }
+    }
+
+    pub(crate) fn cursor_anchor(&self) -> Option<CommandSurfaceCursorAnchor> {
+        Some(CommandSurfaceCursorAnchor::Search {
+            marker: format!("{} / ", self.picker.title),
+            value: self.picker.filter.clone(),
+        })
     }
 
     fn selected_plugin_id(&self) -> Option<String> {

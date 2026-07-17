@@ -6,7 +6,7 @@ use allthecodes_config::settings::{
 };
 
 use crate::ui::better_view_panel::{plain_row, selected_row, BetterViewPanel};
-use crate::ui::command_surface::{cycle_index, CommandSurfaceOutcome};
+use crate::ui::command_surface::{cycle_index, CommandSurfaceCursorAnchor, CommandSurfaceOutcome};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProfileRow {
@@ -310,7 +310,11 @@ impl ProvidersSurface {
             step,
         )
         .detail_title(labels[step])
-        .detail_lines(value.lines().map(str::to_string).collect())
+        .detail_lines(if step < 5 {
+            vec![format!("input: {value}")]
+        } else {
+            value.lines().map(str::to_string).collect()
+        })
         .footer(if target.is_some() && step == 4 {
             "Type new key | Delete toggle clear existing | Enter next | Backspace edit/previous | Esc close"
         } else {
@@ -361,6 +365,28 @@ impl ProvidersSurface {
                 _ => CommandSurfaceOutcome::None,
             },
         }
+    }
+
+    pub(crate) fn cursor_anchor(&self) -> Option<CommandSurfaceCursorAnchor> {
+        let ProvidersMode::Edit { draft, step, .. } = &self.mode else {
+            return None;
+        };
+        if *step >= 5 {
+            return None;
+        }
+        let value = match *step {
+            0 => draft.id.clone(),
+            1 => draft.provider.clone(),
+            2 => draft.model.clone(),
+            3 => draft.base_url.clone(),
+            4 if draft.clear_api_key => "clear existing".to_string(),
+            4 => "*".repeat(draft.api_key.chars().count()),
+            _ => return None,
+        };
+        Some(CommandSurfaceCursorAnchor::Field {
+            marker: "input: ".to_string(),
+            value,
+        })
     }
 
     fn handle_profiles(&mut self, key: KeyEvent) -> CommandSurfaceOutcome {

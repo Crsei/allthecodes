@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ui::better_view_panel::{plain_row, selected_row, BetterViewPanel};
-use crate::ui::command_surface::{cycle_index, CommandSurfaceOutcome};
+use crate::ui::command_surface::{cycle_index, CommandSurfaceCursorAnchor, CommandSurfaceOutcome};
 use crate::ui::skills::skills_menu::SkillMenuItem;
 use crate::ui::skills_helpers::{skill_description, skill_display_name};
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +109,13 @@ impl SkillsSurface {
             }
             _ => CommandSurfaceOutcome::None,
         }
+    }
+
+    pub(crate) fn cursor_anchor(&self) -> Option<CommandSurfaceCursorAnchor> {
+        Some(CommandSurfaceCursorAnchor::Search {
+            marker: "filter=".to_string(),
+            value: self.filter.clone(),
+        })
     }
 
     pub(crate) fn move_selection(&mut self, direction: isize) {

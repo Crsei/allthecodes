@@ -64,10 +64,10 @@ pub struct EnvProbe {
     pub vte_version: Option<String>,
     pub wt_session: Option<String>,
     pub term_program_version: Option<String>,
-    pub claude_code_no_flicker: Option<String>,
-    pub claude_code_enable_mouse_capture: Option<String>,
-    pub claude_code_disable_mouse: Option<String>,
-    pub claude_code_scroll_speed: Option<String>,
+    pub allthecodes_no_flicker: Option<String>,
+    pub allthecodes_enable_mouse_capture: Option<String>,
+    pub allthecodes_disable_mouse: Option<String>,
+    pub allthecodes_scroll_speed: Option<String>,
 }
 
 impl EnvProbe {
@@ -98,10 +98,10 @@ impl EnvProbe {
                 "EDITOR" => p.editor = value,
                 "VTE_VERSION" => p.vte_version = value,
                 "WT_SESSION" => p.wt_session = value,
-                "ALLTHECODES_NO_FLICKER" => p.claude_code_no_flicker = value,
-                "ALLTHECODES_ENABLE_MOUSE_CAPTURE" => p.claude_code_enable_mouse_capture = value,
-                "ALLTHECODES_DISABLE_MOUSE" => p.claude_code_disable_mouse = value,
-                "ALLTHECODES_SCROLL_SPEED" => p.claude_code_scroll_speed = value,
+                "ALLTHECODES_NO_FLICKER" => p.allthecodes_no_flicker = value,
+                "ALLTHECODES_ENABLE_MOUSE_CAPTURE" => p.allthecodes_enable_mouse_capture = value,
+                "ALLTHECODES_DISABLE_MOUSE" => p.allthecodes_disable_mouse = value,
+                "ALLTHECODES_SCROLL_SPEED" => p.allthecodes_scroll_speed = value,
                 _ => {}
             }
         }
@@ -221,21 +221,21 @@ fn render_env(p: &EnvProbe) -> String {
     let effective = TerminalEnvConfig::from_pairs([
         (
             "ALLTHECODES_NO_FLICKER",
-            p.claude_code_no_flicker.clone().unwrap_or_default(),
+            p.allthecodes_no_flicker.clone().unwrap_or_default(),
         ),
         (
             "ALLTHECODES_ENABLE_MOUSE_CAPTURE",
-            p.claude_code_enable_mouse_capture
+            p.allthecodes_enable_mouse_capture
                 .clone()
                 .unwrap_or_default(),
         ),
         (
             "ALLTHECODES_DISABLE_MOUSE",
-            p.claude_code_disable_mouse.clone().unwrap_or_default(),
+            p.allthecodes_disable_mouse.clone().unwrap_or_default(),
         ),
         (
             "ALLTHECODES_SCROLL_SPEED",
-            p.claude_code_scroll_speed.clone().unwrap_or_default(),
+            p.allthecodes_scroll_speed.clone().unwrap_or_default(),
         ),
     ]);
 
@@ -259,34 +259,36 @@ fn render_env(p: &EnvProbe) -> String {
     }
 
     out.push_str("\nALLTHECODES_* toggles (issue #12)\n");
-    out.push_str(&row("ALLTHECODES_NO_FLICKER", &p.claude_code_no_flicker));
+    out.push_str(&row("ALLTHECODES_NO_FLICKER", &p.allthecodes_no_flicker));
     out.push_str(&format!(
         "    -> synchronized updates: {}\n",
         if effective.sync_updates { "on" } else { "off" }
     ));
     out.push_str(&row(
         "ALLTHECODES_ENABLE_MOUSE_CAPTURE",
-        &p.claude_code_enable_mouse_capture,
+        &p.allthecodes_enable_mouse_capture,
     ));
     out.push_str(&row(
         "ALLTHECODES_DISABLE_MOUSE",
-        &p.claude_code_disable_mouse,
+        &p.allthecodes_disable_mouse,
     ));
     out.push_str(&format!(
         "    -> mouse capture:        {}\n",
-        if TerminalEnvConfig::DISABLE_MOUSE_RUNTIME_SUPPORTED {
-            if effective.disable_mouse {
-                "disabled (native selection/copy)"
+        if effective.mouse_capture_enabled() {
+            if p.allthecodes_disable_mouse.as_deref() == Some("0")
+                && p.allthecodes_enable_mouse_capture.is_none()
+            {
+                "enabled (legacy ALLTHECODES_DISABLE_MOUSE=0; wheel/scrollbar capture)"
             } else {
-                "enabled for wheel events; terminal drag selection is captured"
+                "enabled (wheel/scrollbar capture; native drag selection is not guaranteed)"
             }
         } else {
-            "not implemented in current runtime (env is diagnostic-only)"
+            "disabled (native selection/copy)"
         }
     ));
     out.push_str(&row(
         "ALLTHECODES_SCROLL_SPEED",
-        &p.claude_code_scroll_speed,
+        &p.allthecodes_scroll_speed,
     ));
     out.push_str(&format!(
         "    -> scroll speed:         {} lines / step\n",
@@ -337,12 +339,16 @@ fn render_tips(p: &EnvProbe) -> String {
         "  - Values with arguments such as `code --wait` or `nvim -f` are not supported yet; use a wrapper script or set the env var to the executable only.\n\n",
     );
 
-    if !TerminalEnvConfig::DISABLE_MOUSE_RUNTIME_SUPPORTED {
-        out.push_str("Mouse flag status:\n");
-        out.push_str(
-            "  - Mouse capture env flags are parsed and shown here, but the current Rust TUI does not change mouse capture at runtime yet.\n\n",
-        );
-    }
+    out.push_str("Mouse selection / scrolling:\n");
+    out.push_str(
+        "  - Default: native terminal drag selection and copy remain available; keyboard PageUp/PageDown and arrows scroll the session.\n",
+    );
+    out.push_str(
+        "  - Opt into TUI wheel and scrollbar capture with `ALLTHECODES_ENABLE_MOUSE_CAPTURE=1`.\n",
+    );
+    out.push_str(
+        "  - `ALLTHECODES_DISABLE_MOUSE=1` always disables capture; `ALLTHECODES_DISABLE_MOUSE=0` is a legacy opt-in.\n\n",
+    );
 
     out.push_str("Transcript / focus view (issue #12):\n");
     out.push_str("  - Ctrl+O cycles Prompt -> Transcript -> Focus.\n");
@@ -507,14 +513,14 @@ mod tests {
     fn env_table_reports_default_mouse_capture() {
         let p = EnvProbe::from_pairs(Vec::<(&str, &str)>::new());
         let out = render_env(&p);
-        assert!(out.contains("enabled for wheel events"));
+        assert!(out.contains("disabled (native selection/copy)"));
     }
 
     #[test]
     fn env_table_reports_enable_mouse_capture_runtime_effect() {
         let p = EnvProbe::from_pairs(vec![("ALLTHECODES_ENABLE_MOUSE_CAPTURE", "1")]);
         let out = render_env(&p);
-        assert!(out.contains("enabled for wheel events"));
+        assert!(out.contains("enabled (wheel/scrollbar capture"));
     }
 
     #[test]
@@ -522,5 +528,12 @@ mod tests {
         let p = EnvProbe::from_pairs(vec![("ALLTHECODES_DISABLE_MOUSE", "1")]);
         let out = render_env(&p);
         assert!(out.contains("disabled (native selection/copy)"));
+    }
+
+    #[test]
+    fn env_table_marks_legacy_disable_zero() {
+        let p = EnvProbe::from_pairs(vec![("ALLTHECODES_DISABLE_MOUSE", "0")]);
+        let out = render_env(&p);
+        assert!(out.contains("legacy ALLTHECODES_DISABLE_MOUSE=0"));
     }
 }

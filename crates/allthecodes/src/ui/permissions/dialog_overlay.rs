@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -12,6 +12,8 @@ use crate::ui::permissions::permission_request_router::{
     PermissionDialogRequest, PermissionRequestRouter,
 };
 use crate::ui::theme::Theme;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The user's response to a permission prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,11 +258,14 @@ impl PermissionDialog {
         }
 
         if self.is_typing_feedback() && chunks[2].height >= 2 {
-            let feedback = self.active_feedback_with_cursor();
+            let feedback = match self.mode {
+                PermissionDialogMode::TypingFeedback { target } => self.feedback_for(target),
+                PermissionDialogMode::Selecting => "",
+            };
             let input = Line::from(vec![
                 Span::styled("Feedback: ", theme.dim),
                 Span::styled(
-                    truncate_str(&feedback, footer_width.saturating_sub(10)),
+                    truncate_str(feedback, footer_width.saturating_sub(10)),
                     theme.info,
                 ),
             ]);
@@ -427,7 +432,10 @@ impl PermissionDialog {
                 self.feedback_for_mut(target).clear();
             }
             (_, KeyCode::Backspace) => {
-                self.feedback_for_mut(target).pop();
+                let feedback = self.feedback_for_mut(target);
+                if let Some((start, _)) = feedback.grapheme_indices(true).next_back() {
+                    feedback.truncate(start);
+                }
             }
             (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(ch)) => {
                 self.feedback_for_mut(target).push(ch);
@@ -466,17 +474,67 @@ impl PermissionDialog {
         }
     }
 
-    fn is_typing_feedback(&self) -> bool {
+    pub fn is_typing_feedback(&self) -> bool {
         matches!(self.mode, PermissionDialogMode::TypingFeedback { .. })
     }
 
-    fn active_feedback_with_cursor(&self) -> String {
-        match self.mode {
-            PermissionDialogMode::TypingFeedback { target } => {
-                format!("{}|", self.feedback_for(target))
-            }
-            PermissionDialogMode::Selecting => String::new(),
+    /// Return the physical cursor cell for the feedback field. Selection
+    /// mode is deliberately read-only and therefore returns no placement.
+    pub fn cursor_position(
+        &self,
+        area: Rect,
+        prompt_area: Option<Rect>,
+        theme: &Theme,
+    ) -> Option<Position> {
+        let PermissionDialogMode::TypingFeedback { target } = self.mode else {
+            return None;
+        };
+        let spec = PanelSizePreset::PermissionDialog.spec();
+        let dialog_width = spec
+            .resolve_prompt_or_centered_rect(area, prompt_area, spec.min_height)
+            .map(|rect| rect.width)
+            .unwrap_or(area.width);
+        let labels = self.normalized_options();
+        let estimated_footer_width = dialog_width.saturating_sub(4) as usize;
+        let estimated_button_rows =
+            button_lines_for_width(&labels, self.selected, estimated_footer_width, theme).len();
+        let footer_height = (estimated_button_rows as u16).saturating_add(2).max(4);
+        let preferred_height = footer_height.saturating_add(14);
+        let dialog_area = spec
+            .resolve_prompt_or_centered_rect(area, prompt_area, preferred_height)
+            .or_else(|| (area.width > 0 && area.height > 0).then_some(area))?;
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(dialog_area);
+        if inner.width == 0 || inner.height == 0 {
+            return None;
         }
+        let chunks = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(2),
+            Constraint::Length(footer_height),
+        ])
+        .split(inner);
+        let footer_width = chunks[2].width.saturating_sub(2) as usize;
+        let button_lines = button_lines_for_width(&labels, self.selected, footer_width, theme);
+        let reserved_footer_rows = 1 + usize::from(self.is_typing_feedback());
+        let max_button_rows = usize::from(chunks[2].height)
+            .saturating_sub(reserved_footer_rows)
+            .max(1);
+        let row = chunks[2]
+            .y
+            .saturating_add(button_lines.len().min(max_button_rows) as u16);
+        let feedback = truncate_str(
+            self.feedback_for(target),
+            footer_width.saturating_sub("Feedback: ".chars().count()),
+        );
+        let x = chunks[2]
+            .x
+            .saturating_add(1)
+            .saturating_add(UnicodeWidthStr::width("Feedback: ") as u16)
+            .saturating_add(UnicodeWidthStr::width(feedback.as_str()) as u16);
+        let right = chunks[2].x.saturating_add(chunks[2].width);
+        (row < chunks[2].y.saturating_add(chunks[2].height) && x < right)
+            .then_some(Position { x, y: row })
     }
 }
 
@@ -763,6 +821,32 @@ mod tests {
                 "run tests first",
             ))
         );
+    }
+
+    #[test]
+    fn feedback_cursor_uses_display_columns_without_rendering_a_pipe() {
+        let mut dialog = PermissionDialog::new("Bash", r#"{"command":"cargo test"}"#, "");
+        assert_eq!(
+            dialog.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            None
+        );
+        for ch in "你e\u{301}".chars() {
+            assert_eq!(
+                dialog.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                None
+            );
+        }
+
+        let area = Rect::new(0, 0, 120, 30);
+        let prompt_area = Rect::new(0, 24, 120, 3);
+        let position = dialog
+            .cursor_position(area, Some(prompt_area), &Theme::default())
+            .expect("feedback cursor");
+        assert!(position.x < area.x + area.width);
+
+        let rendered = render_dialog_text_in_area(&dialog, area);
+        assert!(rendered.contains("Feedback: 你e\u{301}"));
+        assert!(!rendered.contains("Feedback: 你e\u{301}|"));
     }
 
     #[test]
@@ -1092,17 +1176,34 @@ impl RenderRef for Paragraph<'_> {
     }
 }
 
-/// Truncate a string to at most `max_chars` characters, appending "..." if
-/// truncation occurred.
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    if max_chars < 4 {
-        return s.chars().take(max_chars).collect();
+/// Truncate a string to a terminal display width, appending "..." when it
+/// does not fit. The feedback renderer and its physical cursor both consume
+/// this helper, so a wide Unicode character cannot make the cursor drift past
+/// the text that was actually drawn.
+fn truncate_str(s: &str, max_width: usize) -> String {
+    let total_width = s
+        .chars()
+        .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+        .sum::<usize>();
+    if total_width <= max_width {
+        return s.to_string();
     }
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max_chars {
-        s.to_string()
+
+    let (content_width, suffix) = if max_width > 3 {
+        (max_width - 3, "...")
     } else {
-        let truncated: String = chars[..max_chars - 3].iter().collect();
-        format!("{}...", truncated)
+        (max_width, "")
+    };
+    let mut width = 0usize;
+    let mut truncated = String::new();
+    for grapheme in s.graphemes(true) {
+        let ch_width = UnicodeWidthStr::width(grapheme);
+        if width.saturating_add(ch_width) > content_width {
+            break;
+        }
+        truncated.push_str(grapheme);
+        width = width.saturating_add(ch_width);
     }
+    truncated.push_str(suffix);
+    truncated
 }

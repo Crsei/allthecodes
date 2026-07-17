@@ -1,4 +1,4 @@
-use crossterm::event::DisableMouseCapture;
+use crossterm::event::{DisableFocusChange, DisableMouseCapture};
 use crossterm::terminal::{self, LeaveAlternateScreen};
 use crossterm::{cursor, execute};
 use std::io;
@@ -20,12 +20,18 @@ impl Drop for TerminalGuard {
         if self.mouse_capture_enabled {
             let _ = execute!(
                 io::stdout(),
+                DisableFocusChange,
                 DisableMouseCapture,
                 LeaveAlternateScreen,
                 cursor::Show
             );
         } else {
-            let _ = execute!(io::stdout(), LeaveAlternateScreen, cursor::Show);
+            let _ = execute!(
+                io::stdout(),
+                DisableFocusChange,
+                LeaveAlternateScreen,
+                cursor::Show
+            );
         }
     }
 }
