@@ -5,15 +5,34 @@
 生效日期：2026-07-17
 作用范围：`crates/allthecodes/tests/pty_tui_e2e/` 全部测试、`crates/allthecodes/logs/`（运行产物）、`development/test/README.md`、`development/test/pty-tui-e2e-timing-plan.md`（索引登记）。可选：`.config/nextest.toml`、`scripts/cargo-build-test.sh`。
 
-## 1. 背景：为什么耗时 1930s
+## 实施状态（截至 2026-07-17，`cd30bd70`）
+
+本计划的 Phase 1 和 Phase 2 已在本地 `allthecodes` 分支落地并 fast-forward 合并；相关本地提交尚未推送。下表区分“代码已落地”与“端到端阈值已验收”，避免把抽样结果写成完整套件结论。
+
+| Task | 状态 | 已有证据 / 边界 |
+|------|------|----------------|
+| 0 基线度量 | **部分完成** | 已记录历史基线：215 passed / 36 ignored / 1930.03s；未创建一次性 `_timing_baseline.rs` 探针，也没有其临时文件清理提交。 |
+| 1 信号化原语 | **完成（等效实现）** | 实际 API 是 `TestStep::WaitForScreenText`，而不是草案中的 `WaitUntilScreen`；代表性 PTY 测试、`cargo check --tests` 与目标 clippy 已通过。 |
+| 2 高频离线 Wait 替换 | **完成（本批范围）** | `ff9bbfd4`–`f9aeec14` 覆盖 11 个离线测试文件；代表样本实测降幅约 29–58%。未以此宣称全套固定等待已清零。 |
+| 3 大 timeout 拆分 | **跳过（已确认范围）** | 不改 `#[ignore]` 在线测试语义；`test4` / `test5` 的字面拆分与 §7 冲突，`running_task_slash_commands.rs` 已无可拆分的固定等待。 |
+| 4 解除全局串行锁 | **部分完成** | `9fd69fd2` 已移除会话全程锁、保留 cleanup 短锁；`concurrent_sessions_do_not_serialize` 通过（0.77s）。共享 `/tmp/cc-rust-e2e-test` 仍会在并发 2/4 时竞争 `settings.json` / `sessions.db`，故 `max-threads` 保持 1。 |
+| 5 收尾收窄 | **部分完成** | `637a2985` 已实现 cleanup 节流、flush 200ms→100ms、reader join 500ms→250ms；`cleanup_detached_workspace_processes_throttles` 通过（0.25s）。完整 PTY 套件墙钟未重跑。 |
+| 6 文档与索引 | **完成** | PTY README 已有“时效策略”及并发/cleanup 说明；`development/test/README.md` 已登记为 Phase 1+2 已实现。 |
+| 7 artifact 与合并 | **部分完成** | artifact 已创建，本地 worktree 分支已 ff 至 `allthecodes`；完整回归、推送和已锁定的旧 worktree 清理仍待后续显式执行。 |
+
+下一阶段的前置条件是 **per-session workspace 隔离**。只有消除共享 workspace 竞争后，才可把 `tui_pty_e2e.max-threads` 从 1 逐步提升到 2、4，并重新度量完整离线套件墙钟。
+
+## 1. 背景：为什么耗时 1930s（历史基线）
 
 实测耗时：**215 passed / 36 ignored / 0 failed，1930.03s**。
 
-逐项拆解后，时长来自**可叠加的三个结构性因素**，而不是单点故障：
+以下分析描述的是 Phase 1/2 落地**前**的基线状态，保留用于解释优化动机；当前实现以本文件顶部“实施状态”和 §6 验收清单为准。
+
+逐项拆解后，历史时长来自**可叠加的三个结构性因素**，而不是单点故障：
 
 ### 1.1 全局串行锁（决定性因素）
 
-`crates/allthecodes/tests/pty_tui_e2e/harness.rs` 在 `PtySession::spawn` 内持有进程级 `static Mutex<()>` 直到 `finish_in_dir` 退出：
+在基线版本中，`crates/allthecodes/tests/pty_tui_e2e/harness.rs` 在 `PtySession::spawn` 内持有进程级 `static Mutex<()>` 直到 `finish_in_dir` 退出：
 
 ```rust
 fn pty_test_lock() -> MutexGuard<'static, ()> {
@@ -24,16 +43,18 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 }
 ```
 
-`PtySession` 把 `_serial_guard: MutexGuard<'static, ()>` 存为结构体字段，锁生命周期与会话等长——测试一开始就 acquire，直到 `finish_in_dir`（写日志、回收 reader 线程、`cleanup_detached_workspace_processes`）返回后才 drop。
+基线版本的 `PtySession` 把 `_serial_guard: MutexGuard<'static, ()>` 存为结构体字段，锁生命周期与会话等长——测试一开始就 acquire，直到 `finish_in_dir`（写日志、回收 reader 线程、`cleanup_detached_workspace_processes`）返回后才 drop。
 
 含义：
 - 即便 `cargo test` 默认按线程并发调度（或后续切到 nextest），**任意时刻最多只有 1 个 PTY 测试在跑**。
 - 215 个 passed 测试 = 215 次串行 spawn + 渲染 + 断言 + 收尾。
 - 1930s / 215 ≈ **8.98s/test 平均墙钟**，与每个测试的固定 sleep 总量（见下）量级吻合，说明串行是主要瓶颈，而非单测本身慢到拖垮整体。
 
+**当前状态：** `9fd69fd2` 已移除该会话全程锁，改为短时 `cleanup_lock()`；但因共享 workspace 并发仍会 flake，nextest 配置暂保持 `max-threads = 1`。
+
 ### 1.2 大量硬编码 `Wait(Duration::from_secs(N))` 等待
 
-`TestStep::Wait` 是**固定墙钟等待**，不依赖屏幕/输出信号，无论 TUI 是否已渲染完成都睡满。全量统计 `Wait(Duration::from_secs(N))` 出现次数：
+基线中的 `TestStep::Wait` 是**固定墙钟等待**，不依赖屏幕/输出信号，无论 TUI 是否已渲染完成都睡满。基线全量统计 `Wait(Duration::from_secs(N))` 出现次数：
 
 | N（秒） | 出现次数 |
 |---------|---------|
@@ -68,12 +89,14 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 
 ### 1.3 进程开销 + 收尾确定性花费
 
-每个测试 spawn 一次 `allthecodes` 二进制；`binary_path()` 解析后 `portable_pty::openpty` + spawn，进程冷启动 + TUI 初始化 + trust gate 渲染在慢盘 / 共享 CI 上常见的 0.5–1.5s。`finish_in_dir` 末尾固定消耗：
+每个测试 spawn 一次 `allthecodes` 二进制；`binary_path()` 解析后 `portable_pty::openpty` + spawn，进程冷启动 + TUI 初始化 + trust gate 渲染在慢盘 / 共享 CI 上常见的 0.5–1.5s。基线的 `finish_in_dir` 末尾固定消耗：
 - `std::thread::sleep(Duration::from_millis(200))` 收尾；
 - reader 线程 `join` 最多等 500ms 才 detach；
 - `cleanup_detached_workspace_processes()` 扫描 `/proc`、按 `workspace` + `mcp-cli-daemon`/`mcp-cli-bridge` 关键字匹配残留进程并对齐 `SIGTERM` → 等 `KILL_REAP_TIMEOUT=2s` → 必要时 `SIGKILL`。
 
 215 次串行收尾，`/proc` 全表扫描 × 215，加上零星 1–2s 的 reap 等待，是大批量离线测试下额外的 ~1–2s/test 隐藏成本。
+
+**当前状态：** `637a2985` 已把 flush 收紧为 100ms、reader join 收紧为 250ms，并加入 2 秒 cleanup 节流；完整套件的实际墙钟尚未重测。
 
 ### 1.4 36 个 `#[ignore]` 在线测试
 
@@ -81,12 +104,12 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 
 ## 2. 目标
 
-| 阶段 | 目标 | 验收阈值 |
-|------|------|----------|
-| Phase 0 | 度量基线 + 失败测试暴露问题 | 单跑离线套件，记录耗时 + 每测试耗时分桶；新增 `Wait`/`WaitForAny` 信号化验收用例 |
-| Phase 1 | 把固定 `Wait(N)` 替换为信号化等待（`WaitForScreenText` / `WaitForText` / `WaitForAny` 带短 timeout） | 离线套件墙钟 ≤ 1200s（降幅 ≥ 38%） |
-| Phase 2 | 有界并发：lift 全局串行锁，按"逻辑不冲突分组"并行 | 离线套件墙钟 ≤ 600s（较 Phase 1 再降 ≥ 50%） |
-| Phase 3 | 进程生命周期收尾收窄 + `/proc` 扫描降频 | 收尾非离线套件剩余时长的 ≥ 40% |
+| 阶段 | 目标 | 验收阈值 | 当前状态 |
+|------|------|----------|----------|
+| Phase 0 | 度量基线 + 失败测试暴露问题 | 单跑离线套件，记录耗时 + 每测试耗时分桶；新增 `Wait`/`WaitForAny` 信号化验收用例 | 历史基线已记录；临时探针未创建。 |
+| Phase 1 | 把固定 `Wait(N)` 替换为信号化等待（`WaitForScreenText` / `WaitForText` / `WaitForAny` 带短 timeout） | 离线套件墙钟 ≤ 1200s（降幅 ≥ 38%） | 信号化替换已落地且代表样本下降 29–58%；完整离线套件墙钟未重测，阈值尚未验收。 |
+| Phase 2 | 有界并发：lift 全局串行锁，按"逻辑不冲突分组"并行 | 离线套件墙钟 ≤ 600s（较 Phase 1 再降 ≥ 50%） | 锁已解除且并发 invariant 通过；共享 workspace 仍导致 2/4 线程 flake，配置暂保持 1，阈值尚未验收。 |
+| Phase 3 | 进程生命周期收尾收窄 + `/proc` 扫描降频 | 收尾非离线套件剩余时长的 ≥ 40% | cleanup 节流与收尾收紧已落地；完整套件未重测，量化阈值尚未验收。 |
 
 非目标（Non-Goals）见 §7。
 
@@ -104,7 +127,7 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 | 文件 | 类型 | 用途 |
 |------|------|------|
 | `crates/allthecodes/tests/pty_tui_e2e/harness.rs` | Modify | lift 串行锁、收紧 `WAIT` 常量、新增信号化 helper、收尾收窄 |
-| `crates/allthecodes/tests/pty_tui_e2e/script.rs` | Modify | `TestStep::Wait` 改为可选触发"短固定 + 信号"，新增 `WaitForScreenText` 默认实现复用 |
+| `crates/allthecodes/tests/pty_tui_e2e/script.rs` | Modify | **已完成**：保留 `TestStep::Wait`，新增并使用 `WaitForScreenText` 信号化等待 |
 | `crates/allthecodes/tests/pty_tui_e2e/tests/commands_core_info.rs` | Modify | 替换 `Wait(2s)` → `WaitForScreenText` / 轮询式 helper |
 | `crates/allthecodes/tests/pty_tui_e2e/tests/commands_mcp_plugin.rs` | Modify | 同上 |
 | `crates/allthecodes/tests/pty_tui_e2e/tests/commands_aliases.rs` | Modify | 同上 |
@@ -114,7 +137,7 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 | `crates/allthecodes/tests/pty_tui_e2e/tests/commands_agent_team.rs` | Modify | 同上 |
 | `crates/allthecodes/tests/pty_tui_e2e/tests/commands_session.rs` | Modify | 同上 |
 | 其余 `tests/commands_*.rs`、`test1_login_structure.rs`、`test3_plan_flow.rs` | Modify | 同上（少量） |
-| `crates/allthecodes/tests/pty_tui_e2e/tests/test4_task_execution.rs`、`test5_compact.rs`、`running_task_slash_commands.rs`、`model_flow.rs` | Modify **谨慎** | 大 timeout 测试拆分，120s/300s 收紧到事件驱动 + 阶段快照，**不改在线测试语义** |
+| `crates/allthecodes/tests/pty_tui_e2e/tests/test4_task_execution.rs`、`test5_compact.rs`、`running_task_slash_commands.rs`、`model_flow.rs` | Modify **谨慎** | Task 3 已按确认范围跳过字面拆分；保留在线测试语义，后续仅可在有独立验收时改动 |
 | `crates/allthecodes/tests/pty_tui_e2e/README.md` | Modify | 更新"运行"段、新增"时效策略"段 |
 | `development/test/README.md` | Modify | 在索引表登记 `pty-tui-e2e-timing-plan.md` |
 | `development/test/pty-tui-e2e-timing-plan.md` | Plan | **本文件**（已在主分支前置 commit） |
@@ -125,8 +148,12 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 ## 5. 任务拆分（TDD 形式）
 
 > 每个 Task 末尾 commit。Commit 范围只暂存本 Task 列出的路径。
+>
+> 下方保留原始 TDD 分步以便追溯；Task 标题下的“状态”是当前权威结论。仅在有提交或运行记录可直接佐证时勾选原分步，未勾选不应覆盖该 Task 的已实现状态。
 
 ### Task 0：基线度量与失败测试
+
+> **状态：部分完成。** 历史全套基线已写入 §1；一次性 `_timing_baseline.rs` 探针没有创建，因此不存在其失败测试、运行记录或清理提交。
 
 **Files:**
 - Create: `crates/allthecodes/tests/pty_tui_e2e/tests/_timing_baseline.rs`（临时，仅本 Task）
@@ -138,10 +165,12 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 
 - [ ] **Step 1: 写失败测试** — 新增 `_timing_baseline.rs`，断言 `Wait(Duration::from_secs(0))` 已淘汰（grep 方式：在测试源中检测 `Wait(Duration::from_secs(2))` 数量低于阈值），该测试初始应失败。
 - [ ] **Step 2: 跑测试** — `cargo test -p allthecodes --test pty_tui_e2e timing_baseline -- --nocapture -Z unstable-options --format json` 不可用时退回 `--nocapture`，人工记录墙钟。
-- [ ] **Step 3: 记录基线** — 把 215 passed / 36 ignored / 1930s 写进本计划 §1 顶部（已完成）。
+- [x] **Step 3: 记录基线** — 已把 215 passed / 36 ignored / 1930.03s 写进本计划 §1 顶部。
 - [ ] **Step 4: Commit** — `git add -A -- crates/allthecodes/tests/pty_tui_e2e/tests/_timing_baseline.rs crates/allthecodes/tests/pty_tui_e2e/tests/mod.rs && git commit -m "test: add pty e2e timing baseline probe"`。
 
 ### Task 1：信号化等待原语（harness + script）
+
+> **状态：完成（等效实现）。** 实现采用 `TestStep::WaitForScreenText`，不是草案命名 `WaitUntilScreen`；代表性 PTY 测点、`cargo check --tests` 和目标 clippy 均已有通过记录。原草案的逐步 TDD 过程未单独保留为独立提交，不将其反推为完整套件验收。
 
 **Files:**
 - Modify: `crates/allthecodes/tests/pty_tui_e2e/harness.rs`
@@ -150,18 +179,19 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 **Interfaces:**
 - Consumes: `current_screen()` / `current_text()` / `status_bar()`。
 - Produces:
-  - `pub const RENDER_WAIT_FAST: Duration = Duration::from_millis(500);`（默认渲染等待，用于替换不需要 2s 的 `Wait(2s)`）。
-  - `pub fn wait_for_screen_text_quick(&self, needle: &str, deadline: Duration) -> bool`：以 50ms 粒度轮询 `current_screen()`，最多 `deadline`。
-  - `TestStep::WaitUntilScreen(String, Duration)` 新.step：`Wait(secs)` 的语义化替代，screen 出现 needle 即返回。
+  - `PtySession::wait_for_screen_text(&self, needle: &str, timeout: Duration) -> bool`：轮询当前可见屏幕，命中即返回、超时返回 `false`。
+  - `TestStep::WaitForScreenText(String, Duration)`：`Wait(secs)` 的语义化替代，screen 出现 needle 即返回。
 - 兼容：保留 `TestStep::Wait(Duration)`，不动现有监控点，逐步替换。
 
 - [ ] **Step 1: 写失败测试** — 在 `harness.rs` `#[cfg(test)] mod tests` 新增 `wait_for_screen_text_quick_returns_true_when_present`，构造伪 buffer 断言快速返回；当前无该函数，编译失败即红。
-- [ ] **Step 2: 实现** — 在 `PtySession` 添加 `wait_for_screen_text_quick`；在 `script.rs` `TestStep` 新增 `WaitUntilScreen` 分支，复用上述 helper。
+- [x] **Step 2: 实现** — 已在 `script.rs` 落地 `TestStep::WaitForScreenText` 分支；以当前实现为准，不再要求草案中的 `WaitUntilScreen` 名称。
 - [ ] **Step 3: 跑测试** — `cargo test -p allthecodes --test pty_tui_e2e harness::tests -- --nocapture` 期望 PASS。
-- [ ] **Step 4: clippy** — `cargo clippy -p allthecodes --tests -- -D warnings`，无新增警告。
-- [ ] **Step 5: Commit** — `git add -A -- crates/allthecodes/tests/pty_tui_e2e/harness.rs crates/allthecodes/tests/pty_tui_e2e/script.rs && git commit -m "feat(pty-e2e): add signal-driven screen wait helpers"`。
+- [x] **Step 4: clippy** — 已通过 `cargo clippy -p allthecodes --test pty_tui_e2e --quiet -- -D warnings`；完整 `--tests` 范围也在 Phase 2 记录中通过。
+- [x] **Step 5: 提交边界** — 信号化原语由随后的 Phase 1 提交共同落地；代表性替换提交为 `ff9bbfd4`–`f9aeec14`，不另补写与实际历史不符的 `feat` 提交。
 
 ### Task 2：离线小测试固定 Wait 替换（高频文件）
+
+> **状态：完成（本批范围）。** 已覆盖 11 个离线测试文件（`commands_core_info`、`mcp_plugin`、`aliases`、`permissions`、`kairos`、`memory_skills_hooks`、`agent_team`、`session`、`auth`、`git`、`query`），提交范围为 `ff9bbfd4`–`f9aeec14`。代表样本降幅约 29–58%；完整套件墙钟仍待单独验收。
 
 **Files:** Task 2.x 子项，每子项一个 commit；下一文件开始前先确认上一文件 cargo test 全绿。
 
@@ -177,14 +207,16 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 | 2.8 | `tests/commands_session.rs` | 22 |
 | 2.9 | 其余 `commands_*.rs` 中 ≤ 18 的文件 | 合计 ~100 |
 
-**Interfaces:** Consumes Task 1 helper。每条 `TestStep::Wait(Duration::from_secs(2))` 改为 `TestStep::WaitUntilScreen("<命令名首词>".into(), Duration::from_secs(3))` 或保留 `Wait(Duration::from_millis(300))`（极短间隔）。`WaitForAny` 既有用法不动。
+**Interfaces:** 使用 `TestStep::WaitForScreenText("<命令名首词>".into(), Duration::from_secs(3))` 替换适合信号化的 `TestStep::Wait(Duration::from_secs(2))`，或删除冗余等待 / 保留 `Wait(Duration::from_millis(300))`（极短间隔）。`WaitForAny` 既有用法不动。
 
-- [ ] **Step 1: 替换文件 2.1** — `commands_core_info.rs` 全文件 `Wait(secs)` → 信号化或 ≤ 300ms。
+- [x] **Step 1: 替换文件 2.1** — `commands_core_info.rs` 已按信号化/删除冗余等待完成（`ff9bbfd4`）。
 - [ ] **Step 2: 跑文件** — `cargo test -p allthecodes --test pty_tui_e2e commands_core_info -- --nocapture` 全绿且耗时显著下降（记录 before/after）。
-- [ ] **Step 3: Commit** — `git add -A -- crates/allthecodes/tests/pty_tui_e2e/tests/commands_core_info.rs && git commit -m "test(pty-e2e): signal-drive waits in commands_core_info"`。
-- [ ] **Step 4–N:** 对 2.2–2.9 各文件重复 Step 1–3，逐文件 commit。
+- [x] **Step 3: Commit** — 已提交 `ff9bbfd4 test(pty_e2e): replace Wait(2s) with signal-driven waits in commands_core_info`。
+- [x] **Step 4–N:** 2.2–2.9 的本批文件已分别完成并提交；具体文件与提交边界见本节状态说明及 artifact。逐文件完整运行记录未作为全套验收替代。
 
 ### Task 3：大 timeout 测试拆分
+
+> **状态：跳过（已确认范围）。** 保持 `#[ignore]` 在线测试语义；`test4_task_execution.rs`、`test5_compact.rs` 的字面拆分没有执行，`running_task_slash_commands.rs` 已无可拆分的固定等待。此项不是“完成”，后续若调整范围须重新立项并定义在线测试验收。
 
 **Files:**
 - Modify: `tests/test4_task_execution.rs`
@@ -202,28 +234,32 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 
 ### Task 4：lift 全局串行锁（受控并发）
 
+> **状态：部分完成。** `9fd69fd2` 已删除会话全程 `_serial_guard`，改为仅在 cleanup 中使用 `cleanup_lock()`，并新增 `concurrent_sessions_do_not_serialize`（0.77s 通过）。`logs_dir()` 已加入 PID 隔离。并发 2/4 的 16 测试抽样仍因共享 `/tmp/cc-rust-e2e-test` 的 `settings.json` / `sessions.db` 竞争而 flaky，所以 `.config/nextest.toml` 有意维持 `max-threads = 1`；提升并发留待 per-session workspace 隔离。
+
 **Files:**
 - Modify: `crates/allthecodes/tests/pty_tui_e2e/harness.rs`
 - Create: `.config/nextest.toml`（若不存在；若 `cargo-build-test-system-plan.md` 已建则 Extend）
 - Modify: `scripts/cargo-build-test.sh`（nextest mode 若已有，则登记 `tui_pty_e2e` thread-budget；可选）
 
 **Interfaces:**
-- 删除 / 缩窄 `pty_test_lock()`：保留锁只为 **读 `/proc` 清理 + DSR 自动回写互斥**，不再包住整段会话。
-- 改为细粒度 `cleanup_lock`：仅在 `cleanup_detached_workspace_processes` 与 reader 线程 DSR 写入处持锁，会话期间不持全锁。
-- 在 `.config/nextest.toml` 给 `test-groups.tui_pty_e2e.max-threads` 设为 N（先 2，验证后提至 4），并 `slow-timeout=45s`。
+- 删除会话全程 `pty_test_lock()`；仅为 `/proc` cleanup 保留短时互斥，不再包住整段会话。
+- 改为细粒度 `cleanup_lock`：仅在 `cleanup_detached_workspace_processes` 中持锁，会话期间不持全锁。
+- `.config/nextest.toml` 已有 `slow-timeout=45s`；在 per-session workspace 隔离前，`test-groups.tui_pty_e2e.max-threads` 固定为 1。后续先验证 2，再决定是否提升至 4。
 
 **风险:** PTY / 共享 `E2E_WORKSPACE` 并发会撞 workspace 目录与日志目录；hash logs_dir 用 `Local::now()` 在同一秒并发跑会写同一目录。需在 §6 验证。
 
-- [ ] **Step 1: 写失败测试** — `harness::tests::concurrent_sessions_do_not_serialize`：spawn 两个空 `PtySession`，断言有重叠时间窗（用 `thread::spawn` + `Arc<AtomicUsize>` concurrent counter > 1）。初始红（锁会保证只 1）。
-- [ ] **Step 2: 收窄锁** — 把 `_serial_guard` 从 `PtySession` 字段中移除，`pty_test_lock()` 改名为 `cleanup_lock()`，仅在 cleanup / DSR 写入持锁。
-- [ ] **Step 3: 给 logs_dir 加并发隔离** — `logs_dir()` 增加每会话 `test_subdir` 用 PID + 计数器防碰撞。
-- [ ] **Step 4: 跑失败测试** — 期望 PASS。
-- [ ] **Step 5: nextest 配置** — 给 `tui_pty_e2e` 设 `max-threads = 2`（保守起步），`slow-timeout=45s`。
+- [x] **Step 1: 写失败测试** — `harness::tests::concurrent_sessions_do_not_serialize` 已新增并作为 lock-lift invariant 保留。
+- [x] **Step 2: 收窄锁** — `_serial_guard` 与 `pty_test_lock()` 已移除，`cleanup_lock()` 仅包住 cleanup 临界区。
+- [x] **Step 3: 给 logs_dir 加并发隔离** — `logs_dir()` 已加入 PID 后缀，避免 nextest 多进程同秒目录碰撞。
+- [x] **Step 4: 跑失败测试** — `concurrent_sessions_do_not_serialize` 已通过（0.77s）。
+- [x] **Step 5: nextest 配置** — 已写入 `slow-timeout=45s`；抽样发现 2/4 线程 flaky，故刻意保留 `max-threads = 1`，待 per-session workspace 隔离后重开此步。
 - [ ] **Step 6: 跑 nextest** — `cargo nextest run -p allthecodes --test pty_tui_e2e` 全绿，墙钟减半。
 - [ ] **Step 7: 提升 max-threads=4** — 跑一次确认无 flake，否则回 2。
-- [ ] **Step 8: Commit** — `git add -A -- crates/allthecodes/tests/pty_tui_e2e/harness.rs .config/nextest.toml scripts/cargo-build-test.sh && git commit -m "perf(pty-e2e): lift global pty serialization lock"`。
+- [x] **Step 8: Commit** — 已提交 `9fd69fd2 perf(pty-e2e): lift global pty serialization lock`；未改动的 `scripts/cargo-build-test.sh` 未被纳入提交。
 
 ### Task 5：进程生命周期收尾收窄
+
+> **状态：部分完成。** `637a2985` 已落实 2 秒 cleanup 节流、flush 200ms→100ms、reader join 500ms→250ms；`cleanup_detached_workspace_processes_throttles`（0.25s）通过。完整 PTY 套件未重跑，不能声称其墙钟已满足本计划阈值。
 
 **Files:**
 - Modify: `crates/allthecodes/tests/pty_tui_e2e/harness.rs`
@@ -232,42 +268,47 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 - `cleanup_detached_workspace_processes()` 节流：用 `OnceLock<Mutex<Instant>>`，最近 2s 已扫过则跳过；遇残留才升级完整扫描。
 - `capture_output_after_finish` 里 `Duration::from_millis(200)` 调到 100，reader join deadline 从 500ms 调到 250ms（确认无 flake 再保留）。
 
-- [ ] **Step 1: 写失败测试** — 断言 215 测试场景下 `find_detached_workspace_processes` 调用次数显著下降（用 `AtomicUsize` 计数器）。
-- [ ] **Step 2: 实现节流** — 加 throttle。
+- [x] **Step 1: 写失败测试** — `cleanup_detached_workspace_processes_throttles` 已新增，使用扫描/跳过计数验证节流 invariant。
+- [x] **Step 2: 实现节流** — 2 秒 throttle、flush 和 reader join 收紧均已落地。
 - [ ] **Step 3: 全跑** — `cargo test -p allthecodes --test pty_tui_e2e` 全绿，墙钟再降一档。
-- [ ] **Step 4: Commit** — `git add -A -- crates/allthecodes/tests/pty_tui_e2e/harness.rs && git commit -m "perf(pty-e2e): throttle detached workspace cleanup"`。
+- [x] **Step 4: Commit** — 已提交 `637a2985 perf(pty-e2e): throttle detached cleanup + tighten reader join`。
 
 ### Task 6：文档与索引收尾
+
+> **状态：完成。** PTY README 已补“时效策略”“并发与锁”“收尾 / cleanup 节流”，开发测试索引已标注为 Phase 1+2 已实现、并记录 `max-threads=1` 的 Phase 3 前置条件。
 
 **Files:**
 - Modify: `crates/allthecodes/tests/pty_tui_e2e/README.md`
 - Modify: `development/test/README.md`
 
-- [ ] **Step 1: README 时效策略段** — 在 `pty_tui_e2e/README.md` 加"## 时效策略"段：解释串行锁历史、信号化等待、`WaitUntilScreen` 用法、nextest thread-budget、不应再加 `Wait(secs>1)`。
-- [ ] **Step 2: 索引登记** — 在 `development/test/README.md` 表格新增一行指向本计划，状态标 ⭐ P0。
-- [ ] **Step 3: Commit** — `git add -A -- crates/allthecodes/tests/pty_tui_e2e/README.md development/test/README.md && git commit -m "docs(pty-e2e): document timing strategy and index plan"`。
+- [x] **Step 1: README 时效策略段** — 已加入“时效策略”及 Phase 2 并发/cleanup 说明，使用当前 API 名称 `WaitForScreenText`。
+- [x] **Step 2: 索引登记** — 已在 `development/test/README.md` 登记本计划，状态为“Phase 1+2 已实现（部分）”，并如实注明 `max-threads=1`。
+- [x] **Step 3: Commit** — 已由 `911ead3b` 与 `cd30bd70` 完成文档/索引更新；提交信息按实际范围记录。
 
 ### Task 7：HTML artifact + ff 合并
+
+> **状态：部分完成。** `development/worktree-workflow-artifacts/2026-07-17-pty-e2e-timing.html` 已存在，本地 `worktree-pty-e2e-timing-p2` 与 `allthecodes` 同在 `cd30bd70`，说明本地 ff 已完成。完整回归、推送，以及陈旧 locked worktree 的删除尚未执行；除非后续获得明确授权，不处理该 worktree。
 
 **Files:**
 - Create: `development/worktree-workflow-artifacts/2026-07-17-pty-e2e-timing.html`
 
-- [ ] **Step 1: 写 artifact** — 含：任务目标、§3 流程步骤、改动列表（对应 §4 文件）、计划文件路径（本文件）、commit 列表、验证依据（`cargo test` before/after 墙钟数字、`cargo clippy` 无新警告）。
+- [x] **Step 1: 写 artifact** — artifact 已含任务目标、改动/提交清单、代表性 before/after、局部验证和遗留边界。
 - [ ] **Step 2: 全跑回归** — `cargo build --workspace --release` + `cargo test -p allthecodes --test pty_tui_e2e`，记录最终墙钟。
-- [ ] **Step 3: Commit artifact** — `git add -A -- development/worktree-workflow-artifacts/2026-07-17-pty-e2e-timing.html && git commit -m "docs(pty-e2e): add timing plan worktree artifact"`。
-- [ ] **Step 4: ff 合并 + 删树** — 按 `development/workflow/2026-07-16-per-session-worktree-workflow-plan.md` §3-5/6 执行 `git merge --ff-only worktree/pty-e2e-timing` + `git push origin allthecodes` + `git worktree remove .worktrees/pty-e2e-timing` + `git branch -d worktree/pty-e2e-timing`。
-- [ ] **Step 5: 移除临时基线探针** — 删 `_timing_baseline.rs` + `tests/mod.rs` 中 `mod _timing_baseline;`，单独 commit。
+- [x] **Step 3: Commit artifact** — artifact 与 Phase 1/2 文档已由 `911ead3b`、`cd30bd70` 提交。
+- [x] **Step 4a: 本地 ff 合并** — `worktree-pty-e2e-timing-p2` 已与 `allthecodes` 同在 `cd30bd70`；远端推送与旧 worktree 清理仍未执行。
+- [x] **Step 5: 确认无需移除临时基线探针** — `_timing_baseline.rs` 和对应 `mod` 从未创建，因此没有待删文件或额外提交。
 
 ## 6. 验收清单
 
-- [ ] 离线 `cargo test -p allthecodes --test pty_tui_e2e` 墙钟 ≤ 600s（§2 Phase 2）。
-- [ ] `cargo clippy -p allthecodes --tests -- -D warnings` 无新增警告。
-- [ ] `grep -rE "Wait\(Duration::from_secs\([2-9]\|[12][0-9]\)" crates/allthecodes/tests/pty_tui_e2e/tests --include=*.rs | wc -l` 显著减少（≤ Phase 1 前 10%，大 timeout 例外记录在计划中）。
-- [ ] nextest profile 存在 `tui_pty_e2e.max-threads ≥ 2`，且 `cargo nextest run -p allthecodes --test pty_tui_e2e` 全绿。
-- [ ] `development/test/README.md` 索引登记本计划且状态为 ⭐ P0。
-- [ ] `crates/allthecodes/tests/pty_tui_e2e/README.md` 有"时效策略"段。
-- [ ] HTML artifact 路径存在且独立可读，包含 before 1930s / after 数字。
-- [ ] `git log --oneline allthecodes..worktree/pty-e2e-timing` 全部为 ff 可达。
+- [ ] 离线 `cargo test -p allthecodes --test pty_tui_e2e` 墙钟 ≤ 600s（§2 Phase 2）。完整套件尚未重跑，不能以抽样替代。
+- [x] `cargo clippy -p allthecodes --tests --quiet -- -D warnings` 已通过（Phase 2 记录）；无新增警告。
+- [ ] 固定 `Wait(secs ≥ 2)` 的剩余数量已重新统计并达到 Phase 1 前 10%。本批替换已完成，但此全局量化门槛尚未重测。
+- [ ] nextest profile 达到 `tui_pty_e2e.max-threads ≥ 2`，且完整 `cargo nextest run -p allthecodes --test pty_tui_e2e` 全绿。当前有意保留 `max-threads = 1`，等待 per-session workspace 隔离。
+- [x] `development/test/README.md` 已登记本计划，状态如实标为 Phase 1+2 已实现（部分），并记录 Phase 3 并发前置条件。
+- [x] `crates/allthecodes/tests/pty_tui_e2e/README.md` 已有“时效策略”段及 Phase 2 说明。
+- [x] HTML artifact 路径存在且独立可读，包含历史 before 1930.03s、代表性 after 数字、提交与验证边界。
+- [x] 本地 Phase 1/2 worktree 已 ff 到 `allthecodes`：`worktree-pty-e2e-timing-p2` 与 `allthecodes` 同在 `cd30bd70`。
+- [ ] 相关提交已推送至 `origin/allthecodes`，且陈旧 locked worktree 已按流程清理。此项需单独授权，不在本次状态更新中执行。
 
 ## 7. 非目标
 
@@ -275,19 +316,21 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 - 不引入 Bazel、不改 npm release 策略（与 `cargo-build-test-system-plan.md` 非目标一致）。
 - 不在本计划内做大规模 rustfmt 重排、import 重排，避免 churn 掩盖性能 diff。
 - 不删除 `TestStep::Wait`：它是合法原语，仅约束"勿用 `Wait(secs>1)` 等待 UI"。
-- 不在 Phase 2 之前解除串行锁：避免在信号化等待尚未达成时引入并发竞态。
+- 在完成信号化等待后才解除串行锁；该前置已满足，Phase 2 的 lock lift 已落地，但并发线程数仍受共享 workspace 限制。
 - 不重写 `vt100` / `portable_pty` 集成层。
 
 ## 8. 风险与回退
 
 | 风险 | 触发条件 | 回退 |
 |------|----------|------|
-| 并发撞 `E2E_WORKSPACE` 日志目录 | Phase 2 同秒多测试写 `logs_dir()` | 给 `logs_dir` 加 PID/计数，回 `max-threads=1` 重跑确认 |
+| 并发撞共享 `E2E_WORKSPACE` 状态 | Phase 2 多个 cc-rust 子进程同时读写 `/tmp/cc-rust-e2e-test/settings.json`、`sessions.db` | 已给 `logs_dir()` 加 PID 隔离并保持 `max-threads=1`；下一阶段实现 per-session workspace 后重测 2 → 4 线程 |
 | nextest profile 未安装 | CI 仍用 `cargo test` | 不替换 CI；nextest 本地验证用 |
-| 信号化等待漏判 | `WaitUntilScreen` needle 选错，测试莫名通过 | 在每个替换处保留 `AssertScreenContains` 双重确认 |
+| 信号化等待漏判 | `WaitForScreenText` needle 选错，测试莫名通过 | 在每个替换处保留 `AssertScreenContains` 双重确认 |
 | 在线测试误伤 | Task 3 拆 `test4` 时动到 `#[ignore]` 段 | Task 3 Step 1 仅碰离线断言段，不动 `API_TIMEOUT` 行为 |
-| ff 失败 | 主分支在 task 期间被推进 | 按 §3-5 先 rebase `worktree/pty-e2e-timing` 再 ff，不产 `--no-ff` |
+| 后续合并或清理误操作 | 主分支再推进，或误处理陈旧 locked worktree | 以当前已合并事实为准；清理前先核验 worktree 状态和祖先关系，不产 `--no-ff` |
 
 ## 9. 执行顺序
 
-主分支前置（本文件 commit）→ worktree `worktree/pty-e2e-timing` → Task 0 → Task 1 → Task 2.1..2.9 → Task 3 → Task 6（README 部分可与 Task 4 并行写）→ Task 4 → Task 5 → Task 7（artifact + ff 合并 + 删树）。
+已执行：主分支前置计划 → Phase 1（Task 1/2）→ 文档与 artifact（Task 6/7）→ Phase 2（Task 4/5）→ 本地 ff 合并。
+
+后续顺序：per-session workspace 隔离 → `max-threads=2` 抽样与完整回归 → 评估 `max-threads=4` → 重新度量完整离线套件墙钟 → 在获得明确授权后推送与清理陈旧 worktree。
