@@ -21,7 +21,13 @@ max-threads = 1
 max-threads = 2
 
 [[profile.default.overrides]]
-filter = 'package(allthecodes) & test(pty_tui_e2e)'
+# 用 `binary(pty_tui_e2e)` 而非 `test(pty_tui_e2e)`：nextest 的 `test(NAME)`
+# 按"测试名"匹配，而 pty_tui_e2e 是 binary 名，没有任何测试名字里带这个字面；旧
+# 滤片 `package(allthecodes) & test(pty_tui_e2e)` 实际匹配 0 个测试（
+# `cargo nextest show-config test-groups` 显示该组 `(no matches)`），等于 max-threads=1
+# 不生效，217 个测试被 nextest 默认并发跑，共享 workspace 出 24/217 flake。
+# `binary(pty_tui_e2e)` 才按"测试 binary 名"匹配，命中全部 217 个测试。
+filter = 'binary(pty_tui_e2e)'
 test-group = 'tui_pty_e2e'
 slow-timeout = { period = "45s", terminate-after = 2 }
 

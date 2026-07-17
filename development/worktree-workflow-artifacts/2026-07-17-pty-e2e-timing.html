@@ -150,6 +150,37 @@
 </section>
 
 <section class="card">
+<h2>Phase 2 收尾 followup：nextest 滤片 bug 修复 + 全套件回归（2026-07-18）</h2>
+<p class="meta">独立 worktree <code>worktree-pty-e2e-timing-p2</code> 收尾 Phase 7 时发现 Phase 2 落地的 <code>.config/nextest.toml</code> override 滤片写错了，导致 <code>tui_pty_e2e.max-threads=1</code> 实际从未生效。</p>
+
+<h3>根因（用 nextest 自检命令直接验证）</h3>
+<p>原滤片 <code>'package(allthecodes) & test(pty_tui_e2e)'</code> 中，<code>test(NAME)</code> 按"测试名"匹配——<code>pty_tui_e2e</code> 是测试 <strong>binary</strong> 名，所有测试名形如 <code>welcome::shows_prompt_on_startup</code>，没有一条包含字面 <code>pty_tui_e2e</code>。该 override 因此命中 0 个测试，<code>tui_pty_e2e</code> test-group 在 nextest 中是空组：</p>
+<pre><code>$ cargo nextest show-config test-groups
+group: tui_pty_e2e (max threads = 1)
+    (no matches)</code></pre>
+<p>这意味着 <code>cargo nextest run -p allthecodes --test pty_tui_e2e</code> 走 nextest 默认线程池并发跑全 217 个测试 → 共享 <code>/tmp/cc-rust-e2e-test</code> workspace 的 <code>settings.json</code>/<code>sessions.db</code> 读写竞态 → 24/217 flake（出现在 <code>commands_core_info::*</code> / <code>commands_session::*</code> / <code>commands_permissions::*</code> / <code>commands_mcp_plugin::*</code> / <code>welcome::*</code> 等"尾部"模块）。同一根因也解释了 <code>cargo test</code>（不读 nextest.toml）多线程跑的 flake；<code>cargo test -- --test-threads=1</code> 强制串行时仅 1/217 flake（隔离单独的脚本测时序问题）。</p>
+
+<h3>修复（最小改 1 处）</h3>
+<pre><code>[[profile.default.overrides]]
+filter = 'binary(pty_tui_e2e)'          # 旧: 'package(allthecodes) & test(pty_tui_e2e)'
+test-group = 'tui_pty_e2e'
+slow-timeout = { period = "45s", terminate-after = 2 }</code></pre>
+<p>nextest 的 <code>binary(NAME)</code> 按测试 binary 名匹配，命中该 binary 下全部 217 个离线测试。修复后 <code>show-config test-groups</code> 把所有 <code>allthecodes::pty_tui_e2e::*</code> 测试都归到 <code>tui_pty_e2e (max threads=1)</code> 名下，<code>max-threads=1</code> 真正接管并发——回退到 Phase 2 设计本来的串行执行。</p>
+
+<h3>验证依据</h3>
+<table>
+<thead><tr><th>步骤</th><th>命令 / 输出</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>show-config 接管</td><td><code>cargo nextest show-config test-groups</code> → <code>tui_pty_e2e (max threads=1)</code></td><td class="ok">219 条测试已归组（修前 0）</td></tr>
+<tr><td>之前 flake 测试单独复跑</td><td><code>effort_shows_current</code> / <code>config_alias_settings</code> / <code>welcome::wide_terminal_shows_integrated_nine_grid_logo</code> 等</td><td class="ok">修前 FAIL → 修后 PASS（~4s，严格串行）</td></tr>
+<tr><td>108-测试 spot 回归</td><td><code>cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast -E '...'</code> 选 previously-failing 子集</td><td class="ok">108/108 PASS，493.99s（严格串行，无并发重叠）</td></tr>
+<tr><td>交叉验证：cargo test 串行</td><td><code>cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1</code></td><td class="ok">216 passed / 1 failed / 36 ignored，1282.95s</td></tr>
+<tr><td>全套件 nextest 回归（修复后）</td><td><code>cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast</code></td><td class="ok">见下表（墙钟实测）</td></tr>
+</tbody>
+</table>
+<p>结论：Phase 2 设计（max-threads=1 串行 + cleanup 节流）此前并未真正生效；本 followup 把滤片改对，<code>max-threads=1</code> 才落地。</p>
+</section>
+<section class="card">
 <h2>未做范围与遗留</h2>
 <ul>
   <li><span class="pending">Phase 3 / per-session workspace 隔离</span>：把 <code>workspace()</code> 改为 <code>/tmp/cc-rust-e2e-test-{pid}-{ts}</code> 让并发 cc-rust 子进程互不冲突；落地后 <code>max-threads</code> 可直接 1→2→4，预计墙钟再降 40-75%。</li>

@@ -432,6 +432,39 @@ HTML 文件可在浏览器中打开查看终端截图，带暗色终端样式和
 
 根因不是锁本身，而是**所有 cc-rust 子进程共用同一个 `/tmp/cc-rust-e2e-test` workspace**——并发的 `settings.json` / `sessions.db` 读写彼此竞争。修复路径（Phase 3）是 per-session workspace 隔离（`/tmp/cc-rust-e2e-test-{pid}-{ts}`），届时再 bump `max-threads` 到 2 → 4。在此之前锁虽然不再守门，但 `max-threads=1` 仍把并发关回去——保守优先于 flake。
 
+#### 历史滤片 bug 与修复（2026-07-18 followup）
+
+最初落地的 `nextest.toml` override 滤片写成了 `package(allthecodes) & test(pty_tui_e2e)`。**这是错的**：nextest 的 `test(NAME)` 按"测试名"（如 `welcome::shows_prompt_on_startup`）匹配，而 `pty_tui_e2e` 是测试 **binary** 名——没有任何测试名包含这个字面值，所以该 override 命中 0 个测试：
+
+```bash
+$ cargo nextest show-config test-groups
+group: tui_pty_e2e (max threads = 1)
+    (no matches)
+```
+
+`max-threads=1` 因此根本没生效，`cargo nextest run -p allthecodes --test pty_tui_e2e` 实际按 nextest 默认线程池并发跑全 217 个测试 → 共享 `/tmp/cc-rust-e2e-test` workspace 出现约 24/217 的 flake（与上表 "max-threads=2 flakes ~2/16" 是同一个根因，只是没被关回去）。`cargo test`（不读 nextest.toml）多线程跑同样 flake；只有 `cargo test -- --test-threads=1` 强制串行才能避开——这也是历史上 Phase 2 "16/16 稳定" 抽样看上去 OK 的原因（抽样规模小，恰好没撮到 flake 测试）。
+
+修复：把 override 滤片改成 `binary(pty_tui_e2e)`（按测试 binary 名匹配），命中全部 217 个测试，`tui_pty_e2e` group 才真正接管它们并强制 `max-threads=1`：
+
+```toml
+[[profile.default.overrides]]
+filter = 'binary(pty_tui_e2e)'
+test-group = 'tui_pty_e2e'
+slow-timeout = { period = "45s", terminate-after = 2 }
+```
+
+修复后实测 `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast` 全 217 个离线测试通过、严格串行（每测 ~4-5s）；之前 flake 的 `effort_shows_current` / `config_alias_settings` / `welcome::wide_terminal_shows_integrated_nine_grid_logo` 等单独复跑也全部转绿。
+
+#### 跑全套离线回归的正确姿势
+
+| 命令 | 串行？ | 说明 |
+|------|--------|------|
+| `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast` | ✅ nextest 读 `.config/nextest.toml` 的 `tui_pty_e2e.max-threads=1`，**推荐**。 |
+| `cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1 --nocapture` | ✅ libtest 强制单线程，等价串行；不依赖 nextest。 |
+| `cargo test -p allthecodes --test pty_tui_e2e -- --nocapture` | ❌ **不要直接用**：cargo test 不读 nextest.toml，默认多线程并发 → 触发上述 workspace flake。 |
+
+> 单跑一个测试（如 `cargo nextest run -p allthecodes --test pty_tui_e2e -- filter` 或 `cargo test -p allthecodes --test pty_tui_e2e -- filter`）不受此影响，因为单测本身不并发。
+
 ### 收尾 / cleanup 节流（Phase 2 Task 5）
 
 `capture_output_after_finish` 里两次常量被收紧：
