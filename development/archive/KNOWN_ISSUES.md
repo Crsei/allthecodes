@@ -111,3 +111,16 @@
 | --- | --- | --- | --- | --- | --- |
 | PTY-001 | 低 | Fixed | PTY harness `status_bar()` | `status_bar()` 不再只读取最后一行；当 vt100 当前 screen buffer 最后一行为空时，会自底向上查找状态栏候选行，并从累积纯文本回退提取最近一次状态栏片段。 | 修复文件：`crates/claude-code-rs/tests/pty_tui_e2e/harness.rs`。验证：`cargo test -p claude-code-rs --test pty_tui_e2e status -- --nocapture`，状态栏相关离线用例通过。 |
 | PTY-002 | 中 | Fixed | PTY model_flow 测试 | `ask_model_identity`/完整 model flow 的模型身份询问现在会检测首轮 `Conversation interrupted` 或 `Error:`，并对真实后端 transient interruption 自动重试一次。 | 修复文件：`crates/claude-code-rs/tests/pty_tui_e2e/model_flow.rs`。在线用例仍保留 `#[ignore]`，需要真实 API key/network；修复目标是让已观察到的首轮 transient interruption 不再直接导致测试失败。 |
+
+## 14. 测试隔离 / 长跑门禁 (2026-07-18)
+
+> 来源：复盘 Codex session `019f668f-207c-7853-aa03-e9f0755bcd9e`（2026-07-15→16）。该 session 串行暴露了 4 类根因，故障本身已在历史代码 commit 修复；本节作为「已修复 + 防回归」记录留存，并对应 [`CLAUDE.md`](../../CLAUDE.md) / [`AGENTS.md`](../../AGENTS.md) 的「测试分层验证 SOP」5 条。
+
+| ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
+| --- | --- | --- | --- | --- | --- |
+| TESTISO-001 | 高 | Fixed | 跨 worktree target 共享 | 并行 worktree 共用 `…/.tmp/allthecodes-target` 时，跨树 build/test 会链接到对方分支的陈旧 `allthecodes-types` 元数据，导致 phantom 编译错误（现象表现为「定义在某分支已存在但链接器找不到」）。 | 根因：`CARGO_TARGET_DIR` 全局固定值被多个 worktree 共享。规约：并行 worktree 各自 `CARGO_TARGET_DIR=…/.tmp/atc-<slug>`；CLAUDE.md / AGENTS.md §「测试分层验证 SOP」第 3 条。session 2026-07-16 复盘定位（聚焦跑包级缓存清理后协议/types 重新编译、陈旧产物消失为根因证据）。 |
+| TESTISO-002 | 高 | Fixed | ACP 凭据测试未隔离 `CODEX_HOME` | 鉴权测试在非隔离环境下读取真机 `~/.codex` 登录态，把「格式无效但非空的 API key」误判为可用凭据，触发非确定性测试失败。 | 根因：测试夹具未显式重定向 `CODEX_HOME` 与凭据环境。规约：所有涉及认证/凭据的集成测试在夹具启动时显式隔离 `CODEX_HOME`、`ANTHROPIC_API_KEY` 与同类环境变量，并强制 `RUNTIME_ENVIRONMENT=test`；CLAUDE.md / AGENTS.md §「测试分层验证 SOP」第 4 条。session 同期 commit 落地 ACP 隔离修复。 |
+| TESTISO-003 | 高 | Fixed | daemon Team Memory 请求被 `HTTP_PROXY` 接管 | Team Memory 向固定 loopback endpoint 的回环请求被系统 `HTTP_PROXY` 接管，引起错误超时分类，并把内部 secret 通过环境代理外泄。同时 daemon 新 submit 未清除上一次 abort 状态，导致 abort 后的 submit 继承取消态。 | 根因：内部 RPC 客户端未强制 `no_proxy()` + submit/abort 状态机缺互斥。规约：对所有 loopback / 内部 RPC 客户端强制 `no_proxy()`，secret-bearing 客户端禁止使用环境代理；submit 与 abort 必须互斥排序（旧 abort 先发生则新 submit 重置，新 abort 后发生则取消当前 submit）。代码修复 commit `71bb6768`。CLAUDE.md / AGENTS.md §「测试分层验证 SOP」第 4 条覆盖环境/代理隔离。 |
+| TESTISO-004 | 高 | Fixed | IPC `Optional<security>` 反序列化用非 Optional 结构 | `security: None` 序列化为 JSON `null`，legacy adapter 按非 Optional 结构反序列化触发 `InvalidPayload` panic；测试任务 panic 后接收端仍持 sender clone，造成无限等待（不会被测试 harness 自然超时）。 | 根因：协议 DTO 对可空字段未声明 `Option<T>` + adapter 转换在 pending 注册之后执行。规约：协议 DTO 对所有可空字段声明 `Option<T>`，反序列化对 missing / null 双兼容，非法非 null 仍 fail-closed；adapter 转换提前到 pending 注册之前；交互测试对每条接收路径加 5 秒接收边界，未来同类回归快速失败而非无限挂起。代码修复 commit `46b22cad`。 |
+| TESTISO-005 | 低 | Open | 单一巨型 PTY 套件绑架全仓验证 | 全仓 `cargo test --workspace` 把 `pty_tui_e2e`（251 项并发 PTY、约 32min/轮）与 daemon / IPC / types / protocol 等 crate 级测试捆在同一条命令里。任何 crate 级失败必须等到 PTY 跑完才暴露，单轮全仓验证返工成本极高（session 期末 5 轮约 160 分钟纯测试时间）。 | 主要整改是 SOP 层面，不需要改产品代码：CLAUDE.md / AGENTS.md §「测试分层验证 SOP」第 1、5 条强制「先分 crate 再单独 PTY」「一次任务 >2 轮全仓必须降级」。后续若 PTY 仍需进一步拆分独立 binary 由独立任务推进，本条作为「Open」防回归哨兵保留。 |
+
