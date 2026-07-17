@@ -299,9 +299,9 @@ session.finish_to(timeout, "test_name", &dir);      // 退出 + 保存到指定�
 ### 辅助函数
 
 ```rust
-workspace()          // 测试工作区路径（E2E_WORKSPACE 或 /tmp/cc-rust-e2e-test）
-logs_dir()           // 日志根目录（logs/pty_tui_e2e_{timestamp}/）
-test_subdir("name")  // 测试专属子目录（logs/pty_tui_e2e_{timestamp}/{name}/）
+workspace()          // 测试工作区路径（E2E_WORKSPACE 或 /tmp/cc-rust-e2e-test-{runner_pid}）
+logs_dir()           // 日志根目录（logs/pty_tui_e2e_{timestamp}_{runner_pid}/）
+test_subdir("name")  // 测试专属子目录（logs/pty_tui_e2e_{timestamp}_{runner_pid}/{name}/）
 binary_path()        // allthecodes 二进制路径
 default_args()       // 标准启动参数：-C {workspace} --permission-mode bypass
 read_settings()      // 读取 ~/.allthecodes/settings.json 的 activeAuthProfile 和 model
@@ -414,7 +414,7 @@ HTML 文件可在浏览器中打开查看终端截图，带暗色终端样式和
 - 想 snapshot 调试时留一个 `Wait(Duration::from_millis(500))` 短窗口，不要 `Wait(2s)`。
 - 替代方案是 clippy-style 检查（待补）：作为本计划 Task 4 之后的收尾项。
 
-### 并发与锁（Phase 2）
+### 并发与锁（Phase 2 + Phase 3 隔离）
 
 历史上 `PtySession::spawn` 持有一个全局 `OnceLock<Mutex<()>>` 守卫 `_serial_guard`，**把整个会话生命周期串行化**——任何时刻只有一个 cc-rust 在 PTY 里跑。Phase 2 已落地：
 
@@ -422,7 +422,7 @@ HTML 文件可在浏览器中打开查看终端截图，带暗色终端样式和
 - **收窄到 `cleanup_lock()`**：仅在 `cleanup_detached_workspace_processes()` 这段"扫 `/proc` + 发信号"短临界区持锁，避免两个并发收尾重复扫同一组 pid。
 - **per-process 日志根**：`logs_dir()` 加 PID 后缀，nextest 多进程同秒领号互不覆盖；`test_subdir(test_name)` 已天然按测试名隔离。
 
-**但是** `nextest` `tui_pty_e2e` test-group **目前仍 `max-threads = 1`**。原因：跑了 16 个离线测试的抽样墙钟：
+Phase 2 初次实现时，`nextest` `tui_pty_e2e` test-group 仍保持 `max-threads = 1`。当时跑 16 个离线测试的抽样结果如下：
 
 | `max-threads` | 通过 | 现象 |
 |---------------|------|------|
@@ -430,7 +430,9 @@ HTML 文件可在浏览器中打开查看终端截图，带暗色终端样式和
 | 2 | 14/16 | `effort_shows_current` / `config_alias_settings` flake（`WaitForScreenText` 在 3s 内未等到屏幕文字） |
 | 4 | 13/16 | 上限；后续 cc-rust 启动被拖慢到 window 外 |
 
-根因不是锁本身，而是**所有 cc-rust 子进程共用同一个 `/tmp/cc-rust-e2e-test` workspace**——并发的 `settings.json` / `sessions.db` 读写彼此竞争。修复路径（Phase 3）是 per-session workspace 隔离（`/tmp/cc-rust-e2e-test-{pid}-{ts}`），届时再 bump `max-threads` 到 2 → 4。在此之前锁虽然不再守门，但 `max-threads=1` 仍把并发关回去——保守优先于 flake。
+根因不是锁本身，而是所有 cc-rust 子进程曾共用同一个 `/tmp/cc-rust-e2e-test` workspace——并发的 `settings.json` / `sessions.db` 读写彼此竞争。Phase 3 已把默认路径改为 `/tmp/cc-rust-e2e-test-{runner_pid}`：nextest 每个 test case 使用独立 runner 进程，因此 workspace 隔离；显式 `E2E_WORKSPACE` 覆盖仍保持原语义。普通 libtest 的 test case 共用 runner PID，所以全套回归仍必须传 `--test-threads=1`。
+
+隔离后先验证 `max-threads=2` 的 `commands_core_info` 25/25（59.529s），再验证 `max-threads=4` 25/25（32.027s）。最终完整回归以 `max-threads=4` 执行：220 passed、36 skipped、0 failed，nextest summary 340.329s、命令墙钟 341.47s。因此 `.config/nextest.toml` 现已正式提升到 4；若后续新增跨 workspace 的共享状态，必须用完整套件证据决定是否回退。
 
 #### 历史滤片 bug 与修复（2026-07-18 followup）
 
@@ -444,7 +446,7 @@ group: tui_pty_e2e (max threads = 1)
 
 `max-threads=1` 因此根本没生效，`cargo nextest run -p allthecodes --test pty_tui_e2e` 实际按 nextest 默认线程池并发跑全 217 个测试 → 共享 `/tmp/cc-rust-e2e-test` workspace 出现约 24/217 的 flake（与上表 "max-threads=2 flakes ~2/16" 是同一个根因，只是没被关回去）。`cargo test`（不读 nextest.toml）多线程跑同样 flake；只有 `cargo test -- --test-threads=1` 强制串行才能避开——这也是历史上 Phase 2 "16/16 稳定" 抽样看上去 OK 的原因（抽样规模小，恰好没撮到 flake 测试）。
 
-修复：把 override 滤片改成 `binary(pty_tui_e2e)`（按测试 binary 名匹配），命中全部 217 个测试，`tui_pty_e2e` group 才真正接管它们并强制 `max-threads=1`：
+修复：把 override 滤片改成 `binary(pty_tui_e2e)`（按测试 binary 名匹配），`tui_pty_e2e` group 才真正接管该 binary。该修复最初强制 `max-threads=1`；Phase 3 workspace 隔离完成并通过完整回归后，预算已提升为 4：
 
 ```toml
 [[profile.default.overrides]]
@@ -453,15 +455,15 @@ test-group = 'tui_pty_e2e'
 slow-timeout = { period = "45s", terminate-after = 2 }
 ```
 
-修复后实测 `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast` 全 217 个离线测试通过、严格串行（每测 ~4-5s）；之前 flake 的 `effort_shows_current` / `config_alias_settings` / `welcome::wide_terminal_shows_integrated_nine_grid_logo` 等单独复跑也全部转绿。
+滤片修复后的历史串行基线为全 217 个离线测试通过、1250.847s。Phase 3 隔离后的当前完整回归为全 220 个离线测试通过、341.47s；此前 flaky 的 `effort_shows_current` / `config_alias_settings` / `welcome::wide_terminal_shows_integrated_nine_grid_logo` 也包含在这次全绿结果中。
 
 #### 跑全套离线回归的正确姿势
 
 | 命令 | 串行？ | 说明 |
 |------|--------|------|
-| `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast` | ✅ nextest 读 `.config/nextest.toml` 的 `tui_pty_e2e.max-threads=1`，**推荐**。 |
+| `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast` | 4-way | ✅ **推荐**。nextest 读 `.config/nextest.toml` 的 `tui_pty_e2e.max-threads=4`；runner PID 隔离默认 workspace。 |
 | `cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1 --nocapture` | ✅ libtest 强制单线程，等价串行；不依赖 nextest。 |
-| `cargo test -p allthecodes --test pty_tui_e2e -- --nocapture` | ❌ **不要直接用**：cargo test 不读 nextest.toml，默认多线程并发 → 触发上述 workspace flake。 |
+| `cargo test -p allthecodes --test pty_tui_e2e -- --nocapture` | ❌ **不要直接用**：cargo test 不读 nextest.toml，且同一 runner PID 下的 case 仍共享默认 workspace。 |
 
 > 单跑一个测试（如 `cargo nextest run -p allthecodes --test pty_tui_e2e -- filter` 或 `cargo test -p allthecodes --test pty_tui_e2e -- filter`）不受此影响，因为单测本身不并发。
 
@@ -474,7 +476,7 @@ slow-timeout = { period = "45s", terminate-after = 2 }
 | 收尾 buffer flush sleep | 200ms | 100ms |
 | reader-thread join deadline | 500ms | 250ms |
 
-`cleanup_detached_workspace_processes()` 自带 2s 节流窗（`OnceLock<Mutex<Instant>>` + `CLEANUP_THROTTLE`）：若距上次扫描不足 2s，跳过本次 `/proc` 扫描，原子计数 `CLEANUP_SKIP_COUNT` 自增供测试观测。平行 invariant 由 `cleanup_detached_workspace_processes_throttles` 钉住（5 次快速调用 ⇒ ≥4 次跳过 / ≤1 次实际扫描）。每次收尾可省下大约 100-300ms 的 `/proc` 遍历。
+`cleanup_detached_workspace_processes()` 自带 2s 节流窗（`OnceLock<Mutex<Option<Instant>>>` + `CLEANUP_THROTTLE`）：首次调用必定扫描 `/proc`；若距上次扫描不足 2s，后续调用才跳过，原子计数 `CLEANUP_SKIP_COUNT` 自增供测试观测。`cleanup_throttle_scans_first_call_then_throttles` 钉住“首次扫描 1 次、窗口内随后跳过”的 invariant，避免 nextest 每个 runner 唯一一次 cleanup 被错误节流。
 
 ## 添加新测试
 

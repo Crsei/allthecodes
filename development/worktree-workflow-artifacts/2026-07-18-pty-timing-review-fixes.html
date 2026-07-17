@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PTY timing review fixes — 2026-07-18</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 1040px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+  h1 { margin-bottom: .2rem; }
+  .meta { color: #657; }
+  .card { border: 1px solid #8793a0; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+  code { overflow-wrap: anywhere; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+  th, td { border: 1px solid #8793a0; padding: .45rem; text-align: left; vertical-align: top; }
+  .ok { color: #18794e; font-weight: 650; }
+  .fail { color: #b42318; font-weight: 650; }
+  .pending { color: #9a6700; font-weight: 650; }
+  .num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>PTY TUI E2E timing review 修复</h1>
+<p class="meta">Task slug: <code>pty-timing-review-fixes</code> · branch: <code>worktree/pty-timing-review-fixes</code> · 2026-07-18</p>
+
+<section class="card">
+<h2>任务目标与流程</h2>
+<p>修复 <code>development/test/pty-tui-e2e-timing-plan.md</code> review 发现的四类证据缺口：首次 cleanup 被节流、nextest 并发仍共享 workspace、两个被终端裁剪的断言、旧文档把失败结果标绿。</p>
+<ol>
+  <li>主分支先提交计划更新 <code>06dd4c04</code>。</li>
+  <li>从该 HEAD 创建 <code>.worktrees/pty-timing-review-fixes</code> 和同名 worktree 分支。</li>
+  <li>在 worktree 内完成代码、测试、README 和 artifact；构建统一写入 <code>/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/atc-pty-timing-review-fixes</code>。</li>
+  <li>验证完成后 fast-forward 回 <code>allthecodes</code>，再在主分支单独更新计划最终状态。</li>
+</ol>
+</section>
+
+<section class="card">
+<h2>改动列表</h2>
+<table>
+<thead><tr><th>路径</th><th>实现</th></tr></thead>
+<tbody>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/harness.rs</code></td><td>默认 workspace 改为 <code>/tmp/cc-rust-e2e-test-{runner_pid}</code>，保留显式 <code>E2E_WORKSPACE</code>；cleanup throttle 改为 <code>Option&lt;Instant&gt;</code>，首次调用必扫；新增 3 个 invariant 测试。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_core_info.rs</code></td><td><code>effort_set_high_reports_profile_result</code> 改匹配稳定语义前缀，避免 120 列状态栏把末尾裁掉。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_memory_skills_hooks.rs</code></td><td>CRUD 值改为短且唯一的 <code>v9Z</code>；仍验证 set/get/rm，但不再等待不可见的被裁剪后缀。</td></tr>
+<tr><td><code>.config/nextest.toml</code></td><td>完整套件全绿后把 <code>tui_pty_e2e.max-threads</code> 从 1 提升到 4；普通 libtest 仍要求 <code>--test-threads=1</code>。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/README.md</code></td><td>同步 runner PID 隔离、4-way nextest、首次 cleanup 必扫和正确运行方式。</td></tr>
+<tr><td><code>development/test/README.md</code></td><td>索引状态更新为 Phase 1–3 已实现并附完整回归数字。</td></tr>
+<tr><td><code>development/worktree-workflow-artifacts/2026-07-17-pty-e2e-timing.html</code></td><td>把 216 passed / 1 failed 从成功色改为失败，补齐 217-test nextest 结果，删除“完整套件未跑”和 Phase 3 未做的过期陈述。</td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="card">
+<h2>提交边界</h2>
+<ul>
+  <li><code>06dd4c04 docs(pty-e2e): plan review remediation</code> — 主分支前置计划。</li>
+  <li><code>c64bf37c fix(pty-e2e): isolate workspaces and preserve first cleanup</code></li>
+  <li><code>a4886f0a test(pty-e2e): match clipped effort diagnostics</code></li>
+  <li><code>448e9a9c test(pty-e2e): avoid clipped memory value assertion</code></li>
+  <li><code>54196b3d test(pty-e2e): enable isolated four-way nextest</code></li>
+  <li>README 与 artifact 更新：本 artifact 所在提交。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>验证依据</h2>
+<table>
+<thead><tr><th>命令 / 范围</th><th>结果</th><th>墙钟</th></tr></thead>
+<tbody>
+<tr><td>harness tests</td><td class="ok">7 passed / 0 failed</td><td>targeted</td></tr>
+<tr><td><code>commands_core_info</code>，<code>max-threads=2</code></td><td class="ok">25/25 passed</td><td class="num">59.529s</td></tr>
+<tr><td><code>commands_core_info</code>，<code>max-threads=4</code></td><td class="ok">25/25 passed</td><td class="num">32.027s</td></tr>
+<tr><td>首次完整 4-way nextest</td><td class="fail">219 passed / 1 failed / 36 skipped；失败为 <code>memory_set_get_rm_cycle</code> 等待不可见的 <code>test_value</code></td><td class="num">346.93s</td></tr>
+<tr><td><code>memory_set_get_rm_cycle</code> 修复后 targeted</td><td class="ok">1/1；10/10 script steps passed，value wait 188ms</td><td class="num">5.796s</td></tr>
+<tr><td><code>cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast</code></td><td class="ok">220 passed (1 slow) / 36 skipped / 0 failed；exit 0</td><td class="num">nextest 340.329s；real 341.47s</td></tr>
+<tr><td><code>cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1</code></td><td class="ok">220 passed / 0 failed / 36 ignored；exit 0</td><td class="num">test 1260.42s；real 1263.19s</td></tr>
+<tr><td><code>cargo fmt --all --check</code></td><td class="ok">exit 0</td><td class="num">real 5.46s</td></tr>
+<tr><td><code>cargo clippy -p allthecodes --test pty_tui_e2e -- -D warnings</code></td><td class="ok">exit 0；无 warning</td><td class="num">real 3.78s</td></tr>
+<tr><td><code>cargo build --workspace --release</code></td><td class="ok">exit 0；无 warning</td><td class="num">real 312.61s</td></tr>
+</tbody>
+</table>
+<p>性能对比：严格串行 nextest 历史实测 <code>1250.847s</code>，当前 4-way nextest <code>340.329s</code>，nextest summary 墙钟减少约 72.8%。历史最早 <code>cargo test</code> 基线为 <code>1930.03s</code>。</p>
+</section>
+
+<section class="card">
+<h2>边界</h2>
+<ul>
+  <li>nextest 每个 case 是独立 runner 进程，PID workspace 隔离成立；libtest 同进程 case 共用 PID，因此不宣称默认多线程 libtest 已隔离。</li>
+  <li>显式设置 <code>E2E_WORKSPACE</code> 仍会按调用者要求共享路径。</li>
+  <li>36 个需要真实 API key / network 的 ignored 测试不在离线回归范围。</li>
+</ul>
+</section>
+</body>
+</html>

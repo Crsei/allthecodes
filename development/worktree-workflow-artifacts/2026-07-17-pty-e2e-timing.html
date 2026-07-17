@@ -14,6 +14,7 @@
   table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
   th, td { border: 1px solid #8793a0; padding: .45rem; text-align: left; vertical-align: top; }
   .ok { color: #18794e; font-weight: 650; }
+  .fail { color: #b42318; font-weight: 650; }
   .pending { color: #9a6700; font-weight: 650; }
   .delta { color: #18794e; font-weight: 650; }
   .num { font-variant-numeric: tabular-nums; }
@@ -113,7 +114,7 @@
 <tbody>
 <tr><td><code>crates/allthecodes/tests/pty_tui_e2e/harness.rs</code> – Task 4</td><td>移除 <code>PtySession::_serial_guard</code> 与 <code>pty_test_lock()</code>；新增 <code>cleanup_lock()</code> 仅在 <code>cleanup_detached_workspace_processes()</code> 入口短暂持有。<code>logs_dir()</code> 加 PID 后缀，nextest 多进程同秒领号不撞目录。新增 <code>concurrent_sessions_do_not_serialize</code> 测试钉住并发 invariant（TDD red → green）。</td></tr>
 <tr><td><code>.config/nextest.toml</code> – Task 4</td><td><code>test-groups.tui_pty_e2e.max-threads</code> 暂设 <code>1</code>（详见下文 flake 抽样），注释说明 Phase 3 per-session workspace 隔离后再 bump。</td></tr>
-<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/harness.rs</code> – Task 5</td><td><code>capture_output_after_finish</code>：收尾 flush 200ms→100ms；reader join deadline 500ms→250ms。<code>cleanup_detached_workspace_processes()</code> 加 2s 节流窗（<code>OnceLock<Mutex<Instant>></code> + <code>CLEANUP_THROTTLE</code>），跳过计数 <code>CLEANUP_SKIP_COUNT</code> 与扫描计数 <code>FIND_DETACHED_SCAN_COUNT</code> 供测试观测。新增 <code>cleanup_detached_workspace_processes_throttles</code> 钉住 throttle invariant（TDD red → green）。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/harness.rs</code> – Task 5</td><td><code>capture_output_after_finish</code>：收尾 flush 200ms→100ms；reader join deadline 500ms→250ms。历史实现给 <code>cleanup_detached_workspace_processes()</code> 加 2s 节流窗（当时为 <code>OnceLock&lt;Mutex&lt;Instant&gt;&gt;</code> + <code>CLEANUP_THROTTLE</code>）；2026-07-18 review 已修正为 <code>Option&lt;Instant&gt;</code>，保证首次调用必扫。</td></tr>
 <tr><td><code>crates/allthecodes/tests/pty_tui_e2e/README.md</code></td><td>在<strong>时效策略</strong>节后追加"并发与锁"+"收尾 / cleanup 节流"两小节，列出 max-threads 抽样表与 Phase 3 路径。</td></tr>
 <tr><td><code>development/test/README.md</code></td><td>索引表更新为 <strong>Phase 1+2 已实现</strong>，备注 max-threads=1 待 Phase 3。</td></tr>
 </tbody>
@@ -145,7 +146,7 @@
   <li><span class="ok">通过</span> <code>cargo clippy -p allthecodes --tests --quiet -- -D warnings</code>：exit 0。</li>
   <li><span class="ok">通过</span> <code>cargo fmt --all --check</code>：clean。</li>
   <li><span class="ok">通过</span> 8-测试 max-threads=4 spot run：5.73s wall，8/8 绿。</li>
-  <li><span class="pending">未跑</span> 完整 <code>pty_tui_e2e</code> 全跑（>10min tool 上限），用户已 defer，信任抽样 + invariant 测试。</li>
+  <li>该阶段当时尚未完成全套回归；后续 followup 的完整结果见下一节。</li>
 </ul>
 </section>
 
@@ -158,7 +159,7 @@
 <pre><code>$ cargo nextest show-config test-groups
 group: tui_pty_e2e (max threads = 1)
     (no matches)</code></pre>
-<p>这意味着 <code>cargo nextest run -p allthecodes --test pty_tui_e2e</code> 走 nextest 默认线程池并发跑全 217 个测试 → 共享 <code>/tmp/cc-rust-e2e-test</code> workspace 的 <code>settings.json</code>/<code>sessions.db</code> 读写竞态 → 24/217 flake（出现在 <code>commands_core_info::*</code> / <code>commands_session::*</code> / <code>commands_permissions::*</code> / <code>commands_mcp_plugin::*</code> / <code>welcome::*</code> 等"尾部"模块）。同一根因也解释了 <code>cargo test</code>（不读 nextest.toml）多线程跑的 flake；<code>cargo test -- --test-threads=1</code> 强制串行时仅 1/217 flake（隔离单独的脚本测时序问题）。</p>
+<p>这意味着 <code>cargo nextest run -p allthecodes --test pty_tui_e2e</code> 走 nextest 默认线程池并发跑全 217 个测试 → 共享 <code>/tmp/cc-rust-e2e-test</code> workspace 的 <code>settings.json</code>/<code>sessions.db</code> 读写竞态 → 24/217 flake（出现在 <code>commands_core_info::*</code> / <code>commands_session::*</code> / <code>commands_permissions::*</code> / <code>commands_mcp_plugin::*</code> / <code>welcome::*</code> 等"尾部"模块）。同一根因也解释了 <code>cargo test</code>（不读 nextest.toml）多线程跑的 flake。历史串行 run 的唯一失败后来被具体复现为 <code>memory_set_get_rm_cycle</code>：CRUD 已成功，但 120 列状态栏把 <code>test_value</code> 裁成 <code>test_v</code>，完整字符串断言超时；不再笼统归类为“脚本测时序问题”。</p>
 
 <h3>修复（最小改 1 处）</h3>
 <pre><code>[[profile.default.overrides]]
@@ -174,8 +175,8 @@ slow-timeout = { period = "45s", terminate-after = 2 }</code></pre>
 <tr><td>show-config 接管</td><td><code>cargo nextest show-config test-groups</code> → <code>tui_pty_e2e (max threads=1)</code></td><td class="ok">219 条测试已归组（修前 0）</td></tr>
 <tr><td>之前 flake 测试单独复跑</td><td><code>effort_shows_current</code> / <code>config_alias_settings</code> / <code>welcome::wide_terminal_shows_integrated_nine_grid_logo</code> 等</td><td class="ok">修前 FAIL → 修后 PASS（~4s，严格串行）</td></tr>
 <tr><td>108-测试 spot 回归</td><td><code>cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast -E '...'</code> 选 previously-failing 子集</td><td class="ok">108/108 PASS，493.99s（严格串行，无并发重叠）</td></tr>
-<tr><td>交叉验证：cargo test 串行</td><td><code>cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1</code></td><td class="ok">216 passed / 1 failed / 36 ignored，1282.95s</td></tr>
-<tr><td>全套件 nextest 回归（修复后）</td><td><code>cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast</code></td><td class="ok">见下表（墙钟实测）</td></tr>
+<tr><td>交叉验证：cargo test 串行</td><td><code>cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1</code></td><td class="fail">216 passed / 1 failed / 36 ignored，1282.95s；非成功门槛，遗留失败待修</td></tr>
+<tr><td>全套件 nextest 回归（修复后）</td><td><code>cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast</code></td><td class="ok">217 passed / 36 skipped / 0 failed；nextest 1250.847s（命令 wall 1253.82s）</td></tr>
 </tbody>
 </table>
 <p>结论：Phase 2 设计（max-threads=1 串行 + cleanup 节流）此前并未真正生效；本 followup 把滤片改对，<code>max-threads=1</code> 才落地。</p>
@@ -183,8 +184,8 @@ slow-timeout = { period = "45s", terminate-after = 2 }</code></pre>
 <section class="card">
 <h2>未做范围与遗留</h2>
 <ul>
-  <li><span class="pending">Phase 3 / per-session workspace 隔离</span>：把 <code>workspace()</code> 改为 <code>/tmp/cc-rust-e2e-test-{pid}-{ts}</code> 让并发 cc-rust 子进程互不冲突；落地后 <code>max-threads</code> 可直接 1→2→4，预计墙钟再降 40-75%。</li>
-  <li><span class="pending">完整套件墙钟度量</span>：未跑 <code>cargo nextest run -p allthecodes --test pty_tui_e2e</code>（>10min tool 上限）；用户已 defer。抽样测试墙钟与单测降幅一致。</li>
+  <li><span class="ok">Phase 3 / runner workspace 隔离已在 2026-07-18 followup 完成</span>：默认路径按 nextest runner PID 隔离，<code>max-threads=4</code> 的完整 220-test 回归结果记录在 <code>development/worktree-workflow-artifacts/2026-07-18-pty-timing-review-fixes.html</code>。</li>
+  <li><span class="ok">完整套件墙钟已度量</span>：本 artifact 上一节补齐历史严格串行结果；当前四并发结果见 2026-07-18 followup artifact。</li>
   <li><span class="pending">Task 3 字面拆分</span>（<code>test4</code> / <code>test5</code> 的 <code>#[ignore]</code> 在线测试）<strong>跳过</strong> — 与计划 §7 非目标冲突，用户已确认跳过。</li>
   <li><span class="ok">已完成</span> Phase 1 信号化等待替换与护栏。</li>
   <li><span class="ok">已完成</span> Phase 2 串行锁 lift、cleanup 节流、reader join 收紧、invariant 测试。</li>
