@@ -88,6 +88,7 @@ fn is_available_during_task(command: &str) -> bool {
             | "ide"
             | "lsp"
             | "plugin"
+            | "providers"
             | "skills"
             | "chrome"
             | "assistant"

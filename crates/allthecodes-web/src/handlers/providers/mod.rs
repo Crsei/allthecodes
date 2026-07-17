@@ -14,8 +14,9 @@ pub use api_proxy::{
 };
 pub use codex::{codex_apply_local_handler, codex_local_status_handler};
 pub use crud::{
-    providers_create_handler, providers_delete_handler, providers_list_handler,
-    providers_refresh_models_handler, providers_update_handler,
+    providers_create_handler, providers_delete_handler, providers_detail_handler,
+    providers_list_handler, providers_refresh_models_handler, providers_replace_handler,
+    providers_update_handler,
 };
 pub(crate) use internal_api::{
     configured_provider_models, provider_for_model, update_configured_model,
@@ -23,8 +24,8 @@ pub(crate) use internal_api::{
 pub use probe::providers_probe_handler;
 pub use types::{
     CodexApplyLocalResponse, CodexLocalStatusResponse, ModelDiscoveryResponse,
-    ProviderCreateRequest, ProviderListResponse, ProviderPreset, ProviderSummary,
-    ProviderUpdateRequest,
+    ProviderCreateRequest, ProviderDetailResponse, ProviderListResponse, ProviderPreset,
+    ProviderReplaceRequest, ProviderSecretUpdate, ProviderSummary, ProviderUpdateRequest,
 };
 
 #[cfg(test)]

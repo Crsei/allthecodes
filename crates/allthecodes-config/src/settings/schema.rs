@@ -1,5 +1,7 @@
 use serde_json::{json, Value};
 
+use super::VALID_API_PROVIDERS;
+
 // ---------------------------------------------------------------------------
 // JSON Schema
 // ---------------------------------------------------------------------------
@@ -20,7 +22,7 @@ pub fn settings_schema() -> Value {
         "properties": {
             "model": { "type": "string" },
             "backend": { "type": "string", "enum": ["native", "codex"] },
-            "apiProvider": { "type": "string", "enum": ["anthropic", "openai-codex", "openai"] },
+            "apiProvider": { "type": "string", "enum": VALID_API_PROVIDERS },
             "activeAuthProfile": { "type": "string" },
             "authProfiles": {
                 "type": "object",
@@ -29,7 +31,7 @@ pub fn settings_schema() -> Value {
                     "additionalProperties": true,
                     "properties": {
                         "backend": { "type": "string", "enum": ["native", "codex"] },
-                        "apiProvider": { "type": "string", "enum": ["anthropic", "openai-codex", "openai"] },
+                        "apiProvider": { "type": "string", "enum": VALID_API_PROVIDERS },
                         "model": { "type": "string" },
                         "availableModels": { "type": "array", "items": { "type": "string" } },
                         "modelReasoningEffort": {

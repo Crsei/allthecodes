@@ -1,18 +1,14 @@
-//! Profile CRUD handlers — list, create, detail, update, delete, switch, import, export.
-
-use std::collections::HashMap;
+//! Profile CRUD handlers backed by the lossless provider-profile store.
 
 use axum::extract::Path as AxumPath;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use allthecodes_config::settings::{
-    load_global_config, write_user_settings, ProviderProfileSettings,
+    ProviderProfileSettings, ProviderProfileStore, ProviderProfileStoreError,
 };
-
 use allthecodes_protocol::ApiError as ProtocolApiError;
 
 #[derive(Serialize, Clone)]
@@ -49,346 +45,160 @@ pub struct ProfileImportRequest {
     pub payload: Option<serde_json::Value>,
 }
 
-/// Load profiles from user settings, returning the active profile id and
-/// a sorted list of profiles.
-fn load_profile_list() -> (Option<String>, Vec<ProfileSummary>) {
-    let settings = load_global_config().unwrap_or_default();
-    let active_id = settings.active_auth_profile.clone();
-    let mut profiles: Vec<ProfileSummary> = Vec::new();
-
-    if let Some(auth_profiles) = settings.auth_profiles {
-        for (id, _profile) in auth_profiles {
-            let active = Some(&id) == active_id.as_ref();
-            profiles.push(ProfileSummary {
-                id: id.clone(),
-                name: id.clone(),
-                active,
-                created_at: Some(Utc::now().timestamp()),
-                updated_at: Some(Utc::now().timestamp()),
-            });
-        }
-    }
-
-    profiles.sort_by(|a, b| a.name.cmp(&b.name));
-    (active_id, profiles)
-}
-
-fn save_profile_list(
-    active_id: &Option<String>,
-    profiles: &[ProfileSummary],
-) -> Result<(), String> {
-    let mut settings = load_global_config().unwrap_or_default();
-    settings.active_auth_profile = active_id.clone();
-
-    let mut auth_profiles = HashMap::new();
-    for p in profiles {
-        auth_profiles.insert(
-            p.id.clone(),
-            ProviderProfileSettings {
-                backend: None,
-                api_provider: None,
-                model: None,
-                available_models: None,
-                model_capabilities: None,
-                model_reasoning_effort: None,
-                base_url: None,
-                api_key: None,
-                env: None,
-                auth_source: None,
-                extra: HashMap::new(),
-            },
-        );
-    }
-    settings.auth_profiles = Some(auth_profiles);
-
-    write_user_settings(&settings).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// GET /api/profiles — List all profiles.
-pub async fn profiles_list_handler() -> impl IntoResponse {
-    let (active_id, profiles) = load_profile_list();
-    Json(ProfileListResponse {
-        active_profile_id: active_id,
+fn list_response() -> Result<ProfileListResponse, anyhow::Error> {
+    let store = ProviderProfileStore::global();
+    let settings = store.load()?;
+    let profiles = store
+        .list()?
+        .into_iter()
+        .map(|profile| ProfileSummary {
+            name: profile.id.clone(),
+            id: profile.id,
+            active: profile.active,
+            created_at: None,
+            updated_at: None,
+        })
+        .collect();
+    Ok(ProfileListResponse {
+        active_profile_id: settings.active_auth_profile,
         profiles,
     })
 }
 
-/// POST /api/profiles — Create a new profile.
-pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> impl IntoResponse {
-    if req.name.trim().is_empty() {
+fn error_response(error: anyhow::Error) -> Response {
+    let (status, body) = match error.downcast_ref::<ProviderProfileStoreError>() {
+        Some(ProviderProfileStoreError::EmptyId) => (
+            StatusCode::BAD_REQUEST,
+            ProtocolApiError::BadRequest {
+                code: "validation_error",
+                message: error.to_string(),
+            }
+            .into_body(),
+        ),
+        Some(ProviderProfileStoreError::NotFound(id)) => (
+            StatusCode::NOT_FOUND,
+            ProtocolApiError::NotFound {
+                entity: "profile",
+                id: id.clone(),
+            }
+            .into_body(),
+        ),
+        Some(ProviderProfileStoreError::AlreadyExists(_))
+        | Some(ProviderProfileStoreError::ActiveProfile(_))
+        | Some(ProviderProfileStoreError::UnsupportedProvider(_)) => (
+            StatusCode::CONFLICT,
+            ProtocolApiError::Conflict {
+                reason: error.to_string(),
+            }
+            .into_body(),
+        ),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ProtocolApiError::Internal {
+                message: error.to_string(),
+            }
+            .into_body(),
+        ),
+    };
+    (status, Json(body)).into_response()
+}
+
+fn refreshed_list() -> Response {
+    match list_response() {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+/// GET /api/profiles — List all profiles.
+pub async fn profiles_list_handler() -> Response {
+    refreshed_list()
+}
+
+/// POST /api/profiles — Create an empty, editable profile.
+pub async fn profiles_create_handler(Json(req): Json<ProfileCreateRequest>) -> Response {
+    match ProviderProfileStore::global().create(&req.name, ProviderProfileSettings::default()) {
+        Ok(()) => refreshed_list(),
+        Err(error) => error_response(error),
+    }
+}
+
+/// GET /api/profiles/{id} — Return a redacted, lossless profile document.
+pub async fn profiles_detail_handler(AxumPath(id): AxumPath<String>) -> Response {
+    match ProviderProfileStore::global().get(&id) {
+        Ok(profile) => Json(profile).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+/// PATCH /api/profiles/{id} — Rename a profile without rebuilding its contents.
+pub async fn profiles_update_handler(
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<ProfileUpdateRequest>,
+) -> Response {
+    let Some(name) = req.name else {
+        return refreshed_list();
+    };
+    match ProviderProfileStore::global().rename(&id, &name) {
+        Ok(()) => refreshed_list(),
+        Err(error) => error_response(error),
+    }
+}
+
+/// DELETE /api/profiles/{id} — Delete a non-active profile.
+pub async fn profiles_delete_handler(AxumPath(id): AxumPath<String>) -> Response {
+    match ProviderProfileStore::global().delete(&id) {
+        Ok(()) => refreshed_list(),
+        Err(error) => error_response(error),
+    }
+}
+
+/// POST /api/profiles/{id}/switch — Activate a supported LLM profile.
+pub async fn profiles_switch_handler(AxumPath(id): AxumPath<String>) -> Response {
+    match ProviderProfileStore::global().activate(&id) {
+        Ok(()) => refreshed_list(),
+        Err(error) => error_response(error),
+    }
+}
+
+/// POST /api/profiles/import — Import the actual profile payload without data loss.
+pub async fn profiles_import_handler(Json(req): Json<ProfileImportRequest>) -> Response {
+    let Some(mut payload) = req.payload else {
         return (
             StatusCode::BAD_REQUEST,
             Json(
                 ProtocolApiError::BadRequest {
                     code: "validation_error",
-                    message: "Profile name cannot be empty".into(),
+                    message: "Missing 'payload' field".to_string(),
                 }
                 .into_body(),
             ),
         )
             .into_response();
-    }
-
-    let (active_id, mut profiles) = load_profile_list();
-
-    // Check for duplicate
-    if profiles.iter().any(|p| p.id == req.name.trim()) {
-        return (
-            StatusCode::CONFLICT,
-            Json(
-                ProtocolApiError::Conflict {
-                    reason: format!("Profile '{}' already exists", req.name),
-                }
-                .into_body(),
-            ),
-        )
-            .into_response();
-    }
-
-    let now = Utc::now().timestamp();
-    profiles.push(ProfileSummary {
-        id: req.name.trim().to_string(),
-        name: req.name.trim().to_string(),
-        active: false,
-        created_at: Some(now),
-        updated_at: Some(now),
-    });
-
-    match save_profile_list(&active_id, &profiles) {
-        Ok(()) => Json(ProfileListResponse {
-            active_profile_id: active_id,
-            profiles,
-        })
-        .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ProtocolApiError::Internal { message: e }.into_body()),
-        )
-            .into_response(),
-    }
-}
-
-/// GET /api/profiles/{id} — Get a single profile detail.
-pub async fn profiles_detail_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
-    let (_, profiles) = load_profile_list();
-    if let Some(profile) = profiles.into_iter().find(|p| p.id == id) {
-        Json(profile).into_response()
-    } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(
-                ProtocolApiError::NotFound {
-                    entity: "profile",
-                    id: format!("Profile '{}' not found", id),
-                }
-                .into_body(),
-            ),
-        )
-            .into_response()
-    }
-}
-
-/// PATCH /api/profiles/{id} — Update a profile.
-pub async fn profiles_update_handler(
-    AxumPath(id): AxumPath<String>,
-    Json(req): Json<ProfileUpdateRequest>,
-) -> impl IntoResponse {
-    let (active_id, mut profiles) = load_profile_list();
-
-    let profile = match profiles.iter_mut().find(|p| p.id == id) {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(
-                    ProtocolApiError::NotFound {
-                        entity: "profile",
-                        id: format!("Profile '{}' not found", id),
-                    }
-                    .into_body(),
-                ),
-            )
-                .into_response();
-        }
     };
-
-    if let Some(new_name) = &req.name {
-        let trimmed = new_name.trim().to_string();
-        if trimmed.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(
-                    ProtocolApiError::BadRequest {
-                        code: "validation_error",
-                        message: "Profile name cannot be empty".into(),
-                    }
-                    .into_body(),
-                ),
-            )
-                .into_response();
-        }
-        profile.id = trimmed.clone();
-        profile.name = trimmed;
-        profile.updated_at = Some(Utc::now().timestamp());
-    }
-
-    match save_profile_list(&active_id, &profiles) {
-        Ok(()) => Json(ProfileListResponse {
-            active_profile_id: active_id,
-            profiles,
-        })
-        .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ProtocolApiError::Internal { message: e }.into_body()),
-        )
-            .into_response(),
-    }
-}
-
-/// DELETE /api/profiles/{id} — Delete a profile.
-pub async fn profiles_delete_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
-    let (active_id, mut profiles) = load_profile_list();
-
-    let pos = match profiles.iter().position(|p| p.id == id) {
-        Some(pos) => pos,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(
-                    ProtocolApiError::NotFound {
-                        entity: "profile",
-                        id: format!("Profile '{}' not found", id),
-                    }
-                    .into_body(),
-                ),
-            )
-                .into_response();
-        }
-    };
-
-    profiles.remove(pos);
-
-    let active_id = if active_id.as_deref() == Some(&id) {
-        None
-    } else {
-        active_id
-    };
-
-    match save_profile_list(&active_id, &profiles) {
-        Ok(()) => Json(ProfileListResponse {
-            active_profile_id: active_id,
-            profiles,
-        })
-        .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ProtocolApiError::Internal { message: e }.into_body()),
-        )
-            .into_response(),
-    }
-}
-
-/// POST /api/profiles/{id}/switch — Switch the active profile.
-pub async fn profiles_switch_handler(AxumPath(id): AxumPath<String>) -> impl IntoResponse {
-    let (_, mut profiles) = load_profile_list();
-
-    if !profiles.iter().any(|p| p.id == id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(
-                ProtocolApiError::NotFound {
-                    entity: "profile",
-                    id: format!("Profile '{}' not found", id),
-                }
-                .into_body(),
-            ),
-        )
-            .into_response();
-    }
-
-    // Update active flags
-    for p in &mut profiles {
-        p.active = p.id == id;
-    }
-
-    let new_active_id = Some(id.clone());
-    match save_profile_list(&new_active_id, &profiles) {
-        Ok(()) => Json(ProfileListResponse {
-            active_profile_id: new_active_id,
-            profiles,
-        })
-        .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ProtocolApiError::Internal { message: e }.into_body()),
-        )
-            .into_response(),
-    }
-}
-
-/// POST /api/profiles/import — Import a profile from a JSON payload.
-pub async fn profiles_import_handler(Json(req): Json<ProfileImportRequest>) -> impl IntoResponse {
-    let payload = match req.payload {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(
-                    ProtocolApiError::BadRequest {
-                        code: "validation_error",
-                        message: "Missing 'payload' field".into(),
-                    }
-                    .into_body(),
-                ),
-            )
-                .into_response();
-        }
-    };
-
-    // Extract profile name from payload
     let name = payload
         .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("imported");
-    let (active_id, mut profiles) = load_profile_list();
-
-    let now = Utc::now().timestamp();
-    profiles.push(ProfileSummary {
-        id: name.to_string(),
-        name: name.to_string(),
-        active: false,
-        created_at: Some(now),
-        updated_at: Some(now),
-    });
-
-    match save_profile_list(&active_id, &profiles) {
-        Ok(()) => Json(ProfileListResponse {
-            active_profile_id: active_id,
-            profiles,
-        })
-        .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ProtocolApiError::Internal { message: e }.into_body()),
-        )
-            .into_response(),
-    }
-}
-
-/// GET /api/profiles/{id}/export — Export a profile as JSON.
-pub async fn profiles_export_handler(AxumPath(id): AxumPath<String>) -> Response {
-    let (_, profiles) = load_profile_list();
-    let profile = match profiles.into_iter().find(|p| p.id == id) {
-        Some(p) => p,
-        None => {
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("imported")
+        .to_string();
+    let profile_value = payload
+        .get_mut("profile")
+        .map(std::mem::take)
+        .unwrap_or_else(|| {
+            if let Some(object) = payload.as_object_mut() {
+                object.remove("name");
+            }
+            payload
+        });
+    let profile = match serde_json::from_value::<ProviderProfileSettings>(profile_value) {
+        Ok(profile) => profile,
+        Err(error) => {
             return (
-                StatusCode::NOT_FOUND,
+                StatusCode::BAD_REQUEST,
                 Json(
-                    ProtocolApiError::NotFound {
-                        entity: "profile",
-                        id: format!("Profile '{}' not found", id),
+                    ProtocolApiError::BadRequest {
+                        code: "validation_error",
+                        message: format!("Invalid profile payload: {error}"),
                     }
                     .into_body(),
                 ),
@@ -396,6 +206,16 @@ pub async fn profiles_export_handler(AxumPath(id): AxumPath<String>) -> Response
                 .into_response();
         }
     };
+    match ProviderProfileStore::global().create(&name, profile) {
+        Ok(()) => refreshed_list(),
+        Err(error) => error_response(error),
+    }
+}
 
-    Json(profile).into_response()
+/// GET /api/profiles/{id}/export — Export only the redacted profile document.
+pub async fn profiles_export_handler(AxumPath(id): AxumPath<String>) -> Response {
+    match ProviderProfileStore::global().get(&id) {
+        Ok(profile) => Json(profile).into_response(),
+        Err(error) => error_response(error),
+    }
 }

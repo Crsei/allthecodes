@@ -24,6 +24,7 @@ pub use surfaces::memory::MemorySurface;
 pub use surfaces::model::ModelSurface;
 pub use surfaces::permissions::PermissionsSurface;
 pub use surfaces::plugin::PluginSurface;
+pub use surfaces::providers::ProvidersSurface;
 pub use surfaces::remote::RemoteSurface;
 pub use surfaces::resume::ResumeSurface;
 pub use surfaces::sandbox::SandboxSurface;
@@ -71,6 +72,7 @@ pub enum CommandSurface {
     Model(ModelSurface),
     Permissions(PermissionsSurface),
     Plugin(PluginSurface),
+    Providers(ProvidersSurface),
     Remote(RemoteSurface),
     Resume(ResumeSurface),
     Sandbox(SandboxSurface),
@@ -110,6 +112,7 @@ impl CommandSurface {
             "model" => Some(Self::Model(ModelSurface::new(state))),
             "permissions" | "perms" => Some(Self::Permissions(PermissionsSurface::new(state))),
             "plugin" | "plugins" => Some(Self::Plugin(PluginSurface::new())),
+            "providers" => Some(Self::Providers(ProvidersSurface::new())),
             "remote" => Some(Self::Remote(RemoteSurface::new())),
             "resume" => Some(Self::Resume(ResumeSurface::new(cwd))),
             "sandbox" => Some(Self::Sandbox(SandboxSurface::new(state))),
@@ -140,6 +143,7 @@ impl CommandSurface {
             Self::Model(_) => "Model",
             Self::Permissions(_) => "Permissions",
             Self::Plugin(_) => "Plugins",
+            Self::Providers(_) => "Providers",
             Self::Remote(_) => "Remote",
             Self::Resume(_) => "Resume",
             Self::Sandbox(_) => "Sandbox",
@@ -164,6 +168,7 @@ impl CommandSurface {
             Self::Model(surface) => surface.render(),
             Self::Permissions(surface) => surface.render(),
             Self::Plugin(surface) => surface.render(),
+            Self::Providers(surface) => surface.render(),
             Self::Remote(surface) => surface.render(),
             Self::Resume(surface) => surface.render(),
             Self::Sandbox(surface) => surface.render(),
@@ -201,6 +206,7 @@ impl CommandSurface {
             Self::Model(surface) => surface.handle_key(key),
             Self::Permissions(surface) => surface.handle_key(key),
             Self::Plugin(surface) => surface.handle_key(key),
+            Self::Providers(surface) => surface.handle_key(key),
             Self::Remote(surface) => surface.handle_key(key),
             Self::Resume(surface) => surface.handle_key(key),
             Self::Sandbox(surface) => surface.handle_key(key),

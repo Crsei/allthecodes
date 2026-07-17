@@ -8,11 +8,10 @@ use serde_json::Value;
 
 use crate::permission_validation::{self, PermissionValidationWarning};
 use crate::runtime_settings::SettingsJson;
-use crate::settings::LoadedSettings;
+use crate::settings::{LoadedSettings, VALID_API_PROVIDERS};
 use crate::validation_tips::{self, ValidationTip};
 
 const VALID_BACKENDS: &[&str] = &["native", "codex"];
-const VALID_API_PROVIDERS: &[&str] = &["anthropic", "openai-codex", "openai"];
 
 // ---------------------------------------------------------------------------
 // Engine-layer constants duplicated here

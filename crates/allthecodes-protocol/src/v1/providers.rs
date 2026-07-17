@@ -142,6 +142,60 @@ pub struct ProviderUpdateRequest {
     pub provider_options: Option<Value>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(tag = "action", content = "value", rename_all = "snake_case")]
+pub enum ProviderSecretUpdate<T> {
+    #[default]
+    Keep,
+    Set(T),
+    Clear,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProviderSecretUpdates {
+    pub api_key: ProviderSecretUpdate<String>,
+    pub env: ProviderSecretUpdate<HashMap<String, String>>,
+    pub auth_source: ProviderSecretUpdate<Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProviderReplaceRequest {
+    pub backend: Option<String>,
+    pub api_provider: Option<String>,
+    pub model: Option<String>,
+    pub available_models: Option<Vec<String>>,
+    pub model_capabilities: Option<HashMap<String, Value>>,
+    pub model_reasoning_effort: Option<String>,
+    pub base_url: Option<String>,
+    pub extra: HashMap<String, Value>,
+    pub secret_updates: ProviderSecretUpdates,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDetailResponse {
+    pub id: String,
+    pub active: bool,
+    pub runtime_support: String,
+    pub backend: Option<String>,
+    pub api_provider: Option<String>,
+    pub model: Option<String>,
+    pub available_models: Option<Vec<String>>,
+    pub model_capabilities: Option<HashMap<String, Value>>,
+    pub model_reasoning_effort: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key_configured: bool,
+    pub env_keys: Vec<String>,
+    pub auth_source_configured: bool,
+    pub extra: HashMap<String, Value>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]

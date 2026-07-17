@@ -10,6 +10,7 @@ pub(super) mod memory;
 pub(super) mod model;
 pub(super) mod permissions;
 pub(super) mod plugin;
+pub(super) mod providers;
 pub(super) mod remote;
 pub(super) mod resume;
 pub(super) mod sandbox;

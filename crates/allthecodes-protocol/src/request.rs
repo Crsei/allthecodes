@@ -680,6 +680,13 @@ crate::api_definitions! {
         params: v1::providers::ProviderCreateRequest,
         response: Value,
     },
+    ProvidersDetail => "GET /api/providers/{id}" {
+        response: v1::providers::ProviderDetailResponse,
+    },
+    ProvidersReplace => "PUT /api/providers/{id}" {
+        params: v1::providers::ProviderReplaceRequest,
+        response: v1::providers::ProviderDetailResponse,
+    },
     ProvidersOpenaiCodexLocalStatus => "GET /api/providers/openai-codex/local-status" {
         response: v1::providers::CodexLocalStatusResponse,
     },

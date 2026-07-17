@@ -630,6 +630,14 @@ pub fn provider_handlers() -> HandlerRegistry {
             post(handlers::providers_create_handler),
         )
         .handle(
+            ApiMethod::ProvidersDetail,
+            get(handlers::providers_detail_handler),
+        )
+        .handle(
+            ApiMethod::ProvidersReplace,
+            put(handlers::providers_replace_handler),
+        )
+        .handle(
             ApiMethod::ProvidersOpenaiCodexLocalStatus,
             get(handlers::codex_local_status_handler),
         )

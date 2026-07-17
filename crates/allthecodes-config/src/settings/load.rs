@@ -13,7 +13,7 @@ use super::layers::{
 use super::paths::{
     find_local_config, find_project_config, managed_settings_path, user_settings_path,
 };
-use super::providers::{normalize_api_provider, API_PROVIDER_OPENAI_CODEX};
+use super::providers::{normalize_api_provider, provider_env_key, API_PROVIDER_OPENAI_CODEX};
 use super::raw::{GlobalConfig, MergedConfig, ProjectConfig, RawSettings};
 use super::requirements::{evaluate_requirements, load_requirements};
 use super::source::{SettingsSource, SourceMap};
@@ -119,6 +119,10 @@ pub(crate) fn apply_active_auth_profile(merged: &mut EffectiveSettings, sources:
         .get("authProfiles")
         .copied()
         .unwrap_or(SettingsSource::User);
+    let normalized_profile_provider = profile
+        .api_provider
+        .as_deref()
+        .and_then(normalize_api_provider);
     let is_codex = profile
         .backend
         .as_deref()
@@ -172,12 +176,9 @@ pub(crate) fn apply_active_auth_profile(merged: &mut EffectiveSettings, sources:
         .filter(|_| should_profile_override(sources, "apiKey", source))
     {
         merged.api_key = Some(api_key.clone());
-        let env_key = if is_codex {
-            "OPENAI_CODEX_AUTH_TOKEN"
-        } else {
-            "ANTHROPIC_API_KEY"
-        };
-        merged.env.insert(env_key.to_string(), api_key);
+        if let Some(env_key) = normalized_profile_provider.and_then(provider_env_key) {
+            merged.env.insert(env_key.to_string(), api_key);
+        }
         sources.insert("apiKey".to_string(), source);
         sources.insert(profile_key("apiKey"), source);
         sources.insert("env".to_string(), source);
@@ -187,12 +188,15 @@ pub(crate) fn apply_active_auth_profile(merged: &mut EffectiveSettings, sources:
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
     {
-        let env_key = if is_codex {
-            "OPENAI_CODEX_BASE_URL"
-        } else {
-            "ANTHROPIC_BASE_URL"
+        let env_key = match normalized_profile_provider {
+            Some(API_PROVIDER_OPENAI_CODEX) => Some("OPENAI_CODEX_BASE_URL"),
+            Some("anthropic") => Some("ANTHROPIC_BASE_URL"),
+            Some("azure") => Some("AZURE_BASE_URL"),
+            _ => None,
         };
-        merged.env.insert(env_key.to_string(), base_url);
+        if let Some(env_key) = env_key {
+            merged.env.insert(env_key.to_string(), base_url);
+        }
         sources.insert("env".to_string(), source);
         sources.insert(profile_key("baseUrl"), source);
     }
@@ -208,16 +212,18 @@ pub(crate) fn apply_active_auth_profile(merged: &mut EffectiveSettings, sources:
                 .insert("OPENAI_CODEX_MODEL".to_string(), model.to_string());
             sources.insert("env".to_string(), source);
         }
-    } else if let Some(model) = merged
-        .model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        merged
-            .env
-            .insert("ANTHROPIC_MODEL".to_string(), model.to_string());
-        sources.insert("env".to_string(), source);
+    } else if normalized_profile_provider == Some("anthropic") {
+        if let Some(model) = merged
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            merged
+                .env
+                .insert("ANTHROPIC_MODEL".to_string(), model.to_string());
+            sources.insert("env".to_string(), source);
+        }
     }
     if let Some(env) = profile.env {
         for (key, value) in env {

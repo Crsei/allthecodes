@@ -283,6 +283,21 @@ fn surface_plugin_open_content() {
 }
 
 #[test]
+fn surface_providers_open_content() {
+    assert_surface_open(
+        "surface_providers",
+        "providers",
+        "┌ Providers / Configured ",
+        &[
+            "No configured provider profiles",
+            "Presets (read-only)",
+            "n create",
+            "d delete",
+        ],
+    );
+}
+
+#[test]
 fn surface_remote_open_content() {
     assert_surface_open(
         "surface_remote",
@@ -378,6 +393,7 @@ fn commands_with_args_do_not_open_surfaces() {
         ("memory list", "┌ Memory "),
         ("hooks list", "┌ Hooks "),
         ("sandbox status", "┌ Sandbox "),
+        ("providers list", "┌ Providers / Configured "),
     ] {
         assert_command_with_args_does_not_open_surface(input, forbidden_title);
     }

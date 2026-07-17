@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::handlers::models::ModelSummary;
+
+pub use allthecodes_protocol::v1::providers::{
+    ProviderDetailResponse, ProviderReplaceRequest, ProviderSecretUpdate,
+};
 
 #[derive(Serialize)]
 pub struct ProviderSummary {
@@ -120,19 +124,61 @@ pub struct ProviderUpdateRequest {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
-    pub base_url: Option<String>,
+    pub base_url: PatchField<String>,
     #[serde(default)]
-    pub api_key: Option<String>,
+    pub api_key: PatchField<String>,
     #[serde(default)]
-    pub command: Option<String>,
+    pub command: PatchField<String>,
     #[serde(default)]
-    pub arguments: Option<Vec<String>>,
+    pub arguments: PatchField<Vec<String>>,
     #[serde(default)]
-    pub env: Option<HashMap<String, String>>,
+    pub env: PatchField<HashMap<String, String>>,
     #[serde(default)]
-    pub models: Option<Vec<String>>,
+    pub models: PatchField<Vec<String>>,
     #[serde(default)]
-    pub provider_options: Option<Value>,
+    pub provider_options: PatchField<Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum PatchField<T> {
+    #[default]
+    Missing,
+    Null,
+    Value(T),
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    #[test]
+    fn patch_distinguishes_missing_null_and_value() {
+        let missing: ProviderUpdateRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.base_url, PatchField::Missing);
+        let null: ProviderUpdateRequest = serde_json::from_str(r#"{"base_url":null}"#).unwrap();
+        assert_eq!(null.base_url, PatchField::Null);
+        let value: ProviderUpdateRequest =
+            serde_json::from_str(r#"{"base_url":"https://example.test"}"#).unwrap();
+        assert_eq!(
+            value.base_url,
+            PatchField::Value("https://example.test".to_string())
+        );
+    }
+}
+
+impl<'de, T> Deserialize<'de> for PatchField<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => Self::Value(value),
+            None => Self::Null,
+        })
+    }
 }
 
 #[derive(Serialize)]

@@ -61,6 +61,7 @@ pub mod plan_workflow;
 pub mod plugin_cmd;
 pub mod plugin_commands;
 pub mod proactive_cmd;
+pub mod providers_cmd;
 pub mod rate_limit;
 pub mod recap;
 pub mod reload_plugins_cmd;
@@ -887,6 +888,12 @@ pub fn get_all_commands() -> Vec<Command> {
             &[],
             "Authenticate (Claude Code / Anthropic-compatible, OpenAI Codex, OpenAI API, Bedrock, Vertex)",
             login::LoginHandler,
+        ),
+        command(
+            "providers",
+            &[],
+            "List, inspect, create, replace, activate, or delete provider profiles",
+            providers_cmd::ProvidersHandler,
         ),
         command(
             "login-code",

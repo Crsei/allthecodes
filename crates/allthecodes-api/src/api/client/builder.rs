@@ -596,6 +596,38 @@ impl ApiClient {
     }
 
     fn from_selected_provider_result(provider: &str) -> Result<Option<Self>> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let loaded = allthecodes_config::settings::load_effective(&cwd)?;
+        let profile = loaded
+            .effective
+            .active_auth_profile
+            .as_ref()
+            .and_then(|id| loaded.effective.auth_profiles.get(id));
+
+        if provider == allthecodes_config::settings::API_PROVIDER_BEDROCK {
+            return Self::from_bedrock_profile_result(profile).map(Some);
+        }
+        if provider == allthecodes_config::settings::API_PROVIDER_VERTEX {
+            return Self::from_vertex_profile_result(profile).map(Some);
+        }
+        if provider == allthecodes_config::settings::API_PROVIDER_FOUNDRY {
+            bail!("{}", crate::api::providers::FOUNDRY_UNSUPPORTED_REASON);
+        }
+
+        if let Some(info) = crate::api::providers::get_provider(provider) {
+            let profile_key = profile
+                .and_then(|profile| profile.api_key.clone())
+                .or_else(|| {
+                    profile
+                        .and_then(|profile| profile.env.as_ref())
+                        .and_then(|env| env.get(info.env_key).cloned())
+                })
+                .filter(|value| !value.trim().is_empty());
+            if let Some(api_key) = profile_key {
+                return Self::from_provider_profile(info, &api_key, profile).map(Some);
+            }
+        }
+
         match provider {
             allthecodes_config::settings::API_PROVIDER_OPENAI => {
                 if let Some(info) = crate::api::providers::get_provider(OPENAI_PROVIDER_NAME) {
@@ -615,6 +647,145 @@ impl ApiClient {
             }
             provider => bail!("unsupported apiProvider `{provider}`"),
         }
+    }
+
+    fn from_provider_profile(
+        info: &ProviderInfo,
+        api_key: &str,
+        profile: Option<&allthecodes_config::settings::ProviderProfileSettings>,
+    ) -> Result<Self> {
+        let base_url = profile
+            .and_then(|profile| profile.base_url.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| info.base_url.to_string())
+            .trim_end_matches('/')
+            .to_string();
+        let default_model = profile
+            .and_then(|profile| profile.model.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| info.default_model.to_string());
+        let provider = match info.protocol {
+            ProviderProtocol::Anthropic => ApiProvider::Anthropic {
+                auth: AnthropicAuth::ApiKey(api_key.to_string()),
+                endpoint_kind: crate::api::providers::anthropic_endpoint_kind_for_base_url(Some(
+                    &base_url,
+                )),
+                base_url: Some(base_url),
+            },
+            ProviderProtocol::OpenAiCompat => ApiProvider::OpenAiCompat {
+                name: info.name.to_string(),
+                api_key: api_key.to_string(),
+                base_url,
+                default_model: default_model.clone(),
+            },
+            ProviderProtocol::Google => ApiProvider::Google {
+                api_key: api_key.to_string(),
+                base_url,
+            },
+        };
+        Self::try_new(ApiClientConfig {
+            provider,
+            default_model,
+            max_retries: 3,
+            timeout_secs: 120,
+        })
+    }
+
+    fn from_bedrock_profile_result(
+        profile: Option<&allthecodes_config::settings::ProviderProfileSettings>,
+    ) -> Result<Self> {
+        let env = profile.and_then(|profile| profile.env.as_ref());
+        let bearer = profile
+            .and_then(|profile| profile.api_key.clone())
+            .or_else(|| env.and_then(|env| env.get("AWS_BEARER_TOKEN_BEDROCK").cloned()))
+            .filter(|value| !value.trim().is_empty());
+        let auth = if let Some(token) = bearer {
+            crate::api::bedrock::BedrockAuth::BearerToken(token)
+        } else if let (Some(access_key_id), Some(secret_access_key)) = (
+            env.and_then(|env| env.get("AWS_ACCESS_KEY_ID").cloned()),
+            env.and_then(|env| env.get("AWS_SECRET_ACCESS_KEY").cloned()),
+        ) {
+            crate::api::bedrock::BedrockAuth::AwsCredentials(crate::api::sigv4::AwsCredentials {
+                access_key_id,
+                secret_access_key,
+                session_token: env.and_then(|env| env.get("AWS_SESSION_TOKEN").cloned()),
+            })
+        } else {
+            crate::api::bedrock::BedrockAuth::from_env().ok_or_else(|| {
+                anyhow::anyhow!("active Bedrock profile has no usable credentials")
+            })?
+        };
+        let region = env
+            .and_then(|env| {
+                env.get("AWS_REGION")
+                    .or_else(|| env.get("AWS_DEFAULT_REGION"))
+            })
+            .cloned()
+            .unwrap_or_else(crate::api::bedrock::resolve_region);
+        let base_url_override = profile
+            .and_then(|profile| profile.base_url.clone())
+            .or_else(|| env.and_then(|env| env.get("ANTHROPIC_BEDROCK_BASE_URL").cloned()));
+        let default_model = profile
+            .and_then(|profile| profile.model.clone())
+            .unwrap_or_else(|| ANTHROPIC_DEFAULT_MODEL_ALIAS.to_string());
+        let default_model =
+            resolve_anthropic_model_alias(&default_model, AnthropicEndpointKind::DirectAnthropic)?;
+        Self::try_new(ApiClientConfig {
+            provider: ApiProvider::Bedrock {
+                region,
+                auth,
+                base_url_override,
+            },
+            default_model,
+            max_retries: 3,
+            timeout_secs: 120,
+        })
+    }
+
+    fn from_vertex_profile_result(
+        profile: Option<&allthecodes_config::settings::ProviderProfileSettings>,
+    ) -> Result<Self> {
+        let env = profile.and_then(|profile| profile.env.as_ref());
+        let project_id = env
+            .and_then(|env| {
+                env.get("ANTHROPIC_VERTEX_PROJECT_ID")
+                    .or_else(|| env.get("GOOGLE_CLOUD_PROJECT"))
+                    .or_else(|| env.get("GCLOUD_PROJECT"))
+            })
+            .cloned()
+            .or_else(crate::api::vertex::resolve_project_id)
+            .ok_or_else(|| anyhow::anyhow!("active Vertex profile has no project id"))?;
+        let access_token = profile
+            .and_then(|profile| profile.api_key.clone())
+            .or_else(|| {
+                env.and_then(|env| {
+                    env.get("ALLTHECODES_VERTEX_ACCESS_TOKEN")
+                        .or_else(|| env.get("GOOGLE_OAUTH_ACCESS_TOKEN"))
+                        .cloned()
+                })
+            })
+            .filter(|value| !value.trim().is_empty())
+            .map(crate::api::vertex::VertexAccessToken)
+            .or_else(crate::api::vertex::VertexAccessToken::from_env_or_gcloud)
+            .ok_or_else(|| anyhow::anyhow!("active Vertex profile has no OAuth access token"))?;
+        let region = env
+            .and_then(|env| env.get("CLOUD_ML_REGION").cloned())
+            .unwrap_or_else(crate::api::vertex::resolve_region);
+        let default_model = profile
+            .and_then(|profile| profile.model.clone())
+            .unwrap_or_else(|| ANTHROPIC_DEFAULT_MODEL_ALIAS.to_string());
+        let default_model =
+            resolve_anthropic_model_alias(&default_model, AnthropicEndpointKind::DirectAnthropic)?;
+        Self::try_new(ApiClientConfig {
+            provider: ApiProvider::Vertex {
+                project_id,
+                region,
+                access_token,
+            },
+            default_model,
+            max_retries: 3,
+            timeout_secs: 120,
+        })
     }
 
     fn from_anthropic_auth_result() -> Result<Option<Self>> {
@@ -653,5 +824,65 @@ impl ApiClient {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_profile_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn every_static_provider_builds_from_profile_credentials() {
+        for info in crate::api::providers::PROVIDERS {
+            let profile = allthecodes_config::settings::ProviderProfileSettings {
+                api_provider: Some(info.name.to_string()),
+                model: Some(format!("{}-profile-model", info.name)),
+                base_url: Some(info.base_url.to_string()),
+                api_key: Some("profile-secret".to_string()),
+                ..Default::default()
+            };
+            let client = ApiClient::from_provider_profile(info, "profile-secret", Some(&profile))
+                .unwrap_or_else(|error| panic!("{} profile failed: {error}", info.name));
+            assert_eq!(
+                client.config.default_model,
+                format!("{}-profile-model", info.name)
+            );
+        }
+    }
+
+    #[test]
+    fn bedrock_and_vertex_build_from_profile_env_without_process_mutation() {
+        let bedrock = allthecodes_config::settings::ProviderProfileSettings {
+            api_provider: Some("bedrock".to_string()),
+            model: Some("claude-sonnet-4-20250514".to_string()),
+            env: Some(HashMap::from([
+                (
+                    "AWS_BEARER_TOKEN_BEDROCK".to_string(),
+                    "bedrock-secret".to_string(),
+                ),
+                ("AWS_REGION".to_string(), "us-west-2".to_string()),
+            ])),
+            ..Default::default()
+        };
+        assert!(ApiClient::from_bedrock_profile_result(Some(&bedrock)).is_ok());
+
+        let vertex = allthecodes_config::settings::ProviderProfileSettings {
+            api_provider: Some("vertex".to_string()),
+            model: Some("claude-sonnet-4-20250514".to_string()),
+            env: Some(HashMap::from([
+                (
+                    "ANTHROPIC_VERTEX_PROJECT_ID".to_string(),
+                    "project".to_string(),
+                ),
+                (
+                    "ALLTHECODES_VERTEX_ACCESS_TOKEN".to_string(),
+                    "vertex-secret".to_string(),
+                ),
+                ("CLOUD_ML_REGION".to_string(), "us-east5".to_string()),
+            ])),
+            ..Default::default()
+        };
+        assert!(ApiClient::from_vertex_profile_result(Some(&vertex)).is_ok());
     }
 }

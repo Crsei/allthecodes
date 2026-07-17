@@ -8,16 +8,51 @@ use super::raw::RawSettings;
 pub const API_PROVIDER_ANTHROPIC: &str = "anthropic";
 pub const API_PROVIDER_OPENAI_CODEX: &str = "openai-codex";
 pub const API_PROVIDER_OPENAI: &str = "openai";
+pub const API_PROVIDER_BEDROCK: &str = "bedrock";
+pub const API_PROVIDER_VERTEX: &str = "vertex";
+pub const API_PROVIDER_FOUNDRY: &str = "azure-foundry";
 pub const AUTH_PROFILE_CLAUDE_CODE: &str = "claude_code";
 pub const AUTH_PROFILE_ANTHROPIC_LEGACY: &str = "anthropic";
 pub const AUTH_PROFILE_CODEX: &str = "codex";
 pub const AUTH_PROFILE_OPENAI: &str = "openai";
 pub const AUTH_PROFILE_CUSTOM: &str = "custom";
 pub const VALID_API_PROVIDERS: &[&str] = &[
-    API_PROVIDER_ANTHROPIC,
-    API_PROVIDER_OPENAI_CODEX,
-    API_PROVIDER_OPENAI,
+    "anthropic",
+    "azure",
+    "openai",
+    "openai-codex",
+    "google",
+    "groq",
+    "openrouter",
+    "deepseek",
+    "zhipu",
+    "qwen",
+    "moonshot",
+    "baichuan",
+    "minimax",
+    "yi",
+    "siliconflow",
+    "stepfun",
+    "spark",
+    "bedrock",
+    "vertex",
+    "azure-foundry",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderRuntimeSupport {
+    Supported,
+    Unsupported,
+    Unknown,
+}
+
+pub fn provider_runtime_support(value: &str) -> ProviderRuntimeSupport {
+    match normalize_api_provider(value) {
+        Some(API_PROVIDER_FOUNDRY) => ProviderRuntimeSupport::Unsupported,
+        Some(_) => ProviderRuntimeSupport::Supported,
+        None => ProviderRuntimeSupport::Unknown,
+    }
+}
 
 pub fn normalize_api_provider(value: &str) -> Option<&'static str> {
     let normalized = value.trim().to_ascii_lowercase().replace('_', "-");
@@ -25,6 +60,34 @@ pub fn normalize_api_provider(value: &str) -> Option<&'static str> {
         "anthropic" | "anthropic-method" | "anthropic_method" => Some(API_PROVIDER_ANTHROPIC),
         "openai-codex" | "openai_codex" | "codex" => Some(API_PROVIDER_OPENAI_CODEX),
         "openai" | "openai-api" | "openai_api" => Some(API_PROVIDER_OPENAI),
+        "azure-openai" => Some("azure"),
+        "foundry" | "microsoft-foundry" => Some(API_PROVIDER_FOUNDRY),
+        other => VALID_API_PROVIDERS
+            .iter()
+            .copied()
+            .find(|known| *known == other),
+    }
+}
+
+pub fn provider_env_key(value: &str) -> Option<&'static str> {
+    match normalize_api_provider(value)? {
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "azure" => Some("AZURE_API_KEY"),
+        "openai" => Some("OPENAI_API_KEY"),
+        "openai-codex" => Some("OPENAI_CODEX_AUTH_TOKEN"),
+        "google" => Some("GOOGLE_API_KEY"),
+        "groq" => Some("GROQ_API_KEY"),
+        "openrouter" => Some("OPENROUTER_API_KEY"),
+        "deepseek" => Some("DEEPSEEK_API_KEY"),
+        "zhipu" => Some("ZHIPU_API_KEY"),
+        "qwen" => Some("DASHSCOPE_API_KEY"),
+        "moonshot" => Some("MOONSHOT_API_KEY"),
+        "baichuan" => Some("BAICHUAN_API_KEY"),
+        "minimax" => Some("MINIMAX_API_KEY"),
+        "yi" => Some("YI_API_KEY"),
+        "siliconflow" => Some("SILICONFLOW_API_KEY"),
+        "stepfun" => Some("STEPFUN_API_KEY"),
+        "spark" => Some("SPARK_API_KEY"),
         _ => None,
     }
 }
