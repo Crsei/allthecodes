@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Model-Effort Provider Semantics Fix &mdash; Worktree Artifact (2026-07-18)</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #161821; --ink: #e8e8ea; --muted: #9aa0aa;
+    --accent: #6ac1ff; --ok: #62d585; --warn: #f0c674; --bad: #ff8a7a;
+    --rule: #2a2d36;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px 96px; }
+  header h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+  header .meta { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 24px; }
+  header .meta span {
+    background: var(--panel); border: 1px solid var(--rule);
+    padding: 4px 10px; border-radius: 999px; font-size: 12px; color: var(--muted);
+  }
+  h2 {
+    font-size: 20px; margin: 36px 0 12px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--rule); color: var(--accent);
+  }
+  h3 { font-size: 16px; margin: 22px 0 8px; color: var(--ink); }
+  p, li { margin: 6px 0; }
+  code, pre {
+    font-family: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
+    background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 4px; padding: 2px 5px;
+  }
+  pre { padding: 12px 14px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 22px; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; background: var(--panel); }
+  tr td:first-child code { color: var(--accent); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 11px; border: 1px solid var(--rule); color: var(--muted);
+  }
+  .pill.ok { color: var(--ok); border-color: var(--ok); background: rgba(98,213,133,0.08); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); background: rgba(240,198,116,0.08); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); background: rgba(255,138,122,0.08); }
+  ul.checklist { list-style: none; padding-left: 0; }
+  ul.checklist li { padding-left: 22px; position: relative; }
+  ul.checklist li::before {
+    content: "\2713"; position: absolute; left: 0; color: var(--ok); font-weight: 700;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 14px 16px; margin: 12px 0;
+  }
+  .callout {
+    border-left: 3px solid var(--accent); padding: 8px 14px;
+    background: rgba(106,193,255,0.05); margin: 14px 0; border-radius: 0 4px 4px 0;
+  }
+  footer { margin-top: 60px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--rule); padding-top: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Model-Effort Provider Semantics Fix</h1>
+  <div class="sub">让 effort / reasoning 配置在 Anthropic 与 Codex 两条 provider 路径上语义自洽</div>
+  <div class="meta">
+    <span>Worktree: <code>.worktrees/model-effort-provider-semantics</code></span>
+    <span>Branch: <code>worktree/model-effort-provider-semantics</code></span>
+    <span>Plan: 2026-07-18-model-effort-provider-semantics-fix-plan.md</span>
+    <span>Artifact date: 2026-07-18</span>
+  </div>
+</header>
+
+<section>
+  <h2>任务目标</h2>
+  <p>
+    把 <code>effort_value</code> / <code>model_reasoning_effort</code> /
+    <code>output_config.effort</code> / <code>effort_level</code> /
+    <code>effort_to_budget_tokens</code> 等多个 effort / reasoning 相关字段
+    在 Anthropic 与 Codex 两个 provider 路径上的混淆（"转移 / 跨污染 / 漂移 / 静默丢"）一次性对齐。
+    根因是历史代码把 Codex 的 <code>reasoning.effort</code> 与 Anthropic 的
+    <code>thinking.budget_tokens</code> 和 <code>output_config.effort</code> 塞进同一套字段与回退链，
+    导致 TUI 显示、wire 请求、settings 持久化三者语义不一致。
+  </p>
+  <div class="callout">
+    <strong>权威计划</strong>：
+    <code>development/tui/2026-07-18-model-effort-provider-semantics-fix-plan.md</code><br/>
+    对各个 identifier 的全量审计见
+    <code>development/archive/effort-family-audit-2026-07-18.md</code>（子代理产物，已合入参考材料）。
+  </div>
+</section>
+
+<section>
+  <h2>流程步骤（按 Phase 顺序）</h2>
+  <ul class="checklist">
+    <li><strong>Phase A</strong> &mdash; 优先级反转/静默丢之类的失败测试与 KNOWN_ISSUES 条目（EFFORT-001..006）。</li>
+    <li><strong>Phase B</strong> &mdash; 在 <code>allthecodes_engine::effort</code> 集中 effort 语义：单一 resolver
+        (<code>resolve_effort_for_state</code>)、<code>CapabilityProvenance</code> 与 <code>EffortTransport</code> 枚举、
+        统一 <code>effort_value → output_config → effort_level</code> 回退链。</li>
+    <li><strong>Phase C</strong> &mdash; provider-specific 命令与持久化：Codex <code>/effort</code> 路径只写
+        <code>authProfiles.<active>.modelReasoningEffort</code>，停止触碰 root
+        <code>output_config.effort</code>；<code>/effort auto</code> 不再持久化具体档。</li>
+    <li><strong>Phase D</strong> &mdash; TUI 显示：picker / statusline / status widget 改用 resolver；
+        "X tokens" 文案被 gating 到 Anthropic 固定 budget 传输通道；picker 标注 source provenance。</li>
+    <li><strong>Phase E</strong> &mdash; 内置 Codex catalog 添加 version/source/updated provenance 常量与访问器；
+        更新 <code>codex-backend.md</code>、settings JSON schema 的字段说明、KNOWN_ISSUES 条目与本 artifact。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>改动列表（关键文件）</h2>
+  <table>
+    <thead><tr><th>路径</th><th>改动摘要</th></tr></thead>
+    <tbody>
+      <tr><td><code>crates/allthecodes-engine/src/effort.rs</code></td>
+          <td>新增 <code>CapabilityProvenance</code>、<code>EffortTransport</code>、<code>EffortSource</code>、
+              <code>resolve_effort_for_state</code>；统一 normalize/budget 工具的本意注释。</td></tr>
+      <tr><td><code>crates/allthecodes-engine/src/lifecycle/helpers.rs</code></td>
+          <td>调整 <code>resolve_model_reasoning_effort</code> 优先级（per-turn override → session → profile baseline → bundled default → auto）；
+              <code>codex_effort_from_effort_level</code> 现也识 <code>xhigh</code>。</td></tr>
+      <tr><td><code>crates/allthecodes-engine/src/query/{deps.rs,turn_context.rs}</code></td>
+          <td><code>ModelCallParams</code> 增加 per-turn override 注入；snapshot 路径只读中央 resolver。</td></tr>
+      <tr><td><code>crates/allthecodes-commands/src/effort.rs</code></td>
+          <td>Codex <code>/effort</code> 路径不再写 <code>output_config.effort</code>；
+              <code>/effort auto</code> 删除显式覆盖；<code>budget_summary</code> 仅在 Anthropic 路径展示 tokens。</td></tr>
+      <tr><td><code>crates/allthecodes-config/src/settings/{providers.rs,schema.rs}</code></td>
+          <td>新增 <code>BUNDLED_CODEX_CATALOG_VERSION / UPDATED / SOURCE</code> 常量与访问器；
+              settings schema 三处 effort 字段补充 Provider boundary/deprecation 说明。</td></tr>
+      <tr><td><code>crates/allthecodes/src/startup_model.rs</code></td>
+          <td>新增 <code>resolve_display_effort</code>，picker / status 汇入此 resolver，删除 3 处 fallback 重复链。</td></tr>
+      <tr><td><code>crates/allthecodes/src/ui/command_surface/surfaces/config.rs</code></td>
+          <td>effort picker 改用 <code>resolve_display_effort</code>；token 文案经
+              <code>EffortTransport::Anthropic</code> gating；显示 source provenance。</td></tr>
+      <tr><td><code>crates/allthecodes/src/ui/app/status.rs</code></td>
+          <td><code>sync_status_context_from_state</code> 与 <code>output_config_effort</code> 改用中央 resolver。</td></tr>
+      <tr><td><code>crates/allthecodes-safety/src/classifier.rs</code></td>
+          <td>分类模型请求参数与 resolver 优先级对齐。</td></tr>
+      <tr><td><code>development/reference/codex-backend.md</code></td>
+          <td>新增 Catalog provenance 段；新增 Effort/Reasoning 语义段，记录跨 provider 边界与持久化行为。</td></tr>
+      <tr><td><code>development/archive/KNOWN_ISSUES.md</code></td>
+          <td>新增 §8 EFFORT-001..006 条目（全部 Fixed）。</td></tr>
+      <tr><td>PTY snapshots（<code>command_palette</code> / <code>command_surface</code>）</td>
+          <td>测试期望文案随 picker 改动同步更新；<code>INSTA_UPDATE=always</code> 一次性批处理。</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>计划文件路径</h2>
+  <ul>
+    <li><code>development/tui/2026-07-18-model-effort-provider-semantics-fix-plan.md</code>（主分支已先提交）</li>
+    <li>审计产物：<code>development/archive/effort-family-audit-2026-07-18.md</code>（子代理汇总，覆盖 §1–§15 全部 identifier）</li>
+  </ul>
+</section>
+
+<section>
+  <h2>提交切分（拟）</h2>
+  <table>
+    <thead><tr><th>顺序</th><th>范围</th><th>主旨</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>engine + helpers + query</td><td>集中 effort 语义与 resolver 优先级修正（Phase B + Phase A 失败测试）</td></tr>
+      <tr><td>2</td><td>commands/effort.rs + classifier.rs</td><td>provider-specific 持久化与 token gating（Phase C）</td></tr>
+      <tr><td>3</td><td>startup_model.rs + ui/command_surface + ui/app/status.rs + snapshots</td><td>TUI 显示、picker provenance、快照同步（Phase D）</td></tr>
+      <tr><td>4</td><td>config catalog provenance + schema + codex-backend.md + KNOWN_ISSUES.md + 本 artifact</td><td>catalog provenance 与文档（Phase E）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>验证依据</h2>
+  <h3>分层验证（按 SOP）</h3>
+  <ul>
+    <li><code>cargo fmt --all --check</code>（format gate）</li>
+    <li><code>cargo clippy --workspace --all-targets -- -D warnings</code></li>
+    <li>非-PTY crate 库测试：<code>cargo test --workspace --exclude allthecodes --lib</code></li>
+    <li>engine resolver 测试：<code>cargo test -p allthecodes-engine --lib effort</code></li>
+    <li>config providers 测试：<code>cargo test -p allthecodes-config --lib settings::providers</code></li>
+    <li>commands effort 测试：<code>cargo test -p allthecodes-commands --lib effort</code></li>
+    <li>picker 行为：command_surface / app status 测试与 PTY snapshot 一次 batch 更新</li>
+  </ul>
+  <h3>新增的有效测试</h3>
+  <ul class="checklist">
+    <li>Codex 路径下 per-turn override 在 wire 上不被 profile baseline 静默覆盖。</li>
+    <li>Codex <code>/effort <level></code> 不再写 <code>output_config.effort</code>。</li>
+    <li><code>/effort auto</code> 不持久化具体档，settings 中无残留 default。</li>
+    <li>picker 标签区分 <em>Bundled levels</em> / <em>Configured levels</em> / <em>Supported levels</em>。</li>
+    <li>"X tokens" 文案仅出现在 Anthropic 固定 budget 传输路径上的 picker 项。</li>
+    <li><code>codex_effort_from_effort_level</code> 现正确识别 <code>xhigh</code>。</li>
+    <li><code>BUNDLED_CODEX_CATALOG_SOURCE</code> / <code>VERSION</code> / <code>UPDATED</code> 稳定可被 display label 组合。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>KNOWN_ISSUES 对照</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>ID</th><th>严重度</th><th>摘要</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td><code>EFFORT-001</code></td><td>High</td><td>Codex picker/effort 文案不该声称 server-side token budget</td><td><span class="pill ok">Fixed</span></td></tr>
+        <tr><td><code>EFFORT-002</code></td><td>High</td><td>重启后 TUI 与 wire effort 状态漂移（三处重复 fallback 链）</td><td><span class="pill ok">Fixed</span></td></tr>
+        <tr><td><code>EFFORT-003</code></td><td>High</td><td>Codex path per-turn override 被 profile baseline 静默 down-rank</td><td><span class="pill ok">Fixed</span></td></tr>
+        <tr><td><code>EFFORT-004</code></td><td>Medium</td><td><code>/effort auto</code> 持久化具体档导致漂移</td><td><span class="pill ok">Fixed</span></td></tr>
+        <tr><td><code>EFFORT-005</code></td><td>Medium</td><td>Codex profiling cross-pollution: 向 <code>output_config.effort</code> 残写</td><td><span class="pill ok">Fixed</span></td></tr>
+        <tr><td><code>EFFORT-006</code></td><td>Low</td><td>内置 Codex catalog 来源标识缺失</td><td><span class="pill ok">Fixed</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>流程收尾动作</h2>
+  <ol>
+    <li>在 worktree 内逐组显式 <code>git add</code> + <code>git commit</code>（按上表 4 组提交）。</li>
+    <li>回到主分支 <code>git merge --ff-only worktree/model-effort-provider-semantics</code>。</li>
+    <li><code>git push origin allthecodes</code>。</li>
+    <li><code>git worktree remove .worktrees/model-effort-provider-semantics</code> + <code>git branch -d worktree/model-effort-provider-semantics</code>。</li>
+  </ol>
+  <div class="callout">
+    ff 要求强：worktree 提交结束前不要再在主分支推任何内容；如需 rebase，<code>git rebase allthecodes</code> 后再 ff。
+  </div>
+</section>
+
+<footer>
+  本 artifact 随 worktree 提交一起合并到主分支；可独立打开阅读。<br/>
+  生成环境：allthecodes 工作分支（worktree/model-effort-provider-semantics），2026-07-18。
+</footer>
+
+</div>
+</body>
+</html>
