@@ -386,3 +386,25 @@ fn pty_test_lock() -> MutexGuard<'static, ()> {
 - [x] Task 4/5/7 顶部状态、验收清单和执行顺序已同步到当前实现。
 - [x] `show-config` 的历史 219 条归组记录与当前实际 executed 220 passed 已明确区分。
 - [x] 新 artifact 记录计划路径、commit、精确命令、退出码、墙钟与残余边界，并通过 HTML 解析验证。
+
+## 11. 2026-07-18 提升 nextest 并发到 10
+
+> 本节是 `pty-timing-max-threads-10` 的主分支前置计划。配置、README 和 artifact 只在 `worktree/pty-timing-max-threads-10` 中修改；本文件待 worktree ff 合并后再在主分支单独同步最终状态。
+
+### Task 12：把 `tui_pty_e2e.max-threads` 从 4 提升到 10
+
+**Files:**
+- Modify: `.config/nextest.toml`
+- Modify: `crates/allthecodes/tests/pty_tui_e2e/README.md`
+- Modify: `development/test/README.md`
+- Create: `development/worktree-workflow-artifacts/2026-07-18-pty-timing-max-threads-10.html`
+- Modify（ff 合并后在主分支单独提交）: `development/test/pty-tui-e2e-timing-plan.md`
+
+**验收边界:** nextest 每个 test case 已按 runner PID 隔离默认 workspace，因此可以提高进程级并发；普通 libtest 仍共用 runner PID，继续要求 `--test-threads=1`。显式 `E2E_WORKSPACE` 覆盖不改变。
+
+- [ ] 把 `.config/nextest.toml` 的 `tui_pty_e2e.max-threads` 改为 10，并同步注释。
+- [ ] 用 `cargo nextest show-config test-groups` 确认 `pty_tui_e2e` binary 仍归入 10-thread group。
+- [ ] 先跑 previously-flaky 的 `commands_core_info` 模块，再跑完整 `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast`；只有 0 failed 才保留 10。
+- [ ] 记录完整 passed/skipped/failed、nextest summary、命令 real time，并与 4-thread 341.47s 基线比较。
+- [ ] 运行 `cargo fmt --all --check`、目标 clippy 和 `cargo build --workspace --release`，不得新增 warning。
+- [ ] 更新 README、测试索引和独立 HTML artifact；ff 合并、推送并清理本轮 worktree/分支。
