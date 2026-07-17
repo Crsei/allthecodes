@@ -11,9 +11,9 @@ inherits = "default"
 # Phase 3: the harness default workspace is scoped by runner PID, so concurrent
 # nextest test processes no longer race on settings.json / sessions.db. Keep
 # libtest serial (`--test-threads=1`), because its cases share one runner PID.
-# Four threads are covered by the PTY full-suite regression recorded in the
-# timing-plan artifact. Lower this value if a future shared-state regression appears.
-max-threads = 4
+# Ten threads are covered by the PTY full-suite regression recorded in the timing-plan
+# artifact. Lower this value if a future shared-state or host-capacity regression appears.
+max-threads = 10
 
 [test-groups.integration_process_heavy]
 max-threads = 2
