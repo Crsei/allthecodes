@@ -33,7 +33,8 @@
         <li>从主分支创建 <code>worktree/command-surface-scroll-occlusion</code> 独立 worktree。</li>
         <li>在 worktree 内完成输入隔离、绘制遮挡、回归测试和已知问题记录。</li>
         <li>按分层 SOP 完成格式、定向测试、PTY、clippy、非 PTY workspace 测试和 release build。</li>
-        <li>代码、已知问题和本 artifact 分开提交，随后 fast-forward 合并并清理 worktree。</li>
+        <li>代码、已知问题和本 artifact 分开提交；主分支并行推进后，将 worktree rebase 到 <code>d8439af1</code> 并重新验证。</li>
+        <li>rebase 带入的 API test 格式问题使用独立提交修正，随后 fast-forward 合并并清理 worktree。</li>
       </ol>
     </section>
 
@@ -55,7 +56,9 @@
           <tr><td><code>0c745675</code></td><td>Plan command surface scroll occlusion fix</td></tr>
           <tr><td><code>30e672c2</code></td><td>Fix TUI command panel scroll occlusion</td></tr>
           <tr><td><code>9c5aff03</code></td><td>Record TUI command panel scroll issue</td></tr>
-          <tr><td>本 artifact commit</td><td>Document command panel scroll fix evidence</td></tr>
+          <tr><td><code>2cd168a4</code></td><td>Document command panel scroll fix evidence</td></tr>
+          <tr><td><code>9c9d67ac</code></td><td>Format API proxy fallback test</td></tr>
+          <tr><td>最终 artifact refresh commit</td><td>Refresh command panel fix evidence after rebase</td></tr>
         </tbody>
       </table>
     </section>
@@ -72,7 +75,8 @@
           <tr><td><code>surface_model_open_content</code> PTY E2E（12 steps）</td><td class="pass">PASS</td></tr>
           <tr><td><code>cargo clippy --workspace --all-targets -- -D warnings</code></td><td class="pass">PASS</td></tr>
           <tr><td><code>cargo test --workspace --exclude allthecodes --lib</code></td><td class="pass">PASS</td></tr>
-          <tr><td><code>cargo build --workspace --release</code>（7m 34s）</td><td class="pass">PASS</td></tr>
+          <tr><td><code>cargo build --workspace --release</code>（初次 7m 34s；rebase 后 4m 02s）</td><td class="pass">PASS</td></tr>
+          <tr><td><code>test_try_new_env_proxy_fallbacks_when_settings_absent</code>（rebase 格式修正后）</td><td class="pass">PASS</td></tr>
         </tbody>
       </table>
       <p>完整 PTY 套件未重复执行；本次采用直接覆盖报告 surface 的定向 PTY 用例，并由 in-process 鼠标事件和 buffer 测试覆盖新增行为，符合仓库分层验证 SOP。</p>
