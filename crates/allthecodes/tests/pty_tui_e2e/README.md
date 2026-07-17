@@ -432,7 +432,9 @@ Phase 2 初次实现时，`nextest` `tui_pty_e2e` test-group 仍保持 `max-thre
 
 根因不是锁本身，而是所有 cc-rust 子进程曾共用同一个 `/tmp/cc-rust-e2e-test` workspace——并发的 `settings.json` / `sessions.db` 读写彼此竞争。Phase 3 已把默认路径改为 `/tmp/cc-rust-e2e-test-{runner_pid}`：nextest 每个 test case 使用独立 runner 进程，因此 workspace 隔离；显式 `E2E_WORKSPACE` 覆盖仍保持原语义。普通 libtest 的 test case 共用 runner PID，所以全套回归仍必须传 `--test-threads=1`。
 
-隔离后先验证 `max-threads=2` 的 `commands_core_info` 25/25（59.529s），再验证 `max-threads=4` 25/25（32.027s）。最终完整回归以 `max-threads=4` 执行：220 passed、36 skipped、0 failed，nextest summary 340.329s、命令墙钟 341.47s。因此 `.config/nextest.toml` 现已正式提升到 4；若后续新增跨 workspace 的共享状态，必须用完整套件证据决定是否回退。
+隔离后依次验证 `max-threads=2` 的 `commands_core_info` 25/25（59.529s）、`max-threads=4` 25/25（32.027s），以及 `max-threads=10` 25/25（real 17.85s）。10 并发的最终完整回归为 220 passed、36 skipped、0 failed，nextest summary 143.308s、命令墙钟 144.65s。因此 `.config/nextest.toml` 现已正式提升到 10；若后续新增跨 workspace 的共享状态或宿主机容量回归，必须用完整套件证据决定是否回退。
+
+首次 10-way 全跑曾暴露 `mcp_help_no_args` 的陈旧断言：`/mcp` 已打开完整 MCP server surface，但测试仍等待旧 help 文本中的小写 `list`。断言改为当前稳定可见语义 `MCP servers` 后，目标测试 1/1、整个 MCP 模块 19/19、最终完整套件 220/220 均通过。
 
 #### 历史滤片 bug 与修复（2026-07-18 followup）
 
@@ -455,13 +457,13 @@ test-group = 'tui_pty_e2e'
 slow-timeout = { period = "45s", terminate-after = 2 }
 ```
 
-滤片修复后的历史串行基线为全 217 个离线测试通过、1250.847s。Phase 3 隔离后的当前完整回归为全 220 个离线测试通过、341.47s；此前 flaky 的 `effort_shows_current` / `config_alias_settings` / `welcome::wide_terminal_shows_integrated_nine_grid_logo` 也包含在这次全绿结果中。
+滤片修复后的历史串行基线为全 217 个离线测试通过、1250.847s。Phase 3 隔离后的当前 10-way 完整回归为全 220 个离线测试通过、144.65s；此前 flaky 的 `effort_shows_current` / `config_alias_settings` / `welcome::wide_terminal_shows_integrated_nine_grid_logo` 也包含在这次全绿结果中。
 
 #### 跑全套离线回归的正确姿势
 
 | 命令 | 串行？ | 说明 |
 |------|--------|------|
-| `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast` | 4-way | ✅ **推荐**。nextest 读 `.config/nextest.toml` 的 `tui_pty_e2e.max-threads=4`；runner PID 隔离默认 workspace。 |
+| `cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast` | 10-way | ✅ **推荐**。nextest 读 `.config/nextest.toml` 的 `tui_pty_e2e.max-threads=10`；runner PID 隔离默认 workspace。 |
 | `cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1 --nocapture` | ✅ libtest 强制单线程，等价串行；不依赖 nextest。 |
 | `cargo test -p allthecodes --test pty_tui_e2e -- --nocapture` | ❌ **不要直接用**：cargo test 不读 nextest.toml，且同一 runner PID 下的 case 仍共享默认 workspace。 |
 

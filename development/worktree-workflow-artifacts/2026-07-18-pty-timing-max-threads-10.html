@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PTY nextest max-threads=10 — 2026-07-18</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 1040px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+  h1 { margin-bottom: .2rem; }
+  .meta { color: #657; }
+  .card { border: 1px solid #8793a0; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+  code { overflow-wrap: anywhere; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+  th, td { border: 1px solid #8793a0; padding: .45rem; text-align: left; vertical-align: top; }
+  .ok { color: #18794e; font-weight: 650; }
+  .fail { color: #b42318; font-weight: 650; }
+  .pending { color: #9a6700; font-weight: 650; }
+  .num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>PTY TUI E2E nextest 并发提升到 10</h1>
+<p class="meta">Task slug: <code>pty-timing-max-threads-10</code> · branch: <code>worktree/pty-timing-max-threads-10</code> · 2026-07-18</p>
+
+<section class="card">
+<h2>目标与流程</h2>
+<p>把 <code>tui_pty_e2e.max-threads</code> 从 4 提升到 10，并以完整 220-test 离线套件证明新预算不会重新引入 workspace 竞争或容量 flake。</p>
+<ol>
+  <li>主分支计划：<code>development/test/pty-tui-e2e-timing-plan.md</code>，提交 <code>1ba3f7ee</code>。</li>
+  <li>独立 worktree：<code>.worktrees/pty-timing-max-threads-10</code>。</li>
+  <li>构建目录：<code>/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/atc-pty-timing-max-threads-10</code>。</li>
+  <li>完整验证后 fast-forward 到 <code>allthecodes</code>，推送并删除 worktree/临时分支。</li>
+</ol>
+</section>
+
+<section class="card">
+<h2>改动</h2>
+<table>
+<thead><tr><th>路径</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td><code>.config/nextest.toml</code></td><td><code>tui_pty_e2e.max-threads = 10</code>，保留 <code>binary(pty_tui_e2e)</code> 归组和 45 秒 slow-timeout。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/tests/commands_mcp_plugin.rs</code></td><td><code>mcp_help_no_args</code> 从等待旧 help 文本 <code>list</code> 改为验证当前 MCP surface 的稳定可见语义 <code>MCP servers</code>。</td></tr>
+<tr><td><code>crates/allthecodes/tests/pty_tui_e2e/README.md</code></td><td>更新 10-way 执行方式、完整回归数字和陈旧 MCP 断言修复。</td></tr>
+<tr><td><code>development/test/README.md</code></td><td>测试计划索引同步 <code>max-threads=10</code> 和 144.65s 完整结果。</td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="card">
+<h2>提交边界</h2>
+<ul>
+  <li><code>1ba3f7ee docs(pty-e2e): plan ten-way nextest validation</code> — 主分支前置计划。</li>
+  <li><code>139e117d test(pty-e2e): assert current MCP surface</code> — 修复陈旧可见文本断言。</li>
+  <li><code>8140cea3 test(pty-e2e): raise nextest concurrency to ten</code> — 提升 thread budget。</li>
+  <li>README、测试索引和本 artifact：本 artifact 所在提交。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>验证证据</h2>
+<table>
+<thead><tr><th>命令 / 范围</th><th>结果</th><th>墙钟</th></tr></thead>
+<tbody>
+<tr><td><code>cargo nextest show-config test-groups</code></td><td class="ok"><code>tui_pty_e2e (max threads = 10)</code>，override 仍为 <code>binary(pty_tui_e2e)</code></td><td>冷编译后确认</td></tr>
+<tr><td><code>commands_core_info</code>，10-way</td><td class="ok">25 passed / 231 skipped / 0 failed</td><td class="num">summary 13.942s；real 17.85s</td></tr>
+<tr><td>首次完整 10-way</td><td class="fail">219 passed / 1 failed / 36 skipped；唯一失败 <code>mcp_help_no_args</code> 已显示 MCP surface，但等待旧文本 <code>list</code></td><td class="num">summary 142.392s；real 143.49s</td></tr>
+<tr><td><code>mcp_help_no_args</code> 修复后 targeted</td><td class="ok">1/1；8/8 script steps，<code>MCP servers</code> 148ms 命中</td><td class="num">summary 5.336s；real 10.44s</td></tr>
+<tr><td><code>commands_mcp_plugin</code>，10-way</td><td class="ok">19 passed / 237 skipped / 0 failed</td><td class="num">summary 17.769s；real 18.94s</td></tr>
+<tr><td><code>cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast</code></td><td class="ok">220 passed (1 slow) / 36 skipped / 0 failed；exit 0</td><td class="num">summary 143.308s；real 144.65s</td></tr>
+<tr><td><code>cargo fmt --all --check</code></td><td class="ok">exit 0</td><td class="num">real 9.15s</td></tr>
+<tr><td><code>cargo clippy -p allthecodes --test pty_tui_e2e -- -D warnings</code></td><td class="ok">exit 0；无 warning</td><td class="num">real 196.74s</td></tr>
+<tr><td><code>cargo build --workspace --release</code></td><td class="ok">exit 0；无 warning</td><td class="num">real 436.09s</td></tr>
+</tbody>
+</table>
+<p>性能对比：4-way 完整回归 real 341.47s；10-way 为 144.65s，再减少约 57.6%。相对严格串行 nextest 1250.847s，减少约 88.4%。</p>
+</section>
+
+<section class="card">
+<h2>保留边界</h2>
+<ul>
+  <li>10-way 只适用于 nextest 多进程 runner；普通 libtest case 共用 PID workspace，仍须 <code>--test-threads=1</code>。</li>
+  <li>显式配置相同 <code>E2E_WORKSPACE</code> 时仍由调用者负责避免共享状态。</li>
+  <li>36 个真实 API key / network 测试保持 ignored，不在离线并发验收范围。</li>
+</ul>
+</section>
+</body>
+</html>

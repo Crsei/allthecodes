@@ -15,7 +15,7 @@
 | [worktree-session-tdd-test-plan.md](worktree-session-tdd-test-plan.md) | `development/worktree/worktree-aware-session-plan.md` | **已实现**（回归） | ✅ 回归 |
 | [tui-command-operation-tdd-test-plan.md](tui-command-operation-tdd-test-plan.md) | `development/tui/command-operation-display-plan.md` | **已实现**（回归） | ✅ 回归 |
 | [runtime-current-state-tdd-reference.md](runtime-current-state-tdd-reference.md) | `development/runtime/` 4 份 RFC 状态文档 | 已知边界参考 | 📖 参考 |
-| [pty-tui-e2e-timing-plan.md](pty-tui-e2e-timing-plan.md) | `development/test/pty-tui-e2e-timing-plan.md`（本目录内） | **Phase 1–3 已实现**（信号化等待、首次 cleanup 必扫、runner PID workspace 隔离、nextest `binary(pty_tui_e2e)` 归组与 `max-threads=4`）；完整 nextest 220 passed / 36 skipped / 0 failed，墙钟 341.47s。普通 libtest 仍须 `--test-threads=1`。 | ✅ 完成 |
+| [pty-tui-e2e-timing-plan.md](pty-tui-e2e-timing-plan.md) | `development/test/pty-tui-e2e-timing-plan.md`（本目录内） | **Phase 1–3 已实现**（信号化等待、首次 cleanup 必扫、runner PID workspace 隔离、nextest `binary(pty_tui_e2e)` 归组与 `max-threads=10`）；完整 nextest 220 passed / 36 skipped / 0 failed，墙钟 144.65s。普通 libtest 仍须 `--test-threads=1`。 | ✅ 完成 |
 
 ## 测试层级定义
 
