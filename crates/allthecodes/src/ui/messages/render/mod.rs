@@ -15,7 +15,8 @@ use allthecodes_tool_display::ToolOperation;
 use allthecodes_types::message::{ContentBlock, Message};
 
 use crate::ui::messages::tool_operation_content::{
-    render_todo_operation_lines, render_tool_operation_lines, ToolOperationView,
+    render_operation_detail_line, render_todo_operation_lines, render_tool_operation_lines,
+    ToolOperationView,
 };
 use crate::ui::theme::Theme;
 use crate::ui::virtual_scroll::VirtualScroll;
@@ -248,7 +249,16 @@ pub(in crate::ui) fn render_renderable_message_with_context<'a>(
             render_single_message_with_context(message, index, theme, width, render_context)
         }
         RenderableMessage::ToolOperationBatch(batch) => {
-            if batch.is_batch {
+            if batch.is_batch
+                && msg.has_source_index(render_context.selected_message)
+                && render_context.selected_expanded
+            {
+                batch
+                    .operations
+                    .iter()
+                    .flat_map(|operation| render_operation_detail_line(operation, theme))
+                    .collect()
+            } else if batch.is_batch {
                 let op_refs: Vec<&ToolOperation> = batch.operations.iter().collect();
                 let view = ToolOperationView::from_batch(&op_refs);
                 render_tool_operation_lines(&view, theme)
@@ -1232,7 +1242,10 @@ mod tests {
 
         assert!(rendered.contains("cargo test"));
         assert!(rendered.contains("cargo build"));
-        assert!(rendered.contains("2 commands"));
+        assert!(
+            rendered.contains("Running 2 bash commands"),
+            "expected active shell batch, got:\n{rendered}"
+        );
         assert!(rendered.contains("first bash output"));
         assert!(rendered.contains("second bash output"));
     }
@@ -1278,15 +1291,105 @@ mod tests {
             let rendered = render_pipeline_text(&messages, super::MessageRenderOptions::default());
 
             let expected = if matches!(tool_name, "Write" | "FileWrite") {
-                "2 creates"
+                "Writing 2 files"
             } else {
-                "2 edits"
+                "Editing 2 files"
             };
             assert!(
                 rendered.contains(expected),
                 "{tool_name} should render as {expected}, got:\n{rendered}"
             );
         }
+    }
+
+    #[test]
+    fn selected_operation_batch_expands_to_individual_rows() {
+        let messages = vec![
+            Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 1,
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "toolu_bash_1".to_string(),
+                    name: "Bash".to_string(),
+                    input: json!({ "command": "cargo test" }),
+                }],
+                usage: None,
+                stop_reason: None,
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.0,
+            }),
+            Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 2,
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "toolu_bash_2".to_string(),
+                    name: "Bash".to_string(),
+                    input: json!({ "command": "cargo build" }),
+                }],
+                usage: None,
+                stop_reason: None,
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.0,
+            }),
+        ];
+        let source_context = super::build_message_render_context_with_options(
+            &messages,
+            None,
+            false,
+            super::MessageRenderOptions::default(),
+        );
+        let operations = source_context
+            .renderable_messages()
+            .iter()
+            .filter_map(|message| match message {
+                super::RenderableMessage::ToolOperationBatch(batch) => {
+                    batch.operations.first().cloned()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(operations.len(), 2);
+        let batch = super::RenderableMessage::ToolOperationBatch(
+            super::context::ToolOperationBatchRenderRecord {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 1,
+                source_indices: vec![42],
+                operations,
+                is_batch: true,
+            },
+        );
+        let collapsed_context = super::MessageRenderContext::default();
+        let expanded_context = super::build_message_render_context_with_options(
+            &[],
+            Some(42),
+            true,
+            super::MessageRenderOptions::default(),
+        );
+
+        let collapsed = super::render_renderable_message_with_context(
+            &batch,
+            0,
+            &Theme::default(),
+            80,
+            &collapsed_context,
+        );
+        let expanded = super::render_renderable_message_with_context(
+            &batch,
+            0,
+            &Theme::default(),
+            80,
+            &expanded_context,
+        );
+
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(expanded.len(), 2);
+        let expanded_text = lines_to_text(expanded);
+        assert!(expanded_text.contains("cargo test"));
+        assert!(expanded_text.contains("cargo build"));
     }
 
     #[test]

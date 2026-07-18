@@ -35,8 +35,6 @@ pub struct ToolOperationView {
     pub target: Option<String>,
     /// Summary of the operation result (if available).
     pub result_summary: Option<String>,
-    /// Count of items in this batch (1 = single operation).
-    pub batch_count: usize,
     /// Whether this view represents a batch summary (vs a single op).
     pub is_batch: bool,
     /// Whether the operation is still in progress.
@@ -75,7 +73,6 @@ impl ToolOperationView {
             label,
             target: op.target.clone(),
             result_summary: result_text,
-            batch_count: 1,
             is_batch: false,
             active,
             has_error,
@@ -125,7 +122,7 @@ impl ToolOperationView {
             .unwrap_or(OperationRisk::Safe);
 
         // Build the batch label
-        let label = build_batch_label(kind, subtype, count);
+        let label = build_batch_label(kind, subtype, count, status);
 
         ToolOperationView {
             kind,
@@ -135,7 +132,6 @@ impl ToolOperationView {
             label,
             target: None,
             result_summary: None,
-            batch_count: count,
             is_batch: true,
             active: any_in_progress,
             has_error: any_error,
@@ -158,30 +154,72 @@ fn build_batch_label(
     kind: OperationKind,
     subtype: Option<OperationSubtype>,
     count: usize,
+    status: OperationStatus,
 ) -> String {
-    let category = match kind {
-        OperationKind::Read => "reads",
-        OperationKind::Search => "searches",
-        OperationKind::Create => "creates",
-        OperationKind::Modify => "edits",
-        OperationKind::Delete => "deletes",
-        OperationKind::Execute => match subtype {
-            Some(OperationSubtype::Build) => "builds",
-            Some(OperationSubtype::Test) => "tests",
-            Some(OperationSubtype::Format) => "formats",
-            Some(OperationSubtype::Shell) => "commands",
-            Some(OperationSubtype::Install) => "installs",
-            _ => "commands",
-        },
-        OperationKind::Permission => "permissions",
-        OperationKind::Network => "network ops",
-        OperationKind::Delegate => "delegations",
-        OperationKind::Plan => "plans",
-        OperationKind::Status => "updates",
-        OperationKind::System => "system ops",
-        OperationKind::Unknown => "operations",
+    let active = status == OperationStatus::InProgress;
+    let noun = |singular: &'static str, plural: &'static str| {
+        if count == 1 {
+            singular
+        } else {
+            plural
+        }
     };
-    format!("{count} {category}")
+    match (kind, subtype, active) {
+        (OperationKind::Read, _, true) => format!("Reading {count} {}", noun("file", "files")),
+        (OperationKind::Read, _, false) => format!("Read {count} {}", noun("file", "files")),
+        (OperationKind::Search, _, true) => {
+            format!("Searching for {count} {}", noun("pattern", "patterns"))
+        }
+        (OperationKind::Search, _, false) => {
+            format!("Searched for {count} {}", noun("pattern", "patterns"))
+        }
+        (OperationKind::Create, _, true) => format!("Writing {count} {}", noun("file", "files")),
+        (OperationKind::Create, _, false) => format!("Wrote {count} {}", noun("file", "files")),
+        (OperationKind::Modify, _, true) => format!("Editing {count} {}", noun("file", "files")),
+        (OperationKind::Modify, _, false) => format!("Edited {count} {}", noun("file", "files")),
+        (OperationKind::Delete, _, true) => format!("Deleting {count} {}", noun("file", "files")),
+        (OperationKind::Delete, _, false) => format!("Deleted {count} {}", noun("file", "files")),
+        (OperationKind::Execute, Some(OperationSubtype::Test), true) => {
+            format!("Running {count} {}", noun("test", "tests"))
+        }
+        (OperationKind::Execute, Some(OperationSubtype::Test), false) => {
+            format!("Ran {count} {}", noun("test", "tests"))
+        }
+        (OperationKind::Execute, Some(OperationSubtype::Build), true) => {
+            format!("Running {count} {}", noun("build", "builds"))
+        }
+        (OperationKind::Execute, Some(OperationSubtype::Build), false) => {
+            format!("Ran {count} {}", noun("build", "builds"))
+        }
+        (OperationKind::Execute, Some(OperationSubtype::Install), true) => {
+            format!("Running {count} {}", noun("install", "installs"))
+        }
+        (OperationKind::Execute, Some(OperationSubtype::Install), false) => {
+            format!("Ran {count} {}", noun("install", "installs"))
+        }
+        (OperationKind::Execute, _, true) => {
+            format!("Running {count} {}", noun("bash command", "bash commands"))
+        }
+        (OperationKind::Execute, _, false) => {
+            format!("Ran {count} {}", noun("bash command", "bash commands"))
+        }
+        (OperationKind::Delegate, _, true) => {
+            format!("Launching {count} {}", noun("agent", "agents"))
+        }
+        (OperationKind::Delegate, _, false) => {
+            format!("Launched {count} {}", noun("agent", "agents"))
+        }
+        (OperationKind::Plan, _, true) => format!("Updating {count} {}", noun("plan", "plans")),
+        (OperationKind::Plan, _, false) => format!("Updated {count} {}", noun("plan", "plans")),
+        (OperationKind::Status, _, true) => {
+            format!("Updating {count} {}", noun("status", "statuses"))
+        }
+        (OperationKind::Status, _, false) => {
+            format!("Updated {count} {}", noun("status", "statuses"))
+        }
+        (_, _, true) => format!("Running {count} operations"),
+        (_, _, false) => format!("Ran {count} operations"),
+    }
 }
 
 fn operation_kind_prefix(kind: OperationKind, subtype: Option<OperationSubtype>) -> &'static str {
@@ -247,15 +285,7 @@ fn render_tool_operation_lines_with_width(
     };
 
     let prefix = operation_kind_prefix(view.kind, view.subtype);
-    let mut label = if view.is_batch {
-        if view.batch_count > 1 && !view.label.starts_with(&view.batch_count.to_string()) {
-            format!("{} {}", view.batch_count, view.label)
-        } else {
-            view.label.clone()
-        }
-    } else {
-        view.label.clone()
-    };
+    let mut label = view.label.clone();
     if label.trim().is_empty() {
         label = prefix.to_string();
     }
@@ -281,7 +311,7 @@ fn render_tool_operation_lines_with_width(
     // Status indicator
     spans.push(Span::raw(" "));
     match view.status {
-        OperationStatus::InProgress => spans.push(Span::styled("⋯", theme.info)),
+        OperationStatus::InProgress => spans.push(Span::styled("…", theme.info)),
         OperationStatus::Error => spans.push(Span::styled("[error]", theme.error)),
         OperationStatus::Cancelled => spans.push(Span::styled("[cancelled]", theme.dim)),
         OperationStatus::Resolved => spans.push(Span::styled("✔", theme.diff_add)),
@@ -416,7 +446,7 @@ pub fn render_todo_operation_lines(
 
     // Show status indicator alongside title
     if !all_resolved && !any_error {
-        let status_span = Span::styled(" ⋯", theme.info);
+        let status_span = Span::styled(" …", theme.info);
         if let Some(first_line) = lines.first_mut() {
             first_line.spans.push(status_span);
         }
@@ -436,7 +466,6 @@ pub fn render_todo_operation_lines(
 }
 
 /// Render an expanded individual operation row (for use within a batch detail).
-#[allow(dead_code)]
 pub fn render_operation_detail_line(op: &ToolOperation, theme: &Theme) -> Vec<Line<'static>> {
     let view = ToolOperationView::from_operation(op);
     render_tool_operation_lines(&view, theme)
@@ -579,8 +608,25 @@ mod tests {
         let ops = vec![&op1, &op2, &op3];
         let view = ToolOperationView::from_batch(&ops);
         let rendered = render_tool_operation_content(&view, &Theme::default());
-        assert!(rendered.contains("3 reads"));
+        assert!(rendered.contains("Read 3 files"));
         assert!(rendered.contains("✔"));
+    }
+
+    #[test]
+    fn batch_labels_use_active_tense_and_singular_nouns() {
+        let op = make_op(
+            OperationKind::Search,
+            None,
+            OperationStatus::InProgress,
+            OperationRisk::Safe,
+            "Search TODOs",
+            None,
+        );
+        let view = ToolOperationView::from_batch(&[&op]);
+        let rendered = render_tool_operation_content(&view, &Theme::default());
+
+        assert!(rendered.contains("Searching for 1 pattern"));
+        assert!(rendered.contains("…"));
     }
 
     #[test]
@@ -604,7 +650,7 @@ mod tests {
         let ops = vec![&op1, &op2];
         let view = ToolOperationView::from_batch(&ops);
         let rendered = render_tool_operation_content(&view, &Theme::default());
-        assert!(rendered.contains("2 edits"));
+        assert!(rendered.contains("Edited 2 files"));
         assert!(rendered.contains("[error]"));
     }
 
@@ -621,7 +667,7 @@ mod tests {
         let view = ToolOperationView::from_operation(&op);
         let rendered = render_tool_operation_content(&view, &Theme::default());
         assert!(rendered.contains("Build"));
-        assert!(rendered.contains("⋯"));
+        assert!(rendered.contains("…"));
     }
 
     #[test]
