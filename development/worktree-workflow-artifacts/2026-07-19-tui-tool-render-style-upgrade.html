@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TUI tool-render-style-upgrade worktree record</title>
+  <style>
+    body { max-width: 920px; margin: 40px auto; padding: 0 24px; color: #1f2937; background: #f8fafc; font: 16px/1.6 system-ui, sans-serif; }
+    main { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 32px; box-shadow: 0 8px 24px #0f172a12; }
+    h1, h2 { color: #0f3d70; } code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; } li { margin: 6px 0; }
+    .ok { color: #137333; font-weight: 650; } .muted { color: #64748b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TUI tool-render-style-upgrade</h1>
+    <p class="muted">2026-07-19 · isolated worktree <code>worktree/tui-tool-render-style-upgrade</code></p>
+
+    <h2>Goal</h2>
+    <p>Implement the paired task-render and tool-style plans: use Claude Code-style verb phrases and U+2026 ellipsis for operation batches, allow selected batches to reveal individual rows, and show the shared TaskListV2 renderer above the Spinner via <code>Ctrl+T</code>.</p>
+
+    <h2>Plan sources</h2>
+    <ul>
+      <li><code>development/workflow/2026-07-19-tui-task-render-port-plan.md</code></li>
+      <li><code>development/workflow/2026-07-19-tui-tool-render-style-upgrade-plan.md</code></li>
+    </ul>
+
+    <h2>Implemented flow</h2>
+    <ol>
+      <li>Changed semantic operation batches to verb-tense labels such as <code>Read 2 files</code>, <code>Searching for 1 pattern</code>, and <code>Ran 2 bash commands</code>; replaced the midline ellipsis with <code>…</code>.</li>
+      <li>Made a selected grouped operation render its individual operation rows while preserving its one-line collapsed form.</li>
+      <li>Added <code>None / Tasks / Teammates</code> expanded-view state. <code>Ctrl+T</code> uses two states without teammates and three states when teammates exist.</li>
+      <li>Reused the task-store adapter to refresh TaskListV2 snapshots, rendered those lines above Spinner, and auto-collapsed a wholly terminal list after five seconds.</li>
+    </ol>
+
+    <h2>Changed paths</h2>
+    <ul>
+      <li>Tool presentation: <code>ui/messages/tool_operation_content.rs</code>, <code>ui/messages/render/mod.rs</code>.</li>
+      <li>Task spinner view: <code>ui/app*.rs</code>, <code>ui/components/bottom_pane.rs</code>, <code>ui/command_surface/*</code>, and <code>ui/messages.rs</code>.</li>
+      <li>No plan file was modified in this worktree.</li>
+    </ul>
+
+    <h2>Commits</h2>
+    <ul>
+      <li><code>c6bd49d5</code> — <code>feat(tui): upgrade tool batch rendering</code></li>
+      <li><code>3fb471dc</code> — <code>feat(tui): add expandable task spinner view</code></li>
+      <li>This artifact is recorded by its own following documentation commit.</li>
+    </ul>
+
+    <h2>Verification</h2>
+    <ul>
+      <li class="ok">cargo fmt --all --check</li>
+      <li class="ok">cargo clippy -p allthecodes --all-targets -- -D warnings</li>
+      <li class="ok">cargo test -p allthecodes ui::messages:: (146 tests)</li>
+      <li class="ok">cargo test -p allthecodes ui::app:: (107 tests)</li>
+      <li class="ok">Focused Ctrl+T, five-second collapse, Spinner ordering, and selected-batch expansion tests</li>
+      <li class="ok">cargo build --workspace --release</li>
+      <li class="ok">git diff --check; no U+22EF <code>⋯</code> remains under <code>crates/</code></li>
+    </ul>
+  </main>
+</body>
+</html>
