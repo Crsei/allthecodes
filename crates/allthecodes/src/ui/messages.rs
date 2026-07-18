@@ -38,6 +38,11 @@ pub mod system_api_error_message;
 pub mod system_text_message;
 #[path = "messages/task_assignment_message.rs"]
 pub mod task_assignment_message;
+#[path = "messages/task_list_content.rs"]
+// This shared renderer is wired into the Spinner by the following
+// tui-tool-render-style-upgrade worktree.
+#[allow(dead_code)]
+pub mod task_list_content;
 #[path = "messages/team_mem_collapsed.rs"]
 pub mod team_mem_collapsed;
 #[path = "messages/team_mem_saved.rs"]

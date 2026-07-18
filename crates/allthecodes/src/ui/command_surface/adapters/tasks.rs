@@ -1,4 +1,5 @@
 use crate::ui::command_surface::surfaces::tasks::{TaskSurfaceItem, TaskSurfaceSource};
+use crate::ui::messages::task_list_content::TaskListItem;
 use crate::ui::tasks::{
     TaskKind as UiTaskKind, TaskState as UiTaskState, TaskStatus as UiTaskStatus,
 };
@@ -32,6 +33,29 @@ pub(crate) fn task_surface_items() -> Vec<TaskSurfaceItem> {
             .map(team_task_surface_item),
     );
     items
+}
+
+/// Snapshot the task-store data used by the compact expanded task list.
+///
+/// Team activity deliberately stays out of this list: the `Teammates` view
+/// owns that surface, while this one mirrors the plan/task state maintained by
+/// `allthecodes_tasks`.
+#[allow(dead_code)]
+pub(crate) fn task_list_items() -> Vec<TaskListItem> {
+    allthecodes_tasks::global_store()
+        .list()
+        .into_iter()
+        .map(|task| TaskListItem {
+            title: if task.subject.trim().is_empty() {
+                task.id.clone()
+            } else {
+                task.subject.clone()
+            },
+            state: ui_task_state_from_tool_status(task.status),
+            blocked_by: task.depends_on,
+            updated_at: task.updated_at,
+        })
+        .collect()
 }
 
 pub(crate) fn tool_task_surface_item(task: allthecodes_tasks::TaskEntry) -> TaskSurfaceItem {
