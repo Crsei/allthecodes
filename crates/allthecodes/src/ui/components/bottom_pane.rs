@@ -11,7 +11,6 @@ use super::chat_composer::ChatComposerState;
 pub struct BottomPaneHeights {
     pub spinner: u16,
     pub suggestions: u16,
-    pub paste_notice: u16,
     pub input: u16,
     pub completion_popup: u16,
     pub command_palette: u16,
@@ -26,7 +25,6 @@ impl BottomPaneHeights {
     pub fn total(self) -> u16 {
         self.spinner
             + self.suggestions
-            + self.paste_notice
             + self.input
             + self.completion_popup
             + self.command_palette
@@ -41,7 +39,6 @@ impl BottomPaneHeights {
         let chunks = Layout::vertical([
             Constraint::Length(self.spinner),
             Constraint::Length(self.suggestions),
-            Constraint::Length(self.paste_notice),
             Constraint::Length(self.completion_popup),
             Constraint::Length(self.command_palette),
             Constraint::Length(self.command_arg_help),
@@ -56,15 +53,14 @@ impl BottomPaneHeights {
         BottomPaneAreas {
             spinner: chunks[0],
             suggestions: chunks[1],
-            paste_notice: chunks[2],
-            completion_popup: chunks[3],
-            command_palette: chunks[4],
-            command_arg_help: chunks[5],
-            input: chunks[6],
-            notification: chunks[7],
-            context: chunks[8],
-            agent_footer: chunks[9],
-            status: chunks[10],
+            completion_popup: chunks[2],
+            command_palette: chunks[3],
+            command_arg_help: chunks[4],
+            input: chunks[5],
+            notification: chunks[6],
+            context: chunks[7],
+            agent_footer: chunks[8],
+            status: chunks[9],
         }
     }
 }
@@ -73,7 +69,6 @@ impl BottomPaneHeights {
 pub struct BottomPaneAreas {
     pub spinner: Rect,
     pub suggestions: Rect,
-    pub paste_notice: Rect,
     pub input: Rect,
     pub completion_popup: Rect,
     pub command_palette: Rect,
@@ -181,7 +176,6 @@ mod tests {
         let heights = BottomPaneHeights {
             spinner: 1,
             suggestions: 1,
-            paste_notice: 0,
             input: 3,
             completion_popup: 2,
             command_palette: 4,

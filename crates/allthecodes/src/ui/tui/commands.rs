@@ -192,6 +192,7 @@ fn sync_app_runtime_from_state(
     });
 
     app.set_model_name(state.main_loop_model.clone());
+    app.set_context_capacity_from_settings(&state.settings);
     app.set_backend_name(state.main_loop_backend.clone());
     app.set_status_line_settings(state.settings.status_line.clone());
     app.set_output_style(state.settings.output_style.clone());

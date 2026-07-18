@@ -9,8 +9,9 @@ use super::engine_events::{
 use super::subsystem_events::handle_subsystem_event;
 use super::{
     clear_proactive_sleep_for_steer_submit, clear_proactive_sleep_for_user_submit,
-    reject_unavailable_streaming_command,
+    inject_startup_diagnostics, reject_unavailable_streaming_command,
 };
+use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSource};
 use crate::ui::app::{App, ProactiveUiStatus};
 use allthecodes_config::features::{self, FeatureFlags};
 use allthecodes_engine::types::tool::ToolProgress;
@@ -48,6 +49,37 @@ fn render_app_for_test(app: &mut App, width: u16, height: u16) -> String {
         out.push('\n');
     }
     out
+}
+
+#[test]
+fn startup_diagnostics_are_injected_only_as_redacted_tui_system_messages() {
+    let mut app = App::new();
+    inject_startup_diagnostics(
+        &mut app,
+        vec![StartupDiagnostic::warning(
+            "auth-startup",
+            StartupDiagnosticSource::Auth,
+            "Authentication needs attention",
+            Some("token=sk-secret-value".to_string()),
+            Some("Run /login".to_string()),
+        )],
+    );
+
+    assert_eq!(app.messages().len(), 1);
+    let Message::System(message) = &app.messages()[0] else {
+        panic!("expected startup system message");
+    };
+    assert!(matches!(
+        &message.subtype,
+        SystemSubtype::Informational {
+            level: InfoLevel::Warning
+        }
+    ));
+    assert!(message
+        .content
+        .contains("[auth] Authentication needs attention"));
+    assert!(!message.content.contains("sk-secret-value"));
+    assert!(render_app_for_test(&mut app, 100, 24).contains("Authentication needs attention"));
 }
 
 #[test]

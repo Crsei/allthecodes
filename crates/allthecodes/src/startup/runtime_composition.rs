@@ -8,6 +8,7 @@ use allthecodes_engine::types::tool::Tools;
 
 use crate::cli::Cli;
 use crate::startup::app_state_factory::{AppStateFactory, AppStateRuntime};
+use crate::startup::diagnostics::StartupDiagnostic;
 use crate::startup::engine_factory::EngineFactory;
 use crate::startup::mcp_runtime::McpRuntimeBuilder;
 use crate::startup::model_runtime::ModelRuntimeBuilder;
@@ -31,6 +32,7 @@ pub(crate) struct RuntimeReady {
     pub(crate) merged_config: settings::EffectiveSettings,
     pub(crate) runtime_services: Arc<RuntimeServices>,
     pub(crate) engine: Arc<QueryEngine>,
+    pub(crate) startup_diagnostics: Vec<StartupDiagnostic>,
 }
 
 impl RuntimeComposition {

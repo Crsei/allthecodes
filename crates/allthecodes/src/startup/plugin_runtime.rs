@@ -1,10 +1,12 @@
 use tracing::{info, warn};
 
+use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSource};
 use crate::startup::settings_runtime::SettingsRuntime;
 use crate::startup::startup_context::StartupContext;
 
 pub(crate) struct PluginRuntime {
     pub(crate) all_plugins: Vec<allthecodes_plugins::PluginEntry>,
+    pub(crate) diagnostics: Vec<StartupDiagnostic>,
 }
 
 pub(crate) struct PluginRuntimeBuilder;
@@ -14,6 +16,7 @@ impl PluginRuntimeBuilder {
         _startup: &StartupContext,
         _settings: &SettingsRuntime,
     ) -> anyhow::Result<PluginRuntime> {
+        let mut diagnostics = Vec::new();
         allthecodes_plugins::init_plugins();
         let all_plugins = allthecodes_plugins::get_all_plugins();
         if !all_plugins.is_empty() {
@@ -30,6 +33,13 @@ impl PluginRuntimeBuilder {
             Ok(_) => {}
             Err(error) => {
                 warn!(%error, "worktree session startup reconciliation failed");
+                diagnostics.push(StartupDiagnostic::warning(
+                    "plugin-worktree-reconciliation",
+                    StartupDiagnosticSource::Plugin,
+                    "Plugin/worktree startup reconciliation failed",
+                    Some(error.to_string()),
+                    Some("Review worktree sessions with /doctor.".to_string()),
+                ));
             }
         }
 
@@ -223,6 +233,9 @@ impl PluginRuntimeBuilder {
             info!("telemetry bridge installed");
         }
 
-        Ok(PluginRuntime { all_plugins })
+        Ok(PluginRuntime {
+            all_plugins,
+            diagnostics,
+        })
     }
 }

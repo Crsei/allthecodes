@@ -67,13 +67,15 @@ fn render_places_prompt_after_compact_welcome() {
         content[8].trim().is_empty(),
         "welcome panel and prompt input should have a blank spacer row"
     );
+    let prompt_area = app.render_layout.prompt_area.expect("prompt area");
+    let prompt_row = content
+        .iter()
+        .position(|line| line.trim_start().starts_with(">"))
+        .expect("prompt row");
+    assert_eq!(prompt_row as u16, prompt_area.y + 1);
     assert!(
-        content[10].trim_start().starts_with(">"),
-        "prompt should sit on the middle line of the 3-line input area after the spacer row"
-    );
-    assert!(
-        !content[22].trim_start().starts_with(">"),
-        "prompt should not be pinned to the bottom row"
+        prompt_area.y + prompt_area.height == 23,
+        "prompt area should end immediately above the footer"
     );
 }
 
@@ -130,14 +132,50 @@ fn render_places_prompt_after_short_chat_content() {
         content[3].trim().is_empty(),
         "chat content and prompt input should have a blank spacer row"
     );
+    let prompt_area = app.render_layout.prompt_area.expect("prompt area");
+    let prompt_row = content
+        .iter()
+        .position(|line| line.trim_start().starts_with(">"))
+        .expect("prompt row");
+    assert_eq!(prompt_row as u16, prompt_area.y + 1);
     assert!(
-        content[5].trim_start().starts_with(">"),
-        "prompt should sit on the middle line of the 3-line input area after the spacer row"
+        prompt_area.y + prompt_area.height == 23,
+        "prompt area should end immediately above the footer"
     );
-    assert!(
-        !content[22].trim_start().starts_with(">"),
-        "prompt should not be pinned to the bottom row"
-    );
+}
+
+#[test]
+fn render_bottom_pane_stays_anchored_for_short_tall_and_multiline_frames() {
+    for (width, height, prompt_text) in [
+        (80, 24, "short prompt"),
+        (120, 40, "tall prompt"),
+        (40, 6, "tiny prompt"),
+        (80, 24, "first line\nsecond line\nthird line"),
+    ] {
+        let mut app = App::new();
+        app.add_message(Message::User(UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 0,
+            role: "user".to_string(),
+            content: MessageContent::Text("existing message".to_string()),
+            is_meta: false,
+            tool_use_result: None,
+            source_tool_assistant_uuid: None,
+        }));
+        app.prompt.insert_str(prompt_text);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("draw");
+
+        let prompt_area = app.render_layout.prompt_area.expect("prompt area");
+        assert_eq!(prompt_area.y + prompt_area.height, height - 1);
+        assert!(prompt_area.y + prompt_area.height <= height);
+        assert!(
+            buffer_to_lines(terminal.backend().buffer(), width, height)
+                .iter()
+                .any(|line| line.trim_start().starts_with(">")),
+            "prompt should remain visible at {width}x{height}"
+        );
+    }
 }
 
 #[test]
@@ -623,7 +661,20 @@ fn app_context_layer_includes_available_runtime_state() {
             "time_used_seconds": 9
         }),
     );
-    app.update_session_usage(120, 30, 10, 5, 2, None, None);
+    let settings = allthecodes_config::runtime_settings::SettingsJson {
+        context_window: Some(272_000),
+        ..Default::default()
+    };
+    app.set_context_capacity_from_settings(&settings);
+    app.update_context_window_from_usage(&allthecodes_types::sdk::UsageTracking {
+        total_input_tokens: 120,
+        total_output_tokens: 30,
+        total_cache_read_tokens: 10,
+        total_cache_creation_tokens: 5,
+        total_reasoning_output_tokens: 0,
+        total_cost_usd: 0.0,
+        api_call_count: 1,
+    });
     app.runtime_view
         .upsert_agent(crate::ui::app::agent_navigation::AgentThreadEntry {
             thread_id: "worker-1".to_string(),
@@ -649,7 +700,7 @@ fn app_context_layer_includes_available_runtime_state() {
     assert_context_item(&items, "repo", "/repo/workspace");
     assert_context_item(&items, "model", "codex-high");
     assert_context_item(&items, "plan", "active ship the release");
-    assert_context_item(&items, "ctx", "165t");
+    assert_context_item(&items, "context", "165/272.0k (0%)");
     assert_context_item(&items, "agent", "Build worker");
     assert_context_item(&items, "tool", "Bash cargo test");
     assert_context_item(&items, "permission", "pending approval");
@@ -1145,7 +1196,7 @@ fn agent_tree_dialog_renders_above_prompt_input() {
 
 #[test]
 #[serial]
-fn status_bar_renders_only_model_and_workspace() {
+fn status_bar_does_not_duplicate_model_owned_by_context_layer() {
     let home = tempfile::tempdir().expect("allthecodes home");
     let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
     let mut app = App::new();
@@ -1165,7 +1216,9 @@ fn status_bar_renders_only_model_and_workspace() {
     terminal.draw(|frame| app.render(frame)).expect("draw");
 
     let content = buffer_to_lines(terminal.backend().buffer(), 120, 24).join("\n");
-    assert!(content.contains("deepseek-v4-pro | /repo/workspace"));
+    assert!(content.contains("model: deepseek-v4-pro"));
+    assert_eq!(content.matches("model: deepseek-v4-pro").count(), 1);
+    assert!(content.contains("repo: /repo/workspace"));
     assert!(!content.contains("perm:acceptEdits"));
     assert!(!content.contains("sandbox:workspace,no-net"));
     assert!(!content.contains("effort:medium"));

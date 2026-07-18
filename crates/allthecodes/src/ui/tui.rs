@@ -15,6 +15,7 @@ use std::time::Duration;
 use allthecodes_engine::types::config::QuerySource;
 use allthecodes_engine::types::tool::PermissionMode;
 use allthecodes_types::callbacks::PermissionResponsePayload;
+use allthecodes_types::message::{InfoLevel, Message, SystemMessage, SystemSubtype};
 use crossterm::event::{
     self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
 };
@@ -65,6 +66,7 @@ use subsystem_events::{
 };
 use terminal_guard::TerminalGuard;
 
+use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSeverity};
 use crate::ui::messages::user_text_message::CONVERSATION_INTERRUPTED_MESSAGE;
 use allthecodes_engine::lifecycle::QueryEngine;
 use allthecodes_ipc::subsystem_events::SubsystemEventBus;
@@ -264,11 +266,13 @@ fn handle_agent_backend_messages(app: &mut App, messages: Vec<BackendMessage>) {
 /// * `engine` - Shared QueryEngine instance
 /// * `initial_prompt` - Optional prompt to submit immediately on startup
 /// * `model_name` - Model name for display in the status bar
+/// * `startup_diagnostics` - Explicitly user-visible startup warnings/errors
 /// * `shutdown_token` - Cancellation token for graceful shutdown
 pub async fn run_tui(
     engine: Arc<QueryEngine>,
     initial_prompt: Option<String>,
     model_name: &str,
+    startup_diagnostics: Vec<StartupDiagnostic>,
     shutdown_token: CancellationToken,
 ) -> anyhow::Result<()> {
     // ── Setup terminal ─────────────────────────────────────────────
@@ -291,6 +295,7 @@ pub async fn run_tui(
     let mut app = App::new();
     let mut desktop_notifications = detect_backend(NotificationMethod::Auto);
     app.set_model_name(model_name.to_string());
+    app.set_context_capacity_from_settings(&engine.app_state().settings);
     app.set_backend_name(engine.app_state().main_loop_backend.clone());
     app.set_session_id(engine.current_session_id().to_string());
     app.set_cwd(engine.cwd().to_string());
@@ -362,6 +367,11 @@ pub async fn run_tui(
     // `ALLTHECODES_ENABLE_MOUSE_CAPTURE`, `ALLTHECODES_DISABLE_MOUSE`,
     // `ALLTHECODES_SCROLL_SPEED`. Cached for the duration of the session.
     app.set_terminal_env(terminal_env);
+
+    // These diagnostics were collected before alternate-screen setup. Inject
+    // only the explicitly classified, redacted subset into the TUI session;
+    // print/json/headless/ACP modes never pass through this boundary.
+    inject_startup_diagnostics(&mut app, startup_diagnostics);
 
     for message in engine.messages() {
         app.add_message(message);
@@ -910,6 +920,25 @@ pub async fn run_tui(
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+pub(crate) fn inject_startup_diagnostics(app: &mut App, diagnostics: Vec<StartupDiagnostic>) {
+    if diagnostics.is_empty() {
+        return;
+    }
+    app.dismiss_welcome();
+    for diagnostic in diagnostics {
+        let level = match diagnostic.severity {
+            StartupDiagnosticSeverity::Warning => InfoLevel::Warning,
+            StartupDiagnosticSeverity::Error => InfoLevel::Error,
+        };
+        app.add_message(Message::System(SystemMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp(),
+            subtype: SystemSubtype::Informational { level },
+            content: diagnostic.display_text(),
+        }));
+    }
 }
 
 fn export_debug_snapshot(app: &mut App) {

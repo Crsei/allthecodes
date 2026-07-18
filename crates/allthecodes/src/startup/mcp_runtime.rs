@@ -3,6 +3,7 @@ use std::sync::Arc;
 use allthecodes_engine::types::tool::Tools;
 use tracing::{info, warn};
 
+use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSource};
 use crate::startup::settings_runtime::SettingsRuntime;
 use crate::startup::startup_context::StartupContext;
 use crate::startup::tool_catalog::ToolCatalog;
@@ -10,6 +11,7 @@ use crate::startup_skills::log_skill_report;
 
 pub(crate) struct McpRuntime {
     pub(crate) tools: Tools,
+    pub(crate) diagnostics: Vec<StartupDiagnostic>,
 }
 
 pub(crate) struct McpRuntimeBuilder;
@@ -24,6 +26,7 @@ impl McpRuntimeBuilder {
         _settings: &SettingsRuntime,
         mut tool_catalog: ToolCatalog,
     ) -> anyhow::Result<McpRuntime> {
+        let mut diagnostics = tool_catalog.diagnostics;
         use allthecodes_engine::mcp_tool_adapter::mcp_tools_to_tools_for_context;
         use allthecodes_mcp::bindings::canonical_workspace_root;
         use allthecodes_mcp::discovery::{discover_bound_mcp_servers, BoundMcpServerConfig};
@@ -34,6 +37,13 @@ impl McpRuntimeBuilder {
             Ok(discovered) => discovered,
             Err(err) => {
                 warn!(error = %err, "MCP server discovery failed");
+                diagnostics.push(StartupDiagnostic::warning(
+                    "mcp-discovery",
+                    StartupDiagnosticSource::Mcp,
+                    "MCP server discovery failed",
+                    Some(err.to_string()),
+                    Some("Check MCP configuration and retry the session.".to_string()),
+                ));
                 Default::default()
             }
         };
@@ -103,6 +113,13 @@ impl McpRuntimeBuilder {
                 .await
             {
                 warn!(error = %e, "MCP: some servers failed to connect");
+                diagnostics.push(StartupDiagnostic::warning(
+                    "mcp-connect",
+                    StartupDiagnosticSource::Mcp,
+                    "Some MCP servers failed to connect",
+                    Some(e.to_string()),
+                    Some("Use /mcp status to inspect configured servers.".to_string()),
+                ));
             }
 
             let startup_context = McpBindingContext::startup(Some(workspace_root.clone()));
@@ -181,6 +198,7 @@ impl McpRuntimeBuilder {
 
         Ok(McpRuntime {
             tools: tool_catalog.tools,
+            diagnostics,
         })
     }
 }

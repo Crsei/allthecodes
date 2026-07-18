@@ -3,6 +3,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
+use std::ops::Range;
+use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -13,6 +15,21 @@ const PROMPT_PREFIX: &str = "> ";
 const PROMPT_PREFIX_WIDTH: usize = 2;
 const INPUT_VERTICAL_PADDING: u16 = 2;
 pub const MAX_VISIBLE_INPUT_LINES: usize = 8;
+
+const LARGE_PASTE_CHAR_THRESHOLD: usize = 512;
+const LARGE_PASTE_LINE_THRESHOLD: usize = 4;
+
+/// A source-map entry for a compact paste reference in the editable display
+/// string. `range` points at the visible `[Pasted Content ...]` token while
+/// `original` is the exact normalized text submitted to the engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LargePasteRange {
+    pub id: u64,
+    pub range: Range<usize>,
+    pub original: String,
+    pub char_count: usize,
+    pub line_count: usize,
+}
 
 /// One display row of the prompt text. `start..end` is always a UTF-8
 /// character-boundary range in the original input.
@@ -62,8 +79,9 @@ pub struct PromptInput {
     pub cursor_position: usize,
     /// Whether this widget is focused / accepting input.
     pub is_active: bool,
-    /// Summary of the most recent large paste, shown by the app chrome only.
-    large_paste_notice: Option<String>,
+    /// Source-map entries for compact large-paste references in `input`.
+    large_paste_ranges: Vec<LargePasteRange>,
+    next_large_paste_id: u64,
     /// Optional ghost suffix text shown dimmed after the cursor.
     ghost_suffix: Option<String>,
     /// Whether to show the ghost suffix.
@@ -77,6 +95,7 @@ pub struct PromptInputRenderContext<'a> {
     pub hint: Option<&'a str>,
     pub placeholder: Option<&'a str>,
     pub mode_indicator: Option<&'a str>,
+    pub command_highlights: &'a [Range<usize>],
 }
 
 impl PromptInput {
@@ -85,7 +104,8 @@ impl PromptInput {
             input: String::new(),
             cursor_position: 0,
             is_active: true,
-            large_paste_notice: None,
+            large_paste_ranges: Vec::new(),
+            next_large_paste_id: 1,
             ghost_suffix: None,
             show_ghost: false,
             desired_vertical_column: None,
@@ -140,10 +160,10 @@ impl PromptInput {
                 if self.input.trim().is_empty() {
                     return None;
                 }
-                let text = self.input.clone();
+                let text = self.expanded_text();
                 self.input.clear();
                 self.cursor_position = 0;
-                self.large_paste_notice = None;
+                self.large_paste_ranges.clear();
                 self.desired_vertical_column = None;
                 return Some(text);
             }
@@ -153,8 +173,7 @@ impl PromptInput {
 
             // Ctrl shortcuts
             (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-                self.input.clear();
-                self.cursor_position = 0;
+                self.clear();
                 self.reset_vertical_column();
             }
             (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
@@ -171,7 +190,7 @@ impl PromptInput {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
                 let end = self.current_visual_line_end();
-                self.input.drain(self.cursor_position..end);
+                self.delete_range(self.cursor_position..end);
                 self.reset_vertical_column();
             }
 
@@ -186,27 +205,27 @@ impl PromptInput {
                 self.reset_vertical_column();
             }
             (_, KeyCode::Home) => {
-                self.cursor_position = self.current_visual_line_start();
+                self.cursor_position = self.snap_cursor(self.current_visual_line_start());
                 self.reset_vertical_column();
             }
             (_, KeyCode::End) => {
-                self.cursor_position = self.current_visual_line_end();
+                self.cursor_position = self.snap_cursor(self.current_visual_line_end());
                 self.reset_vertical_column();
             }
 
             // Deletion
             (_, KeyCode::Backspace) => {
                 if self.cursor_position > 0 {
-                    let prev = self.prev_grapheme_boundary();
-                    self.input.drain(prev..self.cursor_position);
-                    self.cursor_position = prev;
+                    let (start, end) = self.deletion_range_backwards();
+                    self.delete_range(start..end);
+                    self.cursor_position = start;
                 }
                 self.reset_vertical_column();
             }
             (_, KeyCode::Delete) => {
                 if self.cursor_position < self.input.len() {
-                    let next = self.next_grapheme_boundary();
-                    self.input.drain(self.cursor_position..next);
+                    let (start, end) = self.deletion_range_forwards();
+                    self.delete_range(start..end);
                 }
                 self.reset_vertical_column();
             }
@@ -248,7 +267,11 @@ impl PromptInput {
             self.cursor_position.min(lines[current].end),
         );
         let desired = self.desired_vertical_column.unwrap_or(current_column);
-        self.cursor_position = byte_offset_at_display_column(&self.input, &lines[target], desired);
+        self.cursor_position = self.snap_cursor(byte_offset_at_display_column(
+            &self.input,
+            &lines[target],
+            desired,
+        ));
         self.desired_vertical_column = Some(desired);
         true
     }
@@ -269,17 +292,111 @@ impl PromptInput {
     /// Insert pasted text, normalizing all common terminal newline forms.
     pub fn paste_text(&mut self, text: &str) {
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        self.insert_text_internal(&normalized);
-        self.large_paste_notice = large_paste_notice(&normalized);
+        if is_large_paste(&normalized) {
+            self.insert_large_paste(&normalized);
+        } else {
+            self.insert_text_internal(&normalized);
+        }
     }
 
+    /// Return the exact text represented by the editable display string.
+    /// Large paste placeholders are expanded only at the submission boundary.
+    pub fn expanded_text(&self) -> String {
+        if self.large_paste_ranges.is_empty() {
+            return self.input.clone();
+        }
+
+        let mut expanded = String::with_capacity(self.input.len());
+        let mut cursor = 0;
+        for paste in &self.large_paste_ranges {
+            if paste.range.start < cursor
+                || paste.range.end > self.input.len()
+                || paste.range.start > paste.range.end
+            {
+                return self.input.clone();
+            }
+            expanded.push_str(&self.input[cursor..paste.range.start]);
+            expanded.push_str(&paste.original);
+            cursor = paste.range.end;
+        }
+        expanded.push_str(&self.input[cursor..]);
+        expanded
+    }
+
+    /// Return the current source-map entries for tests and diagnostics.
     #[cfg(test)]
-    pub fn take_large_paste_notice(&mut self) -> Option<String> {
-        self.large_paste_notice.take()
+    pub fn large_paste_ranges(&self) -> &[LargePasteRange] {
+        &self.large_paste_ranges
     }
 
-    pub fn large_paste_notice(&self) -> Option<&str> {
-        self.large_paste_notice.as_deref()
+    /// Replace the display text from history, a picker, or an external
+    /// editor. These sources already carry the text that should be edited, so
+    /// any old placeholder mapping must be discarded atomically.
+    pub fn set_input(&mut self, text: String) {
+        self.input = text;
+        self.large_paste_ranges.clear();
+        self.cursor_position = self.input.len();
+        self.reset_vertical_column();
+    }
+
+    pub fn clear(&mut self) {
+        self.input.clear();
+        self.large_paste_ranges.clear();
+        self.cursor_position = 0;
+    }
+
+    /// Replace a byte range using the same source-map rules as keyboard
+    /// editing. This keeps completion and vim operations from leaving stale
+    /// paste payloads behind.
+    pub fn replace_range(&mut self, range: Range<usize>, replacement: &str) {
+        if range.start > range.end || range.end > self.input.len() {
+            return;
+        }
+        self.delete_range(range.clone());
+        self.cursor_position = range.start.min(self.input.len());
+        self.insert_text_internal(replacement);
+    }
+
+    pub fn delete_range(&mut self, range: Range<usize>) {
+        let mut start = range.start.min(self.input.len());
+        let mut end = range.end.min(self.input.len());
+        if start > end || !self.input.is_char_boundary(start) || !self.input.is_char_boundary(end) {
+            return;
+        }
+        // A paste is an atomic editing unit. Expand arbitrary ranges (vim,
+        // completion, or a stale byte cursor) to cover any placeholder they
+        // touch before removing bytes from the display projection.
+        loop {
+            let expanded = self
+                .large_paste_ranges
+                .iter()
+                .filter(|paste| paste.range.start < end && paste.range.end > start)
+                .fold((start, end), |(start, end), paste| {
+                    (start.min(paste.range.start), end.max(paste.range.end))
+                });
+            if expanded == (start, end) {
+                break;
+            }
+            (start, end) = expanded;
+        }
+        if start >= end {
+            return;
+        }
+        self.remove_overlapping_pastes(start..end);
+        self.input.drain(start..end);
+        let removed = end - start;
+        for paste in &mut self.large_paste_ranges {
+            if paste.range.start >= end {
+                paste.range.start -= removed;
+                paste.range.end -= removed;
+            }
+        }
+        self.cursor_position = start.min(self.input.len());
+    }
+
+    pub fn set_cursor_position(&mut self, position: usize) {
+        self.cursor_position = self.snap_cursor(position.min(self.input.len()));
+        self.reset_vertical_column();
     }
 
     #[cfg(test)]
@@ -303,6 +420,7 @@ impl PromptInput {
                 hint,
                 placeholder: None,
                 mode_indicator: None,
+                command_highlights: &[],
             },
         )
     }
@@ -354,9 +472,13 @@ impl PromptInput {
                     ));
                 }
             } else if self.is_active {
-                spans.push(Span::styled(
-                    text.to_string(),
+                spans.extend(render_input_spans(
+                    &self.input,
+                    visual.start,
+                    visual.end,
+                    context.command_highlights,
                     with_input_background(Style::default()),
+                    with_input_background(theme.info),
                 ));
                 if self.show_ghost
                     && visual_index == layout.caret_visual_line
@@ -468,9 +590,86 @@ impl PromptInput {
         if text.is_empty() {
             return;
         }
-        self.input.insert_str(self.cursor_position, text);
-        self.cursor_position += text.len();
+        self.cursor_position = self.snap_cursor(self.cursor_position.min(self.input.len()));
+        let position = self.cursor_position;
+        self.input.insert_str(position, text);
+        self.shift_ranges_for_insert(position, text.len());
+        self.cursor_position = position + text.len();
         self.reset_vertical_column();
+    }
+
+    fn insert_large_paste(&mut self, original: &str) {
+        let char_count = original.chars().count();
+        let line_count = original.lines().count().max(1);
+        let placeholder = format!("[Pasted Content {char_count} chars]");
+        let position = self.snap_cursor(self.cursor_position.min(self.input.len()));
+        self.input.insert_str(position, &placeholder);
+        self.shift_ranges_for_insert(position, placeholder.len());
+        self.large_paste_ranges.push(LargePasteRange {
+            id: self.next_large_paste_id,
+            range: position..position + placeholder.len(),
+            original: original.to_string(),
+            char_count,
+            line_count,
+        });
+        self.next_large_paste_id = self.next_large_paste_id.saturating_add(1);
+        self.large_paste_ranges
+            .sort_by_key(|paste| paste.range.start);
+        self.cursor_position = position + placeholder.len();
+        self.reset_vertical_column();
+    }
+
+    fn shift_ranges_for_insert(&mut self, position: usize, amount: usize) {
+        for paste in &mut self.large_paste_ranges {
+            if paste.range.start >= position {
+                paste.range.start += amount;
+                paste.range.end += amount;
+            }
+        }
+    }
+
+    fn remove_overlapping_pastes(&mut self, range: Range<usize>) {
+        self.large_paste_ranges
+            .retain(|paste| paste.range.end <= range.start || paste.range.start >= range.end);
+    }
+
+    fn snap_cursor(&self, position: usize) -> usize {
+        self.large_paste_ranges
+            .iter()
+            .find(|paste| position > paste.range.start && position < paste.range.end)
+            .map_or(position, |paste| {
+                if position - paste.range.start < paste.range.end - position {
+                    paste.range.start
+                } else {
+                    paste.range.end
+                }
+            })
+    }
+
+    fn deletion_range_backwards(&self) -> (usize, usize) {
+        let cursor = self.cursor_position.min(self.input.len());
+        if let Some(paste) = self
+            .large_paste_ranges
+            .iter()
+            .find(|paste| paste.range.end == cursor)
+        {
+            return (paste.range.start, paste.range.end);
+        }
+        let prev = self.prev_grapheme_boundary();
+        (prev, cursor)
+    }
+
+    fn deletion_range_forwards(&self) -> (usize, usize) {
+        let cursor = self.cursor_position.min(self.input.len());
+        if let Some(paste) = self
+            .large_paste_ranges
+            .iter()
+            .find(|paste| paste.range.start == cursor)
+        {
+            return (paste.range.start, paste.range.end);
+        }
+        let next = self.next_grapheme_boundary();
+        (cursor, next)
     }
 
     fn reset_vertical_column(&mut self) {
@@ -479,13 +678,29 @@ impl PromptInput {
 
     fn move_cursor_left(&mut self) {
         if self.cursor_position > 0 {
-            self.cursor_position = self.prev_grapheme_boundary();
+            if let Some(paste) = self
+                .large_paste_ranges
+                .iter()
+                .find(|paste| paste.range.end == self.cursor_position)
+            {
+                self.cursor_position = paste.range.start;
+            } else {
+                self.cursor_position = self.snap_cursor(self.prev_grapheme_boundary());
+            }
         }
     }
 
     fn move_cursor_right(&mut self) {
         if self.cursor_position < self.input.len() {
-            self.cursor_position = self.next_grapheme_boundary();
+            if let Some(paste) = self
+                .large_paste_ranges
+                .iter()
+                .find(|paste| paste.range.start == self.cursor_position)
+            {
+                self.cursor_position = paste.range.end;
+            } else {
+                self.cursor_position = self.snap_cursor(self.next_grapheme_boundary());
+            }
         }
     }
 
@@ -554,8 +769,8 @@ impl PromptInput {
             }
             end = start;
         }
-        self.input.drain(end..self.cursor_position);
-        self.cursor_position = end;
+        self.delete_range(end..self.cursor_position);
+        self.cursor_position = end.min(self.input.len());
     }
 }
 
@@ -740,15 +955,98 @@ fn byte_offset_at_display_column(
     line.end
 }
 
-fn large_paste_notice(text: &str) -> Option<String> {
+fn is_large_paste(text: &str) -> bool {
     let char_count = text.chars().count();
     let line_count = text.lines().count().max(1);
-    if char_count < 512 && line_count < 4 {
-        return None;
+    char_count >= LARGE_PASTE_CHAR_THRESHOLD || line_count >= LARGE_PASTE_LINE_THRESHOLD
+}
+
+/// Find executable slash-command tokens using the same cwd-scoped metadata
+/// registry as command dispatch and the command palette. The returned ranges
+/// include the leading slash but stop before the first argument.
+pub fn slash_command_highlight_ranges(input: &str, cwd: &Path) -> Vec<Range<usize>> {
+    let metadata = allthecodes_commands::get_dynamic_metadata_for_cwd(cwd);
+    slash_command_highlight_ranges_for_metadata(input, &metadata)
+}
+
+fn slash_command_highlight_ranges_for_metadata(
+    input: &str,
+    metadata: &[allthecodes_commands::CommandMetadata],
+) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    for (slash, character) in input.char_indices() {
+        if character != '/' {
+            continue;
+        }
+        if slash > 0
+            && input[..slash]
+                .chars()
+                .next_back()
+                .is_some_and(|previous| !previous.is_whitespace())
+        {
+            continue;
+        }
+        let name_start = slash + character.len_utf8();
+        let token_end = input[name_start..]
+            .find(char::is_whitespace)
+            .map_or(input.len(), |offset| name_start + offset);
+        let name = &input[name_start..token_end];
+        if name.is_empty() || name.contains('/') || name.contains(':') {
+            continue;
+        }
+        let known = metadata.iter().any(|command| {
+            command.name == name || command.aliases.iter().any(|alias| alias == name)
+        });
+        if known {
+            ranges.push(slash..token_end);
+        }
     }
-    Some(format!(
-        "Pasted {char_count} chars across {line_count} lines; the full text remains editable."
-    ))
+    ranges
+}
+
+fn render_input_spans(
+    input: &str,
+    line_start: usize,
+    line_end: usize,
+    highlights: &[Range<usize>],
+    normal_style: Style,
+    highlight_style: Style,
+) -> Vec<Span<'static>> {
+    if highlights.is_empty() {
+        return vec![Span::styled(
+            input[line_start..line_end].to_string(),
+            normal_style,
+        )];
+    }
+
+    let mut spans = Vec::new();
+    let mut cursor = line_start;
+    for range in highlights {
+        let start = range.start.max(line_start);
+        let end = range.end.min(line_end);
+        if start >= end || end <= cursor {
+            continue;
+        }
+        if cursor < start {
+            spans.push(Span::styled(input[cursor..start].to_string(), normal_style));
+        }
+        let highlighted_start = start.max(cursor);
+        spans.push(Span::styled(
+            input[highlighted_start..end].to_string(),
+            highlight_style,
+        ));
+        cursor = end;
+        if cursor >= line_end {
+            break;
+        }
+    }
+    if cursor < line_end {
+        spans.push(Span::styled(
+            input[cursor..line_end].to_string(),
+            normal_style,
+        ));
+    }
+    spans
 }
 
 fn fill_input_background(area: Rect, buf: &mut Buffer) {
@@ -793,6 +1091,7 @@ mod tests {
                 hint: Some("hint"),
                 placeholder: Some("Message allthecodes"),
                 mode_indicator: Some("INS"),
+                command_highlights: &[],
             },
         );
         (0..height)
@@ -936,17 +1235,168 @@ mod tests {
         let mut input = PromptInput::new();
         input.paste_text("a\r\nb\rc");
         assert_eq!(input.input, "a\nb\nc");
-        assert!(input.large_paste_notice().is_none());
+        assert!(input.large_paste_ranges().is_empty());
+        assert_eq!(input.expanded_text(), "a\nb\nc");
     }
 
     #[test]
-    fn large_paste_notice_does_not_replace_editable_text() {
+    fn large_paste_uses_inline_reference_but_submits_the_original_text() {
         let mut input = PromptInput::new();
-        let pasted = ["中文内容"; 200].join("\n");
+        let pasted = "x".repeat(512);
         input.paste_text(&pasted);
-        assert_eq!(input.input, pasted);
-        assert!(input.large_paste_notice().is_some());
-        assert!(input.take_large_paste_notice().is_some());
+        assert_eq!(input.input, "[Pasted Content 512 chars]");
+        assert_eq!(input.expanded_text(), pasted);
+        assert_eq!(input.large_paste_ranges().len(), 1);
+        assert_eq!(input.large_paste_ranges()[0].char_count, 512);
+        assert_eq!(input.large_paste_ranges()[0].line_count, 1);
+    }
+
+    #[test]
+    fn large_paste_thresholds_cover_character_and_line_boundaries() {
+        let mut chars_below = PromptInput::new();
+        chars_below.paste_text(&"x".repeat(511));
+        assert!(chars_below.large_paste_ranges().is_empty());
+
+        let mut chars_at = PromptInput::new();
+        chars_at.paste_text(&"x".repeat(512));
+        assert_eq!(chars_at.large_paste_ranges().len(), 1);
+
+        let mut lines_below = PromptInput::new();
+        lines_below.paste_text("a\nb\nc");
+        assert!(lines_below.large_paste_ranges().is_empty());
+
+        let mut lines_at = PromptInput::new();
+        lines_at.paste_text("a\nb\nc\nd");
+        assert_eq!(lines_at.large_paste_ranges().len(), 1);
+        assert_eq!(lines_at.large_paste_ranges()[0].line_count, 4);
+        assert_eq!(lines_at.expanded_text(), "a\nb\nc\nd");
+    }
+
+    #[test]
+    fn multiple_pastes_keep_stable_ids_when_an_earlier_reference_is_deleted() {
+        let first_text = "a".repeat(512);
+        let second_text = "b".repeat(512);
+        let mut input = PromptInput::new();
+        input.paste_text(&first_text);
+        input.paste_text(&second_text);
+
+        assert_eq!(
+            input
+                .large_paste_ranges()
+                .iter()
+                .map(|paste| paste.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let first_end = input.large_paste_ranges()[0].range.end;
+        input.set_cursor_position(first_end);
+        assert_eq!(
+            input.handle_key(key(KeyCode::Backspace, KeyModifiers::NONE)),
+            None
+        );
+
+        assert_eq!(input.large_paste_ranges().len(), 1);
+        assert_eq!(input.large_paste_ranges()[0].id, 2);
+        assert_eq!(input.expanded_text(), second_text);
+    }
+
+    #[test]
+    fn paste_reference_is_an_atomic_cursor_and_delete_unit() {
+        let pasted = "🙂".repeat(512);
+        let mut input = PromptInput::new();
+        input.insert_str("before ");
+        input.paste_text(&pasted);
+        input.insert_str(" after");
+        let paste = input.large_paste_ranges()[0].clone();
+
+        input.set_cursor_position(paste.range.end);
+        assert_eq!(
+            input.handle_key(key(KeyCode::Left, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(input.cursor_position, paste.range.start);
+        assert_eq!(
+            input.handle_key(key(KeyCode::Right, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(input.cursor_position, paste.range.end);
+        assert_eq!(
+            input.handle_key(key(KeyCode::Backspace, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(input.expanded_text(), "before  after");
+        assert!(input.large_paste_ranges().is_empty());
+    }
+
+    #[test]
+    fn manually_typed_reference_text_is_never_expanded() {
+        let mut input = PromptInput::new();
+        input.set_input("[Pasted Content 512 chars]".to_string());
+        assert!(input.large_paste_ranges().is_empty());
+        assert_eq!(input.expanded_text(), "[Pasted Content 512 chars]");
+    }
+
+    #[test]
+    fn slash_highlight_ranges_require_registered_commands_and_token_boundaries() {
+        let metadata = vec![
+            allthecodes_commands::CommandMetadata {
+                name: "model".to_string(),
+                aliases: vec!["m".to_string()],
+                description: String::new(),
+            },
+            allthecodes_commands::CommandMetadata {
+                name: "help".to_string(),
+                aliases: vec!["h".to_string()],
+                description: String::new(),
+            },
+        ];
+
+        assert_eq!(
+            slash_command_highlight_ranges_for_metadata("/model gpt-5", &metadata),
+            vec![0..6]
+        );
+        assert_eq!(
+            slash_command_highlight_ranges_for_metadata("/m arg\n/help", &metadata),
+            vec![0..2, 7..12]
+        );
+        assert!(slash_command_highlight_ranges_for_metadata("/unknown", &metadata).is_empty());
+        assert!(slash_command_highlight_ranges_for_metadata("/usr/bin", &metadata).is_empty());
+        assert!(slash_command_highlight_ranges_for_metadata(
+            "https://example.test/help",
+            &metadata
+        )
+        .is_empty());
+        assert!(slash_command_highlight_ranges_for_metadata("prefix/model", &metadata).is_empty());
+    }
+
+    #[test]
+    fn slash_highlight_preserves_normal_style_for_cjk_arguments() {
+        let metadata = vec![allthecodes_commands::CommandMetadata {
+            name: "model".to_string(),
+            aliases: Vec::new(),
+            description: String::new(),
+        }];
+        let mut input = PromptInput::new();
+        input.insert_str("/model 中文参数");
+        let highlights = slash_command_highlight_ranges_for_metadata(&input.input, &metadata);
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        input.render_with_context(
+            area,
+            &mut buf,
+            &theme,
+            PromptInputRenderContext {
+                hint: None,
+                placeholder: None,
+                mode_indicator: None,
+                command_highlights: &highlights,
+            },
+        );
+
+        assert_eq!(buf[(2, 1)].style().fg, theme.info.fg);
+        assert_ne!(buf[(9, 1)].style().fg, theme.info.fg);
+        assert!(buf[(9, 1)].symbol().contains('中'));
     }
 
     #[test]

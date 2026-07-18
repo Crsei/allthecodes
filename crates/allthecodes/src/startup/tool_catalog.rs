@@ -1,6 +1,7 @@
 use allthecodes_engine::types::tool::Tools;
 use tracing::{debug, info, warn};
 
+use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSource};
 use crate::startup::plugin_runtime::PluginRuntime;
 use crate::startup::settings_runtime::SettingsRuntime;
 use crate::startup::startup_context::StartupContext;
@@ -10,6 +11,7 @@ use crate::startup_skills::{
 
 pub(crate) struct ToolCatalog {
     pub(crate) tools: Tools,
+    pub(crate) diagnostics: Vec<StartupDiagnostic>,
 }
 
 pub(crate) struct ToolCatalogBuilder;
@@ -20,6 +22,7 @@ impl ToolCatalogBuilder {
         _settings: &SettingsRuntime,
         plugins: &PluginRuntime,
     ) -> anyhow::Result<ToolCatalog> {
+        let mut diagnostics = plugins.diagnostics.clone();
         debug!(
             plugins = plugins.all_plugins.len(),
             "building startup tool catalog after plugin runtime"
@@ -57,12 +60,22 @@ impl ToolCatalogBuilder {
             let session = ChromeSession::new(startup.chrome_enablement);
             if let Err(e) = session.start() {
                 warn!(error = %e, "Chrome subsystem startup failed");
+                diagnostics.push(StartupDiagnostic::warning(
+                    "chrome-startup",
+                    StartupDiagnosticSource::Other,
+                    "Browser companion startup failed",
+                    Some(e.to_string()),
+                    Some(
+                        "Check the browser companion configuration or use /chrome status."
+                            .to_string(),
+                    ),
+                ));
             }
             if allthecodes_browser::state::is_enabled() {
                 info!("Claude in Chrome subsystem active - use /chrome for status");
             }
         }
 
-        Ok(ToolCatalog { tools })
+        Ok(ToolCatalog { tools, diagnostics })
     }
 }

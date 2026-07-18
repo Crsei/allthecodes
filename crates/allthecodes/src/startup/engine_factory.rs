@@ -11,6 +11,7 @@ use allthecodes_engine::types::tool::Tools;
 use tracing::{debug, info, warn};
 
 use crate::classifier_model;
+use crate::startup::diagnostics::{deduplicate, StartupDiagnostic, StartupDiagnosticSource};
 use crate::startup::mcp_runtime::McpRuntime;
 use crate::startup::model_runtime::ModelRuntime;
 use crate::startup::runtime_composition::RuntimeReady;
@@ -83,6 +84,8 @@ impl EngineFactory {
         mut app_state: AppState,
         runtime_services: Arc<RuntimeServices>,
     ) -> anyhow::Result<RuntimeReady> {
+        let mut startup_diagnostics = model.diagnostics;
+        startup_diagnostics.extend(mcp.diagnostics);
         let StartupContext {
             cli,
             cwd,
@@ -107,16 +110,37 @@ impl EngineFactory {
                         }
                         Err(e) => {
                             warn!(error = %e, "failed to load session messages");
+                            startup_diagnostics.push(StartupDiagnostic::warning(
+                                "history-load",
+                                StartupDiagnosticSource::History,
+                                "Failed to load the requested session history",
+                                Some(e.to_string()),
+                                Some("Start a new session or check the session store.".to_string()),
+                            ));
                             (None, None)
                         }
                     }
                 }
                 Ok(None) => {
                     warn!("no session to resume");
+                    startup_diagnostics.push(StartupDiagnostic::error(
+                        "history-resume-missing",
+                        StartupDiagnosticSource::History,
+                        "No resumable session was found",
+                        None,
+                        Some("Start a new session without --resume.".to_string()),
+                    ));
                     (None, None)
                 }
                 Err(e) => {
                     warn!(error = %e, "failed to find session to resume");
+                    startup_diagnostics.push(StartupDiagnostic::warning(
+                        "history-resume-lookup",
+                        StartupDiagnosticSource::History,
+                        "Could not find the session to resume",
+                        Some(e.to_string()),
+                        Some("Check the session store or start a new session.".to_string()),
+                    ));
                     (None, None)
                 }
             }
@@ -129,6 +153,13 @@ impl EngineFactory {
                 }
                 Err(e) => {
                     warn!(error = %e, "failed to load session {}", session_id);
+                    startup_diagnostics.push(StartupDiagnostic::warning(
+                        "history-continue-load",
+                        StartupDiagnosticSource::History,
+                        "Failed to load the requested continued session",
+                        Some(e.to_string()),
+                        Some("Check the session id or start a new session.".to_string()),
+                    ));
                     (None, None)
                 }
             }
@@ -148,6 +179,13 @@ impl EngineFactory {
                         error = %err,
                         "failed to restore team context for resumed session"
                     );
+                    startup_diagnostics.push(StartupDiagnostic::warning(
+                        "history-team-context",
+                        StartupDiagnosticSource::History,
+                        "Resumed team context could not be restored",
+                        Some(err.to_string()),
+                        Some("Review the resumed session's team state.".to_string()),
+                    ));
                 }
             }
         }
@@ -290,6 +328,13 @@ impl EngineFactory {
                 }
                 Err(e) => {
                     warn!(error = %e, "failed to initialize audit sink, continuing without audit logging");
+                    startup_diagnostics.push(StartupDiagnostic::error(
+                        "audit-startup",
+                        StartupDiagnosticSource::Other,
+                        "Audit logging could not be initialized",
+                        Some(e.to_string()),
+                        Some("Check the runs directory permissions.".to_string()),
+                    ));
                 }
             }
         }
@@ -315,6 +360,7 @@ impl EngineFactory {
             merged_config,
             runtime_services,
             engine,
+            startup_diagnostics: deduplicate(startup_diagnostics),
         })
     }
 }

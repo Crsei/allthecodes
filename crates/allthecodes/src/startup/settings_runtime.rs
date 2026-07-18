@@ -1,12 +1,14 @@
 use allthecodes_config::settings;
 use tracing::{debug, info, warn};
 
+use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSource};
 use crate::startup::startup_context::StartupContext;
 
 pub(crate) struct SettingsRuntime {
     pub(crate) loaded_settings: settings::LoadedSettings,
     pub(crate) merged_config: settings::EffectiveSettings,
     pub(crate) backend: String,
+    pub(crate) diagnostics: Vec<StartupDiagnostic>,
 }
 
 pub(crate) struct SettingsRuntimeBuilder;
@@ -14,11 +16,19 @@ pub(crate) struct SettingsRuntimeBuilder;
 impl SettingsRuntimeBuilder {
     pub(crate) async fn build(startup: &mut StartupContext) -> anyhow::Result<SettingsRuntime> {
         let cwd = startup.cwd.to_string_lossy();
+        let mut diagnostics = Vec::new();
 
         let first_run_initialized = match allthecodes_config::settings::initialize_first_run() {
             Ok(created) => created,
             Err(e) => {
                 warn!(error = %e, "first-run initialization failed; continuing with defaults");
+                diagnostics.push(StartupDiagnostic::warning(
+                    "settings-first-run",
+                    StartupDiagnosticSource::Settings,
+                    "First-run settings initialization failed",
+                    Some(e.to_string()),
+                    Some("Check the allthecodes home directory permissions.".to_string()),
+                ));
                 false
             }
         };
@@ -27,6 +37,13 @@ impl SettingsRuntimeBuilder {
             let store = allthecodes_services::onboarding::OnboardingStore::open_default();
             if let Err(e) = store.update(|_| {}) {
                 warn!(error = %e, "failed to initialize onboarding state");
+                diagnostics.push(StartupDiagnostic::warning(
+                    "settings-onboarding",
+                    StartupDiagnosticSource::Settings,
+                    "Onboarding state could not be initialized",
+                    Some(e.to_string()),
+                    Some("Run /doctor after fixing the settings directory.".to_string()),
+                ));
             }
         }
 
@@ -70,6 +87,7 @@ impl SettingsRuntimeBuilder {
             loaded_settings,
             merged_config,
             backend,
+            diagnostics,
         })
     }
 }

@@ -20,7 +20,7 @@ use crate::ui::overlays::{
     render_prompt_adjacent_dialog_lines, render_prompt_adjacent_lines, CenteredOverlayFrame,
 };
 use crate::ui::panel_layout::PanelSizePreset;
-use crate::ui::prompt_input::PromptInputRenderContext;
+use crate::ui::prompt_input::{slash_command_highlight_ranges, PromptInputRenderContext};
 use crate::ui::theme::identity::{agent_identity_style, AgentIdentity};
 use crate::ui::theme::{Theme, ThemeColors};
 use crate::ui::transcript::{self, TranscriptInputMode, ViewMode};
@@ -110,9 +110,8 @@ impl App {
             .min(size.height.saturating_sub(4));
         let completion_popup_height = self.completion_popup_height();
         let cwd_path = std::path::Path::new(&self.session_ui.cwd);
+        let command_highlights = slash_command_highlight_ranges(&self.prompt.input, cwd_path);
         let command_arg_help_height = 0;
-        let paste_notice_height =
-            u16::from(self.prompt.large_paste_notice().is_some() && !immediate_notification);
         let notification_height = u16::from(current_notification.is_some());
         let context_height = u16::from(!self.runtime_view.context_layer().items().is_empty());
         let agent_footer_height = if self.agent_footer_visible() && !immediate_notification {
@@ -131,7 +130,6 @@ impl App {
         let bottom_pane = BottomPaneHeights {
             spinner: spinner_height,
             suggestions: suggestion_height,
-            paste_notice: paste_notice_height,
             input: input_height,
             completion_popup: completion_popup_height,
             command_palette: command_palette_height,
@@ -180,14 +178,14 @@ impl App {
 
         let chunks = Layout::vertical([
             Constraint::Length(content_height),
+            Constraint::Min(0),
             Constraint::Length(message_bottom_gap_height),
             Constraint::Length(bottom_height),
-            Constraint::Min(0),
         ])
         .split(size);
 
         let message_area = chunks[0];
-        let bottom_area = chunks[2];
+        let bottom_area = chunks[3];
         self.render_layout.message_area = Some(message_area);
 
         if self.show_welcome {
@@ -266,7 +264,7 @@ impl App {
             }
         }
 
-        // Bottom area: spinner + suggestions + paste_notice + completion_popup + palette + arg_help + input + notification + context + agent_footer + status
+        // Bottom area: spinner + suggestions + completion_popup + palette + arg_help + input + notification + context + agent_footer + status
         let has_suggestions = suggestion_height > 0;
         let bottom_chunks = bottom_pane.split(bottom_area);
         self.render_layout.prompt_area = Some(bottom_chunks.input);
@@ -278,10 +276,6 @@ impl App {
 
         if has_suggestions {
             self.render_suggestions(bottom_chunks.suggestions, frame.buffer_mut());
-        }
-
-        if paste_notice_height > 0 {
-            self.render_paste_notice(bottom_chunks.paste_notice, frame.buffer_mut());
         }
 
         // Render completion popup (when active and command palette is not active)
@@ -311,6 +305,7 @@ impl App {
                 hint: prompt_hint,
                 placeholder: Some(placeholder),
                 mode_indicator: Some(mode_indicator),
+                command_highlights: &command_highlights,
             },
         );
 
@@ -443,19 +438,6 @@ impl App {
                 hint,
                 ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray),
             ));
-            buf.set_line(area.x, area.y, &line, area.width);
-        }
-    }
-
-    fn render_paste_notice(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
-        if area.height == 0 {
-            return;
-        }
-        if let Some(notice) = self.prompt.large_paste_notice() {
-            let line = Line::from(vec![
-                Span::styled(" paste ", self.theme.info),
-                Span::styled(notice.to_string(), self.theme.dim),
-            ]);
             buf.set_line(area.x, area.y, &line, area.width);
         }
     }
@@ -650,9 +632,6 @@ impl App {
         }
         if let Some(verification) = &self.session_ui.verification {
             parts.push(verification.render_inline());
-        }
-        if !self.session_ui.model_name.is_empty() {
-            parts.push(self.session_ui.model_name.clone());
         }
         if !self.session_ui.cwd.is_empty() {
             parts.push(self.session_ui.cwd.clone());

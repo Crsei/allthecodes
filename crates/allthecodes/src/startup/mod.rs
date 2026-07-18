@@ -1,4 +1,5 @@
 pub(crate) mod app_state_factory;
+pub(crate) mod diagnostics;
 pub(crate) mod engine_factory;
 pub(crate) mod mcp_runtime;
 pub(crate) mod mode_router;

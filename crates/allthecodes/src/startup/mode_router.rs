@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use anyhow::Context;
 use tracing::{error, warn};
 
+use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSource};
 use crate::startup::runtime_composition::{RuntimeComposition, RuntimeReady};
 use crate::startup_skills::persist_skill_usage;
 
@@ -158,6 +159,7 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
     }
 
     let shutdown_token = crate::shutdown::register_shutdown_handler();
+    let mut startup_diagnostics = runtime.startup_diagnostics.clone();
 
     let mut dashboard_companion = if subagent_dashboard_companion_enabled() {
         let dashboard = async {
@@ -168,6 +170,15 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
             Ok(child) => Some(child),
             Err(e) => {
                 warn!(error = %e, "failed to start subagent dashboard companion");
+                startup_diagnostics.push(StartupDiagnostic::warning(
+                    "dashboard-companion",
+                    StartupDiagnosticSource::Dashboard,
+                    "Subagent dashboard companion failed to start",
+                    Some(e.to_string()),
+                    Some(
+                        "Use the TUI without the dashboard or check its configuration.".to_string(),
+                    ),
+                ));
                 None
             }
         }
@@ -179,6 +190,7 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
         runtime.engine.clone(),
         runtime.initial_prompt,
         &runtime.model,
+        startup_diagnostics,
         shutdown_token,
     )
     .await;

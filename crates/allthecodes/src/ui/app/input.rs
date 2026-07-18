@@ -207,8 +207,7 @@ impl App {
                 (_, KeyCode::Enter) => {
                     if let Some(command) = self.command_palette.selected_command_for_execution() {
                         self.command_palette.close();
-                        self.prompt.input.clear();
-                        self.prompt.cursor_position = 0;
+                        self.prompt.clear();
                         self.prompt.reset_vertical_navigation();
                         return AppAction::Submit(command);
                     }
@@ -222,8 +221,7 @@ impl App {
                 }
                 (KeyModifiers::NONE, KeyCode::Char(' ')) => {
                     if let Some(command_input) = self.command_palette.selected_command_input() {
-                        self.prompt.input = command_input;
-                        self.prompt.cursor_position = self.prompt.input.len();
+                        self.prompt.set_input(command_input);
                         self.prompt.reset_vertical_navigation();
                         self.command_palette.close();
                         return AppAction::None;
@@ -440,8 +438,8 @@ impl App {
                 let range = &item.range;
                 let insert = &item.insert_text;
                 if range.end <= self.prompt.input.len() {
-                    self.prompt.input.replace_range(range.clone(), insert);
-                    self.prompt.cursor_position = range.start + insert.len();
+                    self.prompt.replace_range(range.clone(), insert);
+                    self.prompt.set_cursor_position(range.start + insert.len());
                     self.prompt.reset_vertical_navigation();
                 }
             }
@@ -549,8 +547,7 @@ impl App {
             }
             CommandSurfaceOutcome::FillPrompt(text) => {
                 self.overlays.command_surface = None;
-                self.prompt.input = text;
-                self.prompt.cursor_position = self.prompt.input.len();
+                self.prompt.set_input(text);
                 self.prompt.is_active = true;
                 self.prompt.reset_vertical_navigation();
                 self.sync_command_palette();
@@ -576,8 +573,7 @@ impl App {
             } => {
                 self.overlays.command_surface = None;
                 if let Some(text) = install_prompt {
-                    self.prompt.input = text;
-                    self.prompt.cursor_position = self.prompt.input.len();
+                    self.prompt.set_input(text);
                     self.prompt.is_active = true;
                     self.prompt.reset_vertical_navigation();
                     self.sync_command_palette();
@@ -605,8 +601,7 @@ impl App {
             }
             HistorySearchDialogEvent::Selected(prompt) => {
                 self.overlays.history_search_dialog = None;
-                self.prompt.input = prompt;
-                self.prompt.cursor_position = self.prompt.input.len();
+                self.prompt.set_input(prompt);
                 self.prompt.is_active = true;
                 self.prompt.reset_vertical_navigation();
                 self.history_index = None;
@@ -853,7 +848,7 @@ impl App {
             return;
         }
         if self.history_index.is_none() {
-            self.saved_input = self.prompt.input.clone();
+            self.saved_input = self.prompt.expanded_text();
             self.history_index = Some(self.session_ui.history.len() - 1);
         } else if let Some(idx) = self.history_index {
             if idx > 0 {
@@ -863,8 +858,8 @@ impl App {
             }
         }
         if let Some(idx) = self.history_index {
-            self.prompt.input = self.session_ui.history[idx].display.clone();
-            self.prompt.cursor_position = self.prompt.input.len();
+            self.prompt
+                .set_input(self.session_ui.history[idx].display.clone());
             self.prompt.reset_vertical_navigation();
         }
     }
@@ -873,13 +868,12 @@ impl App {
         if let Some(idx) = self.history_index {
             if idx < self.session_ui.history.len() - 1 {
                 self.history_index = Some(idx + 1);
-                self.prompt.input = self.session_ui.history[idx + 1].display.clone();
-                self.prompt.cursor_position = self.prompt.input.len();
+                self.prompt
+                    .set_input(self.session_ui.history[idx + 1].display.clone());
                 self.prompt.reset_vertical_navigation();
             } else {
                 self.history_index = None;
-                self.prompt.input = self.saved_input.clone();
-                self.prompt.cursor_position = self.prompt.input.len();
+                self.prompt.set_input(self.saved_input.clone());
                 self.prompt.reset_vertical_navigation();
             }
         }
@@ -889,16 +883,14 @@ impl App {
         if self.prompt.input.trim().is_empty() {
             return None;
         }
-        let text = self.prompt.input.clone();
-        self.prompt.input.clear();
-        self.prompt.cursor_position = 0;
+        let text = self.prompt.expanded_text();
+        self.prompt.clear();
         self.prompt.reset_vertical_navigation();
         Some(text)
     }
 
     pub fn restore_prompt_text(&mut self, text: String) {
-        self.prompt.input = text;
-        self.prompt.cursor_position = self.prompt.input.len();
+        self.prompt.set_input(text);
         self.prompt.is_active = true;
         self.prompt.reset_vertical_navigation();
         self.sync_command_palette();
@@ -1078,8 +1070,7 @@ impl App {
                 return Some(AppAction::None);
             }
             "chat:clearInput" => {
-                self.prompt.input.clear();
-                self.prompt.cursor_position = 0;
+                self.prompt.clear();
                 self.prompt.reset_vertical_navigation();
                 self.dirty = true;
                 return Some(AppAction::None);
@@ -1304,7 +1295,7 @@ impl App {
             .collect::<Vec<_>>();
         self.overlays.history_search_dialog = Some(HistorySearchDialog::from_entries(
             entries,
-            self.prompt.input.clone(),
+            self.prompt.expanded_text(),
             current_unix_secs(),
         ));
         self.command_palette.close();
@@ -1321,14 +1312,16 @@ impl App {
             }
             VimAction::Delete { start, end } => {
                 if start <= end && end <= self.prompt.input.len() {
-                    self.prompt.input.drain(start..end);
-                    self.prompt.cursor_position = start.min(self.prompt.input.len());
+                    self.prompt.delete_range(start..end);
+                    self.prompt
+                        .set_cursor_position(start.min(self.prompt.input.len()));
                     self.prompt.reset_vertical_navigation();
                 }
                 Some(AppAction::None)
             }
             VimAction::MoveCursor(pos) => {
-                self.prompt.cursor_position = pos.min(self.prompt.input.len());
+                self.prompt
+                    .set_cursor_position(pos.min(self.prompt.input.len()));
                 self.prompt.reset_vertical_navigation();
                 Some(AppAction::None)
             }
@@ -1338,8 +1331,7 @@ impl App {
                 Some(AppAction::None)
             }
             VimAction::DeleteLine => {
-                self.prompt.input.clear();
-                self.prompt.cursor_position = 0;
+                self.prompt.clear();
                 self.prompt.reset_vertical_navigation();
                 Some(AppAction::None)
             }

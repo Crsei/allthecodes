@@ -29,7 +29,7 @@ use allthecodes_types::message::{ContentBlock, Message, MessageContent, Progress
 use allthecodes_types::tool_operation::{OperationKind, ToolOperation};
 use allthecodes_voice::VoiceController;
 use ratatui::layout::Rect;
-use status::SessionUsageSnapshot;
+use status::{ContextWindowSnapshot, SessionUsageSnapshot};
 use workspace_trust::is_workspace_trusted;
 
 use super::brand_logo::WelcomeLogoState;
@@ -277,6 +277,12 @@ pub struct App {
     /// Accumulated usage / cost for the current session (fed to the
     /// status-line payload). Updated from engine `Result` events.
     session_usage: SessionUsageSnapshot,
+    /// Latest request-level context-window snapshot. This is intentionally
+    /// separate from the accumulated session usage above.
+    context_window_snapshot: Option<ContextWindowSnapshot>,
+    context_capacity_model: Option<String>,
+    context_capacity: Option<u64>,
+    context_usage_cursor: status::CumulativeContextUsage,
 
     // Transcript / focus view + terminal env (issue #12)
     /// Which view the user is currently in; cycled with `Ctrl+O`.
@@ -364,6 +370,10 @@ impl App {
             status_line_settings: StatusLineSettings::default(),
             status_line_runner: StatusLineRunner::new(),
             session_usage: SessionUsageSnapshot::default(),
+            context_window_snapshot: None,
+            context_capacity_model: None,
+            context_capacity: None,
+            context_usage_cursor: status::CumulativeContextUsage::default(),
             view_mode: ViewMode::default(),
             terminal_focus: true,
             transcript_state: TranscriptState::default(),
@@ -466,6 +476,14 @@ impl App {
         self.dirty = true;
     }
 
+    /// Hide the welcome panel when startup diagnostics need to be visible in
+    /// the session transcript before the first user turn.
+    pub(crate) fn dismiss_welcome(&mut self) {
+        self.show_welcome = false;
+        self.welcome_logo_visible = false;
+        self.dirty = true;
+    }
+
     pub fn replace_last_message(&mut self, msg: Message) {
         self.conversation.replace_last_message(msg);
         self.sync_primary_agent_thread();
@@ -506,6 +524,8 @@ impl App {
                 self.spinner_state.start(Some("Thinking...".to_string()));
                 self.prompt.is_active = true;
                 self.suggestions = None; // clear stale suggestions
+                self.prepare_context_window();
+                self.mark_context_streaming();
             } else {
                 self.spinner_state.stop();
                 self.prompt.is_active = true;
@@ -639,7 +659,10 @@ impl App {
     }
 
     pub fn set_model_name(&mut self, name: String) {
-        self.session_ui.model_name = name;
+        if self.session_ui.model_name != name {
+            self.session_ui.model_name = name;
+            self.context_window_snapshot = None;
+        }
         self.dirty = true;
     }
 
@@ -1105,7 +1128,14 @@ impl App {
         let current_agent = current_thread_id
             .as_deref()
             .and_then(|thread_id| self.runtime_view.agent_nav().entry(thread_id))
-            .map(|entry| entry.label());
+            .map(|entry| {
+                let status = current_thread_id
+                    .as_deref()
+                    .and_then(|thread_id| self.runtime_view.agent_nav().runtime_info(thread_id))
+                    .map(|runtime| runtime.status.label())
+                    .unwrap_or(if self.is_streaming { "running" } else { "idle" });
+                format!("{} {status}", entry.label())
+            });
         let current_tool = current_thread_id
             .as_deref()
             .and_then(|thread_id| self.runtime_view.agent_nav().runtime_info(thread_id))
@@ -1146,11 +1176,11 @@ impl App {
         } else {
             context.remove(&ContextLayerKey::Plan);
         }
-        if let Some(context_usage) = context_usage {
+        if let Some((context_usage, tone)) = context_usage {
             context.upsert(ContextLayerItem::keyed(
                 ContextLayerKey::ContextUsage,
-                ContextTone::Info,
-                "ctx",
+                tone,
+                "context",
                 context_usage,
             ));
         }
@@ -1240,14 +1270,17 @@ impl App {
             .remove(&crate::ui::context_layer::ContextLayerKey::LastError);
     }
 
-    fn context_usage_summary(&self) -> Option<String> {
-        let total_tokens = self
-            .session_usage
-            .input_tokens
-            .saturating_add(self.session_usage.output_tokens)
-            .saturating_add(self.session_usage.cache_read_tokens)
-            .saturating_add(self.session_usage.cache_creation_tokens);
-        (total_tokens > 0).then(|| format!("{total_tokens}t"))
+    fn context_usage_summary(&self) -> Option<(String, crate::ui::context_layer::ContextTone)> {
+        let snapshot = self.context_window_snapshot.as_ref()?;
+        let tone = if snapshot
+            .effective_capacity
+            .is_some_and(|capacity| snapshot.used_tokens > capacity)
+        {
+            crate::ui::context_layer::ContextTone::Warning
+        } else {
+            crate::ui::context_layer::ContextTone::Info
+        };
+        Some((status::format_context_usage(snapshot), tone))
     }
 
     pub(super) fn toggle_agent_tree_dialog(&mut self) {

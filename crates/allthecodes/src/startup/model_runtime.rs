@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tracing::warn;
 
+use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSource};
 use crate::startup::settings_runtime::SettingsRuntime;
 use crate::startup::startup_context::StartupContext;
 use crate::startup_model::{resolve_model_alias_for_effective_settings, resolve_startup_model};
@@ -11,6 +12,7 @@ pub(crate) struct ModelRuntime {
     pub(crate) model: String,
     pub(crate) fallback_model: String,
     pub(crate) detected_client: Option<Arc<allthecodes_api::api::client::ApiClient>>,
+    pub(crate) diagnostics: Vec<StartupDiagnostic>,
 }
 
 pub(crate) struct ModelRuntimeBuilder;
@@ -21,6 +23,7 @@ impl ModelRuntimeBuilder {
         settings: &SettingsRuntime,
     ) -> anyhow::Result<ModelRuntime> {
         let merged_config = &settings.merged_config;
+        let mut diagnostics = settings.diagnostics.clone();
         let backend = &settings.backend;
         let is_codex_backend = allthecodes_engine::codex_exec::is_codex_backend(backend);
         let detected_client =
@@ -41,6 +44,13 @@ impl ModelRuntimeBuilder {
                      - OPENAI_CODEX_BASE_URL (optional, default: https://chatgpt.com/backend-api)\n  \
                      - OPENAI_CODEX_MODEL (optional, default: gpt-5.6-sol)"
                 );
+                diagnostics.push(StartupDiagnostic::warning(
+                    "auth-missing-codex",
+                    StartupDiagnosticSource::Auth,
+                    "No OpenAI Codex authentication detected",
+                    None,
+                    Some("Set OPENAI_CODEX_AUTH_TOKEN or use /login.".to_string()),
+                ));
             } else {
                 warn!(
                     "No API provider detected. Set an API key in .env, environment, or use /login."
@@ -52,6 +62,13 @@ impl ModelRuntimeBuilder {
                      - Environment variable\n  \
                      - /login command in the REPL"
                 );
+                diagnostics.push(StartupDiagnostic::warning(
+                    "auth-missing-provider",
+                    StartupDiagnosticSource::Auth,
+                    "No API provider authentication detected",
+                    None,
+                    Some("Set an API key or use /login.".to_string()),
+                ));
             }
         }
 
@@ -71,6 +88,18 @@ impl ModelRuntimeBuilder {
             &merged_config.available_models,
             merged_config,
         );
+        if let Some(requested) = requested_model.as_deref() {
+            let requested = resolve_model_alias_for_effective_settings(requested, merged_config);
+            if requested != model {
+                diagnostics.push(StartupDiagnostic::warning(
+                    "model-fallback",
+                    StartupDiagnosticSource::Model,
+                    "Requested model was unavailable",
+                    Some(format!("using {model} instead of {requested}")),
+                    Some("Choose another available model with /model.".to_string()),
+                ));
+            }
+        }
         let fallback_model = merged_config
             .fallback_model
             .as_deref()
@@ -98,6 +127,7 @@ impl ModelRuntimeBuilder {
             model,
             fallback_model,
             detected_client,
+            diagnostics,
         })
     }
 }

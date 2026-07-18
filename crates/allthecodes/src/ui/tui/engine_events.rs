@@ -529,6 +529,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
 
             app.set_streaming(false);
             app.update_session_cost(result.total_cost_usd);
+            app.update_context_window_from_usage(&result.usage);
             // Feed aggregate usage into the status-line payload (issue #11).
             // `result.usage` is engine `UsageTracking` (accumulated across
             // turns) — the payload wants per-session totals, so we pass
@@ -619,7 +620,13 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
             }
         }
 
-        SdkMessage::CompactBoundary(_) => {
+        SdkMessage::CompactBoundary(boundary) => {
+            app.mark_context_compacted(
+                boundary
+                    .compact_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.post_compact_token_count),
+            );
             app.add_message(Message::System(SystemMessage {
                 uuid: uuid::Uuid::new_v4(),
                 timestamp: now_ts(),
