@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust TUI paste, warning, status and bottom-layout fix</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { max-width: 1100px; margin: 0 auto; padding: 32px 24px 56px; line-height: 1.55; }
+    h1, h2 { line-height: 1.2; }
+    h1 { margin-bottom: 0.25rem; }
+    .meta { color: #666; margin-bottom: 2rem; }
+    @media (prefers-color-scheme: dark) { .meta { color: #aaa; } }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0 2rem; }
+    th, td { border: 1px solid #8885; padding: 0.55rem 0.7rem; text-align: left; vertical-align: top; }
+    th { background: #8882; }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .pass { color: #16803c; font-weight: 700; }
+    .partial { color: #a15c00; font-weight: 700; }
+    .note { border-left: 4px solid #a15c00; padding: 0.7rem 1rem; background: #a15c0012; }
+    li { margin: 0.35rem 0; }
+  </style>
+</head>
+<body>
+  <h1>Rust TUI paste, warning, status and bottom-layout fix</h1>
+  <p class="meta">日期：2026-07-18 · worktree：<code>worktree/tui-paste-command-warning-status-bottom-layout</code> · 基线：<code>17a6e954</code></p>
+
+  <h2>任务目标</h2>
+  <p>执行 <a href="../tui/2026-07-18-tui-paste-command-warning-status-bottom-layout-fix-plan.md"><code>development/tui/2026-07-18-tui-paste-command-warning-status-bottom-layout-fix-plan.md</code></a>，收口 Rust TUI 的大粘贴引用、有效 slash command 高亮、启动期用户可见 WARN、model/status 重复、请求级 context 状态和 bottom-anchored prompt 布局。</p>
+
+  <h2>执行流程</h2>
+  <ol>
+    <li>从主分支计划提交 <code>17a6e954</code> 创建独立 worktree，未修改计划文件，也未触碰主分支已有 dirty welcome/logo 修改。</li>
+    <li>完成结构化 prompt paste range/source map、canonical command registry highlight、startup diagnostic DTO/redaction/dedup/TUI 注入、context snapshot/status owner 和 bottom pane 锚定。</li>
+    <li>按用户补充使用 <code>--test-threads=10</code> 运行完整 PTY suite；针对暴露的 context 行左到右截断问题，加入 display-width 优先级裁剪并补回归测试。</li>
+    <li>完成格式、diff、clippy、分层 unit/PTY、release build 验证，记录真实失败边界。</li>
+    <li>先提交代码，再提交 known-issues 与本 artifact；最后按 worktree 流程 fast-forward 回主分支。</li>
+  </ol>
+
+  <h2>改动列表</h2>
+  <ul>
+    <li><code>crates/allthecodes/src/ui/prompt_input.rs</code> 与 input/render 接线：大粘贴以不可伪造的结构化 range 展示 <code>[Pasted Content n chars]</code>，提交/编辑仍使用完整原文；有效 canonical slash command 才高亮。</li>
+    <li><code>crates/allthecodes/src/startup/diagnostics.rs</code> 及 startup builders/router：聚合、去重、脱敏启动诊断，仅在 TUI 边界注入 Warning/Error system message。</li>
+    <li><code>crates/allthecodes/src/ui/app/status.rs</code>、<code>app.rs</code>、engine events：使用 request-level context snapshot，解析 effective capacity/percent，model/agent/context 由 context layer 单一拥有。</li>
+    <li><code>crates/allthecodes/src/ui/context_layer.rs</code>：按实际 Unicode display width 在拥挤时优先保留 notice/error/permission 与 model/agent/context，先移除 repo/branch/plan/tool 装饰字段，避免权限和 memory 结果被截断。</li>
+    <li><code>crates/allthecodes/src/ui/app/render.rs</code>、<code>components/bottom_pane.rs</code>：把弹性 spacer 移到 message content 与 bottom pane 之间，使 prompt-adjacent 区域贴底。</li>
+    <li><code>development/archive/KNOWN_ISSUES.md</code>：新增 UI-014 修复记录。</li>
+  </ul>
+
+  <h2>验证依据</h2>
+  <table>
+    <thead><tr><th>检查</th><th>结果</th><th>证据/边界</th></tr></thead>
+    <tbody>
+      <tr><td><code>cargo fmt --all --check</code></td><td class="pass">通过</td><td>无格式差异。</td></tr>
+      <tr><td><code>git diff --check</code></td><td class="pass">通过</td><td>无 whitespace 错误。</td></tr>
+      <tr><td><code>cargo clippy --workspace --all-targets -- -D warnings</code></td><td class="pass">通过</td><td>无 warning。</td></tr>
+      <tr><td>Context/TUI targeted unit</td><td class="pass">通过</td><td>context layer 8/8；完整 TUI 新增/相关测试（paste、slash、startup、status、layout、subsystem）通过。</td></tr>
+      <tr><td>完整 TUI unit filter</td><td class="partial">部分</td><td>863 passed；2 个未触及的既有 permission Unicode preview 断言失败：<code>feedback_cursor_uses_display_columns_without_rendering_a_pipe</code>、<code>long_answer_preview_keeps_a_display_column_cursor</code>；两者单独重跑仍失败。</td></tr>
+      <tr><td><code>cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=10</code></td><td class="partial">计划目标通过，套件部分</td><td>219 passed、36 ignored；memory_set_get_rm_cycle、permissions_mode_default、permissions_mode_plan 及相关 status/welcome/command/running-task 用例通过。2 个独立等待窗口失败：<code>effort_set_high_reports_profile_result</code>、<code>surface_mcp_remove_action_updates_project_settings</code>；失败快照/最终 screen 均含成功文本，后者 file assertion 也通过。</td></tr>
+      <tr><td><code>cargo test --workspace --exclude allthecodes --lib</code></td><td class="partial">部分</td><td>已完成 crates 通过；gateway 并发执行时 1 个全局 run-path test 找不到临时 run。单独重跑 <code>api_run_response_includes_metadata</code> 为 1/1 通过。</td></tr>
+      <tr><td><code>cargo build --workspace --release</code></td><td class="pass">通过</td><td>独立 worktree target，optimized build 用时 5m16s。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note"><strong>验证结论：</strong>本任务涉及的 TUI 行为回归和质量门通过；完整 PTY 与完整 UI/workspace 测试中的失败已按真实结果保留，属于既有 harness/隔离或未触及的 Unicode 测试问题，不伪装为全绿。</div>
+
+  <h2>提交列表</h2>
+  <ul>
+    <li><code>17a6e954</code> — <code>docs(tui): add paste warning status layout fix plan</code>（任务基线）</li>
+    <li><code>3e51a518</code> — <code>fix(tui): complete paste warning status layout</code>（Rust 实现与测试）</li>
+    <li>当前提交 — <code>docs(tui): record validation and workflow artifact</code>（本记录与 known-issues 更新）</li>
+  </ul>
+
+  <h2>后续合并动作</h2>
+  <p>提交完成后检查主分支 dirty 状态，执行 <code>git merge --ff-only worktree/tui-paste-command-warning-status-bottom-layout</code>；合并成功后删除该 worktree 与分支，再按仓库规定推送主分支。</p>
+</body>
+</html>
