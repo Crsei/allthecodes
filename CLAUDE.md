@@ -289,7 +289,8 @@ ApiClient::from_backend()
    - `cargo fmt --all --check`（秒级）
    - `cargo clippy --workspace --all-targets -- -D warnings`（分钟级）
    - 非-PTY crate：`cargo test --workspace --exclude allthecodes --lib`（分钟级，可先抓 daemon/IPC/types/protocol 等 crate 级失败）
-   - **最后** 单独跑 PTY：`cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1`（32min/轮）
+   - **最后** 单独跑 PTY 完整离线套件：`cargo nextest run -p allthecodes --test pty_tui_e2e --no-fail-fast`；`.config/nextest.toml` 的 `tui_pty_e2e.max-threads = 10` 允许最多 10 个独立 test process 并行执行（完整回归约 2.5min/轮）
+   - 若使用普通 `cargo test` / libtest，则必须保持 `cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1`；libtest case 共享同一个 runner PID，不能直接改为 10 路并行
 
 2. **快照一次性 batch**：首次出现 PTY snapshot 失败时，用 `INSTA_UPDATE=always cargo test -p allthecodes --test pty_tui_e2e -- <failing-test>` 一次性更新所有 `.snap.new`，**统一肉眼审阅后一次提交**；禁止「修一个 → 跑全套 → 再发现下一个 → 再跑全套」的循环。
 
