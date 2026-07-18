@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PTY 套件 10 路并行说明同步 — 2026-07-19</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+  h1 { margin-bottom: .2rem; }
+  .meta { color: #657; }
+  .card { border: 1px solid #8793a0; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+  code { overflow-wrap: anywhere; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #8793a0; padding: .45rem; text-align: left; vertical-align: top; }
+  .ok { color: #18794e; font-weight: 650; }
+  .note { color: #9a6700; font-weight: 650; }
+</style>
+</head>
+<body>
+<h1>PTY 套件 10 路并行说明同步</h1>
+<p class="meta">Task slug: <code>pty-suite-max-threads-10-docs</code> · branch: <code>worktree/pty-suite-max-threads-10-docs</code> · 2026-07-19</p>
+
+<section class="card">
+<h2>任务目标</h2>
+<p>让 <code>AGENTS.md</code> 与 <code>CLAUDE.md</code> 的分层验证 SOP 跟当前 PTY harness 保持一致：完整离线套件通过 nextest 最多启动 10 个相互隔离的 test process；普通 libtest 继续串行，避免共享 runner PID 引发状态竞争。</p>
+</section>
+
+<section class="card">
+<h2>流程与计划</h2>
+<ol>
+  <li>在主分支先提交计划：<code>development/test/2026-07-19-pty-suite-max-threads-10-docs-plan.md</code>。</li>
+  <li>从计划提交创建 <code>.worktrees/pty-suite-max-threads-10-docs</code>。</li>
+  <li>只在 worktree 修改两份说明并完成一致性验证。</li>
+  <li>提交本 artifact 后 fast-forward 回 <code>allthecodes</code>，推送并清理临时 worktree/分支。</li>
+</ol>
+</section>
+
+<section class="card">
+<h2>改动列表</h2>
+<table>
+<thead><tr><th>路径</th><th>改动</th></tr></thead>
+<tbody>
+<tr><td><code>AGENTS.md</code></td><td>把 PTY 完整离线回归命令改为 nextest，明确 <code>max-threads = 10</code>；补充普通 libtest 必须 <code>--test-threads=1</code> 的边界。</td></tr>
+<tr><td><code>CLAUDE.md</code></td><td>同步完全相同的执行命令、10 路并发说明和 libtest 串行边界。</td></tr>
+<tr><td><code>development/worktree-workflow-artifacts/2026-07-19-pty-suite-max-threads-10-docs.html</code></td><td>记录本次 worktree 流程、提交和验证依据。</td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="card">
+<h2>提交列表</h2>
+<ul>
+  <li><code>94a1d06b Plan PTY suite concurrency docs</code> — 主分支前置计划。</li>
+  <li><code>7634eacb Document ten-way PTY suite execution</code> — 同步两份说明。</li>
+  <li>本 HTML artifact — 本文件所在提交。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>验证依据</h2>
+<table>
+<thead><tr><th>检查</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td><code>cmp</code> 对比两份 SOP 对应段落</td><td class="ok">exit 0，两份内容一致</td></tr>
+<tr><td><code>rg</code> 检查 nextest 命令、10 路说明、libtest 串行边界</td><td class="ok">两份说明均命中全部三项</td></tr>
+<tr><td><code>rg -n "max-threads = 10" .config/nextest.toml</code></td><td class="ok">当前配置仍为 10</td></tr>
+<tr><td><code>git diff --check</code></td><td class="ok">exit 0</td></tr>
+</tbody>
+</table>
+<p class="note">边界：本任务只改说明文档，没有修改 Rust 或 nextest 配置，因此未重跑完整 PTY 套件。仓库现有时效计划记录的 10 路完整回归为 220 passed / 36 skipped / 0 failed、real 144.65s。一次冷启动的 <code>cargo nextest show-config test-groups</code> 会先编译测试目标，本次在确认静态配置后终止了重复的只读检查进程，未把冷构建当作验收结果。</p>
+</section>
+</body>
+</html>
