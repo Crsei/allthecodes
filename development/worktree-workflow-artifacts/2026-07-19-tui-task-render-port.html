@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TUI TaskList renderer worktree artifact</title>
+  <style>
+    body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2937; font: 16px/1.55 system-ui, sans-serif; }
+    h1, h2 { color: #0f3d6e; } code { background: #eef2f7; padding: .1rem .3rem; border-radius: 3px; }
+    li { margin: .35rem 0; } .ok { color: #157347; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>TUI TaskList renderer</h1>
+  <p><strong>Date:</strong> 2026-07-19<br><strong>Worktree branch:</strong> <code>worktree/tui-task-render-port</code></p>
+
+  <h2>Goal</h2>
+  <p>Build the shared TaskListV2-style renderer required by the TUI task-render and tool-render-style plans: compact <code>✔</code>/<code>◼</code>/<code>◻</code> status rows, dependency blocking context, and bounded priority ordering.</p>
+
+  <h2>Process</h2>
+  <ol>
+    <li>Started from the already-committed task and tool-render plans on <code>allthecodes</code>.</li>
+    <li>Created this isolated worktree and target directory <code>.tmp/atc-tui-task-render-port</code>.</li>
+    <li>Added the reusable renderer and a task-store adapter snapshot, with no changes to the unrelated main-worktree UI edits.</li>
+    <li>Committed the shared component. The follow-up worktree owns Spinner integration and removes the temporary staged-module allowance.</li>
+  </ol>
+
+  <h2>Changes</h2>
+  <ul>
+    <li><code>crates/allthecodes/src/ui/messages/task_list_content.rs</code>: renderer, state glyph/style mapping, blocked suffixes, recent-completion ordering, truncation, and unit tests.</li>
+    <li><code>crates/allthecodes/src/ui/command_surface/adapters/tasks.rs</code>: task-store snapshot that preserves dependencies and update timestamps.</li>
+    <li><code>crates/allthecodes/src/ui/messages.rs</code>: module registration.</li>
+  </ul>
+
+  <h2>Plan files</h2>
+  <ul>
+    <li><code>development/workflow/2026-07-19-tui-task-render-port-plan.md</code></li>
+    <li><code>development/workflow/2026-07-19-tui-tool-render-style-upgrade-plan.md</code> (revises the list placement to the Spinner surface)</li>
+  </ul>
+
+  <h2>Commits</h2>
+  <ul><li><code>b02d71eb</code> — feat(tui): add TaskListV2 renderer</li></ul>
+
+  <h2>Verification</h2>
+  <p class="ok">Passed</p>
+  <ul>
+    <li><code>cargo fmt --all --check</code></li>
+    <li><code>cargo test -p allthecodes task_list_content</code> — 3 targeted tests passed.</li>
+    <li><code>git diff --check</code></li>
+  </ul>
+</body>
+</html>
