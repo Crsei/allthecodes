@@ -1,7 +1,7 @@
 # Rust TUI 大粘贴、命令高亮、会话 WARN、状态行与底部布局修复计划
 
 日期：2026-07-18  
-状态：待实施  
+状态：修复中（2026-07-19 implementation review follow-up）
 范围：仅 Rust TUI（`crates/allthecodes/src/ui/`）及为 TUI 提供结构化数据所必需的 startup / engine / shared DTO 边界
 
 ## 1. 背景与目标
@@ -400,3 +400,29 @@ Length(bottom_pane_height)     # prompt + notices + context + agent footer + sta
 - startup warning 注入若无分类和脱敏会泄漏配置或把 session 淹没；任何全局 tracing capture 方案直接判为不合格。
 - layout 修改会影响 command surfaces 和短终端；回滚时可只回滚 constraint 顺序，不应连带回滚 prompt document 或 diagnostics。
 - status 所有权调整可以独立回滚到 context layer，但不得恢复 model 双重显示或累计 token 百分比。
+
+## 12. 2026-07-19 实现审阅后的修复批次
+
+提交 `3e51a518` 已落地大粘贴引用、slash command 高亮、startup diagnostic、context 状态与
+bottom-anchored layout 的首版实现，但审阅确认以下边界仍未满足本计划原始契约。本批次在同一计划中继续收口，
+不新建平行计划文件。
+
+### 12.1 必须修复
+
+- [ ] startup diagnostic 在 DTO 入库前覆盖常见 API key、云凭据、JWT、通用敏感环境变量赋值和 MCP 错误文本；新增
+  table-driven redaction tests，确保 session/transcript 不出现原始 secret。
+- [ ] 删除 TUI 从 session 累计 `UsageTracking` 推导“request-level context”的做法；在 engine 已确定实际请求消息集或收到
+  单次 provider usage 的边界产出结构化 `ContextWindowSnapshot`，只把最新请求快照送入 TUI。
+- [ ] context capacity resolver 使用当前 effective `context_window`，仅在明确启用扩展窗口时使用
+  `max_context_window`；覆盖 `gpt-5.4` 的 272k / 1m 差异和 `effective_context_window_percent`。
+- [ ] slash command highlight 使用可失效的 cwd/registry snapshot cache；普通 render 不重复扫描
+  `.allthecodes/workflows`，动态命令或 cwd 变化后仍能刷新。
+- [ ] 为大 paste、startup warning、单一 model/context status 和 bottom anchor 增加真实 PTY 文本/坐标用例；不得只复用与本任务
+  无关的既有 PTY 用例作为完成证据。
+
+### 12.2 文档与验收收口
+
+- [ ] 更新 UI-014：在上述问题和定向 PTY 未通过前不得保持无条件 `Fixed`。
+- [ ] 更新既有 workflow artifact，明确 follow-up commit、测试命令、通过项和任何未通过边界。
+- [ ] 完成相关 unit、targeted PTY、fmt、clippy、非 PTY workspace lib tests、`git diff --check` 和 workspace release build；
+  若完整 PTY 仍有独立失败，必须逐项记录且不能把本计划状态标为全部完成。
