@@ -4,7 +4,6 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use std::ops::Range;
-use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -961,15 +960,10 @@ fn is_large_paste(text: &str) -> bool {
     char_count >= LARGE_PASTE_CHAR_THRESHOLD || line_count >= LARGE_PASTE_LINE_THRESHOLD
 }
 
-/// Find executable slash-command tokens using the same cwd-scoped metadata
-/// registry as command dispatch and the command palette. The returned ranges
-/// include the leading slash but stop before the first argument.
-pub fn slash_command_highlight_ranges(input: &str, cwd: &Path) -> Vec<Range<usize>> {
-    let metadata = allthecodes_commands::get_dynamic_metadata_for_cwd(cwd);
-    slash_command_highlight_ranges_for_metadata(input, &metadata)
-}
-
-fn slash_command_highlight_ranges_for_metadata(
+/// Find executable slash-command tokens in a cached metadata snapshot. The
+/// returned ranges include the leading slash but stop before the first
+/// argument.
+pub(crate) fn slash_command_highlight_ranges_for_metadata(
     input: &str,
     metadata: &[allthecodes_commands::CommandMetadata],
 ) -> Vec<Range<usize>> {

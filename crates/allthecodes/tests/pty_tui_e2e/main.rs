@@ -79,6 +79,7 @@ mod harness;
 mod commands;
 mod conversation;
 mod model_flow;
+mod paste_status_followup;
 mod permissions;
 mod screenshot;
 mod script;

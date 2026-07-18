@@ -20,7 +20,9 @@ use crate::ui::overlays::{
     render_prompt_adjacent_dialog_lines, render_prompt_adjacent_lines, CenteredOverlayFrame,
 };
 use crate::ui::panel_layout::PanelSizePreset;
-use crate::ui::prompt_input::{slash_command_highlight_ranges, PromptInputRenderContext};
+use crate::ui::prompt_input::{
+    slash_command_highlight_ranges_for_metadata, PromptInputRenderContext,
+};
 use crate::ui::theme::identity::{agent_identity_style, AgentIdentity};
 use crate::ui::theme::{Theme, ThemeColors};
 use crate::ui::transcript::{self, TranscriptInputMode, ViewMode};
@@ -31,6 +33,7 @@ use crate::ui::welcome;
 /// eat the messages pane.
 const STATUS_LINE_MAX_LINES: usize = 3;
 const MESSAGE_BOTTOM_GAP_HEIGHT: u16 = 1;
+const COMMAND_HIGHLIGHT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl App {
     pub fn set_kairos_status(&mut self, status: Option<super::domain::KairosUiStatus>) {
@@ -90,6 +93,7 @@ impl App {
 
         self.refresh_context_layer();
 
+        let command_highlights = self.command_highlight_ranges();
         let current_notification = self.current_notification();
         let immediate_notification = current_notification
             .is_some_and(|notification| notification.priority == NotificationPriority::Immediate);
@@ -110,7 +114,6 @@ impl App {
             .min(size.height.saturating_sub(4));
         let completion_popup_height = self.completion_popup_height();
         let cwd_path = std::path::Path::new(&self.session_ui.cwd);
-        let command_highlights = slash_command_highlight_ranges(&self.prompt.input, cwd_path);
         let command_arg_help_height = 0;
         let notification_height = u16::from(current_notification.is_some());
         let context_height = u16::from(!self.runtime_view.context_layer().items().is_empty());
@@ -416,6 +419,33 @@ impl App {
         }
 
         self.capture_render_snapshot(frame);
+    }
+
+    pub(super) fn command_highlight_ranges(&mut self) -> Vec<std::ops::Range<usize>> {
+        let now = std::time::Instant::now();
+        let cwd = std::path::PathBuf::from(&self.session_ui.cwd);
+        let registry_revision = allthecodes_commands::dynamic_registry_revision();
+        let stale = self
+            .command_highlight_cache
+            .refreshed_at
+            .is_none_or(|refreshed_at| {
+                now.saturating_duration_since(refreshed_at) >= COMMAND_HIGHLIGHT_CACHE_TTL
+            });
+        if self.command_highlight_cache.cwd != cwd
+            || self.command_highlight_cache.registry_revision != registry_revision
+            || stale
+        {
+            self.command_highlight_cache.metadata =
+                allthecodes_commands::get_dynamic_metadata_for_cwd(&cwd);
+            self.command_highlight_cache.cwd = cwd;
+            self.command_highlight_cache.registry_revision = registry_revision;
+            self.command_highlight_cache.refreshed_at = Some(now);
+        }
+
+        slash_command_highlight_ranges_for_metadata(
+            &self.prompt.input,
+            &self.command_highlight_cache.metadata,
+        )
     }
 
     fn capture_render_snapshot(&mut self, frame: &mut Frame) {

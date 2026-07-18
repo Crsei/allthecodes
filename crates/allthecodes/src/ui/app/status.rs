@@ -30,14 +30,6 @@ pub(super) struct ContextWindowSnapshot {
     pub phase: ContextWindowPhase,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct CumulativeContextUsage {
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_read_tokens: u64,
-    cache_creation_tokens: u64,
-    api_calls: u64,
-}
 /// Subset of engine usage-tracking relevant to the status-line payload.
 /// Populated by [`App::update_session_usage`].
 #[derive(Debug, Clone, Default)]
@@ -98,44 +90,24 @@ impl App {
         self.context_capacity = capacity;
     }
 
-    /// Convert cumulative engine usage into a request-level delta so the
-    /// status row never displays a session-wide accumulation.
-    pub(crate) fn update_context_window_from_usage(
+    /// Replace the context display with usage from one completed provider
+    /// request. `SdkMessage::Assistant` carries exactly that request's usage;
+    /// tool loops therefore replace this snapshot instead of summing every
+    /// request in the submit or session.
+    pub(crate) fn update_context_window_from_request_usage(
         &mut self,
-        usage: &allthecodes_types::sdk::UsageTracking,
+        usage: &allthecodes_types::message::Usage,
     ) {
-        let current = CumulativeContextUsage {
-            input_tokens: usage.total_input_tokens,
-            output_tokens: usage.total_output_tokens,
-            cache_read_tokens: usage.total_cache_read_tokens,
-            cache_creation_tokens: usage.total_cache_creation_tokens,
-            api_calls: usage.api_call_count,
-        };
-        let previous = self.context_usage_cursor;
-        let used_tokens = current
+        let used_tokens = usage
             .input_tokens
-            .saturating_sub(previous.input_tokens)
-            .saturating_add(current.output_tokens.saturating_sub(previous.output_tokens))
-            .saturating_add(
-                current
-                    .cache_read_tokens
-                    .saturating_sub(previous.cache_read_tokens),
-            )
-            .saturating_add(
-                current
-                    .cache_creation_tokens
-                    .saturating_sub(previous.cache_creation_tokens),
-            );
-        self.context_usage_cursor = current;
+            .saturating_add(usage.output_tokens)
+            .saturating_add(usage.cache_read_input_tokens)
+            .saturating_add(usage.cache_creation_input_tokens);
         self.context_window_snapshot = Some(ContextWindowSnapshot {
             model_id: self.session_ui.model_name.clone(),
             used_tokens,
             effective_capacity: self.context_capacity,
-            source: if current.api_calls.saturating_sub(previous.api_calls) <= 1 {
-                ContextWindowSource::Exact
-            } else {
-                ContextWindowSource::Estimated
-            },
+            source: ContextWindowSource::Exact,
             phase: ContextWindowPhase::Completed,
         });
         self.dirty = true;
@@ -383,7 +355,7 @@ fn resolve_context_capacity(
             .and_then(|capabilities| capabilities.get(model))
     });
     let base = capability
-        .and_then(|value| value.max_context_window.or(value.context_window))
+        .and_then(|value| value.context_window.or(value.max_context_window))
         .or(settings.context_window)
         .filter(|value| *value > 0)?;
     let percent = capability
@@ -435,28 +407,20 @@ fn format_compact_tokens(tokens: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use allthecodes_types::sdk::UsageTracking;
+    use allthecodes_types::message::Usage;
 
-    fn usage(
-        input: u64,
-        output: u64,
-        cache_read: u64,
-        cache_creation: u64,
-        calls: u64,
-    ) -> UsageTracking {
-        UsageTracking {
-            total_input_tokens: input,
-            total_output_tokens: output,
-            total_cache_read_tokens: cache_read,
-            total_cache_creation_tokens: cache_creation,
-            total_reasoning_output_tokens: 0,
-            total_cost_usd: 0.0,
-            api_call_count: calls,
+    fn usage(input: u64, output: u64, cache_read: u64, cache_creation: u64) -> Usage {
+        Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: cache_creation,
+            reasoning_output_tokens: 0,
         }
     }
 
     #[test]
-    fn context_usage_uses_the_latest_cumulative_delta_not_the_session_total() {
+    fn context_usage_replaces_each_provider_request_instead_of_accumulating_a_turn() {
         let mut app = App::new();
         app.set_model_name("test-model".to_string());
         let settings = allthecodes_config::runtime_settings::SettingsJson {
@@ -465,7 +429,7 @@ mod tests {
         };
         app.set_context_capacity_from_settings(&settings);
 
-        app.update_context_window_from_usage(&usage(100, 25, 10, 5, 1));
+        app.update_context_window_from_request_usage(&usage(100, 25, 10, 5));
         assert_eq!(
             app.context_usage_summary()
                 .expect("first context snapshot")
@@ -473,7 +437,7 @@ mod tests {
             "140/1.0k (14%)"
         );
 
-        app.update_context_window_from_usage(&usage(300, 75, 20, 5, 2));
+        app.update_context_window_from_request_usage(&usage(200, 50, 10, 0));
         assert_eq!(
             app.context_usage_summary()
                 .expect("second context snapshot")
@@ -496,7 +460,7 @@ mod tests {
             },
         );
         app.set_context_capacity_from_settings(&settings);
-        app.update_context_window_from_usage(&usage(800, 200, 0, 0, 1));
+        app.update_context_window_from_request_usage(&usage(800, 200, 0, 0));
         assert_eq!(
             app.context_usage_summary()
                 .expect("limited context snapshot")
@@ -506,7 +470,7 @@ mod tests {
 
         app.set_model_name("not-configured".to_string());
         app.set_context_capacity_from_settings(&settings);
-        app.update_context_window_from_usage(&usage(900, 300, 0, 0, 2));
+        app.update_context_window_from_request_usage(&usage(150, 50, 0, 0));
         assert_eq!(
             app.context_usage_summary()
                 .expect("unknown context snapshot")
@@ -524,7 +488,7 @@ mod tests {
             ..Default::default()
         };
         app.set_context_capacity_from_settings(&settings);
-        app.update_context_window_from_usage(&usage(700, 100, 0, 0, 1));
+        app.update_context_window_from_request_usage(&usage(700, 100, 0, 0));
         assert_eq!(
             app.context_usage_summary().expect("pre-compact snapshot").0,
             "800/1.0k (80%)"
@@ -549,5 +513,25 @@ mod tests {
             phase: ContextWindowPhase::Completed,
         };
         assert_eq!(format_context_usage(&snapshot), "1.5k/1.0k (>150%)");
+    }
+
+    #[test]
+    fn current_context_window_wins_over_optional_extended_maximum() {
+        let mut app = App::new();
+        app.set_model_name("gpt-5.4".to_string());
+        let mut settings = allthecodes_config::runtime_settings::SettingsJson::default();
+        settings.model_capabilities.insert(
+            "gpt-5.4".to_string(),
+            allthecodes_config::settings::ModelCapabilitySettings {
+                context_window: Some(272_000),
+                max_context_window: Some(1_000_000),
+                effective_context_window_percent: Some(95),
+                ..Default::default()
+            },
+        );
+
+        app.set_context_capacity_from_settings(&settings);
+
+        assert_eq!(app.context_capacity, Some(258_400));
     }
 }

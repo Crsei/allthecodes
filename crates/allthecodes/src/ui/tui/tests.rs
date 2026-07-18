@@ -24,7 +24,7 @@ use allthecodes_skills::{SkillDefinition, SkillFrontmatter, SkillSource};
 use allthecodes_types::brief::{BriefMessagePayload, BriefMessageStatus};
 use allthecodes_types::message::{
     ContentBlock, InfoLevel, Message, MessageContent, StreamEvent, SystemMessage, SystemSubtype,
-    ToolResultContent, UserMessage,
+    ToolResultContent, Usage, UserMessage,
 };
 use allthecodes_types::sdk::{
     ResultSubtype, SdkAssistantMessage, SdkMessage, SdkResult, SdkStreamEvent, SdkTombstone,
@@ -459,6 +459,60 @@ fn tui_ignores_tool_input_delta_until_final_assistant() {
         }
         other => panic!("expected final tool use block, got {:?}", other),
     }
+}
+
+#[test]
+fn tui_context_status_uses_the_latest_assistant_request_usage() {
+    let mut app = App::new();
+    app.set_model_name("request-model".to_string());
+    app.set_context_capacity_from_settings(&allthecodes_config::runtime_settings::SettingsJson {
+        context_window: Some(1_000),
+        ..Default::default()
+    });
+    let mut state = StreamingState::new();
+
+    for usage in [
+        Usage {
+            input_tokens: 100,
+            output_tokens: 25,
+            cache_read_input_tokens: 10,
+            cache_creation_input_tokens: 5,
+            reasoning_output_tokens: 0,
+        },
+        Usage {
+            input_tokens: 200,
+            output_tokens: 50,
+            cache_read_input_tokens: 10,
+            cache_creation_input_tokens: 0,
+            reasoning_output_tokens: 0,
+        },
+    ] {
+        handle_sdk_message(
+            &mut app,
+            SdkMessage::Assistant(SdkAssistantMessage {
+                message: allthecodes_types::message::AssistantMessage {
+                    uuid: uuid::Uuid::new_v4(),
+                    timestamp: now_ts(),
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "done".to_string(),
+                    }],
+                    usage: Some(usage),
+                    stop_reason: Some("end_turn".to_string()),
+                    is_api_error_message: false,
+                    api_error: None,
+                    cost_usd: 0.0,
+                },
+                session_id: "test-session".to_string(),
+                parent_tool_use_id: None,
+            }),
+            &mut state,
+        );
+    }
+
+    let rendered = render_app_for_test(&mut app, 100, 24);
+    assert!(rendered.contains("context: 260/1.0k (26%)"), "{rendered}");
+    assert!(!rendered.contains("context: 400/1.0k (40%)"), "{rendered}");
 }
 
 #[test]

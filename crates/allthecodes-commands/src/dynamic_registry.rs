@@ -70,12 +70,14 @@ pub struct DynamicCommandEntry {
 /// `CommandSource` priority wins.
 pub struct DynamicRegistry {
     commands: Vec<DynamicCommandEntry>,
+    revision: u64,
 }
 
 impl DynamicRegistry {
     pub fn new() -> Self {
         Self {
             commands: Vec::new(),
+            revision: 0,
         }
     }
 
@@ -98,11 +100,13 @@ impl DynamicRegistry {
         {
             let old = self.commands.remove(pos);
             self.commands.push(entry);
+            self.revision = self.revision.wrapping_add(1);
             return Some(old);
         }
 
         // New entry — just append
         self.commands.push(entry);
+        self.revision = self.revision.wrapping_add(1);
         None
     }
 
@@ -123,7 +127,9 @@ impl DynamicRegistry {
             .iter()
             .position(|c| c.name == name && c.source == source)
         {
-            Some(self.commands.remove(pos))
+            let removed = self.commands.remove(pos);
+            self.revision = self.revision.wrapping_add(1);
+            Some(removed)
         } else {
             None
         }
@@ -204,6 +210,12 @@ impl DynamicRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
+    }
+
+    /// Monotonic in-process generation for metadata consumers. Wrapping is
+    /// acceptable because consumers only compare it with their last snapshot.
+    pub const fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Returns the priority order of sources.
@@ -381,5 +393,25 @@ mod tests {
         assert_eq!(visible[0].name, "high"); // Builtin
         assert_eq!(visible[1].name, "mid"); // Plugin
         assert_eq!(visible[2].name, "low"); // Skill
+    }
+
+    #[test]
+    fn revision_changes_only_when_command_metadata_membership_changes() {
+        let mut reg = DynamicRegistry::new();
+        assert_eq!(reg.revision(), 0);
+
+        reg.register(entry("cmd", CommandSource::Plugin, 0.0));
+        let registered = reg.revision();
+        assert_ne!(registered, 0);
+
+        reg.record_usage("cmd");
+        assert_eq!(reg.revision(), registered);
+
+        reg.register(entry("cmd", CommandSource::Plugin, 0.5));
+        let replaced = reg.revision();
+        assert_ne!(replaced, registered);
+
+        reg.unregister("cmd", CommandSource::Plugin);
+        assert_ne!(reg.revision(), replaced);
     }
 }

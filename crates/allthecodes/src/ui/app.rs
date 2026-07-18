@@ -30,6 +30,8 @@ use allthecodes_types::tool_operation::{OperationKind, ToolOperation};
 use allthecodes_voice::VoiceController;
 use ratatui::layout::Rect;
 use status::{ContextWindowSnapshot, SessionUsageSnapshot};
+use std::path::PathBuf;
+use std::time::Instant;
 use workspace_trust::is_workspace_trusted;
 
 use super::brand_logo::WelcomeLogoState;
@@ -71,6 +73,14 @@ pub struct GoalStatusSnapshot {
     pub status: String,
     pub tokens_used: u64,
     pub time_used_seconds: u64,
+}
+
+#[derive(Debug, Default)]
+struct CommandHighlightCache {
+    cwd: PathBuf,
+    registry_revision: u64,
+    refreshed_at: Option<Instant>,
+    metadata: Vec<allthecodes_commands::CommandMetadata>,
 }
 
 /// Actions produced by the app in response to user input.
@@ -243,6 +253,7 @@ pub struct App {
     history_index: Option<usize>,
     saved_input: String,
     command_palette: CommandPalette,
+    command_highlight_cache: CommandHighlightCache,
     pending_command_surface_after_submit: Option<CommandSurfaceTarget>,
     runtime_view: RuntimeViewState,
     show_agent_footer: bool,
@@ -282,7 +293,6 @@ pub struct App {
     context_window_snapshot: Option<ContextWindowSnapshot>,
     context_capacity_model: Option<String>,
     context_capacity: Option<u64>,
-    context_usage_cursor: status::CumulativeContextUsage,
 
     // Transcript / focus view + terminal env (issue #12)
     /// Which view the user is currently in; cycled with `Ctrl+O`.
@@ -356,6 +366,7 @@ impl App {
             history_index: None,
             saved_input: String::new(),
             command_palette: CommandPalette::new(),
+            command_highlight_cache: CommandHighlightCache::default(),
             pending_command_surface_after_submit: None,
             runtime_view: RuntimeViewState::default(),
             show_agent_footer: true,
@@ -373,7 +384,6 @@ impl App {
             context_window_snapshot: None,
             context_capacity_model: None,
             context_capacity: None,
-            context_usage_cursor: status::CumulativeContextUsage::default(),
             view_mode: ViewMode::default(),
             terminal_focus: true,
             transcript_state: TranscriptState::default(),

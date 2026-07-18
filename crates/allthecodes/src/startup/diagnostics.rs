@@ -144,6 +144,7 @@ fn normalize(value: &str) -> String {
 pub(crate) fn redact_secrets(mut value: String) -> String {
     value = redact_url_userinfo(&value);
     value = redact_credential_paths(&value);
+    value = redact_sensitive_assignments(&value);
 
     for marker in [
         "Authorization:",
@@ -206,7 +207,17 @@ fn redact_url_userinfo(value: &str) -> String {
 }
 
 fn redact_credential_paths(value: &str) -> String {
-    let needles = ["credentials.json", "auth.json", "github_token.txt"];
+    let needles = [
+        "credentials.json",
+        "auth.json",
+        "github_token.txt",
+        ".aws/credentials",
+        "application_default_credentials.json",
+        "accessTokens.json",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+    ];
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
     while let Some((index, needle)) = needles
@@ -236,6 +247,100 @@ fn redact_credential_paths(value: &str) -> String {
     output
 }
 
+fn redact_sensitive_assignments(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = String::with_capacity(value.len());
+    let mut copied_until = 0;
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if !is_secret_key_byte(bytes[index])
+            || index
+                .checked_sub(1)
+                .is_some_and(|previous| is_secret_key_byte(bytes[previous]))
+        {
+            index += 1;
+            continue;
+        }
+
+        let key_start = index;
+        while index < bytes.len() && is_secret_key_byte(bytes[index]) {
+            index += 1;
+        }
+        let key_end = index;
+        if !is_sensitive_key(&value[key_start..key_end]) {
+            continue;
+        }
+
+        let mut delimiter = key_end;
+        if delimiter < bytes.len() && matches!(bytes[delimiter], b'\'' | b'"') {
+            delimiter += 1;
+        }
+        while delimiter < bytes.len() && bytes[delimiter].is_ascii_whitespace() {
+            delimiter += 1;
+        }
+        if delimiter >= bytes.len() || !matches!(bytes[delimiter], b'=' | b':') {
+            continue;
+        }
+
+        let mut secret_start = delimiter + 1;
+        while secret_start < bytes.len() && bytes[secret_start].is_ascii_whitespace() {
+            secret_start += 1;
+        }
+        let quote = bytes
+            .get(secret_start)
+            .copied()
+            .filter(|byte| matches!(byte, b'\'' | b'"'));
+        if quote.is_some() {
+            secret_start += 1;
+        }
+        if secret_start >= bytes.len() {
+            break;
+        }
+
+        let authorization = value[key_start..key_end].eq_ignore_ascii_case("authorization");
+        let mut secret_end = secret_start;
+        while secret_end < bytes.len() {
+            let byte = bytes[secret_end];
+            if quote.is_some_and(|quote| byte == quote)
+                || matches!(byte, b',' | b';' | b'\n' | b'\r')
+                || (!authorization && byte.is_ascii_whitespace())
+            {
+                break;
+            }
+            secret_end += 1;
+        }
+        if secret_start == secret_end {
+            continue;
+        }
+
+        output.push_str(&value[copied_until..secret_start]);
+        output.push_str("<redacted>");
+        copied_until = secret_end;
+        index = secret_end;
+    }
+
+    output.push_str(&value[copied_until..]);
+    output
+}
+
+fn is_secret_key_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase().replace('-', "_");
+    key == "authorization"
+        || key.contains("api_key")
+        || key.contains("apikey")
+        || key.contains("token")
+        || key.contains("secret")
+        || key.contains("password")
+        || key.contains("passwd")
+        || key.contains("private_key")
+        || key.contains("credential")
+}
+
 fn redact_after_marker(value: &str, marker: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
@@ -259,7 +364,16 @@ fn append_redacted_token(output: &mut String, token: &mut String) {
     if token.starts_with("sk-")
         || token.starts_with("ghp_")
         || token.starts_with("github_pat_")
+        || token.starts_with("glpat-")
         || token.starts_with("xoxb-")
+        || token.starts_with("xoxp-")
+        || token.starts_with("xoxa-")
+        || token.starts_with("xoxs-")
+        || token.starts_with("AKIA")
+        || token.starts_with("ASIA")
+        || token.starts_with("AIza")
+        || token.starts_with("ya29.")
+        || looks_like_jwt(token)
         || token.contains("credentials.json")
         || token.contains("auth.json")
     {
@@ -268,6 +382,10 @@ fn append_redacted_token(output: &mut String, token: &mut String) {
         output.push_str(token);
     }
     token.clear();
+}
+
+fn looks_like_jwt(token: &str) -> bool {
+    token.starts_with("eyJ") && token.split('.').count() == 3
 }
 
 #[cfg(test)]
@@ -312,6 +430,31 @@ mod tests {
         assert!(!text.contains("/home/user"));
         assert!(!text.contains("user:password@"));
         assert!(text.contains("<redacted>@example.test"));
+    }
+
+    #[test]
+    fn redaction_covers_cloud_keys_json_env_and_token_shapes() {
+        for (input, secret) in [
+            ("AZURE_API_KEY=azure-value", "azure-value"),
+            ("GOOGLE_API_KEY: google-value", "google-value"),
+            (r#"env={"API_TOKEN":"nested-value"}"#, "nested-value"),
+            ("authorization: bearer lower-case-value", "lower-case-value"),
+            ("AWS_SECRET_ACCESS_KEY=aws-value", "aws-value"),
+            ("credential at /home/user/.aws/credentials", "/home/user"),
+            ("token glpat-example-value", "glpat-example-value"),
+            ("token AIzaExampleValue", "AIzaExampleValue"),
+            (
+                "token eyJheader.payload.signature",
+                "eyJheader.payload.signature",
+            ),
+        ] {
+            let redacted = redact_secrets(input.to_string());
+            assert!(
+                !redacted.contains(secret),
+                "secret {secret:?} leaked from {input:?}: {redacted:?}"
+            );
+            assert!(redacted.contains("<redacted>"));
+        }
     }
 
     #[test]

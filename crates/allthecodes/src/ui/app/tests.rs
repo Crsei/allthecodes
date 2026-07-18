@@ -179,6 +179,45 @@ fn render_bottom_pane_stays_anchored_for_short_tall_and_multiline_frames() {
 }
 
 #[test]
+#[serial]
+fn command_highlight_cache_reuses_frames_and_invalidates_on_registry_revision() {
+    use allthecodes_commands::dynamic_registry::{
+        CommandSource, DynamicCommandEntry, ExecutionStrategy,
+    };
+
+    let temp = tempfile::tempdir().expect("workspace");
+    let name = format!("cache-revision-{}", std::process::id());
+    let mut app = App::new();
+    app.set_cwd(temp.path().display().to_string());
+    app.prompt.set_input(format!("/{name}"));
+
+    assert!(app.command_highlight_ranges().is_empty());
+    let first_refresh = app.command_highlight_cache.refreshed_at;
+    assert!(app.command_highlight_ranges().is_empty());
+    assert_eq!(app.command_highlight_cache.refreshed_at, first_refresh);
+
+    allthecodes_commands::DYNAMIC_REGISTRY
+        .lock()
+        .register(DynamicCommandEntry {
+            name: name.clone(),
+            aliases: Vec::new(),
+            description: "cache invalidation test".to_string(),
+            source: CommandSource::Plugin,
+            plugin_id: Some("cache-test".to_string()),
+            hidden: false,
+            usage_score: 0.0,
+            execution_strategy: ExecutionStrategy::Plugin,
+        });
+
+    assert_eq!(app.command_highlight_ranges(), vec![0..name.len() + 1]);
+    assert_ne!(app.command_highlight_cache.refreshed_at, first_refresh);
+
+    allthecodes_commands::DYNAMIC_REGISTRY
+        .lock()
+        .unregister(&name, CommandSource::Plugin);
+}
+
+#[test]
 fn in_app_notification_renders_in_footer_region() {
     let mut app = App::new();
     app.add_notification(
@@ -666,14 +705,12 @@ fn app_context_layer_includes_available_runtime_state() {
         ..Default::default()
     };
     app.set_context_capacity_from_settings(&settings);
-    app.update_context_window_from_usage(&allthecodes_types::sdk::UsageTracking {
-        total_input_tokens: 120,
-        total_output_tokens: 30,
-        total_cache_read_tokens: 10,
-        total_cache_creation_tokens: 5,
-        total_reasoning_output_tokens: 0,
-        total_cost_usd: 0.0,
-        api_call_count: 1,
+    app.update_context_window_from_request_usage(&allthecodes_types::message::Usage {
+        input_tokens: 120,
+        output_tokens: 30,
+        cache_read_input_tokens: 10,
+        cache_creation_input_tokens: 5,
+        reasoning_output_tokens: 0,
     });
     app.runtime_view
         .upsert_agent(crate::ui::app::agent_navigation::AgentThreadEntry {

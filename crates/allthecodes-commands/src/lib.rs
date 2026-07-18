@@ -647,6 +647,13 @@ pub fn get_dynamic_metadata() -> Vec<CommandMetadata> {
     metadata
 }
 
+/// Current generation of the dynamic registry. UI caches use this inexpensive
+/// value to invalidate command-name snapshots without rebuilding metadata or
+/// scanning project workflow directories on every rendered frame.
+pub fn dynamic_registry_revision() -> u64 {
+    DYNAMIC_REGISTRY.lock().revision()
+}
+
 /// Get command metadata visible from a project cwd.
 ///
 /// This includes builtin and global dynamic command metadata plus project-local

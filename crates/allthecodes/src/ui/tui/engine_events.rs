@@ -477,6 +477,9 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
         }
 
         SdkMessage::Assistant(assistant) => {
+            if let Some(usage) = assistant.message.usage.as_ref() {
+                app.update_context_window_from_request_usage(usage);
+            }
             // Replace the partial streaming message with the final one.
             if ss.is_partial() {
                 app.replace_last_message(Message::Assistant(assistant.message));
@@ -529,7 +532,6 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
 
             app.set_streaming(false);
             app.update_session_cost(result.total_cost_usd);
-            app.update_context_window_from_usage(&result.usage);
             // Feed aggregate usage into the status-line payload (issue #11).
             // `result.usage` is engine `UsageTracking` (accumulated across
             // turns) — the payload wants per-session totals, so we pass
