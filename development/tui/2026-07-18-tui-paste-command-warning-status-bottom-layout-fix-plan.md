@@ -1,7 +1,7 @@
 # Rust TUI 大粘贴、命令高亮、会话 WARN、状态行与底部布局修复计划
 
 日期：2026-07-18  
-状态：修复中（2026-07-19 implementation review follow-up）
+状态：审阅修复已完成；完整 PTY 保留 2 个独立既有等待窗口失败（2026-07-19）
 范围：仅 Rust TUI（`crates/allthecodes/src/ui/`）及为 TUI 提供结构化数据所必需的 startup / engine / shared DTO 边界
 
 ## 1. 背景与目标
@@ -409,20 +409,40 @@ bottom-anchored layout 的首版实现，但审阅确认以下边界仍未满足
 
 ### 12.1 必须修复
 
-- [ ] startup diagnostic 在 DTO 入库前覆盖常见 API key、云凭据、JWT、通用敏感环境变量赋值和 MCP 错误文本；新增
+- [x] startup diagnostic 在 DTO 入库前覆盖常见 API key、云凭据、JWT、通用敏感环境变量赋值和 MCP 错误文本；新增
   table-driven redaction tests，确保 session/transcript 不出现原始 secret。
-- [ ] 删除 TUI 从 session 累计 `UsageTracking` 推导“request-level context”的做法；在 engine 已确定实际请求消息集或收到
+- [x] 删除 TUI 从 session 累计 `UsageTracking` 推导“request-level context”的做法；在 engine 已确定实际请求消息集或收到
   单次 provider usage 的边界产出结构化 `ContextWindowSnapshot`，只把最新请求快照送入 TUI。
-- [ ] context capacity resolver 使用当前 effective `context_window`，仅在明确启用扩展窗口时使用
+- [x] context capacity resolver 使用当前 effective `context_window`，仅在明确启用扩展窗口时使用
   `max_context_window`；覆盖 `gpt-5.4` 的 272k / 1m 差异和 `effective_context_window_percent`。
-- [ ] slash command highlight 使用可失效的 cwd/registry snapshot cache；普通 render 不重复扫描
+- [x] slash command highlight 使用可失效的 cwd/registry snapshot cache；普通 render 不重复扫描
   `.allthecodes/workflows`，动态命令或 cwd 变化后仍能刷新。
-- [ ] 为大 paste、startup warning、单一 model/context status 和 bottom anchor 增加真实 PTY 文本/坐标用例；不得只复用与本任务
+- [x] 为大 paste、startup warning、单一 model/context status 和 bottom anchor 增加真实 PTY 文本/坐标用例；不得只复用与本任务
   无关的既有 PTY 用例作为完成证据。
 
 ### 12.2 文档与验收收口
 
-- [ ] 更新 UI-014：在上述问题和定向 PTY 未通过前不得保持无条件 `Fixed`。
-- [ ] 更新既有 workflow artifact，明确 follow-up commit、测试命令、通过项和任何未通过边界。
-- [ ] 完成相关 unit、targeted PTY、fmt、clippy、非 PTY workspace lib tests、`git diff --check` 和 workspace release build；
+- [x] 更新 UI-014：在上述问题和定向 PTY 未通过前不得保持无条件 `Fixed`。
+- [x] 更新既有 workflow artifact，明确 follow-up commit、测试命令、通过项和任何未通过边界。
+- [x] 完成相关 unit、targeted PTY、fmt、clippy、非 PTY workspace lib tests、`git diff --check` 和 workspace release build；
   若完整 PTY 仍有独立失败，必须逐项记录且不能把本计划状态标为全部完成。
+
+### 12.3 本批次实现与验证结果
+
+实现提交：`c29a329f`（`fix(tui): close paste status review gaps`）。定向 unit 覆盖 startup diagnostic 脱敏、动态 registry
+revision/cache 失效、单次 Assistant request usage 覆盖前次 context snapshot，以及 `gpt-5.4` 的 272k effective capacity。
+新增真实 PTY 用例覆盖 512 字符 bracketed paste、真实 startup model fallback warning、单一 model owner，以及 100x24 下
+prompt/context/footer 的 20/22/23 行坐标，2/2 通过。
+
+最终验证：
+
+- `cargo fmt --all --check`：通过。
+- 相关 unit：dynamic registry 12/12、startup diagnostics 4/4、context status 5/5、cache 与 SDK event 回归各 1/1。
+- `cargo clippy --workspace --all-targets -- -D warnings`：通过。
+- `cargo test --workspace --exclude allthecodes --lib`：通过，本次未复现旧 artifact 记录的 gateway 并发偶发失败。
+- `cargo test -p allthecodes --test pty_tui_e2e paste_status_followup -- --test-threads=1 --nocapture`：2/2 通过。
+- `cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=10`：221 passed、36 ignored、2 failed；失败仍为
+  `effort_set_high_reports_profile_result` 与 `surface_mcp_remove_action_updates_project_settings` 的既有等待窗口问题，后者磁盘
+  settings 删除断言通过。本任务新增用例和相关行为均通过，因此不把完整 PTY 标为全绿。
+- `git diff --check`：通过。
+- `cargo build --workspace --release`：通过，独立 target cold release 用时 8m26s，无 warning。

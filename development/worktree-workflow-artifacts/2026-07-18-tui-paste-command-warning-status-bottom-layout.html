@@ -23,7 +23,7 @@
 </head>
 <body>
   <h1>Rust TUI paste, warning, status and bottom-layout fix</h1>
-  <p class="meta">日期：2026-07-18 · worktree：<code>worktree/tui-paste-command-warning-status-bottom-layout</code> · 基线：<code>17a6e954</code></p>
+  <p class="meta">日期：2026-07-18，follow-up：2026-07-19 · 原 worktree：<code>worktree/tui-paste-command-warning-status-bottom-layout</code> · follow-up worktree：<code>worktree/tui-paste-status-followup</code> · 最新计划基线：<code>b56ec6ae</code></p>
 
   <h2>任务目标</h2>
   <p>执行 <a href="../tui/2026-07-18-tui-paste-command-warning-status-bottom-layout-fix-plan.md"><code>development/tui/2026-07-18-tui-paste-command-warning-status-bottom-layout-fix-plan.md</code></a>，收口 Rust TUI 的大粘贴引用、有效 slash command 高亮、启动期用户可见 WARN、model/status 重复、请求级 context 状态和 bottom-anchored prompt 布局。</p>
@@ -35,6 +35,8 @@
     <li>按用户补充使用 <code>--test-threads=10</code> 运行完整 PTY suite；针对暴露的 context 行左到右截断问题，加入 display-width 优先级裁剪并补回归测试。</li>
     <li>完成格式、diff、clippy、分层 unit/PTY、release build 验证，记录真实失败边界。</li>
     <li>先提交代码，再提交 known-issues 与本 artifact；最后按 worktree 流程 fast-forward 回主分支。</li>
+    <li>2026-07-19 实现审阅后，在同一个计划中追加 follow-up checklist 并以 <code>b56ec6ae</code> 单独提交，再创建独立 follow-up worktree。</li>
+    <li>follow-up 修复诊断脱敏覆盖、单次 provider request context usage、effective context capacity、command metadata cache，并新增本任务专用真实 PTY 文本/坐标用例。</li>
   </ol>
 
   <h2>改动列表</h2>
@@ -45,9 +47,11 @@
     <li><code>crates/allthecodes/src/ui/context_layer.rs</code>：按实际 Unicode display width 在拥挤时优先保留 notice/error/permission 与 model/agent/context，先移除 repo/branch/plan/tool 装饰字段，避免权限和 memory 结果被截断。</li>
     <li><code>crates/allthecodes/src/ui/app/render.rs</code>、<code>components/bottom_pane.rs</code>：把弹性 spacer 移到 message content 与 bottom pane 之间，使 prompt-adjacent 区域贴底。</li>
     <li><code>development/archive/KNOWN_ISSUES.md</code>：新增 UI-014 修复记录。</li>
+    <li>follow-up <code>c29a329f</code>：startup diagnostic 增加 API key、云凭据、JWT 和通用 sensitive assignment 脱敏；TUI 从最终 Assistant message 读取最新单次 request usage，不再从 session 累计值做差。</li>
+    <li>follow-up <code>c29a329f</code>：capacity 优先当前 <code>context_window</code>，command highlight 使用 cwd/registry revision/1 秒 TTL cache；新增 <code>paste_status_followup.rs</code> 真实 PTY 覆盖。</li>
   </ul>
 
-  <h2>验证依据</h2>
+  <h2>首版验证依据（2026-07-18）</h2>
   <table>
     <thead><tr><th>检查</th><th>结果</th><th>证据/边界</th></tr></thead>
     <tbody>
@@ -64,14 +68,33 @@
 
   <div class="note"><strong>验证结论：</strong>本任务涉及的 TUI 行为回归和质量门通过；完整 PTY 与完整 UI/workspace 测试中的失败已按真实结果保留，属于既有 harness/隔离或未触及的 Unicode 测试问题，不伪装为全绿。</div>
 
+  <h2>实现审阅 follow-up 验证（2026-07-19）</h2>
+  <table>
+    <thead><tr><th>检查</th><th>结果</th><th>证据/边界</th></tr></thead>
+    <tbody>
+      <tr><td><code>cargo fmt --all --check</code> / <code>git diff --check</code></td><td class="pass">通过</td><td>无格式或 whitespace 差异。</td></tr>
+      <tr><td>相关 unit</td><td class="pass">通过</td><td>dynamic registry 12/12；startup diagnostics 4/4；context status 5/5；command cache 与 SDK Assistant request usage 回归各 1/1。</td></tr>
+      <tr><td><code>cargo test -p allthecodes --test pty_tui_e2e paste_status_followup -- --test-threads=1 --nocapture</code></td><td class="pass">通过</td><td>2/2：真实 512 字符 bracketed paste 引用；真实 model fallback warning；model 单一 owner；100x24 下 prompt/context/footer 分别位于 20/22/23 行。</td></tr>
+      <tr><td><code>cargo clippy --workspace --all-targets -- -D warnings</code></td><td class="pass">通过</td><td>4m32s，无 warning。</td></tr>
+      <tr><td><code>cargo test --workspace --exclude allthecodes --lib</code></td><td class="pass">通过</td><td>完整 exit 0；首版 artifact 记录的 gateway 并发偶发失败本次未复现。</td></tr>
+      <tr><td><code>cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=10</code></td><td class="partial">计划目标通过，套件部分</td><td>221 passed、36 ignored、2 failed（2m26s）。失败仍为 <code>effort_set_high_reports_profile_result</code> 和 <code>surface_mcp_remove_action_updates_project_settings</code> 的既有等待窗口；后者磁盘 settings 删除断言通过。本任务新增 2 个 PTY 均通过。</td></tr>
+      <tr><td><code>cargo build --workspace --release</code></td><td class="pass">通过</td><td>独立 follow-up target cold release，8m26s，无 warning。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note"><strong>follow-up 结论：</strong>实现审阅指出的五项产品/测试缺口已由 <code>c29a329f</code> 修复并获得定向真实 PTY 证据。完整 PTY 的两个既有等待窗口失败继续如实保留，因此不声称完整套件全绿。</div>
+
   <h2>提交列表</h2>
   <ul>
     <li><code>17a6e954</code> — <code>docs(tui): add paste warning status layout fix plan</code>（任务基线）</li>
     <li><code>3e51a518</code> — <code>fix(tui): complete paste warning status layout</code>（Rust 实现与测试）</li>
-    <li>当前提交 — <code>docs(tui): record validation and workflow artifact</code>（本记录与 known-issues 更新）</li>
+    <li><code>1c2b775b</code> — <code>docs(tui): record validation and workflow artifact</code>（首版记录与 known-issues 更新）</li>
+    <li><code>b56ec6ae</code> — <code>docs(tui): plan paste status follow-up fixes</code>（审阅 follow-up checklist）</li>
+    <li><code>c29a329f</code> — <code>fix(tui): close paste status review gaps</code>（follow-up 实现与测试）</li>
+    <li>当前提交 — <code>docs(tui): close paste status follow-up</code>（计划、UI-014 与本 artifact 收口）</li>
   </ul>
 
   <h2>后续合并动作</h2>
-  <p>提交完成后检查主分支 dirty 状态，执行 <code>git merge --ff-only worktree/tui-paste-command-warning-status-bottom-layout</code>；合并成功后删除该 worktree 与分支，再按仓库规定推送主分支。</p>
+  <p>follow-up 提交完成后检查主分支 dirty 状态，执行 <code>git merge --ff-only worktree/tui-paste-status-followup</code>；合并成功后删除该 worktree 与分支，再按仓库规定推送主分支。</p>
 </body>
 </html>
