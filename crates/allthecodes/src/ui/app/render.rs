@@ -14,7 +14,10 @@ use crate::ui::bottom_pane::BottomPaneHeights;
 use crate::ui::command_palette::CommandPalette;
 use crate::ui::command_surface::{CommandSurface, CommandSurfaceCursorAnchor};
 use crate::ui::history_search_dialog::HistorySearchDialog;
-use crate::ui::messages::{render_messages, MessageListViewModel, MessageRenderOptions};
+use crate::ui::messages::{
+    render_messages, task_list_content::render_task_list_lines, MessageListViewModel,
+    MessageRenderOptions,
+};
 use crate::ui::notifications::in_app::{NotificationPriority, NotificationTone};
 use crate::ui::overlays::{
     render_prompt_adjacent_dialog_lines, render_prompt_adjacent_lines, CenteredOverlayFrame,
@@ -92,6 +95,7 @@ impl App {
             };
 
         self.refresh_context_layer();
+        let expanded_view_lines = self.expanded_view_lines();
 
         let command_highlights = self.command_highlight_ranges();
         let current_notification = self.current_notification();
@@ -101,6 +105,13 @@ impl App {
             1u16
         } else {
             0
+        };
+        let expanded_view_height = if immediate_notification {
+            0
+        } else {
+            expanded_view_lines
+                .len()
+                .min(size.height.saturating_sub(5) as usize) as u16
         };
         let suggestion_height =
             if !self.is_streaming && self.suggestions.is_some() && !immediate_notification {
@@ -131,6 +142,7 @@ impl App {
             custom_lines.len().min(STATUS_LINE_MAX_LINES) as u16
         };
         let bottom_pane = BottomPaneHeights {
+            expanded_view: expanded_view_height,
             spinner: spinner_height,
             suggestions: suggestion_height,
             input: input_height,
@@ -267,10 +279,23 @@ impl App {
             }
         }
 
-        // Bottom area: spinner + suggestions + completion_popup + palette + arg_help + input + notification + context + agent_footer + status
+        // Bottom area: expanded task/teammate view + spinner + suggestions + completion popup + palette + arg help + input + notification + context + agent footer + status.
         let has_suggestions = suggestion_height > 0;
         let bottom_chunks = bottom_pane.split(bottom_area);
         self.render_layout.prompt_area = Some(bottom_chunks.input);
+
+        for (index, line) in expanded_view_lines
+            .iter()
+            .take(bottom_chunks.expanded_view.height as usize)
+            .enumerate()
+        {
+            frame.buffer_mut().set_line(
+                bottom_chunks.expanded_view.x,
+                bottom_chunks.expanded_view.y + index as u16,
+                line,
+                bottom_chunks.expanded_view.width,
+            );
+        }
 
         if self.is_streaming && bottom_chunks.spinner.height > 0 {
             self.spinner_state
@@ -419,6 +444,32 @@ impl App {
         }
 
         self.capture_render_snapshot(frame);
+    }
+
+    fn expanded_view_lines(&self) -> Vec<Line<'static>> {
+        match self.expanded_view {
+            super::ExpandedView::None => Vec::new(),
+            super::ExpandedView::Tasks => render_task_list_lines(
+                self.runtime_view.task_list_items(),
+                &self.theme,
+                chrono::Utc::now().timestamp(),
+            ),
+            super::ExpandedView::Teammates => {
+                let count = self.runtime_view.agent_nav().active_non_primary_count();
+                (count > 0)
+                    .then(|| {
+                        Line::from(Span::styled(
+                            format!(
+                                "  {count} teammate{} active",
+                                if count == 1 { "" } else { "s" }
+                            ),
+                            self.theme.dim,
+                        ))
+                    })
+                    .into_iter()
+                    .collect()
+            }
+        }
     }
 
     pub(super) fn command_highlight_ranges(&mut self) -> Vec<std::ops::Range<usize>> {

@@ -1679,6 +1679,93 @@ fn tick_marks_dirty_for_streaming_thinking_animation() {
 }
 
 #[test]
+fn ctrl_t_cycles_tasks_and_teammates_only_when_available() {
+    let mut app = App::new();
+
+    assert_eq!(app.expanded_view, ExpandedView::None);
+    assert_eq!(
+        send_key_with_modifiers(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL),
+        AppAction::None
+    );
+    assert_eq!(app.expanded_view, ExpandedView::Tasks);
+    send_key_with_modifiers(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    assert_eq!(app.expanded_view, ExpandedView::None);
+
+    app.runtime_view.upsert_agent(AgentThreadEntry {
+        thread_id: "worker-1".to_string(),
+        agent_nickname: Some("Worker".to_string()),
+        agent_role: None,
+        is_primary: false,
+        is_closed: false,
+    });
+    send_key_with_modifiers(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    assert_eq!(app.expanded_view, ExpandedView::Tasks);
+    send_key_with_modifiers(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    assert_eq!(app.expanded_view, ExpandedView::Teammates);
+    send_key_with_modifiers(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    assert_eq!(app.expanded_view, ExpandedView::None);
+}
+
+#[test]
+fn completed_task_list_collapses_after_five_seconds() {
+    use crate::ui::messages::task_list_content::TaskListItem;
+    use crate::ui::tasks::TaskState;
+
+    let mut app = App::new();
+    app.expanded_view = ExpandedView::Tasks;
+    app.runtime_view
+        .set_task_list_items_for_tests(vec![TaskListItem {
+            title: "Finish renderer".to_string(),
+            state: TaskState::Succeeded,
+            blocked_by: Vec::new(),
+            updated_at: 0,
+        }]);
+    let started = Instant::now();
+
+    app.collapse_expanded_task_view_if_complete(started);
+    assert_eq!(app.expanded_view, ExpandedView::Tasks);
+    app.collapse_expanded_task_view_if_complete(started + std::time::Duration::from_secs(5));
+    assert_eq!(app.expanded_view, ExpandedView::None);
+}
+
+#[test]
+fn expanded_task_view_renders_above_the_prompt_spinner() {
+    use crate::ui::messages::task_list_content::TaskListItem;
+    use crate::ui::tasks::TaskState;
+
+    let mut app = App::new();
+    app.add_message(Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 0,
+        role: "user".to_string(),
+        content: MessageContent::Text("show task list".to_string()),
+        is_meta: false,
+        tool_use_result: None,
+        source_tool_assistant_uuid: None,
+    }));
+    app.runtime_view
+        .set_task_list_items_for_tests(vec![TaskListItem {
+            title: "Port task renderer".to_string(),
+            state: TaskState::Running,
+            blocked_by: Vec::new(),
+            updated_at: chrono::Utc::now().timestamp(),
+        }]);
+    app.expanded_view = ExpandedView::Tasks;
+    app.set_streaming(true);
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+
+    terminal.draw(|frame| app.render(frame)).expect("draw");
+    let lines = buffer_to_lines(terminal.backend().buffer(), 80, 24);
+    let task_row = row_containing(&lines, "◼ Port task renderer");
+    let spinner_row = row_containing(&lines, "Thinking");
+
+    assert!(task_row < spinner_row);
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("1 tasks (0 done, 1 in progress, 0 open)")));
+}
+
+#[test]
 fn visible_welcome_logo_marks_dirty_every_eighty_ms() {
     let mut app = App::new();
     app.show_welcome = true;

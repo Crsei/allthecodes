@@ -243,6 +243,14 @@ impl App {
             return AppAction::None;
         }
 
+        if matches!(
+            (key.modifiers, key.code),
+            (KeyModifiers::CONTROL, KeyCode::Char('t'))
+        ) {
+            self.cycle_expanded_view();
+            return AppAction::None;
+        }
+
         // Ctrl+C / Ctrl+D retain their "abort or quit" semantics even in
         // transcript / focus modes; the user always needs a way out.
         match (key.modifiers, key.code) {

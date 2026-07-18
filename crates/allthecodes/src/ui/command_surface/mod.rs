@@ -11,6 +11,7 @@ mod adapters;
 mod surfaces;
 
 pub(crate) use adapters::kairos::set_kairos_snapshot;
+pub(crate) use adapters::tasks::task_list_items;
 
 pub use surfaces::agents::AgentsSurface;
 pub use surfaces::config::ConfigSurface;

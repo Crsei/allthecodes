@@ -83,6 +83,25 @@ struct CommandHighlightCache {
     metadata: Vec<allthecodes_commands::CommandMetadata>,
 }
 
+/// The compact view floated above the prompt spinner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ExpandedView {
+    #[default]
+    None,
+    Tasks,
+    Teammates,
+}
+
+impl ExpandedView {
+    fn cycle(self, has_teammates: bool) -> Self {
+        match (self, has_teammates) {
+            (Self::None, _) => Self::Tasks,
+            (Self::Tasks, true) => Self::Teammates,
+            (Self::Tasks, false) | (Self::Teammates, _) => Self::None,
+        }
+    }
+}
+
 /// Actions produced by the app in response to user input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
@@ -257,6 +276,8 @@ pub struct App {
     pending_command_surface_after_submit: Option<CommandSurfaceTarget>,
     runtime_view: RuntimeViewState,
     show_agent_footer: bool,
+    expanded_view: ExpandedView,
+    task_list_completed_since: Option<Instant>,
 
     // Prompt suggestions
     /// Next-prompt suggestions shown after an assistant turn completes.
@@ -370,6 +391,8 @@ impl App {
             pending_command_surface_after_submit: None,
             runtime_view: RuntimeViewState::default(),
             show_agent_footer: true,
+            expanded_view: ExpandedView::None,
+            task_list_completed_since: None,
             render_layout: RenderLayoutStore::default(),
             mouse_focus: MouseFocus::Messages,
             dirty: true,
@@ -663,7 +686,55 @@ impl App {
         if self.is_streaming && self.tick_counter.is_multiple_of(5) {
             self.dirty = true;
         }
+        self.refresh_expanded_task_view();
         if self.notifications.process_queue() {
+            self.dirty = true;
+        }
+    }
+
+    fn cycle_expanded_view(&mut self) {
+        let has_teammates = self.runtime_view.agent_nav().active_non_primary_count() > 0;
+        self.runtime_view.refresh_task_list_items();
+        self.expanded_view = self.expanded_view.cycle(has_teammates);
+        self.task_list_completed_since = None;
+        self.dirty = true;
+    }
+
+    fn refresh_expanded_task_view(&mut self) {
+        if self.expanded_view != ExpandedView::Tasks {
+            self.task_list_completed_since = None;
+            return;
+        }
+
+        if self.runtime_view.refresh_task_list_items() {
+            self.dirty = true;
+        }
+
+        self.collapse_expanded_task_view_if_complete(Instant::now());
+    }
+
+    fn collapse_expanded_task_view_if_complete(&mut self, now: Instant) {
+        let all_terminal = {
+            let tasks = self.runtime_view.task_list_items();
+            !tasks.is_empty()
+                && tasks.iter().all(|task| {
+                    matches!(
+                        task.state,
+                        crate::ui::tasks::TaskState::Succeeded
+                            | crate::ui::tasks::TaskState::Failed
+                            | crate::ui::tasks::TaskState::Canceled
+                    )
+                })
+        };
+        if !all_terminal {
+            self.task_list_completed_since = None;
+            return;
+        }
+
+        let completed_since = self.task_list_completed_since.get_or_insert(now);
+        if now.duration_since(*completed_since) >= std::time::Duration::from_secs(5) {
+            self.expanded_view = ExpandedView::None;
+            self.task_list_completed_since = None;
             self.dirty = true;
         }
     }

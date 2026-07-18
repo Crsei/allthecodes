@@ -9,6 +9,7 @@ use super::chat_composer::ChatComposerState;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BottomPaneHeights {
+    pub expanded_view: u16,
     pub spinner: u16,
     pub suggestions: u16,
     pub input: u16,
@@ -23,7 +24,8 @@ pub struct BottomPaneHeights {
 
 impl BottomPaneHeights {
     pub fn total(self) -> u16 {
-        self.spinner
+        self.expanded_view
+            + self.spinner
             + self.suggestions
             + self.input
             + self.completion_popup
@@ -37,6 +39,7 @@ impl BottomPaneHeights {
 
     pub fn split(self, area: Rect) -> BottomPaneAreas {
         let chunks = Layout::vertical([
+            Constraint::Length(self.expanded_view),
             Constraint::Length(self.spinner),
             Constraint::Length(self.suggestions),
             Constraint::Length(self.completion_popup),
@@ -51,22 +54,24 @@ impl BottomPaneHeights {
         .split(area);
 
         BottomPaneAreas {
-            spinner: chunks[0],
-            suggestions: chunks[1],
-            completion_popup: chunks[2],
-            command_palette: chunks[3],
-            command_arg_help: chunks[4],
-            input: chunks[5],
-            notification: chunks[6],
-            context: chunks[7],
-            agent_footer: chunks[8],
-            status: chunks[9],
+            expanded_view: chunks[0],
+            spinner: chunks[1],
+            suggestions: chunks[2],
+            completion_popup: chunks[3],
+            command_palette: chunks[4],
+            command_arg_help: chunks[5],
+            input: chunks[6],
+            notification: chunks[7],
+            context: chunks[8],
+            agent_footer: chunks[9],
+            status: chunks[10],
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BottomPaneAreas {
+    pub expanded_view: Rect,
     pub spinner: Rect,
     pub suggestions: Rect,
     pub input: Rect,
@@ -174,6 +179,7 @@ mod tests {
     #[test]
     fn height_model_splits_terminal_regions() {
         let heights = BottomPaneHeights {
+            expanded_view: 2,
             spinner: 1,
             suggestions: 1,
             input: 3,
@@ -186,8 +192,9 @@ mod tests {
             status: 1,
         };
 
-        assert_eq!(heights.total(), 17);
+        assert_eq!(heights.total(), 19);
         let areas = heights.split(Rect::new(0, 0, 80, 24));
+        assert_eq!(areas.expanded_view.height, 2);
         assert_eq!(areas.spinner.height, 1);
         assert_eq!(areas.input.height, 3);
         assert_eq!(areas.status.height, 1);

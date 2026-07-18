@@ -40,7 +40,6 @@ pub(crate) fn task_surface_items() -> Vec<TaskSurfaceItem> {
 /// Team activity deliberately stays out of this list: the `Teammates` view
 /// owns that surface, while this one mirrors the plan/task state maintained by
 /// `allthecodes_tasks`.
-#[allow(dead_code)]
 pub(crate) fn task_list_items() -> Vec<TaskListItem> {
     allthecodes_tasks::global_store()
         .list()
