@@ -38,6 +38,7 @@ async fn test_deepseek_openai_compat_chat() {
         default_model: "deepseek-v4-pro".to_string(),
         max_retries: 1,
         timeout_secs: 60,
+        recovery_policy: None,
     });
 
     let request = MessagesRequest {

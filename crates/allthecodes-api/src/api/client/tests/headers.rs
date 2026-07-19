@@ -117,6 +117,7 @@ fn test_build_headers_azure_has_api_key() {
         default_model: "model".to_string(),
         max_retries: 1,
         timeout_secs: 30,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let headers = client.build_headers_map();
@@ -135,6 +136,7 @@ fn test_build_headers_openai_compat_bearer() {
         default_model: "gpt-4o".to_string(),
         max_retries: 1,
         timeout_secs: 30,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let headers = client.build_headers_map();
@@ -153,6 +155,7 @@ fn test_build_headers_google_no_auth_header() {
         default_model: "gemini-2.0-flash".to_string(),
         max_retries: 1,
         timeout_secs: 30,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let headers = client.build_headers_map();
@@ -172,6 +175,7 @@ fn test_build_headers_bedrock_no_api_key() {
         default_model: "model".to_string(),
         max_retries: 1,
         timeout_secs: 30,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let headers = client.build_headers_map();
@@ -324,6 +328,7 @@ fn provider_diagnostic_includes_endpoint_kind_and_host_without_secret() {
         default_model: "claude-sonnet-4-20250514".to_string(),
         max_retries: 1,
         timeout_secs: 30,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let diagnostic = client.provider_diagnostic();

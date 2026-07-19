@@ -33,6 +33,7 @@ pub(super) fn anthropic_config() -> ApiClientConfig {
         default_model: "claude-sonnet-4-20250514".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     }
 }
 
@@ -46,6 +47,7 @@ pub(super) fn anthropic_config_custom_url() -> ApiClientConfig {
         default_model: "claude-sonnet-4-20250514".to_string(),
         max_retries: 2,
         timeout_secs: 30,
+        recovery_policy: None,
     }
 }
 

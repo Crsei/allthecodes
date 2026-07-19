@@ -31,6 +31,16 @@ use allthecodes_types::message::{AssistantMessage, StreamEvent};
 // ---------------------------------------------------------------------------
 
 impl ApiClient {
+    pub async fn messages_stream_once(
+        &self,
+        request: MessagesRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        let request = resolve_request_model_for_provider(&self.config.provider, request)?;
+        self.stream_provider
+            .stream(&self.stream_http, &request)
+            .await
+    }
+
     /// Return `true` when the current provider supports exact token counting.
     pub fn supports_exact_token_count(&self) -> bool {
         matches!(
@@ -464,6 +474,14 @@ impl ApiClient {
     /// Langfuse provider name for the current client.
     pub fn langfuse_provider_name(&self) -> &str {
         self.config.provider.langfuse_provider_name()
+    }
+
+    /// Whether this client uses the OpenAI Codex Responses streaming protocol.
+    pub fn uses_codex_responses(&self) -> bool {
+        matches!(
+            &self.config.provider,
+            ApiProvider::OpenAiCompat { name, .. } if super::is_openai_codex_provider(name)
+        )
     }
 
     /// Return a provider diagnostic struct describing the current provider.

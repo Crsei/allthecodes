@@ -31,6 +31,7 @@ fn test_build_url_anthropic_trailing_slash() {
         default_model: "model".to_string(),
         max_retries: 1,
         timeout_secs: 30,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let url = client.build_url();
@@ -48,6 +49,7 @@ fn test_build_url_bedrock_returns_aws_endpoint() {
         default_model: "claude-sonnet-4-5-20250929".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let url = client.build_url();
@@ -77,6 +79,7 @@ fn test_build_url_bedrock_with_override() {
         default_model: "claude-sonnet-4-5-20250929".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let url = client.build_url();
@@ -101,6 +104,7 @@ fn test_build_url_vertex_returns_streamrawpredict() {
         default_model: "claude-sonnet-4-5-20250929".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let url = client.build_url();
@@ -125,6 +129,7 @@ fn test_build_url_vertex_uses_per_model_region_override() {
         default_model: "claude-haiku-4-5-20251001".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let url = client.build_url();
@@ -146,6 +151,7 @@ fn test_build_url_azure() {
         default_model: "model".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let url = client.build_url();
@@ -164,6 +170,7 @@ fn test_build_url_openai_compat() {
         default_model: "deepseek-chat".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let url = client.build_url();
@@ -182,6 +189,7 @@ fn test_build_url_openai_compat_trailing_slash() {
         default_model: "gpt-4o".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let url = client.build_url();
@@ -200,6 +208,7 @@ fn test_build_url_openai_codex() {
         default_model: "gpt-5.4".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     };
     let client = ApiClient::new(config);
     let url = client.build_url();

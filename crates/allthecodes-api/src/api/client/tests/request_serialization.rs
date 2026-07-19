@@ -336,6 +336,7 @@ fn test_exact_token_count_support_matrix() {
         default_model: "claude-sonnet-4-20250514".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     });
     assert!(compatible_anthropic.supports_exact_token_count());
 
@@ -347,6 +348,7 @@ fn test_exact_token_count_support_matrix() {
         default_model: "claude-sonnet-4-20250514".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     });
     assert!(azure.supports_exact_token_count());
 
@@ -358,6 +360,7 @@ fn test_exact_token_count_support_matrix() {
         default_model: "gemini-2.0-flash".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     });
     assert!(google.supports_exact_token_count());
 
@@ -370,6 +373,7 @@ fn test_exact_token_count_support_matrix() {
         default_model: "claude-sonnet-4-5-20250929".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     });
     assert!(bedrock.supports_exact_token_count());
 
@@ -382,6 +386,7 @@ fn test_exact_token_count_support_matrix() {
         default_model: "claude-sonnet-4-5-20250929".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     });
     assert!(vertex.supports_exact_token_count());
 
@@ -395,6 +400,7 @@ fn test_exact_token_count_support_matrix() {
         default_model: "gpt-4o".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     });
     assert!(!openai.supports_exact_token_count());
 
@@ -408,6 +414,7 @@ fn test_exact_token_count_support_matrix() {
         default_model: "deepseek-chat".to_string(),
         max_retries: 3,
         timeout_secs: 60,
+        recovery_policy: None,
     });
     assert!(!openai_compatible.supports_exact_token_count());
 }

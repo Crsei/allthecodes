@@ -38,6 +38,10 @@ pub fn settings_schema() -> Value {
                             "type": "string",
                             "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                         },
+                        "requestMaxRetries": { "type": "integer", "minimum": 0, "maximum": 100 },
+                        "streamMaxRetries": { "type": "integer", "minimum": 0, "maximum": 100 },
+                        "streamIdleTimeoutMs": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+                        "requestTimeoutMs": { "type": "integer", "minimum": 1, "maximum": 3600000 },
                         "modelCapabilities": {
                             "type": "object",
                             "additionalProperties": {

@@ -171,6 +171,22 @@ pub(crate) fn apply_active_auth_profile(merged: &mut EffectiveSettings, sources:
         sources.insert("model_reasoning_effort".to_string(), source);
         sources.insert(profile_key("modelReasoningEffort"), source);
     }
+    if let Some(value) = profile.request_max_retries {
+        merged.request_max_retries = Some(value);
+        sources.insert(profile_key("requestMaxRetries"), source);
+    }
+    if let Some(value) = profile.stream_max_retries {
+        merged.stream_max_retries = Some(value);
+        sources.insert(profile_key("streamMaxRetries"), source);
+    }
+    if let Some(value) = profile.stream_idle_timeout_ms {
+        merged.stream_idle_timeout_ms = Some(value);
+        sources.insert(profile_key("streamIdleTimeoutMs"), source);
+    }
+    if let Some(value) = profile.request_timeout_ms {
+        merged.request_timeout_ms = Some(value);
+        sources.insert(profile_key("requestTimeoutMs"), source);
+    }
     if let Some(api_key) = profile
         .api_key
         .filter(|_| should_profile_override(sources, "apiKey", source))
@@ -284,6 +300,19 @@ fn apply_env_overrides(merged: &mut EffectiveSettings, sources: &mut SourceMap) 
     if let Ok(theme) = std::env::var("CLAUDE_THEME") {
         merged.theme = Some(theme);
         set_src("theme", sources);
+    }
+    apply_stream_idle_env_override(merged, sources);
+}
+
+fn apply_stream_idle_env_override(merged: &mut EffectiveSettings, sources: &mut SourceMap) {
+    let stream_idle_override = std::env::var("ALLTHECODES_STREAM_IDLE_TIMEOUT_MS")
+        .ok()
+        .or_else(|| std::env::var("CC_RUST_STREAM_IDLE_TIMEOUT_MS").ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| (1..=super::PROVIDER_TIMEOUT_MS_MAX).contains(value));
+    if let Some(value) = stream_idle_override {
+        merged.stream_idle_timeout_ms = Some(value);
+        sources.insert("streamIdleTimeoutMs".to_string(), SettingsSource::Env);
     }
 }
 
@@ -866,6 +895,7 @@ pub fn load_effective_with_options(cwd: &Path, options: LoadOptions) -> Result<L
     let effective_raw_value = serde_json::to_value(&acc).unwrap_or(Value::Null);
     let mut effective = EffectiveSettings::from_raw(acc);
     apply_active_auth_profile(&mut effective, &mut sources);
+    apply_stream_idle_env_override(&mut effective, &mut sources);
 
     if let Some(raw) = managed.as_ref() {
         apply_managed_non_overridable(&mut effective, &mut sources, raw);

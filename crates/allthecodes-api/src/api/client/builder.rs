@@ -7,9 +7,9 @@ use super::model::{
     selected_api_provider_from_settings,
 };
 use super::types::{
-    AnthropicAuth, ApiClient, ApiClientConfig, ApiProvider, ANTHROPIC_DEFAULT_MODEL_ALIAS,
-    OPENAI_CODEX_BASE_URL_ENV, OPENAI_CODEX_MODEL_ENV, OPENAI_CODEX_PROVIDER_NAME,
-    OPENAI_PROVIDER_NAME,
+    AnthropicAuth, ApiClient, ApiClientConfig, ApiProvider, ProviderRecoveryPolicy,
+    ANTHROPIC_DEFAULT_MODEL_ALIAS, OPENAI_CODEX_BASE_URL_ENV, OPENAI_CODEX_MODEL_ENV,
+    OPENAI_CODEX_PROVIDER_NAME, OPENAI_PROVIDER_NAME,
 };
 use crate::api::providers::{AnthropicEndpointKind, ProviderInfo, ProviderProtocol};
 
@@ -19,6 +19,7 @@ use crate::api::providers::{AnthropicEndpointKind, ProviderInfo, ProviderProtoco
 
 pub(super) fn make_stream_provider(
     provider: &ApiProvider,
+    recovery_policy: ProviderRecoveryPolicy,
 ) -> Box<dyn crate::api::stream_provider::StreamProvider> {
     use crate::api::stream_provider::*;
     match provider {
@@ -31,6 +32,8 @@ pub(super) fn make_stream_provider(
             name: name.clone(),
             api_key: api_key.clone(),
             base_url: base_url.clone(),
+            request_timeout: recovery_policy.request_timeout,
+            stream_idle_timeout: recovery_policy.stream_idle_timeout,
         }),
         ApiProvider::Google { api_key, base_url } => Box::new(GoogleStreamProvider {
             api_key: api_key.clone(),
@@ -213,10 +216,13 @@ fn build_http_client(
     timeout: std::time::Duration,
     proxy: Option<reqwest::Proxy>,
     streaming: bool,
+    codex_stream: bool,
 ) -> reqwest::Client {
     let mut builder =
         reqwest::Client::builder().user_agent(allthecodes_config::user_agent::api_user_agent());
-    builder = if streaming {
+    builder = if streaming && codex_stream {
+        builder.connect_timeout(timeout)
+    } else if streaming {
         builder.connect_timeout(timeout).read_timeout(timeout)
     } else {
         builder.timeout(timeout)
@@ -229,6 +235,77 @@ fn build_http_client(
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
+fn resolve_recovery_policy(
+    config: &ApiClientConfig,
+    codex_stream: bool,
+) -> Result<ProviderRecoveryPolicy> {
+    if let Some(policy) = config.recovery_policy {
+        let timeout_max =
+            std::time::Duration::from_millis(allthecodes_config::settings::PROVIDER_TIMEOUT_MS_MAX);
+        if policy.request_max_retries
+            > usize::from(allthecodes_config::settings::PROVIDER_RETRY_LIMIT_MAX)
+            || policy.stream_max_retries
+                > usize::from(allthecodes_config::settings::PROVIDER_RETRY_LIMIT_MAX)
+            || policy.stream_idle_timeout.is_zero()
+            || policy.stream_idle_timeout > timeout_max
+            || policy.request_timeout.is_zero()
+            || policy.request_timeout > timeout_max
+        {
+            bail!("provider recovery policy is outside the supported retry/timeout bounds");
+        }
+        return Ok(policy);
+    }
+    if !codex_stream {
+        let timeout = std::time::Duration::from_secs(config.timeout_secs);
+        return Ok(ProviderRecoveryPolicy {
+            request_max_retries: config.max_retries,
+            stream_max_retries: 1,
+            stream_idle_timeout: timeout,
+            request_timeout: timeout,
+        });
+    }
+
+    use allthecodes_config::settings::{
+        validate_recovery_policy, CODEX_REQUEST_MAX_RETRIES_DEFAULT,
+        CODEX_REQUEST_TIMEOUT_MS_DEFAULT, CODEX_STREAM_IDLE_TIMEOUT_MS_DEFAULT,
+        CODEX_STREAM_MAX_RETRIES_DEFAULT,
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let loaded = allthecodes_config::settings::load_effective(&cwd)?;
+    if let Some(profile) = loaded
+        .effective
+        .active_auth_profile
+        .as_ref()
+        .and_then(|id| loaded.effective.auth_profiles.get(id))
+    {
+        validate_recovery_policy(profile)?;
+    }
+    Ok(codex_policy_from_effective(&loaded.effective))
+}
+
+fn codex_policy_from_effective(
+    effective: &allthecodes_config::settings::EffectiveSettings,
+) -> ProviderRecoveryPolicy {
+    ProviderRecoveryPolicy {
+        request_max_retries: effective
+            .request_max_retries
+            .unwrap_or(CODEX_REQUEST_MAX_RETRIES_DEFAULT) as usize,
+        stream_max_retries: effective
+            .stream_max_retries
+            .unwrap_or(CODEX_STREAM_MAX_RETRIES_DEFAULT) as usize,
+        stream_idle_timeout: std::time::Duration::from_millis(
+            effective
+                .stream_idle_timeout_ms
+                .unwrap_or(CODEX_STREAM_IDLE_TIMEOUT_MS_DEFAULT),
+        ),
+        request_timeout: std::time::Duration::from_millis(
+            effective
+                .request_timeout_ms
+                .unwrap_or(CODEX_REQUEST_TIMEOUT_MS_DEFAULT),
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ApiClient construction methods
 // ---------------------------------------------------------------------------
@@ -236,12 +313,19 @@ fn build_http_client(
 impl ApiClient {
     /// Try to construct a new `ApiClient` from a fully-formed config.
     /// Validates the provider configuration before building.
-    pub fn try_new(config: ApiClientConfig) -> Result<Self> {
+    pub fn try_new(mut config: ApiClientConfig) -> Result<Self> {
         validate_provider_config(&config.provider)?;
         require_non_empty(&config.default_model, "default model")?;
 
-        let stream_provider = make_stream_provider(&config.provider);
-        let timeout = std::time::Duration::from_secs(config.timeout_secs);
+        let codex_stream = matches!(
+            &config.provider,
+            ApiProvider::OpenAiCompat { name, .. } if crate::api::client::is_openai_codex_provider(name)
+        );
+        let recovery_policy = resolve_recovery_policy(&config, codex_stream)?;
+        config.max_retries = recovery_policy.request_max_retries;
+        config.recovery_policy = Some(recovery_policy);
+        let stream_provider = make_stream_provider(&config.provider, recovery_policy);
+        let timeout = recovery_policy.request_timeout;
         let proxy =
             resolve_proxy_url().and_then(|proxy_url| match reqwest::Proxy::all(&proxy_url) {
                 Ok(proxy) => {
@@ -254,11 +338,16 @@ impl ApiClient {
                 }
             });
         Ok(Self {
-            http: build_http_client(timeout, proxy.clone(), false),
-            stream_http: build_http_client(timeout, proxy, true),
+            http: build_http_client(timeout, proxy.clone(), false, false),
+            stream_http: build_http_client(timeout, proxy, true, codex_stream),
             stream_provider,
+            recovery_policy,
             config,
         })
+    }
+
+    pub fn recovery_policy(&self) -> ProviderRecoveryPolicy {
+        self.recovery_policy
     }
 
     /// Construct a new `ApiClient`, panicking on invalid config.
@@ -296,6 +385,7 @@ impl ApiClient {
             default_model,
             max_retries: 3,
             timeout_secs: 120,
+            recovery_policy: None,
         })
     }
 
@@ -358,6 +448,7 @@ impl ApiClient {
                 default_model: info.default_model.to_string(),
                 max_retries: 3,
                 timeout_secs: 120,
+                recovery_policy: None,
             })
             .map(Some);
         }
@@ -386,6 +477,7 @@ impl ApiClient {
                 default_model,
                 max_retries: 3,
                 timeout_secs: 120,
+                recovery_policy: None,
             })
             .map(Some);
         }
@@ -404,6 +496,7 @@ impl ApiClient {
                 default_model,
                 max_retries: 3,
                 timeout_secs: 120,
+                recovery_policy: None,
             })
             .map(Some);
         }
@@ -456,6 +549,7 @@ impl ApiClient {
             default_model,
             max_retries: 3,
             timeout_secs: 120,
+            recovery_policy: None,
         })
     }
 
@@ -496,6 +590,7 @@ impl ApiClient {
             default_model,
             max_retries: 3,
             timeout_secs: 120,
+            recovery_policy: None,
         })
     }
 
@@ -548,6 +643,7 @@ impl ApiClient {
             default_model,
             max_retries: 3,
             timeout_secs: 120,
+            recovery_policy: None,
         })
         .map(Some)
     }
@@ -571,6 +667,7 @@ impl ApiClient {
             default_model: info.default_model.to_string(),
             max_retries: 3,
             timeout_secs: 120,
+            recovery_policy: None,
         })
         .map(Some)
     }
@@ -744,6 +841,7 @@ impl ApiClient {
             default_model,
             max_retries: 3,
             timeout_secs: 120,
+            recovery_policy: None,
         })
     }
 
@@ -795,6 +893,7 @@ impl ApiClient {
             default_model,
             max_retries: 3,
             timeout_secs: 120,
+            recovery_policy: None,
         })
     }
 
@@ -841,6 +940,7 @@ impl ApiClient {
             default_model,
             max_retries: 3,
             timeout_secs: 120,
+            recovery_policy: None,
         })
     }
 
@@ -867,6 +967,7 @@ impl ApiClient {
             default_model,
             max_retries: 3,
             timeout_secs: 120,
+            recovery_policy: None,
         })
         .map(Some)
     }
@@ -889,6 +990,46 @@ mod provider_profile_tests {
     use futures::StreamExt;
     use std::collections::HashMap;
     use std::io::{Read, Write};
+
+    #[test]
+    fn codex_recovery_policy_defaults_and_profile_overrides() {
+        let defaults = codex_policy_from_effective(
+            &allthecodes_config::settings::EffectiveSettings::default(),
+        );
+        assert_eq!(defaults.request_max_retries, 4);
+        assert_eq!(defaults.stream_max_retries, 5);
+        assert_eq!(defaults.stream_idle_timeout.as_millis(), 300_000);
+        assert_eq!(defaults.request_timeout.as_millis(), 120_000);
+
+        let effective = allthecodes_config::settings::EffectiveSettings {
+            request_max_retries: Some(0),
+            stream_max_retries: Some(7),
+            stream_idle_timeout_ms: Some(42),
+            request_timeout_ms: Some(84),
+            ..Default::default()
+        };
+        let custom = codex_policy_from_effective(&effective);
+        assert_eq!(custom.request_max_retries, 0);
+        assert_eq!(custom.stream_max_retries, 7);
+        assert_eq!(custom.stream_idle_timeout.as_millis(), 42);
+        assert_eq!(custom.request_timeout.as_millis(), 84);
+
+        let client = ApiClient::try_new(ApiClientConfig {
+            provider: ApiProvider::OpenAiCompat {
+                name: OPENAI_CODEX_PROVIDER_NAME.to_string(),
+                api_key: "test-token".to_string(),
+                base_url: "https://example.test/backend-api".to_string(),
+                default_model: "gpt-test".to_string(),
+            },
+            default_model: "gpt-test".to_string(),
+            max_retries: 99,
+            timeout_secs: 99,
+            recovery_policy: Some(custom),
+        })
+        .expect("explicit recovery policy should survive ApiClientConfig");
+        assert_eq!(client.config().recovery_policy, Some(custom));
+        assert_eq!(client.config().max_retries, custom.request_max_retries);
+    }
 
     #[test]
     fn every_static_provider_builds_from_profile_credentials() {

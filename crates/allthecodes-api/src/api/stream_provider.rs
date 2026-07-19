@@ -105,6 +105,8 @@ pub struct OpenAiCompatStreamProvider {
     pub name: String,
     pub api_key: String,
     pub base_url: String,
+    pub request_timeout: std::time::Duration,
+    pub stream_idle_timeout: std::time::Duration,
 }
 
 #[async_trait::async_trait]
@@ -120,6 +122,8 @@ impl StreamProvider for OpenAiCompatStreamProvider {
             &self.api_key,
             &self.name,
             request,
+            self.request_timeout,
+            self.stream_idle_timeout,
         )
         .await
     }

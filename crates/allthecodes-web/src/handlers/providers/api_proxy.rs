@@ -231,6 +231,7 @@ fn client_from_profile(provider_id: &str, profile: &ProviderProfileSettings) -> 
         default_model,
         max_retries: 3,
         timeout_secs: 120,
+        recovery_policy: None,
     })
 }
 

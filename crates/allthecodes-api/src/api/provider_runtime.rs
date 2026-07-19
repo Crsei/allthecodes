@@ -193,6 +193,78 @@ impl fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderStreamFailureCategory {
+    Transport,
+    IdleTimeout,
+    IncompleteResponse,
+    ProviderFailed,
+    Decode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderStreamFailure {
+    pub category: ProviderStreamFailureCategory,
+    pub provider: String,
+    pub message: String,
+    pub status: Option<u16>,
+    pub request_id: Option<String>,
+    pub error_type: Option<String>,
+    pub retry_after_ms: Option<u64>,
+}
+
+impl ProviderStreamFailure {
+    pub fn new(
+        category: ProviderStreamFailureCategory,
+        provider: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            category,
+            provider: provider.into(),
+            message: message.into(),
+            status: None,
+            request_id: None,
+            error_type: None,
+            retry_after_ms: None,
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self.category,
+            ProviderStreamFailureCategory::Transport
+                | ProviderStreamFailureCategory::IdleTimeout
+                | ProviderStreamFailureCategory::IncompleteResponse
+        ) || (self.category == ProviderStreamFailureCategory::ProviderFailed
+            && ProviderErrorKind::classify(self.status, self.error_type.as_deref(), &self.message)
+                .is_retryable())
+    }
+}
+
+impl fmt::Display for ProviderStreamFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "provider stream failure category={:?} provider={}",
+            self.category, self.provider
+        )?;
+        if let Some(status) = self.status {
+            write!(f, " status={status}")?;
+        }
+        if let Some(request_id) = &self.request_id {
+            write!(f, " request_id={request_id}")?;
+        }
+        if let Some(error_type) = &self.error_type {
+            write!(f, " type={error_type}")?;
+        }
+        write!(f, ": {}", self.message)
+    }
+}
+
+impl std::error::Error for ProviderStreamFailure {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderResponseMetadata {
     pub provider: String,

@@ -11,7 +11,7 @@ use crate::api::provider_runtime::{
 use allthecodes_types::message::{ContentBlock, MessageDelta, StreamEvent, Usage};
 
 use super::builder::build_openai_request;
-use super::codex::parse_codex_sse_byte_stream;
+use super::codex::parse_codex_sse_byte_stream_with_timeout;
 use super::format::reasoning_output_tokens_from_usage;
 
 /// Send a streaming request to an OpenAI-compatible provider and return
@@ -22,8 +22,12 @@ pub(crate) async fn openai_compat_stream(
     api_key: &str,
     provider_name: &str,
     request: &MessagesRequest,
+    request_timeout: std::time::Duration,
+    stream_idle_timeout: std::time::Duration,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
-    let endpoint = ProviderEndpoint::openai_compat(provider_name, base_url, api_key)?;
+    let mut endpoint = ProviderEndpoint::openai_compat(provider_name, base_url, api_key)?;
+    endpoint.request_timeout = request_timeout;
+    endpoint.stream_idle_timeout = stream_idle_timeout;
     let url = build_openai_compat_url(base_url, provider_name);
     let body = build_openai_request(request, provider_name);
 
@@ -34,12 +38,20 @@ pub(crate) async fn openai_compat_stream(
         "OpenAI-compat request"
     );
 
-    let response = match endpoint
-        .apply_headers(http.post(&url))
-        .json(&body)
-        .send()
-        .await
-    {
+    let send = endpoint.apply_headers(http.post(&url)).json(&body).send();
+    let response_result = if is_openai_codex_provider(provider_name) {
+        tokio::time::timeout(endpoint.request_timeout, send)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "provider request timeout after {}ms before response headers",
+                    endpoint.request_timeout.as_millis()
+                )
+            })?
+    } else {
+        send.await
+    };
+    let response = match response_result {
         Ok(resp) => resp,
         Err(e) => {
             tracing::error!(
@@ -66,7 +78,10 @@ pub(crate) async fn openai_compat_stream(
     tracing::debug!(?metadata, "provider stream established");
     let byte_stream = response.bytes_stream();
     if is_openai_codex_provider(provider_name) {
-        Ok(Box::pin(parse_codex_sse_byte_stream(byte_stream)))
+        Ok(Box::pin(parse_codex_sse_byte_stream_with_timeout(
+            byte_stream,
+            endpoint.stream_idle_timeout,
+        )))
     } else {
         Ok(Box::pin(parse_chat_sse_byte_stream(byte_stream)))
     }

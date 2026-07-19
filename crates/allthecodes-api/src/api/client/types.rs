@@ -417,6 +417,18 @@ pub struct ApiClientConfig {
     pub default_model: String,
     pub max_retries: usize,
     pub timeout_secs: u64,
+    /// Optional provider-specific recovery policy. When absent, construction
+    /// preserves legacy defaults for non-Codex providers and resolves the
+    /// active profile plus Codex defaults for the Codex Responses provider.
+    pub recovery_policy: Option<ProviderRecoveryPolicy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderRecoveryPolicy {
+    pub request_max_retries: usize,
+    pub stream_max_retries: usize,
+    pub stream_idle_timeout: std::time::Duration,
+    pub request_timeout: std::time::Duration,
 }
 
 /// The API client -- uses reqwest under the hood.
@@ -428,6 +440,7 @@ pub struct ApiClient {
     /// terminate healthy long-lived SSE responses after `timeout_secs`.
     pub stream_http: reqwest::Client,
     pub stream_provider: Box<dyn crate::api::stream_provider::StreamProvider>,
+    pub recovery_policy: ProviderRecoveryPolicy,
 }
 
 #[cfg(test)]

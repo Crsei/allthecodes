@@ -1645,3 +1645,103 @@ fn settings_schema_exposes_typed_kairos_profile() {
         );
     }
 }
+
+#[test]
+fn provider_recovery_policy_round_trips_and_merges() {
+    let profile: ProviderProfileSettings = serde_json::from_value(json!({
+        "apiProvider": "openai-codex",
+        "requestMaxRetries": 4,
+        "streamMaxRetries": 5,
+        "streamIdleTimeoutMs": 300000,
+        "requestTimeoutMs": 120000
+    }))
+    .unwrap();
+    assert_eq!(profile.request_max_retries, Some(4));
+    assert_eq!(profile.stream_max_retries, Some(5));
+    assert_eq!(profile.stream_idle_timeout_ms, Some(300_000));
+    assert_eq!(profile.request_timeout_ms, Some(120_000));
+    assert_eq!(
+        serde_json::to_value(&profile).unwrap()["streamMaxRetries"],
+        5
+    );
+
+    let mut base = ProviderProfileSettings {
+        request_max_retries: Some(1),
+        stream_max_retries: Some(2),
+        ..Default::default()
+    };
+    super::providers::merge_provider_profile(
+        &mut base,
+        ProviderProfileSettings {
+            request_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(42),
+            ..Default::default()
+        },
+    );
+    assert_eq!(base.request_max_retries, Some(0));
+    assert_eq!(base.stream_max_retries, Some(2));
+    assert_eq!(base.stream_idle_timeout_ms, Some(42));
+}
+
+#[test]
+fn provider_recovery_policy_schema_and_validation_share_bounds() {
+    let schema = settings_schema();
+    let base = "/properties/authProfiles/additionalProperties/properties";
+    assert_eq!(
+        schema.pointer(&format!("{base}/requestMaxRetries/maximum")),
+        Some(&json!(100))
+    );
+    assert_eq!(
+        schema.pointer(&format!("{base}/streamMaxRetries/minimum")),
+        Some(&json!(0))
+    );
+    assert_eq!(
+        schema.pointer(&format!("{base}/streamIdleTimeoutMs/maximum")),
+        Some(&json!(3_600_000))
+    );
+    assert_eq!(
+        schema.pointer(&format!("{base}/requestTimeoutMs/minimum")),
+        Some(&json!(1))
+    );
+
+    assert!(validate_recovery_policy(&ProviderProfileSettings {
+        stream_idle_timeout_ms: Some(0),
+        ..Default::default()
+    })
+    .is_err());
+    assert!(validate_recovery_policy(&ProviderProfileSettings {
+        request_timeout_ms: Some(3_600_001),
+        ..Default::default()
+    })
+    .is_err());
+    assert!(validate_recovery_policy(&ProviderProfileSettings {
+        request_max_retries: Some(100),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(1),
+        request_timeout_ms: Some(3_600_000),
+        ..Default::default()
+    })
+    .is_ok());
+}
+
+#[test]
+fn active_profile_projects_recovery_policy_into_effective_settings() {
+    let mut effective = EffectiveSettings::default();
+    effective.active_auth_profile = Some("codex".to_string());
+    effective.auth_profiles.insert(
+        "codex".to_string(),
+        ProviderProfileSettings {
+            api_provider: Some(API_PROVIDER_OPENAI_CODEX.to_string()),
+            request_max_retries: Some(4),
+            stream_max_retries: Some(5),
+            stream_idle_timeout_ms: Some(300_000),
+            request_timeout_ms: Some(120_000),
+            ..Default::default()
+        },
+    );
+    apply_active_auth_profile(&mut effective, &mut SourceMap::new());
+    assert_eq!(effective.request_max_retries, Some(4));
+    assert_eq!(effective.stream_max_retries, Some(5));
+    assert_eq!(effective.stream_idle_timeout_ms, Some(300_000));
+    assert_eq!(effective.request_timeout_ms, Some(120_000));
+}

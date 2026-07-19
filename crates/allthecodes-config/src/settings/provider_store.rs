@@ -18,6 +18,7 @@ pub enum ProviderProfileStoreError {
     NotFound(String),
     ActiveProfile(String),
     UnsupportedProvider(String),
+    InvalidRecoveryPolicy(String),
 }
 
 impl fmt::Display for ProviderProfileStoreError {
@@ -34,6 +35,7 @@ impl fmt::Display for ProviderProfileStoreError {
                 f,
                 "provider `{provider}` is not supported for runtime activation"
             ),
+            Self::InvalidRecoveryPolicy(message) => write!(f, "{message}"),
         }
     }
 }
@@ -77,6 +79,10 @@ pub struct RedactedProviderProfile {
     pub available_models: Option<Vec<String>>,
     pub model_capabilities: Option<HashMap<String, super::ModelCapabilitySettings>>,
     pub model_reasoning_effort: Option<String>,
+    pub request_max_retries: Option<u8>,
+    pub stream_max_retries: Option<u8>,
+    pub stream_idle_timeout_ms: Option<u64>,
+    pub request_timeout_ms: Option<u64>,
     pub base_url: Option<String>,
     pub api_key_configured: bool,
     pub env_keys: Vec<String>,
@@ -161,6 +167,7 @@ impl ProviderProfileStore {
 
     pub fn create(&self, id: &str, profile: ProviderProfileSettings) -> Result<()> {
         let id = validate_id(id)?;
+        validate_recovery_policy(&profile)?;
         let mut settings = self.load()?;
         let profiles = settings.auth_profiles.get_or_insert_with(HashMap::new);
         if profiles.contains_key(id) {
@@ -181,6 +188,7 @@ impl ProviderProfileStore {
             .get_mut(id)
             .ok_or_else(|| ProviderProfileStoreError::NotFound(id.to_string()))?;
         update(profile);
+        validate_recovery_policy(profile)?;
         self.save(&settings)
     }
 
@@ -201,6 +209,7 @@ impl ProviderProfileStore {
             .remove(id)
             .ok_or_else(|| ProviderProfileStoreError::NotFound(id.to_string()))?;
         update(&mut profile);
+        validate_recovery_policy(&profile)?;
         if settings.active_auth_profile.as_deref() == Some(id) {
             ensure_activatable(&target_id, &profile)?;
             settings.active_auth_profile = Some(target_id.clone());
@@ -245,6 +254,7 @@ impl ProviderProfileStore {
             existing.auth_source,
             replacement.secrets.auth_source,
         );
+        validate_recovery_policy(&replacement.profile)?;
 
         if settings.active_auth_profile.as_deref() == Some(id) {
             ensure_activatable(&new_id, &replacement.profile)?;
@@ -294,6 +304,7 @@ impl ProviderProfileStore {
             .and_then(|profiles| profiles.get(id))
             .ok_or_else(|| ProviderProfileStoreError::NotFound(id.to_string()))?;
         ensure_activatable(id, profile)?;
+        validate_recovery_policy(profile)?;
         settings.active_auth_profile = Some(id.to_string());
         self.save(&settings)
     }
@@ -316,6 +327,40 @@ fn ensure_activatable(id: &str, profile: &ProviderProfileSettings) -> Result<()>
             Err(ProviderProfileStoreError::UnsupportedProvider(provider.to_string()).into())
         }
     }
+}
+
+pub fn validate_recovery_policy(profile: &ProviderProfileSettings) -> Result<()> {
+    if profile
+        .request_max_retries
+        .is_some_and(|value| value > super::PROVIDER_RETRY_LIMIT_MAX)
+    {
+        return Err(ProviderProfileStoreError::InvalidRecoveryPolicy(
+            "requestMaxRetries must be between 0 and 100".to_string(),
+        )
+        .into());
+    }
+    if profile
+        .stream_max_retries
+        .is_some_and(|value| value > super::PROVIDER_RETRY_LIMIT_MAX)
+    {
+        return Err(ProviderProfileStoreError::InvalidRecoveryPolicy(
+            "streamMaxRetries must be between 0 and 100".to_string(),
+        )
+        .into());
+    }
+    for (name, value) in [
+        ("streamIdleTimeoutMs", profile.stream_idle_timeout_ms),
+        ("requestTimeoutMs", profile.request_timeout_ms),
+    ] {
+        if value.is_some_and(|value| !(1..=super::PROVIDER_TIMEOUT_MS_MAX).contains(&value)) {
+            return Err(ProviderProfileStoreError::InvalidRecoveryPolicy(format!(
+                "{name} must be between 1 and {}",
+                super::PROVIDER_TIMEOUT_MS_MAX
+            ))
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn apply_secret_update<T>(target: &mut Option<T>, existing: Option<T>, update: SecretUpdate<T>) {
@@ -354,6 +399,10 @@ fn redact_profile(
         available_models: profile.available_models,
         model_capabilities: profile.model_capabilities,
         model_reasoning_effort: profile.model_reasoning_effort,
+        request_max_retries: profile.request_max_retries,
+        stream_max_retries: profile.stream_max_retries,
+        stream_idle_timeout_ms: profile.stream_idle_timeout_ms,
+        request_timeout_ms: profile.request_timeout_ms,
         base_url: profile.base_url,
         api_key_configured: profile
             .api_key

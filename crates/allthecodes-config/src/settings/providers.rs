@@ -16,6 +16,12 @@ pub const AUTH_PROFILE_ANTHROPIC_LEGACY: &str = "anthropic";
 pub const AUTH_PROFILE_CODEX: &str = "codex";
 pub const AUTH_PROFILE_OPENAI: &str = "openai";
 pub const AUTH_PROFILE_CUSTOM: &str = "custom";
+pub const CODEX_REQUEST_MAX_RETRIES_DEFAULT: u8 = 4;
+pub const CODEX_STREAM_MAX_RETRIES_DEFAULT: u8 = 5;
+pub const CODEX_STREAM_IDLE_TIMEOUT_MS_DEFAULT: u64 = 300_000;
+pub const CODEX_REQUEST_TIMEOUT_MS_DEFAULT: u64 = 120_000;
+pub const PROVIDER_RETRY_LIMIT_MAX: u8 = 100;
+pub const PROVIDER_TIMEOUT_MS_MAX: u64 = 3_600_000;
 pub const VALID_API_PROVIDERS: &[&str] = &[
     "anthropic",
     "azure",
@@ -102,6 +108,10 @@ pub struct ProviderProfileSettings {
     pub available_models: Option<Vec<String>>,
     pub model_capabilities: Option<HashMap<String, ModelCapabilitySettings>>,
     pub model_reasoning_effort: Option<String>,
+    pub request_max_retries: Option<u8>,
+    pub stream_max_retries: Option<u8>,
+    pub stream_idle_timeout_ms: Option<u64>,
+    pub request_timeout_ms: Option<u64>,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub env: Option<HashMap<String, String>>,
@@ -124,6 +134,10 @@ impl ProviderProfileSettings {
                 .as_ref()
                 .is_none_or(HashMap::is_empty)
             && self.model_reasoning_effort.is_none()
+            && self.request_max_retries.is_none()
+            && self.stream_max_retries.is_none()
+            && self.stream_idle_timeout_ms.is_none()
+            && self.request_timeout_ms.is_none()
             && self.base_url.is_none()
             && self.api_key.is_none()
             && self.env.as_ref().is_none_or(HashMap::is_empty)
@@ -185,6 +199,18 @@ pub(crate) fn merge_provider_profile(
     }
     if over.model_reasoning_effort.is_some() {
         base.model_reasoning_effort = over.model_reasoning_effort;
+    }
+    if over.request_max_retries.is_some() {
+        base.request_max_retries = over.request_max_retries;
+    }
+    if over.stream_max_retries.is_some() {
+        base.stream_max_retries = over.stream_max_retries;
+    }
+    if over.stream_idle_timeout_ms.is_some() {
+        base.stream_idle_timeout_ms = over.stream_idle_timeout_ms;
+    }
+    if over.request_timeout_ms.is_some() {
+        base.request_timeout_ms = over.request_timeout_ms;
     }
     if over.base_url.is_some() {
         base.base_url = over.base_url;

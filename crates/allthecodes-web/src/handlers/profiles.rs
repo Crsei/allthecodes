@@ -92,6 +92,14 @@ fn error_response(error: anyhow::Error) -> Response {
             }
             .into_body(),
         ),
+        Some(ProviderProfileStoreError::InvalidRecoveryPolicy(_)) => (
+            StatusCode::BAD_REQUEST,
+            ProtocolApiError::BadRequest {
+                code: "validation_error",
+                message: error.to_string(),
+            }
+            .into_body(),
+        ),
         None => (
             StatusCode::INTERNAL_SERVER_ERROR,
             ProtocolApiError::Internal {
