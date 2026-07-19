@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex 长流恢复与非交互 CLI 契约</title>
+  <style>
+    body { max-width: 1080px; margin: 40px auto; padding: 0 24px; color: #1f2937; background: #f8fafc; font: 16px/1.65 system-ui, sans-serif; }
+    main { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 32px; box-shadow: 0 8px 24px #0f172a12; }
+    h1, h2 { color: #0f3d70; }
+    code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+    li { margin: 6px 0; }
+    .ok { color: #137333; font-weight: 650; }
+    .warn { color: #a15c00; font-weight: 650; }
+    .muted { color: #64748b; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #dbe3ee; padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #eef4fa; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Codex 长流恢复与非交互 CLI 契约</h1>
+    <p class="muted">2026-07-20 · <code>worktree/codex-stream-recovery-cli-contract</code></p>
+
+    <h2>任务目标</h2>
+    <p>修复 OpenAI Codex OAuth Responses 长流的总超时、SSE 完成边界、断流恢复、工具幂等和非交互 CLI 错误输出；非 Codex provider 保持原完成协议。权威计划为 <code>development/bugs/2026-07-19-codex-oauth-responses-stream-timeout-retry-fix-plan.md</code>。</p>
+
+    <h2>执行流程</h2>
+    <ol>
+      <li>在主分支单独激活并补充既有权威计划。</li>
+      <li>创建独立 worktree；代码、测试和本 artifact 只在 worktree 修改并提交。</li>
+      <li>候选提交均以 fast-forward 合并到主分支。</li>
+      <li>Rust 格式、clippy、定向测试和 release build 只在主分支执行；失败修复回同一 worktree。</li>
+      <li>推送成功后才删除 worktree 和任务分支。</li>
+    </ol>
+
+    <h2>落地改动</h2>
+    <ul>
+      <li>auth profile 新增 request/stream retry 与 request/idle timeout policy，含默认值、范围验证、merge、schema、redacted API 和 Web API。</li>
+      <li>Codex HTTP timeout 只包围响应头建立；SSE body 由 300 秒 frame idle 管理，合法 heartbeat/未知 event 均刷新 idle。</li>
+      <li>仅 <code>response.completed</code> 成功；EOF、提前 <code>[DONE]</code>、chunk、idle、decode 和 <code>response.failed</code> 使用 typed failure。</li>
+      <li>request retry、stream reconnect、capacity fallback 独立计数；指数退避、jitter、Retry-After、取消和 transient UI 状态已接线。</li>
+      <li>Codex 工具在 completed 前不执行；失败 attempt tombstone，成功 attempt 的重复 tool ID 被拒绝。</li>
+      <li>每次 Codex Responses 请求建立前重新走现有 OAuth resolver；刷新失败分类为不可重试的 <code>AuthenticationFailed</code>，错误不包含 token。</li>
+      <li>print/json 共用 positional/stdin prompt 解析；print mode 最终错误写 stderr，max-turns 原因可见。</li>
+      <li>SDK retry、request record、durable replay 和 session report 可区分 request/stream/fallback 恢复。</li>
+    </ul>
+
+    <h2>提交记录</h2>
+    <table>
+      <thead><tr><th>Commit</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>de7d1586</code>, <code>ba31a5bd</code></td><td>激活权威计划并明确 Codex 工具完成边界。</td></tr>
+        <tr><td><code>ffe0870c</code></td><td>定义 Codex recovery policy。</td></tr>
+        <tr><td><code>acb5f45e</code></td><td>实现同模型断流恢复、typed SSE failure 和工具 barrier。</td></tr>
+        <tr><td><code>fbbb6a34</code></td><td>修复非交互 prompt 与 stderr 契约。</td></tr>
+        <tr><td><code>65f2b59f</code>.. <code>cd69fdb7</code></td><td>完成配置、engine、ACP、Web API、可观测性、durable record 和 lint 集成。</td></tr>
+        <tr><td><code>9a8cc95a</code></td><td>允许 typed provider server failure 按策略重试。</td></tr>
+        <tr><td><code>f95e920e</code></td><td>每次 Codex 请求建立前刷新 OAuth。</td></tr>
+      </tbody>
+    </table>
+
+    <h2>自动化验证</h2>
+    <ul>
+      <li class="ok"><code>cargo fmt --all --check</code>。</li>
+      <li class="ok"><code>cargo clippy --workspace --all-targets -- -D warnings</code>。</li>
+      <li class="ok">config policy 定向套件 92 项；API SSE 套件 195 项通过、2 项 ignored；最终 OAuth refresh 三项定向测试通过。</li>
+      <li class="ok">engine recovery 17/17；flow/tool barrier 15/15；session report、Web provider、CLI router、UI retry label、durable retry record 均通过。</li>
+      <li class="ok">非 PTY workspace lib 的任务相关 crate 通过；共享 <code>allthecodes-commands::branch</code> 并行 temp-file <code>ENOENT</code> 单项串行复跑通过。</li>
+      <li class="ok"><code>cargo build --workspace --release</code> 通过。</li>
+      <li class="ok"><code>git diff --check</code> 通过。</li>
+    </ul>
+
+    <h2>进程级验收</h2>
+    <ul>
+      <li class="ok">CLI 本地 Codex SSE：位置参数、print stdin、JSON stdin exit 0；空 stdin exit 1；<code>--max-turns 1</code> exit 1 且 stderr 含 <code>Reached maximum of 1 turns</code>。</li>
+      <li class="ok">可控断流：第 1 次 POST 在完整 tool block 后 EOF，第 2 次 completed，第 3 次最终文本；恰好 1 个 <code>phase=stream</code> retry、1 个 tool result、3 次 POST，最终 <code>RECOVERED_OK</code>，exit 0。</li>
+      <li class="ok">历史真实 OAuth session <code>0812dfa1-bb43-4553-adcb-bdc87b84ca6c</code> 的银河网页重新验收：<code>node --check app.js</code> 通过；Playwright HTTP 200，暂停、4 倍速、俯视、太阳定位和滚轮交互生效；console/page/failed-request 均为 0。</li>
+      <li class="ok">新 release 默认配置真实 OAuth session <code>cee7800a-ccd1-4bc8-b4f5-9511658e8d8b</code> 已确认前三轮请求使用 <code>openai-codex / codex / gpt-5.6-sol</code> 且 timeout/stall override 全部 unset。</li>
+      <li class="warn">新银河 run 在第 3 轮工具结果持久化后停在工具收口/刷新路径；另一个无工具尝试停在 query 启动前。两者均不是 established SSE idle/total-timeout failure，因此未将其计作“新 release 单次真实 SSE 超过 120 秒”通过证据；该边界由缩放自动化和可控 SSE 验收覆盖，现场限制如实保留。</li>
+    </ul>
+
+    <h2>Release provenance</h2>
+    <ul>
+      <li><code>/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/allthecodes-target/release/allthecodes</code></li>
+      <li><code>allthecodes 0.1.14</code>；inode <code>268703357</code>；size <code>105778488</code>；mtime <code>2026-07-20 02:49:24.600864740 +0800</code>。</li>
+      <li>SHA-256 <code>9b29d518e8a6e775319ac3b85fdc25af968367ea57423d265f018921f0d4f1f1</code>。</li>
+    </ul>
+
+    <h2>隔离证明</h2>
+    <p>主工作树既有四个 footer/cwd UI 改动未暂存、未提交、未覆盖；合并前后组合 diff SHA-256 均为 <code>20d291a0e36dd139909b461228e8f6c91e3e17cb1a7cebab9f3067ba317fb833</code>。验收期间另有并发产生的未跟踪 <code>development/tui-panel-gap-audit-report.md</code>，同样未纳入本任务。</p>
+  </main>
+</body>
+</html>
