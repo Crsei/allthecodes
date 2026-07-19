@@ -29,7 +29,7 @@
 | ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
 | --- | --- | --- | --- | --- | --- |
 | PROVIDER-001 | 高 | Fixed | Rust TUI / provider profile | Rust TUI 缺少删除和管理 provider profile 的入口，Web `/api/profiles` 更新还会把完整 profile 重建为空配置；运行时只允许 Anthropic/OpenAI/Codex。 | 新增 `/providers` 配置与 preset 分区、创建/完整替换/激活/删除向导和非交互命令；TUI、provider API 与 profile API 统一使用无损原子存储。17 个静态 provider、Bedrock、Vertex 可从 active profile 构造运行时，Foundry 与未知/custom/ACP 保持可管理但拒绝激活；所有读取与快照隐藏秘密。 |
-| PROVIDER-002 | 高 | Fixed | OpenAI-compatible SSE | 用户反馈长推理在约 120 秒后显示 `Error occurred: API error: error reading OpenAI response chunk`；共享 reqwest client 把 `timeout_secs=120` 作为整个 response body 的总截止时间，即使流持续有数据也会被截断。 | Streaming client 已改为 connect/read timeout，不再继承 non-streaming total timeout；chunk/idle/stall 在空 accumulator 时同模型安全重试一次，完整错误链用于诊断，已有 partial tool use 时禁止重试。确定性测试以 1 秒 timeout 验证 1.2 秒持续流完整成功。 |
+| PROVIDER-002 | 高 | Fixed | OpenAI-compatible SSE | 用户反馈长推理在约 120 秒后显示 `Error occurred: API error: error reading OpenAI response chunk`；共享 reqwest client 把 `timeout_secs=120` 作为整个 response body 的总截止时间，即使流持续有数据也会被截断。首次修复后，真实会话又发现 query loop 会把超过 60 秒后刚恢复的 `MessageStart`/内容事件反向判成 `stream stalled`。 | Streaming client 已改为 connect/read timeout，不再继承 non-streaming total timeout；chunk/idle/stall 在空 accumulator 时同模型安全重试一次，完整错误链用于诊断，已有 partial tool use 时禁止重试。stall watchdog 现在把 `MessageStart` 与内容事件都视为真实进度，先重置计时，不再拒绝延迟到达的有效输出。确定性测试覆盖 1 秒 timeout 下 1.2 秒持续流，以及连续两段超过测试 stall 阈值的延迟进度。 |
 
 当前无开放项。已关闭记录见 [archive/resolved-model-context-2026-05-07.md](resolved-model-context-2026-05-07.md)。
 
