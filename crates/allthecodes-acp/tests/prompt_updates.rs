@@ -460,6 +460,10 @@ fn api_retry_maps_to_kinded_thought() {
         retry_delay_ms: 500,
         error_status: Some(429),
         error: "rate limited".into(),
+        phase: None,
+        category: None,
+        provider: None,
+        model: None,
         session_id: "session-1".into(),
         uuid: Uuid::nil(),
     }));
