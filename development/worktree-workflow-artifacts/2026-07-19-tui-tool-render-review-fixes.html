@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TUI tool-render review fixes worktree record</title>
+  <style>
+    body { max-width: 920px; margin: 40px auto; padding: 0 24px; color: #1f2937; background: #f8fafc; font: 16px/1.6 system-ui, sans-serif; }
+    main { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 32px; box-shadow: 0 8px 24px #0f172a12; }
+    h1, h2 { color: #0f3d70; } code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; } li { margin: 6px 0; }
+    .ok { color: #137333; font-weight: 650; } .muted { color: #64748b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TUI tool-render review fixes</h1>
+    <p class="muted">2026-07-19 · isolated worktree <code>worktree/tui-tool-render-review-fixes</code></p>
+
+    <h2>Goal</h2>
+    <p>Close the three defects found while reviewing the prior TUI tool-render upgrade: use the active session/team task-list scope, avoid persistent-store reads on every 16 ms UI tick, and honor the configurable <code>app:toggleTodos</code> keybinding instead of hard-coding physical <code>Ctrl+T</code>.</p>
+
+    <h2>Plan source</h2>
+    <p><code>development/tui/2026-07-19-tui-tool-render-review-fix-plan.md</code></p>
+
+    <h2>Implemented flow</h2>
+    <ol>
+      <li>Resolve the compact TaskList store from the active session and any persisted team context, using the same task-list scope precedence as <code>TaskCreate</code> and <code>TaskUpdate</code>.</li>
+      <li>Initialize the runtime cache without reading persistent task state; refresh immediately when Tasks opens, force a refresh after backend tool results, and retain a five-second fallback poll while the view remains open.</li>
+      <li>Dispatch <code>app:toggleTodos</code> through the keybinding registry and remove the physical <code>Ctrl+T</code> branch, so user remaps and explicit unbinding are authoritative.</li>
+      <li>Add regression coverage for session scope, restored team scope, refresh throttling, and remapped/unbound task-view toggling.</li>
+    </ol>
+
+    <h2>Changed paths</h2>
+    <ul>
+      <li><code>crates/allthecodes/src/ui/app.rs</code></li>
+      <li><code>crates/allthecodes/src/ui/app/input.rs</code></li>
+      <li><code>crates/allthecodes/src/ui/app/runtime_state.rs</code></li>
+      <li><code>crates/allthecodes/src/ui/app/tests.rs</code></li>
+      <li><code>crates/allthecodes/src/ui/command_surface/adapters/tasks.rs</code></li>
+      <li>No plan file was modified in this worktree.</li>
+    </ul>
+
+    <h2>Commits</h2>
+    <ul>
+      <li><code>dc0ff394</code> — <code>docs(tui): plan tool render review fixes</code></li>
+      <li><code>e0df08fd</code> — <code>fix(tui): respect scoped task rendering</code></li>
+      <li>This artifact is recorded by its own following documentation commit.</li>
+    </ul>
+
+    <h2>Verification</h2>
+    <ul>
+      <li class="ok"><code>cargo fmt --all --check</code></li>
+      <li class="ok"><code>cargo clippy --workspace --all-targets -- -D warnings</code></li>
+      <li class="ok"><code>cargo test --workspace --exclude allthecodes --lib</code></li>
+      <li class="ok"><code>cargo test -p allthecodes ui::app::</code> — 109 passed</li>
+      <li class="ok"><code>cargo test -p allthecodes ui::command_surface::adapters::tasks::</code> — 2 passed before the restored-team regression was added</li>
+      <li class="ok"><code>cargo test -p allthecodes task_list_items_reads_</code> — session and restored-team scope tests passed</li>
+      <li class="ok"><code>cargo build --workspace --release</code></li>
+      <li class="ok"><code>git diff --check</code></li>
+      <li>PTY was not run: the changed behavior is store selection, refresh scheduling, and keybinding dispatch, and focused non-PTY coverage exposed no terminal-only gap.</li>
+    </ul>
+  </main>
+</body>
+</html>
