@@ -15,6 +15,70 @@ use crate::types::message::{AssistantMessage, Message, StreamEvent, Usage};
 use crate::types::state::AutoCompactTracking;
 use crate::types::tool::{ToolProgress, ToolResult, Tools};
 
+#[derive(Clone)]
+pub enum ToolRefreshOutcome {
+    Fresh {
+        tools: Tools,
+        elapsed_ms: u64,
+    },
+    CachedBusy {
+        tools: Tools,
+        elapsed_ms: u64,
+        reason: String,
+    },
+    CachedError {
+        tools: Tools,
+        elapsed_ms: u64,
+        reason: String,
+    },
+}
+
+impl ToolRefreshOutcome {
+    pub fn fresh(tools: Tools, elapsed_ms: u64) -> Self {
+        Self::Fresh { tools, elapsed_ms }
+    }
+
+    pub fn cached_busy(tools: Tools, elapsed_ms: u64, reason: impl Into<String>) -> Self {
+        Self::CachedBusy {
+            tools,
+            elapsed_ms,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn cached_error(tools: Tools, elapsed_ms: u64, reason: impl Into<String>) -> Self {
+        Self::CachedError {
+            tools,
+            elapsed_ms,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn tools(&self) -> &Tools {
+        match self {
+            Self::Fresh { tools, .. }
+            | Self::CachedBusy { tools, .. }
+            | Self::CachedError { tools, .. } => tools,
+        }
+    }
+
+    pub fn elapsed_ms(&self) -> u64 {
+        match self {
+            Self::Fresh { elapsed_ms, .. }
+            | Self::CachedBusy { elapsed_ms, .. }
+            | Self::CachedError { elapsed_ms, .. } => *elapsed_ms,
+        }
+    }
+
+    pub fn cached_reason(&self) -> Option<(&'static str, &str)> {
+        match self {
+            Self::Fresh { .. } => None,
+            Self::CachedBusy { reason, .. } => Some(("cached_busy", reason)),
+            Self::CachedError { reason, .. } => Some(("cached_error", reason)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelResponse {
     pub assistant_message: AssistantMessage,
@@ -146,6 +210,13 @@ pub trait QueryDeps: Send + Sync {
     ) {
     }
 
+    /// Persist query lifecycle facts that must survive process interruption.
+    async fn record_query_items(
+        &self,
+        _items: Vec<allthecodes_session::record_replay::RecordItem>,
+    ) {
+    }
+
     /// Mark this query as terminally unverified so the lifecycle cannot
     /// translate the last assistant text into a successful SDK result.
     fn mark_verification_incomplete(&self, _summary: String) {}
@@ -162,7 +233,7 @@ pub trait QueryDeps: Send + Sync {
 
     fn get_tools(&self) -> Tools;
 
-    async fn refresh_tools(&self) -> Result<Tools>;
+    async fn refresh_tools(&self) -> ToolRefreshOutcome;
 
     fn drain_background_results(&self) -> Vec<crate::agent_runtime::CompletedBackgroundAgent> {
         vec![]

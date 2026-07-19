@@ -454,7 +454,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use super::super::deps::{CompactionResult, ModelCallParams, ModelResponse};
+    use super::super::deps::{
+        CompactionResult, ModelCallParams, ModelResponse, ToolRefreshOutcome,
+    };
     use super::super::recovery::{
         classify_model_call_failure, strip_fallback_signature_blocks, ModelCallFailureRecovery,
         ModelCallFailureStage,
@@ -672,8 +674,8 @@ mod tests {
             vec![]
         }
 
-        async fn refresh_tools(&self) -> Result<Tools> {
-            Ok(vec![])
+        async fn refresh_tools(&self) -> ToolRefreshOutcome {
+            ToolRefreshOutcome::fresh(vec![], 0)
         }
     }
 

@@ -227,6 +227,11 @@ pub enum QueryEventRecord {
     RawStream {
         event: serde_json::Value,
     },
+    ToolRefreshCached {
+        outcome: String,
+        elapsed_ms: u64,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

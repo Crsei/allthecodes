@@ -913,6 +913,52 @@ fn make_lifecycle_deps(
     }
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn tool_refresh_uses_cached_snapshot_when_mcp_manager_is_busy() {
+    struct ManagerRestore(Option<allthecodes_mcp::runtime::SharedMcpManager>);
+
+    impl Drop for ManagerRestore {
+        fn drop(&mut self) {
+            let _ = allthecodes_mcp::runtime::take_installed_manager();
+            if let Some(manager) = self.0.take() {
+                allthecodes_mcp::runtime::install_manager(manager);
+            }
+        }
+    }
+
+    let previous_manager = allthecodes_mcp::runtime::take_installed_manager();
+    let _restore = ManagerRestore(previous_manager);
+    let manager = Arc::new(tokio::sync::Mutex::new(
+        allthecodes_mcp::manager::McpManager::new(),
+    ));
+    allthecodes_mcp::runtime::install_manager(manager.clone());
+
+    let mut config = make_config();
+    config.tools = vec![Arc::new(TestTool)];
+    let engine = QueryEngine::new(config);
+    let deps = make_lifecycle_deps(
+        &engine,
+        Arc::new(allthecodes_types::hooks::NoopHookRunner),
+        None,
+    );
+
+    let _manager_guard = manager.lock().await;
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        deps.refresh_tools_impl(),
+    )
+    .await
+    .expect("busy MCP manager must not block tool refresh");
+
+    assert!(matches!(
+        &outcome,
+        crate::query::deps::ToolRefreshOutcome::CachedBusy { .. }
+    ));
+    assert_eq!(outcome.tools().len(), 1);
+    assert_eq!(outcome.tools()[0].name(), "TestTool");
+}
+
 async fn execute_permission_matrix_case<F>(
     permission: MatrixToolPermission,
     configure_permissions: F,

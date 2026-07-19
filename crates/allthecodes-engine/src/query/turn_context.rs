@@ -6,7 +6,9 @@ use crate::types::config::{QueryGates, QueryParams, QuerySource};
 use crate::types::state::QueryLoopState;
 use crate::types::tool::Tools;
 use crate::verification::policy::{policy_by_name, VerificationPolicy};
-use allthecodes_session::record_replay::types::{EvidenceKind, VerificationEvidenceRecord};
+use allthecodes_session::record_replay::types::{
+    EvidenceKind, QueryEventRecord, RecordItem, VerificationEvidenceRecord,
+};
 
 use super::deps::{ModelCallParams, QueryDeps};
 
@@ -135,13 +137,24 @@ pub(crate) async fn prepare_model_request(
     )
     .await;
 
-    match deps.refresh_tools().await {
-        Ok(_refreshed) => {
-            debug!("tools refreshed successfully before context and model call");
-        }
-        Err(error) => {
-            debug!(error = %error, "tool refresh failed before context and model call, continuing with existing tools");
-        }
+    let refresh_outcome = deps.refresh_tools().await;
+    let refreshed_tools = refresh_outcome.tools().clone();
+    if let Some((outcome, reason)) = refresh_outcome.cached_reason() {
+        let elapsed_ms = refresh_outcome.elapsed_ms();
+        debug!(outcome, elapsed_ms, reason, "using cached tools before model call");
+        deps.record_query_items(vec![RecordItem::QueryEvent(
+            QueryEventRecord::ToolRefreshCached {
+                outcome: outcome.to_string(),
+                elapsed_ms,
+                reason: reason.to_string(),
+            },
+        )])
+        .await;
+    } else {
+        debug!(
+            elapsed_ms = refresh_outcome.elapsed_ms(),
+            "tools refreshed before context and model call"
+        );
     }
 
     let app_state_for_request = deps.get_app_state();
@@ -168,7 +181,7 @@ pub(crate) async fn prepare_model_request(
         request_model_reasoning_effort.as_deref(),
     );
     let capability_filtered_tools = allthecodes_tools::media::filter_tools_for_model_capabilities(
-        deps.get_tools(),
+        refreshed_tools,
         &app_state_for_request.settings,
         &request_model,
     );

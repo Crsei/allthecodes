@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use super::super::super::deps::{
     CompactionResult, ModelCallParams, ModelResponse, QueryDeps, ToolExecRequest, ToolExecResult,
+    ToolRefreshOutcome,
 };
 use super::super::*;
 use crate::types::app_state::AppState;
@@ -55,6 +56,7 @@ pub struct MockDeps {
     pub tools: Tools,
     pub refreshed_tools: parking_lot::Mutex<Option<Tools>>,
     pub refresh_seen: AtomicBool,
+    pub refresh_calls: AtomicUsize,
     pub hook_runner: parking_lot::Mutex<Arc<dyn HookRunner>>,
     pub steer_drains: parking_lot::Mutex<VecDeque<Vec<String>>>,
     pub app_state: parking_lot::Mutex<AppState>,
@@ -101,6 +103,7 @@ impl MockDeps {
             tools: vec![],
             refreshed_tools: parking_lot::Mutex::new(None),
             refresh_seen: AtomicBool::new(false),
+            refresh_calls: AtomicUsize::new(0),
             hook_runner: parking_lot::Mutex::new(Arc::new(
                 allthecodes_types::hooks::NoopHookRunner,
             )),
@@ -384,13 +387,17 @@ impl QueryDeps for MockDeps {
         self.tools.clone()
     }
 
-    async fn refresh_tools(&self) -> Result<Tools> {
+    async fn refresh_tools(&self) -> ToolRefreshOutcome {
         self.refresh_seen.store(true, Ordering::SeqCst);
-        Ok(self
+        self.refresh_calls.fetch_add(1, Ordering::SeqCst);
+        ToolRefreshOutcome::fresh(
+            self
             .refreshed_tools
             .lock()
             .clone()
-            .unwrap_or_else(|| self.tools.clone()))
+            .unwrap_or_else(|| self.tools.clone()),
+            0,
+        )
     }
 
     fn hook_runner(&self) -> Arc<dyn HookRunner> {
@@ -958,8 +965,8 @@ impl QueryDeps for ImageMockDeps {
         vec![]
     }
 
-    async fn refresh_tools(&self) -> Result<Tools> {
-        Ok(vec![])
+    async fn refresh_tools(&self) -> ToolRefreshOutcome {
+        ToolRefreshOutcome::fresh(vec![], 0)
     }
 }
 
@@ -1098,7 +1105,7 @@ impl QueryDeps for CuMockDeps {
         vec![]
     }
 
-    async fn refresh_tools(&self) -> Result<Tools> {
-        Ok(vec![])
+    async fn refresh_tools(&self) -> ToolRefreshOutcome {
+        ToolRefreshOutcome::fresh(vec![], 0)
     }
 }

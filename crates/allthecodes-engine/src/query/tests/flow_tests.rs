@@ -128,6 +128,11 @@ async fn test_tool_use_then_text_response() {
         .filter(|i| matches!(i, QueryYield::RequestStart(_)))
         .count();
     assert_eq!(request_starts, 2, "expected 2 request starts (two turns)");
+    assert_eq!(
+        deps.refresh_calls.load(Ordering::SeqCst),
+        2,
+        "each model turn must have exactly one tool refresh"
+    );
 
     let assistant_msgs = items
         .iter()

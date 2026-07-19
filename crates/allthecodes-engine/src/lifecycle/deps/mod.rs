@@ -40,6 +40,7 @@ use crate::types::tool::{
 };
 use allthecodes_engine::query::deps::{
     CompactionResult, ModelCallParams, ModelResponse, QueryDeps, ToolExecRequest, ToolExecResult,
+    ToolRefreshOutcome,
 };
 
 use super::helpers::{build_messages_request, format_conversation_for_summary};
@@ -251,6 +252,13 @@ impl QueryDeps for QueryEngineDeps {
             .await;
     }
 
+    async fn record_query_items(
+        &self,
+        items: Vec<allthecodes_session::record_replay::RecordItem>,
+    ) {
+        self.record_replay_items(items, "query_lifecycle").await;
+    }
+
     fn mark_verification_incomplete(&self, summary: String) {
         *self.verification_incomplete.lock() = Some(summary);
     }
@@ -283,7 +291,7 @@ impl QueryDeps for QueryEngineDeps {
             .unwrap_or_else(|| self.state.read().tools.registry.clone())
     }
 
-    async fn refresh_tools(&self) -> Result<Tools> {
+    async fn refresh_tools(&self) -> ToolRefreshOutcome {
         self.refresh_tools_impl().await
     }
 

@@ -20,7 +20,7 @@
 ///        - execute tools
 ///        - check abort during execution
 ///     7. ATTACHMENTS -- inject file changes, memory, skill discovery
-///     8. CONTINUE -- refresh tools, check maxTurns, state = next
+///     8. CONTINUE -- check maxTurns, state = next
 ///   }
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -1178,7 +1178,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
 
                 // STEP 7: ATTACHMENTS (placeholder)
 
-                // STEP 8: CONTINUE -- refresh tools, check maxTurns
+                // STEP 8: CONTINUE -- check maxTurns. Tool refresh happens
+                // exactly once, immediately before each model request.
 
                 if tool_results
                     .iter()
@@ -1208,15 +1209,6 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         };
                         yield QueryYield::Message(Message::Attachment(attachment_msg));
                         break;
-                    }
-                }
-
-                match deps.refresh_tools().await {
-                    Ok(_refreshed) => {
-                        debug!("tools refreshed successfully");
-                    }
-                    Err(e) => {
-                        debug!(error = %e, "tool refresh failed, continuing with existing tools");
                     }
                 }
 

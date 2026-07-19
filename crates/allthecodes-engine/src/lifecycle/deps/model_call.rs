@@ -223,9 +223,14 @@ impl QueryEngineDeps {
         }
         client.messages_stream_once(request).await
     }
-    pub(crate) async fn refresh_tools_impl(&self) -> Result<Tools> {
+    pub(crate) async fn refresh_tools_impl(&self) -> ToolRefreshOutcome {
+        let started = std::time::Instant::now();
+        let cached_tools = || self.state.read().tools.registry.clone();
         let Some(manager) = allthecodes_mcp::runtime::current_manager() else {
-            return Ok(self.state.read().tools.registry.clone());
+            return ToolRefreshOutcome::fresh(
+                cached_tools(),
+                started.elapsed().as_millis() as u64,
+            );
         };
 
         let binding_context = crate::mcp_tool_adapter::mcp_binding_context_for_engine(
@@ -234,7 +239,16 @@ impl QueryEngineDeps {
             self.agent_context.as_ref(),
         );
         let mcp_tool_defs = {
-            let manager_guard = manager.lock().await;
+            let manager_guard = match manager.try_lock() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    return ToolRefreshOutcome::cached_busy(
+                        cached_tools(),
+                        started.elapsed().as_millis() as u64,
+                        format!("MCP manager lock unavailable: {error}"),
+                    );
+                }
+            };
             manager_guard.tools_for_context(&binding_context)
         };
         let mcp_tools = crate::mcp_tool_adapter::mcp_tools_to_tools_for_context(
@@ -251,6 +265,6 @@ impl QueryEngineDeps {
         };
 
         crate::tool_runtime::tool_search::install_runtime_tool_catalog(&refreshed);
-        Ok(refreshed)
+        ToolRefreshOutcome::fresh(refreshed, started.elapsed().as_millis() as u64)
     }
 }
