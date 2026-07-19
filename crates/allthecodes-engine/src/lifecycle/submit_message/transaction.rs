@@ -135,10 +135,9 @@ impl SubmitTransaction {
         }
 
         if !persistence.transcript_messages.is_empty() {
-            if let Err(error) = transcript::record_transcript(
-                session_id.as_str(),
-                &persistence.transcript_messages,
-            ) {
+            if let Err(error) =
+                transcript::record_transcript(session_id.as_str(), &persistence.transcript_messages)
+            {
                 tracing::warn!(%session_id, %error, "failed to update transcript projection");
             }
         }

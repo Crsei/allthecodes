@@ -222,7 +222,9 @@ async fn tool_error_loop_stops_before_a_fourth_provider_request() {
             usage: Usage::default(),
         })
         .collect::<Vec<_>>();
-    responses.push(make_text_response("this fourth response must not be requested"));
+    responses.push(make_text_response(
+        "this fourth response must not be requested",
+    ));
     let deps = Arc::new(MockDeps::new(responses).with_tool_error_loop_after(3));
     let params = make_query_params(vec![make_user_message_for_test("trigger loop guard")]);
 

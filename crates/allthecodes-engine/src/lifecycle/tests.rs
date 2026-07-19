@@ -571,19 +571,18 @@ impl crate::types::tool::Tool for DeferredTargetTool {
         _parent_message: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
     ) -> anyhow::Result<ToolResult> {
-        let file_state_receipts = if let Some(file_path) =
-            input.get("file_path").and_then(serde_json::Value::as_str)
-        {
-            let content = tokio::fs::read(file_path).await?;
-            vec![crate::types::tool::FileStateReceipt::from_content(
-                &ctx.cwd,
-                file_path,
-                std::path::Path::new(file_path),
-                &content,
-            )]
-        } else {
-            Vec::new()
-        };
+        let file_state_receipts =
+            if let Some(file_path) = input.get("file_path").and_then(serde_json::Value::as_str) {
+                let content = tokio::fs::read(file_path).await?;
+                vec![crate::types::tool::FileStateReceipt::from_content(
+                    &ctx.cwd,
+                    file_path,
+                    std::path::Path::new(file_path),
+                    &content,
+                )]
+            } else {
+                Vec::new()
+            };
         Ok(ToolResult {
             data: json!({
                 "target": self.name,
@@ -987,12 +986,7 @@ async fn file_state_receipts_survive_turns_and_reject_external_changes() {
     config.cwd = workspace.path().to_string_lossy().into_owned();
     config.tools = tools.clone();
     let engine = QueryEngine::new(config);
-    engine
-        .state
-        .write()
-        .app_state
-        .tool_permission_context
-        .mode = PermissionMode::Bypass;
+    engine.state.write().app_state.tool_permission_context.mode = PermissionMode::Bypass;
     let mut deps = make_lifecycle_deps(
         &engine,
         Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
@@ -1021,7 +1015,11 @@ async fn file_state_receipts_survive_turns_and_reject_external_changes() {
         )
         .await
         .unwrap();
-    assert!(!read.is_error, "unexpected read error: {:?}", read.result.data);
+    assert!(
+        !read.is_error,
+        "unexpected read error: {:?}",
+        read.result.data
+    );
     assert_eq!(read.result.file_state_receipts.len(), 1);
 
     let edit = deps
@@ -1042,8 +1040,15 @@ async fn file_state_receipts_survive_turns_and_reject_external_changes() {
         )
         .await
         .unwrap();
-    assert!(!edit.is_error, "unexpected edit error: {:?}", edit.result.data);
-    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "ALPHA\nbeta\n");
+    assert!(
+        !edit.is_error,
+        "unexpected edit error: {:?}",
+        edit.result.data
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "ALPHA\nbeta\n"
+    );
 
     std::fs::write(&file_path, "externally changed\nbeta\n").unwrap();
     let stale_edit = deps
@@ -1267,12 +1272,7 @@ async fn third_identical_tool_validation_failure_records_terminal_loop_guard() {
                 validation_error_digest,
                 attempts,
             },
-        ) => Some((
-            tool_name,
-            input_digest,
-            validation_error_digest,
-            attempts,
-        )),
+        ) => Some((tool_name, input_digest, validation_error_digest, attempts)),
         _ => None,
     });
     let (tool_name, input_digest, validation_error_digest, attempts) =
@@ -2138,8 +2138,15 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
         )
         .await
         .unwrap();
-    assert!(!edit.is_error, "unexpected edit error: {:?}", edit.result.data);
-    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "ALPHA\nbeta\n");
+    assert!(
+        !edit.is_error,
+        "unexpected edit error: {:?}",
+        edit.result.data
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "ALPHA\nbeta\n"
+    );
 
     let pre_tool_names = hook_runner.pre_tool_names.lock().clone();
     assert!(pre_tool_names.contains(&"ExecuteExtraTool".to_string()));

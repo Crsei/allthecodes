@@ -29,10 +29,7 @@ impl ToolErrorLoopTermination {
             "tool_error_loop: {} produced the same validation failure {} times \
              (input_digest={}, validation_error_digest={}); stopping to prevent an unbounded \
              tool retry loop",
-            self.tool_name,
-            self.attempts,
-            self.input_digest,
-            self.validation_error_digest,
+            self.tool_name, self.attempts, self.input_digest, self.validation_error_digest,
         )
     }
 }
@@ -93,11 +90,10 @@ impl QueryEngineDeps {
         input: &serde_json::Value,
         validation_error: &str,
     ) {
-        let terminal = self.tool_error_loop_guard.lock().observe(
-            &request.tool_name,
-            input,
-            validation_error,
-        );
+        let terminal =
+            self.tool_error_loop_guard
+                .lock()
+                .observe(&request.tool_name, input, validation_error);
         let Some(terminal) = terminal else {
             return;
         };

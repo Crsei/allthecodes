@@ -141,7 +141,10 @@ pub(crate) async fn prepare_model_request(
     let refreshed_tools = refresh_outcome.tools().clone();
     if let Some((outcome, reason)) = refresh_outcome.cached_reason() {
         let elapsed_ms = refresh_outcome.elapsed_ms();
-        debug!(outcome, elapsed_ms, reason, "using cached tools before model call");
+        debug!(
+            outcome,
+            elapsed_ms, reason, "using cached tools before model call"
+        );
         deps.record_query_items(vec![RecordItem::QueryEvent(
             QueryEventRecord::ToolRefreshCached {
                 outcome: outcome.to_string(),

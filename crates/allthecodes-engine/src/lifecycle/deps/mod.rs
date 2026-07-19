@@ -52,7 +52,6 @@ mod model_call;
 mod permission;
 mod tool_error_loop;
 mod tool_pipeline;
-use tool_error_loop::ToolErrorLoopGuard;
 pub(crate) use model_call::{model_for_autocompact, tool_execution_result_to_exec_result};
 pub(crate) use permission::{
     auto_classifier_needed, central_permission_decision_for_tool, emit_hook_permission_decision,
@@ -60,6 +59,7 @@ pub(crate) use permission::{
     permission_denied_message, permission_feedback_message, permission_result_from_decision,
     runtime_permission_decision_label,
 };
+use tool_error_loop::ToolErrorLoopGuard;
 pub(crate) use tool_pipeline::{
     InputValidationKind, PermissionOverrideStageResult, PipelineStageResult, SanitizedInput,
     ToolExecutionPipeline, ToolExecutionPlan,
@@ -256,10 +256,7 @@ impl QueryDeps for QueryEngineDeps {
             .await;
     }
 
-    async fn record_query_items(
-        &self,
-        items: Vec<allthecodes_session::record_replay::RecordItem>,
-    ) {
+    async fn record_query_items(&self, items: Vec<allthecodes_session::record_replay::RecordItem>) {
         self.record_replay_items(items, "query_lifecycle").await;
     }
 

@@ -341,10 +341,7 @@ fn non_interactive_history_failure(
         .map(StartupDiagnostic::display_text)
 }
 
-fn startup_failure_result(
-    session_id: String,
-    error: String,
-) -> allthecodes_types::sdk::SdkResult {
+fn startup_failure_result(session_id: String, error: String) -> allthecodes_types::sdk::SdkResult {
     allthecodes_types::sdk::SdkResult {
         subtype: allthecodes_types::sdk::ResultSubtype::ErrorDuringExecution,
         is_error: true,

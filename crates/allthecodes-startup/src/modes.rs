@@ -198,7 +198,9 @@ mod tests {
         .unwrap();
 
         assert!(stdout.is_empty());
-        assert!(String::from_utf8(stderr).unwrap().contains("Request failed"));
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("Request failed"));
         assert!(!assistant_effect.wrote_stdout);
         assert!(result_effect.is_error);
     }
@@ -208,12 +210,8 @@ mod tests {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
 
-        let effect = write_print_message(
-            &mut stdout,
-            &mut stderr,
-            &assistant("completed", false),
-        )
-        .unwrap();
+        let effect =
+            write_print_message(&mut stdout, &mut stderr, &assistant("completed", false)).unwrap();
 
         assert_eq!(String::from_utf8(stdout).unwrap(), "completed");
         assert!(stderr.is_empty());
@@ -243,13 +241,7 @@ mod tests {
         let failure = result("Unable to resume session", true);
         let mut plain_stdout = Vec::new();
         let mut plain_stderr = Vec::new();
-        write_startup_failure(
-            &mut plain_stdout,
-            &mut plain_stderr,
-            false,
-            &failure,
-        )
-        .unwrap();
+        write_startup_failure(&mut plain_stdout, &mut plain_stderr, false, &failure).unwrap();
         assert!(plain_stdout.is_empty());
         assert!(String::from_utf8(plain_stderr)
             .unwrap()

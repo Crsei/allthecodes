@@ -151,8 +151,9 @@ pub fn resume_session_detail(session_id: &str) -> Result<ResumedSession> {
     let repair = repair_tool_history(session_id, &messages, &messages)?;
     let messages = repair.messages;
     if repair.repaired {
-        let session_info = storage::load_session_info(session_id)
-            .with_context(|| format!("failed to load metadata for repaired session {session_id}"))?;
+        let session_info = storage::load_session_info(session_id).with_context(|| {
+            format!("failed to load metadata for repaired session {session_id}")
+        })?;
         storage::save_session(session_id, &messages, &session_info.cwd).with_context(|| {
             format!("failed to save repaired legacy session projection {session_id}")
         })?;
@@ -251,7 +252,11 @@ fn replay_session_from_path(
     let mut last_seq = result.lines.iter().map(|line| line.seq).max();
 
     if repair.repaired {
-        last_seq = Some(append_repair_snapshot(session_id, &rollout_path, &messages)?);
+        last_seq = Some(append_repair_snapshot(
+            session_id,
+            &rollout_path,
+            &messages,
+        )?);
         if let Ok(session_info) = storage::load_session_info(session_id) {
             if let Err(error) = storage::save_session(session_id, &messages, &session_info.cwd) {
                 warn!(
@@ -318,9 +323,7 @@ fn repair_tool_history(
             _ => {
                 synthetic_results = synthetic_results.saturating_add(1);
                 Message::User(synthetic_interrupted_tool_result(
-                    session_id,
-                    missing,
-                    position,
+                    session_id, missing, position,
                 ))
             }
         };
@@ -330,11 +333,8 @@ fn repair_tool_history(
             .push(repaired_message);
     }
 
-    let mut repaired_messages = Vec::with_capacity(
-        replay_messages
-            .len()
-            .saturating_add(analysis.missing.len()),
-    );
+    let mut repaired_messages =
+        Vec::with_capacity(replay_messages.len().saturating_add(analysis.missing.len()));
     for (index, message) in replay_messages.iter().enumerate() {
         repaired_messages.push(message.clone());
         if let Some(messages) = insertions.remove(&index) {
@@ -365,15 +365,17 @@ fn analyze_tool_history(messages: &[Message]) -> ToolHistoryAnalysis {
         result_counts: HashMap<String, usize>,
     }
 
-    fn finish_pending(
-        pending: Option<PendingToolCalls>,
-        analysis: &mut ToolHistoryAnalysis,
-    ) {
+    fn finish_pending(pending: Option<PendingToolCalls>, analysis: &mut ToolHistoryAnalysis) {
         let Some(pending) = pending else {
             return;
         };
         for tool_use_id in pending.ordered_ids {
-            match pending.result_counts.get(&tool_use_id).copied().unwrap_or(0) {
+            match pending
+                .result_counts
+                .get(&tool_use_id)
+                .copied()
+                .unwrap_or(0)
+            {
                 0 => analysis.missing.push(MissingToolResult {
                     assistant_index: pending.assistant_index,
                     assistant_uuid: pending.assistant_uuid,
@@ -381,9 +383,9 @@ fn analyze_tool_history(messages: &[Message]) -> ToolHistoryAnalysis {
                     tool_use_id,
                 }),
                 1 => {}
-                count => analysis.errors.push(format!(
-                    "tool call {tool_use_id} has {count} results"
-                )),
+                count => analysis
+                    .errors
+                    .push(format!("tool call {tool_use_id} has {count} results")),
             }
         }
     }
@@ -522,9 +524,11 @@ fn synthetic_interrupted_tool_result(
             &missing.tool_use_id,
             "synthetic",
         ),
-        timestamp: missing
-            .assistant_timestamp
-            .saturating_add(i64::try_from(position).unwrap_or(i64::MAX).saturating_add(1)),
+        timestamp: missing.assistant_timestamp.saturating_add(
+            i64::try_from(position)
+                .unwrap_or(i64::MAX)
+                .saturating_add(1),
+        ),
         role: "user".to_string(),
         content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
             tool_use_id: missing.tool_use_id.clone(),
@@ -745,12 +749,7 @@ mod tests {
             None,
         )
         .unwrap();
-        storage::save_session(
-            session_id,
-            &[call, result],
-            workspace.to_str().unwrap(),
-        )
-        .unwrap();
+        storage::save_session(session_id, &[call, result], workspace.to_str().unwrap()).unwrap();
 
         let resumed = resume_session_detail(session_id).unwrap();
 

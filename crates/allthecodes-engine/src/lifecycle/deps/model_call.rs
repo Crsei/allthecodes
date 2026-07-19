@@ -227,10 +227,7 @@ impl QueryEngineDeps {
         let started = std::time::Instant::now();
         let cached_tools = || self.state.read().tools.registry.clone();
         let Some(manager) = allthecodes_mcp::runtime::current_manager() else {
-            return ToolRefreshOutcome::fresh(
-                cached_tools(),
-                started.elapsed().as_millis() as u64,
-            );
+            return ToolRefreshOutcome::fresh(cached_tools(), started.elapsed().as_millis() as u64);
         };
 
         let binding_context = crate::mcp_tool_adapter::mcp_binding_context_for_engine(

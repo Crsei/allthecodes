@@ -390,10 +390,7 @@ impl QueryDeps for MockDeps {
         })
     }
 
-    async fn record_query_items(
-        &self,
-        items: Vec<allthecodes_session::record_replay::RecordItem>,
-    ) {
+    async fn record_query_items(&self, items: Vec<allthecodes_session::record_replay::RecordItem>) {
         self.recorded_query_items.lock().extend(items);
     }
 
@@ -441,11 +438,10 @@ impl QueryDeps for MockDeps {
         self.refresh_seen.store(true, Ordering::SeqCst);
         self.refresh_calls.fetch_add(1, Ordering::SeqCst);
         ToolRefreshOutcome::fresh(
-            self
-            .refreshed_tools
-            .lock()
-            .clone()
-            .unwrap_or_else(|| self.tools.clone()),
+            self.refreshed_tools
+                .lock()
+                .clone()
+                .unwrap_or_else(|| self.tools.clone()),
             0,
         )
     }

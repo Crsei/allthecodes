@@ -49,9 +49,10 @@ impl QueryTurnEvent {
                 ..
             })) => Vec::new(),
             Self::Message(Message::Assistant(assistant))
-                if assistant.content.iter().any(|block| {
-                    matches!(block, ContentBlock::ToolUse { .. })
-                }) =>
+                if assistant
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolUse { .. })) =>
             {
                 Vec::new()
             }
@@ -1315,8 +1316,8 @@ mod tests {
             })));
         assert!(transient_retry.record_items("codex", "gpt-test").is_empty());
 
-        let tool_call = QueryTurnEvent::from(QueryYield::Message(Message::Assistant(
-            AssistantMessage {
+        let tool_call =
+            QueryTurnEvent::from(QueryYield::Message(Message::Assistant(AssistantMessage {
                 uuid: uuid::Uuid::new_v4(),
                 timestamp: 3,
                 role: "assistant".to_string(),
@@ -1330,8 +1331,7 @@ mod tests {
                 is_api_error_message: false,
                 api_error: None,
                 cost_usd: 0.0,
-            },
-        )));
+            })));
         assert!(tool_call.record_items("codex", "gpt-test").is_empty());
 
         let tool_result = QueryTurnEvent::from(QueryYield::Message(Message::User(
@@ -1433,7 +1433,8 @@ mod tests {
             source_tool_assistant_uuid: None,
         };
 
-        let _actions = process_stream_item(QueryTurnEvent::Message(Message::User(result)), &mut ctx);
+        let _actions =
+            process_stream_item(QueryTurnEvent::Message(Message::User(result)), &mut ctx);
 
         let saved = crate::session::storage::load_session(session_id.as_str()).unwrap();
         assert_eq!(saved.len(), 2);
