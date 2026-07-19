@@ -153,7 +153,8 @@ fn duration_from_env(name: &str) -> Option<Duration> {
 pub(crate) fn is_stream_progress_event(event: &StreamEvent) -> bool {
     matches!(
         event,
-        StreamEvent::ContentBlockStart { .. }
+        StreamEvent::MessageStart { .. }
+            | StreamEvent::ContentBlockStart { .. }
             | StreamEvent::ContentBlockDelta { .. }
             | StreamEvent::ContentBlockStop { .. }
             | StreamEvent::MessageDelta { .. }

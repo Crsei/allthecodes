@@ -375,6 +375,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         Ok(event) => {
                             let now = std::time::Instant::now();
                             if is_stream_progress_event(&event) {
+                                last_progress_at = now;
+                            } else {
                                 let stalled_for = now.duration_since(last_progress_at);
                                 if stalled_for > stall_timeout {
                                     stream_error = Some(format!(
@@ -383,7 +385,6 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                                     ));
                                     break;
                                 }
-                                last_progress_at = now;
                             }
 
                             if first_response_at.is_none()

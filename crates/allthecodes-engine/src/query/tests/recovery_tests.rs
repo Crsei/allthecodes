@@ -564,11 +564,11 @@ async fn test_stream_idle_watchdog_errors_when_first_event_never_arrives() {
 }
 
 #[tokio::test]
-async fn test_stream_stall_detection_errors_after_handshake_without_progress() {
-    let stalled_events = || {
+async fn test_delayed_progress_after_stall_threshold_is_accepted() {
+    let deps = Arc::new(MockDeps::from_steps(vec![MockStreamStep::DelayedEvents(
         vec![
             (
-                Duration::from_millis(0),
+                Duration::from_millis(40),
                 Ok(StreamEvent::MessageStart {
                     usage: Usage::default(),
                 }),
@@ -582,31 +582,60 @@ async fn test_stream_stall_detection_errors_after_handshake_without_progress() {
                     },
                 }),
             ),
-        ]
-    };
-    let deps = Arc::new(MockDeps::from_steps(vec![
-        MockStreamStep::DelayedEvents(stalled_events()),
-        MockStreamStep::DelayedEvents(stalled_events()),
-    ]));
+            (
+                Duration::ZERO,
+                Ok(StreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: serde_json::json!({"type": "text_delta", "text": "Recovered"}),
+                }),
+            ),
+            (
+                Duration::ZERO,
+                Ok(StreamEvent::ContentBlockStop { index: 0 }),
+            ),
+            (
+                Duration::ZERO,
+                Ok(StreamEvent::MessageDelta {
+                    delta: crate::types::message::MessageDelta {
+                        stop_reason: Some("end_turn".to_string()),
+                    },
+                    usage: Some(Usage::default()),
+                }),
+            ),
+            (Duration::ZERO, Ok(StreamEvent::MessageStop)),
+        ],
+    )]));
 
     let stream = query(
-        make_query_params(vec![make_user_message_for_test("Detect stall")]),
+        make_query_params(vec![make_user_message_for_test("Wait for useful progress")]),
         deps,
     );
     let items: Vec<QueryYield> = stream.collect().await;
 
-    assert_eq!(request_start_count(&items), 2);
+    assert_eq!(request_start_count(&items), 1);
     assert!(
-        items
-            .iter()
-            .any(|item| matches!(item, QueryYield::Stream(StreamEvent::MessageStart { .. }))),
-        "stream handshake should be forwarded before the stall is detected"
-    );
-    assert!(
-        has_api_error_containing(&items, "stream stalled"),
-        "passive stall detection should surface a stream stalled error: {:?}",
+        !has_api_error_containing(&items, "stream stalled"),
+        "newly arrived progress must not be rejected retroactively: {:?}",
         items
     );
+    assert!(items.iter().any(|item| {
+        matches!(
+            item,
+            QueryYield::Message(Message::Assistant(message))
+                if message.content.iter().any(|block| {
+                    matches!(block, ContentBlock::Text { text } if text == "Recovered")
+                })
+        )
+    }));
+}
+
+#[test]
+fn test_message_start_counts_as_stream_progress() {
+    assert!(super::super::super::recovery::is_stream_progress_event(
+        &StreamEvent::MessageStart {
+            usage: Usage::default(),
+        }
+    ));
 }
 
 #[tokio::test]
