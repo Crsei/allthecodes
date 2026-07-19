@@ -200,11 +200,10 @@ pub(crate) fn recovery_delay(error: Option<&anyhow::Error>, attempt: usize) -> D
         return Duration::from_millis(delay);
     }
     #[cfg(test)]
-    let config = {
-        let mut config = RetryConfig::default();
-        config.initial_delay_ms = 1;
-        config.max_delay_ms = 10;
-        config
+    let config = RetryConfig {
+        initial_delay_ms: 1,
+        max_delay_ms: 10,
+        ..RetryConfig::default()
     };
     #[cfg(not(test))]
     let config = RetryConfig::default();
