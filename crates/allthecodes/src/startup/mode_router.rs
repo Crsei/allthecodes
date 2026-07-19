@@ -4,7 +4,9 @@ use std::process::ExitCode;
 use anyhow::Context;
 use tracing::{error, warn};
 
-use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSource};
+use crate::startup::diagnostics::{
+    StartupDiagnostic, StartupDiagnosticSeverity, StartupDiagnosticSource,
+};
 use crate::startup::runtime_composition::{RuntimeComposition, RuntimeReady};
 use crate::startup_skills::persist_skill_usage;
 
@@ -33,7 +35,14 @@ fn daemon_allowed_by_features() -> bool {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::{daemon_allowed_by_features, resolve_non_interactive_prompt};
+    use clap::Parser;
+
+    use super::{
+        daemon_allowed_by_features, non_interactive_history_failure,
+        resolve_non_interactive_prompt, startup_failure_result,
+    };
+    use crate::cli::Cli;
+    use crate::startup::diagnostics::{StartupDiagnostic, StartupDiagnosticSource};
 
     struct FeatureOverrideGuard;
 
@@ -89,10 +98,70 @@ mod tests {
             .unwrap_err()
             .contains("stdin is empty"));
     }
+
+    #[test]
+    fn non_interactive_resume_failure_is_terminal() {
+        let cli = Cli::parse_from(["allthecodes", "--resume", "-p", "continue"]);
+        let diagnostic = StartupDiagnostic::error(
+            "history-load",
+            StartupDiagnosticSource::History,
+            "Failed to load the requested session history",
+            Some("corrupt rollout".to_string()),
+            None,
+        );
+
+        let failure = non_interactive_history_failure(&cli, &[diagnostic])
+            .expect("resume failure must stop non-interactive mode");
+        let result = startup_failure_result("session-new".to_string(), failure);
+
+        assert!(result.is_error);
+        assert_eq!(
+            result.subtype,
+            allthecodes_types::sdk::ResultSubtype::ErrorDuringExecution
+        );
+        assert_eq!(result.stop_reason.as_deref(), Some("history_load_error"));
+        assert!(result.result.contains("corrupt rollout"));
+    }
+
+    #[test]
+    fn interactive_resume_keeps_diagnostic_recovery_path() {
+        let cli = Cli::parse_from(["allthecodes", "--resume"]);
+        let diagnostic = StartupDiagnostic::error(
+            "history-resume-missing",
+            StartupDiagnosticSource::History,
+            "No resumable session was found",
+            None,
+            None,
+        );
+
+        assert!(non_interactive_history_failure(&cli, &[diagnostic]).is_none());
+    }
+
+    #[test]
+    fn non_history_warning_does_not_block_non_interactive_resume() {
+        let cli = Cli::parse_from(["allthecodes", "--resume", "-p", "continue"]);
+        let diagnostic = StartupDiagnostic::warning(
+            "history-team-context",
+            StartupDiagnosticSource::History,
+            "Resumed team context could not be restored",
+            None,
+            None,
+        );
+
+        assert!(non_interactive_history_failure(&cli, &[diagnostic]).is_none());
+    }
 }
 
 async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
     let cli = &runtime.cli;
+
+    if let Some(error) = non_interactive_history_failure(cli, &runtime.startup_diagnostics) {
+        let result = startup_failure_result(runtime.engine.current_session_id().to_string(), error);
+        return allthecodes_startup::modes::emit_startup_failure(
+            cli.output_format.as_deref() == Some("json"),
+            result,
+        );
+    }
 
     // JSON output mode takes priority (SDK sends both -p and --output-format json).
     if cli.output_format.as_deref() == Some("json") {
@@ -250,6 +319,47 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
             error!("TUI error: {:#}", e);
             Ok(ExitCode::FAILURE)
         }
+    }
+}
+
+fn non_interactive_history_failure(
+    cli: &crate::cli::Cli,
+    diagnostics: &[StartupDiagnostic],
+) -> Option<String> {
+    let non_interactive = cli.print || cli.output_format.as_deref() == Some("json");
+    let history_requested = cli.resume || cli.continue_session.is_some();
+    if !non_interactive || !history_requested {
+        return None;
+    }
+
+    diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.source == StartupDiagnosticSource::History
+                && diagnostic.severity == StartupDiagnosticSeverity::Error
+        })
+        .map(StartupDiagnostic::display_text)
+}
+
+fn startup_failure_result(
+    session_id: String,
+    error: String,
+) -> allthecodes_types::sdk::SdkResult {
+    allthecodes_types::sdk::SdkResult {
+        subtype: allthecodes_types::sdk::ResultSubtype::ErrorDuringExecution,
+        is_error: true,
+        duration_ms: 0,
+        duration_api_ms: 0,
+        num_turns: 0,
+        result: error.clone(),
+        stop_reason: Some("history_load_error".to_string()),
+        session_id,
+        total_cost_usd: 0.0,
+        usage: allthecodes_types::sdk::UsageTracking::default(),
+        permission_denials: Vec::new(),
+        structured_output: None,
+        uuid: uuid::Uuid::new_v4(),
+        errors: vec![error],
     }
 }
 

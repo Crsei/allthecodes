@@ -110,7 +110,7 @@ impl EngineFactory {
                         }
                         Err(e) => {
                             warn!(error = %e, "failed to load session messages");
-                            startup_diagnostics.push(StartupDiagnostic::warning(
+                            startup_diagnostics.push(StartupDiagnostic::error(
                                 "history-load",
                                 StartupDiagnosticSource::History,
                                 "Failed to load the requested session history",
@@ -134,7 +134,7 @@ impl EngineFactory {
                 }
                 Err(e) => {
                     warn!(error = %e, "failed to find session to resume");
-                    startup_diagnostics.push(StartupDiagnostic::warning(
+                    startup_diagnostics.push(StartupDiagnostic::error(
                         "history-resume-lookup",
                         StartupDiagnosticSource::History,
                         "Could not find the session to resume",
@@ -153,7 +153,7 @@ impl EngineFactory {
                 }
                 Err(e) => {
                     warn!(error = %e, "failed to load session {}", session_id);
-                    startup_diagnostics.push(StartupDiagnostic::warning(
+                    startup_diagnostics.push(StartupDiagnostic::error(
                         "history-continue-load",
                         StartupDiagnosticSource::History,
                         "Failed to load the requested continued session",

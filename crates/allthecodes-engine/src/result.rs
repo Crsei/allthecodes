@@ -57,6 +57,15 @@ pub fn is_result_successful(message: Option<&Message>, stop_reason: Option<&str>
     }
 }
 
+/// Apply terminal protocol semantics to the content-based success result.
+///
+/// Provider failures are represented as synthetic assistant text so interactive
+/// clients can render a useful message. That text must never turn the final SDK
+/// result into a success, even when its stop reason otherwise looks terminal.
+pub fn is_final_result_successful(base_success: bool, is_api_error_message: bool) -> bool {
+    base_success && !is_api_error_message
+}
+
 // ---------------------------------------------------------------------------
 // extract_text_result
 // ---------------------------------------------------------------------------
@@ -193,6 +202,13 @@ mod tests {
         let msg = make_user_text("just text");
         // "end_turn" stop_reason is always successful.
         assert!(is_result_successful(Some(&msg), Some("end_turn")));
+    }
+
+    #[test]
+    fn test_api_error_message_cannot_be_final_success() {
+        assert!(!is_final_result_successful(true, true));
+        assert!(is_final_result_successful(true, false));
+        assert!(!is_final_result_successful(false, false));
     }
 
     #[test]

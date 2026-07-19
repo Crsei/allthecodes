@@ -1214,7 +1214,7 @@ impl QueryEngine {
             let (text_result, is_api_error) =
                 result::extract_text_result(&final_messages);
             let (is_success, text_result) = apply_verification_terminal_outcome(
-                base_success,
+                result::is_final_result_successful(base_success, is_api_error),
                 text_result,
                 verification_incomplete.lock().clone(),
             );
