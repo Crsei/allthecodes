@@ -135,16 +135,21 @@ impl SubmitTransaction {
         }
 
         if !persistence.transcript_messages.is_empty() {
-            let _ = transcript::record_transcript(
+            if let Err(error) = transcript::record_transcript(
                 session_id.as_str(),
                 &persistence.transcript_messages,
-            );
+            ) {
+                tracing::warn!(%session_id, %error, "failed to update transcript projection");
+            }
         }
 
         if persistence.save_session_after_commit && config.auto_save_session {
             let all_msgs = state_ref.read().transcript.messages.clone();
-            let _ =
-                crate::session::storage::save_session(session_id.as_str(), &all_msgs, &config.cwd);
+            if let Err(error) =
+                crate::session::storage::save_session(session_id.as_str(), &all_msgs, &config.cwd)
+            {
+                tracing::warn!(%session_id, %error, "failed to update legacy session projection");
+            }
         }
 
         SubmitTransactionOutcome {

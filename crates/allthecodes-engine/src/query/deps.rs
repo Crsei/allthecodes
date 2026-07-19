@@ -217,6 +217,12 @@ pub trait QueryDeps: Send + Sync {
     ) {
     }
 
+    /// Append the assistant tool-call message and its tool-result messages to
+    /// the canonical rollout, then flush before another model turn.
+    async fn persist_tool_results(&self, _messages: Vec<Message>) -> Result<()> {
+        Ok(())
+    }
+
     /// Mark this query as terminally unverified so the lifecycle cannot
     /// translate the last assistant text into a successful SDK result.
     fn mark_verification_incomplete(&self, _summary: String) {}

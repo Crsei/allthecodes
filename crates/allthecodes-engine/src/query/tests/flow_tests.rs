@@ -133,6 +133,12 @@ async fn test_tool_use_then_text_response() {
         2,
         "each model turn must have exactly one tool refresh"
     );
+    assert_eq!(
+        deps.lifecycle_events.lock().as_slice(),
+        ["model", "tool", "persist", "model"],
+        "tool results must be persisted before the next provider request"
+    );
+    assert_eq!(deps.persisted_tool_results.lock().len(), 1);
 
     let assistant_msgs = items
         .iter()
@@ -146,6 +152,47 @@ async fn test_tool_use_then_text_response() {
             .load(Ordering::SeqCst),
         "tool execution should not start before the model stream reaches message_stop"
     );
+}
+
+#[tokio::test]
+async fn tool_result_persistence_failure_stops_before_next_provider_request() {
+    let tool_response = ModelResponse {
+        assistant_message: AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "tu_durability_failure".to_string(),
+                name: "Bash".to_string(),
+                input: serde_json::json!({"command": "echo hello"}),
+            }],
+            usage: Some(Usage::default()),
+            stop_reason: Some("tool_use".to_string()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        },
+        stream_events: vec![],
+        usage: Usage::default(),
+    };
+    let deps = Arc::new(
+        MockDeps::new(vec![tool_response])
+            .with_persist_tool_results_error("simulated rollout flush failure"),
+    );
+    let params = make_query_params(vec![make_user_message_for_test("run the tool")]);
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+
+    assert!(has_api_error_containing(
+        &items,
+        "tool result persistence failed"
+    ));
+    assert_eq!(deps.recorded_params().len(), 1);
+    assert_eq!(
+        deps.lifecycle_events.lock().as_slice(),
+        ["model", "tool", "persist"]
+    );
+    assert_eq!(deps.tool_execution_count.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

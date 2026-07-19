@@ -48,6 +48,14 @@ impl QueryTurnEvent {
                 subtype: SystemSubtype::ApiError { .. },
                 ..
             })) => Vec::new(),
+            Self::Message(Message::Assistant(assistant))
+                if assistant.content.iter().any(|block| {
+                    matches!(block, ContentBlock::ToolUse { .. })
+                }) =>
+            {
+                Vec::new()
+            }
+            Self::Message(Message::User(user)) if user.tool_use_result.is_some() => Vec::new(),
             Self::Message(message) => {
                 let mut items = vec![RecordItem::Message(MessageRecord::from_message(message))];
                 if let Message::System(system) = message {
@@ -632,6 +640,9 @@ fn handle_user_message(
     transaction.increment_turn_count();
     transaction.append_message(Message::User(user_msg.clone()));
     transaction.persist(Message::User(user_msg.clone()));
+    if user_msg.tool_use_result.is_some() {
+        transaction.save_session_after_commit();
+    }
     if ctx.replay_user_messages {
         let (content_text, content_blocks) = match &user_msg.content {
             MessageContent::Text(text) => (text.clone(), None),
@@ -1304,6 +1315,42 @@ mod tests {
             })));
         assert!(transient_retry.record_items("codex", "gpt-test").is_empty());
 
+        let tool_call = QueryTurnEvent::from(QueryYield::Message(Message::Assistant(
+            AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 3,
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "toolu_preflushed".to_string(),
+                    name: "Read".to_string(),
+                    input: serde_json::json!({"file_path": "/tmp/input.txt"}),
+                }],
+                usage: Some(Usage::default()),
+                stop_reason: Some("tool_use".to_string()),
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.0,
+            },
+        )));
+        assert!(tool_call.record_items("codex", "gpt-test").is_empty());
+
+        let tool_result = QueryTurnEvent::from(QueryYield::Message(Message::User(
+            crate::types::message::UserMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 4,
+                role: "user".to_string(),
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "toolu_preflushed".to_string(),
+                    content: ToolResultContent::Text("ok".to_string()),
+                    is_error: false,
+                }]),
+                is_meta: true,
+                tool_use_result: Some("ok".to_string()),
+                source_tool_assistant_uuid: None,
+            },
+        )));
+        assert!(tool_result.record_items("codex", "gpt-test").is_empty());
+
         let request_start = QueryTurnEvent::from(QueryYield::RequestStart(
             crate::types::message::RequestStartEvent {
                 provider: Some("anthropic".to_string()),
@@ -1323,6 +1370,79 @@ mod tests {
                     retry_phase: None,
                 },
             )] if provider == "anthropic" && model == "claude-test"
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn tool_result_message_immediately_updates_legacy_session_projection() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut config = make_config();
+        config.cwd = workspace.to_string_lossy().to_string();
+        config.auto_save_session = true;
+        let engine = QueryEngine::new(config);
+        let session_id = engine.session_id.clone();
+        engine
+            .state
+            .write()
+            .append_message(Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 1,
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "toolu_projection".to_string(),
+                    name: "Read".to_string(),
+                    input: serde_json::json!({"file_path": "/tmp/input.txt"}),
+                }],
+                usage: Some(Usage::default()),
+                stop_reason: Some("tool_use".to_string()),
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.0,
+            }));
+        let mut submit_turn = SubmitTurnState::new();
+        let mut submit_langfuse_trace = None;
+        let mut telemetry_submit_span = None;
+        let mut ctx = StreamContext {
+            config: &engine.config,
+            state_ref: &engine.state,
+            session_id: &session_id,
+            submit_turn: &mut submit_turn,
+            replay_user_messages: false,
+            submit_langfuse_trace: &mut submit_langfuse_trace,
+            telemetry_submit_span: &mut telemetry_submit_span,
+            model_name: "test-model",
+            backend_name: "test-backend",
+            request_event: None,
+            api_started_at: Instant::now(),
+        };
+        let result = crate::types::message::UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 2,
+            role: "user".to_string(),
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "toolu_projection".to_string(),
+                content: ToolResultContent::Text("ok".to_string()),
+                is_error: false,
+            }]),
+            is_meta: true,
+            tool_use_result: Some("ok".to_string()),
+            source_tool_assistant_uuid: None,
+        };
+
+        let _actions = process_stream_item(QueryTurnEvent::Message(Message::User(result)), &mut ctx);
+
+        let saved = crate::session::storage::load_session(session_id.as_str()).unwrap();
+        assert_eq!(saved.len(), 2);
+        assert!(matches!(
+            &saved[1],
+            Message::User(crate::types::message::UserMessage {
+                tool_use_result: Some(value),
+                ..
+            }) if value == "ok"
         ));
     }
 }

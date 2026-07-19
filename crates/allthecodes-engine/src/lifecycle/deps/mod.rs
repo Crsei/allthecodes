@@ -259,6 +259,10 @@ impl QueryDeps for QueryEngineDeps {
         self.record_replay_items(items, "query_lifecycle").await;
     }
 
+    async fn persist_tool_results(&self, messages: Vec<Message>) -> Result<()> {
+        self.persist_tool_results_impl(messages).await
+    }
+
     fn mark_verification_incomplete(&self, summary: String) {
         *self.verification_incomplete.lock() = Some(summary);
     }

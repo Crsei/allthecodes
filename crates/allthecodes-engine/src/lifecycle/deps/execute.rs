@@ -1,7 +1,7 @@
 use super::*;
 use crate::session::record_replay::types::{
-    PermissionRequestRecord, PermissionResponseRecord, QuestionRequestRecord,
-    QuestionResponseRecord, RecordItem, SecurityDecisionRecord,
+    MessageRecord, PermissionRequestRecord, PermissionResponseRecord, QueryEventRecord,
+    QuestionRequestRecord, QuestionResponseRecord, RecordItem, SecurityDecisionRecord,
 };
 use crate::verification::evidence::evidence_from_tool_result_with_duration;
 use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
@@ -11,6 +11,56 @@ impl QueryEngineDeps {
     pub(super) async fn record_replay_items(&self, items: Vec<RecordItem>, context: &'static str) {
         record_replay_items_for_handle(&self.session_recorder, &self.session_id, items, context)
             .await;
+    }
+
+    pub(super) async fn persist_tool_results_impl(&self, messages: Vec<Message>) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+
+        let tool_use_ids = messages
+            .iter()
+            .filter_map(|message| match message {
+                Message::User(user) => match &user.content {
+                    MessageContent::Blocks(blocks) => blocks.iter().find_map(|block| match block {
+                        crate::types::message::ContentBlock::ToolResult { tool_use_id, .. } => {
+                            Some(tool_use_id.clone())
+                        }
+                        _ => None,
+                    }),
+                    MessageContent::Text(_) => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut items = messages
+            .iter()
+            .map(|message| RecordItem::Message(MessageRecord::from_message(message)))
+            .collect::<Vec<_>>();
+        items.push(RecordItem::QueryEvent(
+            QueryEventRecord::ToolResultsDurable {
+                tool_use_ids: tool_use_ids.clone(),
+            },
+        ));
+
+        let handle = self.session_recorder.lock().clone();
+        let Some(handle) = handle else {
+            if crate::session::record_replay::RecordReplayConfig::from_env().enabled {
+                anyhow::bail!(
+                    "canonical rollout recorder unavailable for tool results: {}",
+                    tool_use_ids.join(",")
+                );
+            }
+            return Ok(());
+        };
+
+        handle.add(items).await.map_err(|error| {
+            anyhow::anyhow!("failed to append tool results to canonical rollout: {error}")
+        })?;
+        handle.flush().await.map_err(|error| {
+            anyhow::anyhow!("failed to flush tool results to canonical rollout: {error}")
+        })?;
+        Ok(())
     }
 
     pub(super) async fn record_tool_permission_request(

@@ -66,6 +66,11 @@ pub struct MockDeps {
     pub parent_agent_id: Option<String>,
     pub agent_type: Option<String>,
     pub tool_result_override: parking_lot::Mutex<Option<ToolExecResult>>,
+    pub persisted_tool_results: parking_lot::Mutex<Vec<Vec<Message>>>,
+    pub persist_tool_results_error: parking_lot::Mutex<Option<String>>,
+    pub lifecycle_events: parking_lot::Mutex<Vec<String>>,
+    pub recorded_query_items:
+        parking_lot::Mutex<Vec<allthecodes_session::record_replay::RecordItem>>,
     pub agent_events: parking_lot::Mutex<Vec<AgentEvent>>,
     pub verification_incomplete: parking_lot::Mutex<Option<String>>,
     pub provider_name: Option<String>,
@@ -115,6 +120,10 @@ impl MockDeps {
             parent_agent_id: None,
             agent_type: None,
             tool_result_override: parking_lot::Mutex::new(None),
+            persisted_tool_results: parking_lot::Mutex::new(Vec::new()),
+            persist_tool_results_error: parking_lot::Mutex::new(None),
+            lifecycle_events: parking_lot::Mutex::new(Vec::new()),
+            recorded_query_items: parking_lot::Mutex::new(Vec::new()),
             agent_events: parking_lot::Mutex::new(Vec::new()),
             verification_incomplete: parking_lot::Mutex::new(None),
             provider_name: None,
@@ -176,6 +185,11 @@ impl MockDeps {
         self
     }
 
+    pub fn with_persist_tool_results_error(self, error: &str) -> Self {
+        *self.persist_tool_results_error.lock() = Some(error.to_string());
+        self
+    }
+
     pub fn recorded_agent_events(&self) -> Vec<AgentEvent> {
         self.agent_events.lock().clone()
     }
@@ -225,6 +239,7 @@ impl QueryDeps for MockDeps {
     }
 
     async fn call_model(&self, params: ModelCallParams) -> Result<ModelResponse> {
+        self.lifecycle_events.lock().push("model".to_string());
         self.call_params.lock().push(params);
         match self.pop_stream_step()? {
             MockStreamStep::Response(resp) => Ok(resp),
@@ -239,6 +254,7 @@ impl QueryDeps for MockDeps {
         &self,
         params: ModelCallParams,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        self.lifecycle_events.lock().push("model".to_string());
         self.call_params.lock().push(params);
         self.stream_finished.store(false, Ordering::SeqCst);
 
@@ -329,6 +345,7 @@ impl QueryDeps for MockDeps {
         _parent: &AssistantMessage,
         _on_progress: Option<Arc<dyn Fn(ToolProgress) + Send + Sync>>,
     ) -> Result<ToolExecResult> {
+        self.lifecycle_events.lock().push("tool".to_string());
         self.tool_execution_count.fetch_add(1, Ordering::SeqCst);
         let active = self.active_tools.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active_tools.fetch_max(active, Ordering::SeqCst);
@@ -364,6 +381,22 @@ impl QueryDeps for MockDeps {
             permission_decision: Some(AgentRuntimePermissionDecision::NotRequired),
             brief_message: None,
         })
+    }
+
+    async fn record_query_items(
+        &self,
+        items: Vec<allthecodes_session::record_replay::RecordItem>,
+    ) {
+        self.recorded_query_items.lock().extend(items);
+    }
+
+    async fn persist_tool_results(&self, messages: Vec<Message>) -> Result<()> {
+        self.lifecycle_events.lock().push("persist".to_string());
+        self.persisted_tool_results.lock().push(messages);
+        if let Some(error) = self.persist_tool_results_error.lock().clone() {
+            anyhow::bail!("{}", error);
+        }
+        Ok(())
     }
 
     fn get_app_state(&self) -> AppState {

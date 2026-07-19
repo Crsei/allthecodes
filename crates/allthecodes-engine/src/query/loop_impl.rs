@@ -32,7 +32,8 @@ use uuid::Uuid;
 
 use allthecodes_config::features::{self, Feature};
 use allthecodes_session::record_replay::types::{
-    RecordItem, VerificationFinishedRecord, VerificationStartedRecord, VerificationStatus,
+    QueryEventRecord, RecordItem, VerificationFinishedRecord, VerificationStartedRecord,
+    VerificationStatus,
 };
 use allthecodes_types::agent_events::AgentEvent;
 use allthecodes_types::agent_runtime_record::{compute_digest, AgentRuntimeExecutionRecord};
@@ -1057,11 +1058,31 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     break;
                 }
 
-                // Convert tool results to user messages
-                for exec_result in &tool_results {
-                    let user_msg =
-                        make_tool_result_user_message(&deps, exec_result, assistant_message.uuid);
-                    let msg = Message::User(user_msg);
+                let tool_result_messages = tool_results
+                    .iter()
+                    .map(|exec_result| {
+                        Message::User(make_tool_result_user_message(
+                            &deps,
+                            exec_result,
+                            assistant_message.uuid,
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                let mut durable_tool_messages = Vec::with_capacity(tool_result_messages.len() + 1);
+                durable_tool_messages.push(Message::Assistant(assistant_message.clone()));
+                durable_tool_messages.extend(tool_result_messages.iter().cloned());
+                if let Err(error) = deps.persist_tool_results(durable_tool_messages).await {
+                    warn!(%error, "tool results were not durable; stopping before the next model turn");
+                    yield QueryYield::Message(Message::Assistant(make_error_message(
+                        &deps,
+                        &format!("tool result persistence failed: {error}"),
+                    )));
+                    break 'query_loop;
+                }
+
+                // The canonical rollout is durable before any result is
+                // projected into the transcript or exposed to the next turn.
+                for (exec_result, msg) in tool_results.iter().zip(tool_result_messages) {
                     yield QueryYield::Message(msg.clone());
                     state.messages.push(msg);
 
@@ -1131,6 +1152,12 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         yield QueryYield::Message(steer_msg.clone());
                         state.messages.push(steer_msg);
                     }
+                    deps.record_query_items(vec![RecordItem::QueryEvent(
+                        QueryEventRecord::NextTurnReady {
+                            turn: state.turn_count.saturating_add(1),
+                        },
+                    )])
+                    .await;
                     state.transition = Some(Continue::NextTurn);
                     state.turn_count += 1;
                     continue;
@@ -1218,6 +1245,12 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     ));
                     break 'query_loop;
                 }
+                deps.record_query_items(vec![RecordItem::QueryEvent(
+                    QueryEventRecord::NextTurnReady {
+                        turn: state.turn_count.saturating_add(1),
+                    },
+                )])
+                .await;
                 state.transition = Some(Continue::NextTurn);
                 state.turn_count += 1;
                 state.stop_hook_active = None;

@@ -227,10 +227,16 @@ pub enum QueryEventRecord {
     RawStream {
         event: serde_json::Value,
     },
+    ToolResultsDurable {
+        tool_use_ids: Vec<String>,
+    },
     ToolRefreshCached {
         outcome: String,
         elapsed_ms: u64,
         reason: String,
+    },
+    NextTurnReady {
+        turn: usize,
     },
 }
 

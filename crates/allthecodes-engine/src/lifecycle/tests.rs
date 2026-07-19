@@ -959,6 +959,89 @@ async fn tool_refresh_uses_cached_snapshot_when_mcp_manager_is_busy() {
     assert_eq!(outcome.tools()[0].name(), "TestTool");
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn tool_result_flush_makes_assistant_call_and_result_replayable_before_next_turn() {
+    let home = tempdir().unwrap();
+    let _home_guard = EnvGuard::set("ALLTHECODES_HOME", home.path());
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let mut config = make_config();
+    config.cwd = workspace.to_string_lossy().to_string();
+    let engine = QueryEngine::new(config);
+    let recorder = engine
+        .ensure_session_recorder()
+        .await
+        .unwrap()
+        .expect("record replay is enabled for the durability test");
+    let assistant_uuid = uuid::Uuid::new_v4();
+    let assistant = Message::Assistant(AssistantMessage {
+        uuid: assistant_uuid,
+        timestamp: 1,
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::ToolUse {
+            id: "toolu_durable".to_string(),
+            name: "Read".to_string(),
+            input: json!({"file_path": "/tmp/input.txt"}),
+        }],
+        usage: Some(Usage::default()),
+        stop_reason: Some("tool_use".to_string()),
+        is_api_error_message: false,
+        api_error: None,
+        cost_usd: 0.0,
+    });
+    let mut deps = make_lifecycle_deps(
+        &engine,
+        Arc::new(allthecodes_types::hooks::NoopHookRunner),
+        None,
+    );
+    deps.session_id = engine.current_session_id().to_string();
+    let result = Message::User(UserMessage {
+        uuid: uuid::Uuid::new_v4(),
+        timestamp: 2,
+        role: "user".to_string(),
+        content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: "toolu_durable".to_string(),
+            content: crate::types::message::ToolResultContent::Text("ok".to_string()),
+            is_error: false,
+        }]),
+        is_meta: true,
+        tool_use_result: Some("ok".to_string()),
+        source_tool_assistant_uuid: Some(assistant_uuid),
+    });
+
+    deps.persist_tool_results_impl(vec![assistant, result])
+        .await
+        .unwrap();
+
+    let read = crate::session::record_replay::read_rollout_file(recorder.rollout_path()).unwrap();
+    let reconstructed = crate::session::record_replay::reconstruct_messages(&read.lines);
+    assert_eq!(reconstructed.len(), 2);
+    assert!(matches!(
+        &reconstructed[0],
+        Message::Assistant(AssistantMessage { content, .. })
+            if matches!(content.as_slice(), [ContentBlock::ToolUse { id, .. }] if id == "toolu_durable")
+    ));
+    assert!(matches!(
+        &reconstructed[1],
+        Message::User(UserMessage { content, .. })
+            if matches!(content, MessageContent::Blocks(blocks)
+                if matches!(blocks.as_slice(), [ContentBlock::ToolResult { tool_use_id, .. }]
+                    if tool_use_id == "toolu_durable"))
+    ));
+    assert!(read.lines.iter().any(|line| matches!(
+        &line.item,
+        crate::session::record_replay::types::RecordItem::QueryEvent(
+            crate::session::record_replay::types::QueryEventRecord::ToolResultsDurable {
+                tool_use_ids
+            }
+        ) if tool_use_ids.as_slice() == ["toolu_durable"]
+    )));
+
+    engine.shutdown_session_record().await.unwrap();
+}
+
 async fn execute_permission_matrix_case<F>(
     permission: MatrixToolPermission,
     configure_permissions: F,
