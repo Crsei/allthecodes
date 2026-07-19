@@ -221,7 +221,7 @@ impl QueryEngineDeps {
                 }
             }
         }
-        client.messages_stream(request).await
+        client.messages_stream_once(request).await
     }
     pub(crate) async fn refresh_tools_impl(&self) -> Result<Tools> {
         let Some(manager) = allthecodes_mcp::runtime::current_manager() else {

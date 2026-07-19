@@ -191,6 +191,10 @@ pub struct PreservedSegment {
 pub struct ApiErrorInfo {
     pub status: Option<u16>,
     pub message: String,
+    pub phase: Option<String>,
+    pub category: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
 }
 
 /// 系统消息
@@ -329,6 +333,8 @@ pub struct RequestStartEvent {
     pub attempt: u32,
     /// Whether this request is a retry/fallback attempt.
     pub is_retry: bool,
+    /// Recovery phase for this attempt: request, stream, or fallback.
+    pub retry_phase: Option<String>,
 }
 
 /// query() 产出的所有事件类型

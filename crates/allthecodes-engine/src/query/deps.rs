@@ -188,6 +188,16 @@ pub trait QueryDeps: Send + Sync {
         None
     }
 
+    fn provider_recovery_policy(
+        &self,
+    ) -> Option<allthecodes_api::api::client::ProviderRecoveryPolicy> {
+        None
+    }
+
+    fn uses_codex_responses(&self) -> bool {
+        false
+    }
+
     /// Session identifier shared across all events in a session.
     fn session_id(&self) -> &str {
         ""

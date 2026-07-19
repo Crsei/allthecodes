@@ -21,6 +21,25 @@ struct EnvGuard {
     previous: Option<std::ffi::OsString>,
 }
 
+#[tokio::test]
+async fn retry_backoff_stops_when_submit_is_cancelled() {
+    let deps = Arc::new(MockDeps::new(vec![]));
+    let cancel_deps = deps.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        cancel_deps.aborted.store(true, Ordering::SeqCst);
+    });
+    let started = std::time::Instant::now();
+    assert!(
+        !super::super::super::recovery::cancellable_retry_sleep(
+            &(deps as Arc<dyn super::super::super::deps::QueryDeps>),
+            Duration::from_secs(1),
+        )
+        .await
+    );
+    assert!(started.elapsed() < Duration::from_millis(300));
+}
+
 impl EnvGuard {
     fn set(key: &'static str, value: impl AsRef<std::path::Path>) -> Self {
         let previous = std::env::var_os(key);
@@ -471,6 +490,50 @@ async fn test_empty_chunk_read_error_retries_same_model_once() {
 }
 
 #[tokio::test]
+async fn request_start_retry_uses_independent_budget_and_attempt_phase() {
+    let deps = Arc::new(
+        MockDeps::from_steps(vec![
+            MockStreamStep::Error("failed to send HTTP request: connection reset".to_string()),
+            MockStreamStep::Response(make_text_response("Recovered request")),
+        ])
+        .with_provider_recovery(
+            "openai-codex",
+            allthecodes_api::api::client::ProviderRecoveryPolicy {
+                request_max_retries: 1,
+                stream_max_retries: 0,
+                stream_idle_timeout: Duration::from_millis(100),
+                request_timeout: Duration::from_millis(100),
+            },
+        ),
+    );
+
+    let items: Vec<QueryYield> = query(
+        make_query_params(vec![make_user_message_for_test("Retry request")]),
+        deps,
+    )
+    .collect()
+    .await;
+
+    assert_eq!(request_start_count(&items), 2);
+    let starts = items
+        .iter()
+        .filter_map(|item| match item {
+            QueryYield::RequestStart(event) => Some(event),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!starts[0].is_retry);
+    assert_eq!(starts[1].retry_phase.as_deref(), Some("request"));
+    assert_eq!(starts[1].attempt, 2);
+    assert!(items.iter().any(|item| matches!(
+        item,
+        QueryYield::Message(Message::System(system))
+            if matches!(&system.subtype, crate::types::message::SystemSubtype::ApiError { error, .. }
+                if error.phase.as_deref() == Some("request"))
+    )));
+}
+
+#[tokio::test]
 async fn test_chunk_error_after_partial_tool_use_is_not_retried() {
     let deps = Arc::new(MockDeps::from_steps(vec![MockStreamStep::Events(vec![
         Ok(StreamEvent::MessageStart {
@@ -627,15 +690,6 @@ async fn test_delayed_progress_after_stall_threshold_is_accepted() {
                 })
         )
     }));
-}
-
-#[test]
-fn test_message_start_counts_as_stream_progress() {
-    assert!(super::super::super::recovery::is_stream_progress_event(
-        &StreamEvent::MessageStart {
-            usage: Usage::default(),
-        }
-    ));
 }
 
 #[tokio::test]

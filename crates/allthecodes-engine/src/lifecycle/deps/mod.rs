@@ -314,6 +314,20 @@ impl QueryDeps for QueryEngineDeps {
             .map(|client| client.langfuse_provider_name().to_string())
     }
 
+    fn provider_recovery_policy(
+        &self,
+    ) -> Option<allthecodes_api::api::client::ProviderRecoveryPolicy> {
+        self.api_client
+            .as_ref()
+            .map(|client| client.recovery_policy())
+    }
+
+    fn uses_codex_responses(&self) -> bool {
+        self.api_client
+            .as_ref()
+            .is_some_and(|client| client.uses_codex_responses())
+    }
+
     fn session_id(&self) -> &str {
         &self.session_id
     }

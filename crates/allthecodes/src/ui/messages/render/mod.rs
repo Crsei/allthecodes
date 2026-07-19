@@ -957,6 +957,10 @@ mod tests {
                 error: ApiErrorInfo {
                     status: Some(403),
                     message: "Provider proxy error (HTTP 403): forbidden".to_string(),
+                    phase: None,
+                    category: None,
+                    provider: None,
+                    model: None,
                 },
             },
             content: String::new(),

@@ -22,6 +22,7 @@
 ///     7. ATTACHMENTS -- inject file changes, memory, skill discovery
 ///     8. CONTINUE -- refresh tools, check maxTurns, state = next
 ///   }
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_stream::stream;
@@ -39,8 +40,9 @@ use allthecodes_types::agent_runtime_record::{compute_digest, AgentRuntimeExecut
 use crate::types::config::QueryParams;
 use crate::types::message::QueryYield;
 use crate::types::message::{
-    AssistantMessage, Attachment, AttachmentMessage, ContentBlock, Message, RequestStartEvent,
-    StreamEvent, TombstoneMessage, ToolUseSummaryMessage, Usage, UserMessage,
+    ApiErrorInfo, AssistantMessage, Attachment, AttachmentMessage, ContentBlock, Message,
+    RequestStartEvent, StreamEvent, SystemMessage, SystemSubtype, TombstoneMessage,
+    ToolUseSummaryMessage, Usage, UserMessage,
 };
 use crate::types::state::{BudgetTracker, TokenBudgetDecision};
 use crate::types::transitions::Continue;
@@ -57,9 +59,10 @@ use super::loop_helpers::{
     StreamingToolExecutor,
 };
 use super::recovery::{
-    classify_model_call_failure, handle_max_output_tokens, handle_prompt_too_long,
-    is_retryable_stream_interruption, is_stream_progress_event, stream_idle_timeout,
-    stream_stall_timeout, strip_fallback_signature_blocks, MaxTokensRecovery,
+    cancellable_retry_sleep, classify_model_call_failure, handle_max_output_tokens,
+    handle_prompt_too_long, is_retryable_stream_interruption, recovery_delay, request_retry_limit,
+    retryable_stream_failure, stream_failure_category, stream_idle_timeout, stream_retry_limit,
+    strip_fallback_signature_blocks, typed_provider_error, typed_stream_failure, MaxTokensRecovery,
     ModelCallFailureRecovery, ModelCallFailureStage, PromptRecovery,
 };
 use super::stop_hooks::{self, StopHookResult};
@@ -90,6 +93,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
         let mut budget_tracker = BudgetTracker::new();
         let mut goal_continuation_scheduler = GoalContinuationScheduler::default();
         let mut cumulative_usage = Usage::default();
+        let mut executed_tool_use_ids = HashSet::new();
         let verification_id = turn_context
             .verification
             .policy
@@ -174,6 +178,12 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             let provider_for_langfuse = deps
                 .langfuse_provider_name()
                 .unwrap_or_else(|| "unknown".to_string());
+            let is_codex_responses = deps.uses_codex_responses();
+            let provider_for_recovery = if is_codex_responses {
+                "openai-codex".to_string()
+            } else {
+                provider_for_langfuse.clone()
+            };
             let generation_input = crate::services::langfuse::convert::convert_generation_input(
                 &call_params.messages,
                 &call_params.system_prompt,
@@ -181,8 +191,11 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             );
             let mut attempt_params = call_params.clone();
             let mut fallback_used = false;
-            let mut retry_count = 0_u32;
-            let mut empty_stream_retry_used = false;
+            let mut request_retry_count = 0_u32;
+            let mut stream_retry_count = 0_u32;
+            let mut fallback_count = 0_u32;
+            let mut last_retry_phase: Option<String> = None;
+            let recovery_policy = deps.provider_recovery_policy();
 
             use futures::StreamExt;
             let (assistant_message, streaming_tool_executor, runtime_record_turn_context) = loop {
@@ -195,11 +208,17 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     submit_id: req_audit_ctx.submit_id.clone(),
                     turn_id: req_audit_ctx.turn_id.clone(),
                     request_id: req_audit_ctx.request_id.clone(),
-                    provider: Some(provider_for_langfuse.clone()),
+                    provider: Some(provider_for_recovery.clone()),
                     backend: None,
                     model: Some(attempt_model.clone()),
-                    attempt: retry_count.saturating_add(1),
-                    is_retry: fallback_used || retry_count > 0,
+                    attempt: request_retry_count
+                        .saturating_add(stream_retry_count)
+                        .saturating_add(fallback_count)
+                        .saturating_add(1),
+                    is_retry: request_retry_count > 0
+                        || stream_retry_count > 0
+                        || fallback_count > 0,
+                    retry_phase: last_retry_phase.clone(),
                 });
 
                 let mut generation_span = deps.langfuse_trace().as_ref().and_then(|trace| {
@@ -255,6 +274,42 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             &attempt_model,
                             &error_str,
                         );
+
+                        let request_category =
+                            allthecodes_api::api::retry::categorize_stream_start_error(&error_str);
+                        let request_retry_max = request_retry_limit(recovery_policy);
+                        if request_category.is_retryable()
+                            && (request_retry_count as usize) < request_retry_max
+                            && !deps.is_aborted()
+                        {
+                            let delay = recovery_delay(Some(&e), request_retry_count as usize);
+                            let next_attempt = request_retry_count.saturating_add(1);
+                            yield QueryYield::Message(Message::System(SystemMessage {
+                                uuid: Uuid::new_v4(),
+                                timestamp: chrono::Utc::now().timestamp_millis(),
+                                subtype: SystemSubtype::ApiError {
+                                    retry_attempt: next_attempt,
+                                    max_retries: request_retry_max as u32,
+                                    retry_in_ms: delay.as_millis() as u64,
+                                    error: ApiErrorInfo {
+                                        status: typed_provider_error(&e)
+                                            .and_then(|failure| failure.status),
+                                        message: format!("Retrying ({next_attempt}/{request_retry_max}) after request-start failure: {error_str}"),
+                                        phase: Some("request".to_string()),
+                                        category: Some(format!("{request_category:?}").to_ascii_lowercase()),
+                                        provider: Some(provider_for_recovery.clone()),
+                                        model: Some(attempt_model.clone()),
+                                    },
+                                },
+                                content: format!("Retrying ({next_attempt}/{request_retry_max})..."),
+                            }));
+                            if !cancellable_retry_sleep(&deps, delay).await {
+                                break 'query_loop;
+                            }
+                            request_retry_count = next_attempt;
+                            last_retry_phase = Some("request".to_string());
+                            continue;
+                        }
 
                         if matches!(&recovery, ModelCallFailureRecovery::PromptTooLong) {
                             crate::lifecycle::set_proactive_context_blocked(
@@ -315,7 +370,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                                 );
 
                                 fallback_used = true;
-                                retry_count += 1;
+                                fallback_count = fallback_count.saturating_add(1);
+                                last_retry_phase = Some("fallback".to_string());
                                 attempt_params.messages =
                                     strip_fallback_signature_blocks(&attempt_params.messages);
                                 attempt_params.model = Some(fallback);
@@ -345,25 +401,26 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     api_error: None,
                     cost_usd: 0.0,
                 };
-                let mut streaming_tool_executor = turn_context
+                let mut streaming_tool_executor = (turn_context
                     .gates
                     .streaming_tool_execution
+                    && !is_codex_responses)
                     .then(StreamingToolExecutor::new);
-                let mut stream_error: Option<String> = None;
+                let mut stream_error: Option<anyhow::Error> = None;
                 let mut first_response_at: Option<std::time::Instant> = None;
-                let idle_timeout = stream_idle_timeout();
-                let stall_timeout = stream_stall_timeout();
-                let mut last_progress_at = std::time::Instant::now();
+                let idle_timeout = stream_idle_timeout(recovery_policy);
 
                 loop {
-                    let event_result = match tokio::time::timeout(
-                        idle_timeout,
-                        event_stream.next(),
-                    ).await {
+                    let next_event = if is_codex_responses {
+                        Ok(event_stream.next().await)
+                    } else {
+                        tokio::time::timeout(idle_timeout, event_stream.next()).await
+                    };
+                    let event_result = match next_event {
                         Ok(Some(event_result)) => event_result,
                         Ok(None) => break,
                         Err(_) => {
-                            stream_error = Some(format!(
+                            stream_error = Some(anyhow::anyhow!(
                                 "stream idle timeout after {}ms",
                                 idle_timeout.as_millis()
                             ));
@@ -374,19 +431,6 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     match event_result {
                         Ok(event) => {
                             let now = std::time::Instant::now();
-                            if is_stream_progress_event(&event) {
-                                last_progress_at = now;
-                            } else {
-                                let stalled_for = now.duration_since(last_progress_at);
-                                if stalled_for > stall_timeout {
-                                    stream_error = Some(format!(
-                                        "stream stalled for {}ms without progress",
-                                        stalled_for.as_millis()
-                                    ));
-                                    break;
-                                }
-                            }
-
                             if first_response_at.is_none()
                                 && matches!(
                                     &event,
@@ -424,16 +468,22 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             yield QueryYield::Stream(event);
                         }
                         Err(e) => {
-                            stream_error = Some(format!("{e:#}"));
+                            stream_error = Some(e);
                             break;
                         }
                     }
                 }
 
-                if stream_error.as_deref().is_some_and(|err| {
-                    should_accept_partial_response_after_chunk_read_error(err, &accumulator)
+                if !is_codex_responses && stream_error.as_ref().is_some_and(|error| {
+                    should_accept_partial_response_after_chunk_read_error(
+                        &format!("{error:#}"),
+                        &accumulator,
+                    )
                 }) {
-                    let err = stream_error.take().unwrap_or_default();
+                    let err = stream_error
+                        .take()
+                        .map(|error| format!("{error:#}"))
+                        .unwrap_or_default();
                     warn!(
                         error = %err,
                         "stream ended with a chunk read error after text content; accepting partial assistant response"
@@ -443,7 +493,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     }
                 }
 
-                if let Some(ref err) = stream_error {
+                if let Some(ref error) = stream_error {
+                    let err = format!("{error:#}");
                     if let Some(executor) = streaming_tool_executor.take() {
                         executor.abort();
                     }
@@ -455,7 +506,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         None,
                         None,
                         ttft_ms,
-                        Some(err),
+                        Some(&err),
                     );
                     warn!(error = %err, "stream error during model call");
                     {
@@ -474,20 +525,54 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         ModelCallFailureStage::StreamInterrupted,
                         turn_context.fallback_model.as_deref(),
                         &attempt_model,
-                        err,
+                        &err,
                     );
 
-                    if !empty_stream_retry_used
-                        && is_retryable_stream_interruption(err)
-                        && stream_attempt_is_empty(&accumulator)
+                    let stream_retry_max = stream_retry_limit(recovery_policy, is_codex_responses);
+                    if retryable_stream_failure(error)
+                        && (is_codex_responses || accumulator.content_blocks.is_empty())
+                        && (stream_retry_count as usize) < stream_retry_max
+                        && !deps.is_aborted()
                     {
+                        let tombstone_message = accumulator.build(&attempt_model);
+                        if !tombstone_message.content.is_empty() {
+                            yield QueryYield::Tombstone(TombstoneMessage {
+                                message: tombstone_message,
+                            });
+                        }
+                        let delay = recovery_delay(Some(error), stream_retry_count as usize);
+                        let next_attempt = stream_retry_count.saturating_add(1);
+                        let category = stream_failure_category(error);
                         warn!(
                             error = %err,
                             model = %attempt_model,
-                            "stream failed before assistant content; retrying the same model once"
+                            attempt = next_attempt,
+                            max_retries = stream_retry_max,
+                            "stream interrupted; reconnecting the same model"
                         );
-                        empty_stream_retry_used = true;
-                        retry_count += 1;
+                        yield QueryYield::Message(Message::System(SystemMessage {
+                            uuid: Uuid::new_v4(),
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                            subtype: SystemSubtype::ApiError {
+                                retry_attempt: next_attempt,
+                                max_retries: stream_retry_max as u32,
+                                retry_in_ms: delay.as_millis() as u64,
+                                error: ApiErrorInfo {
+                                    status: typed_stream_failure(error).and_then(|failure| failure.status),
+                                    message: format!("Reconnecting ({next_attempt}/{stream_retry_max}) after {category}: {err}"),
+                                    phase: Some("stream".to_string()),
+                                    category: Some(category),
+                                    provider: Some(provider_for_recovery.clone()),
+                                    model: Some(attempt_model.clone()),
+                                },
+                            },
+                            content: format!("Reconnecting ({next_attempt}/{stream_retry_max})..."),
+                        }));
+                        if !cancellable_retry_sleep(&deps, delay).await {
+                            break 'query_loop;
+                        }
+                        stream_retry_count = next_attempt;
+                        last_retry_phase = Some("stream".to_string());
                         continue;
                     }
 
@@ -508,7 +593,8 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             );
 
                             fallback_used = true;
-                            retry_count += 1;
+                            fallback_count = fallback_count.saturating_add(1);
+                            last_retry_phase = Some("fallback".to_string());
                             attempt_params.messages =
                                 strip_fallback_signature_blocks(&attempt_params.messages);
                             attempt_params.model = Some(fallback);
@@ -516,8 +602,21 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         }
                     }
 
+                    let category = stream_failure_category(error);
+                    let final_error = format!(
+                        "provider={} model={} attempt={} elapsed_ms={} category={}: {}",
+                        provider_for_recovery,
+                        attempt_model,
+                        request_retry_count
+                            .saturating_add(stream_retry_count)
+                            .saturating_add(fallback_count)
+                            .saturating_add(1),
+                        model_call_start.elapsed().as_millis(),
+                        category,
+                        err
+                    );
                     yield QueryYield::Message(Message::Assistant(
-                        make_error_message(&deps, err),
+                        make_error_message(&deps, &final_error),
                     ));
                     break 'query_loop;
                 }
@@ -559,7 +658,9 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     RuntimeRecordTurnContext {
                         model: Some(attempt_model),
                         fallback_used,
-                        retry_count,
+                        retry_count: request_retry_count
+                            .saturating_add(stream_retry_count)
+                            .saturating_add(fallback_count),
                     },
                 );
             };
@@ -892,6 +993,29 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             } else {
                 // STEP 6: TOOL EXECUTION
 
+                if is_codex_responses {
+                    let mut attempt_tool_ids = HashSet::new();
+                    let duplicate = tool_uses.iter().find_map(|(tool_use_id, _, _)| {
+                        if !attempt_tool_ids.insert(tool_use_id.clone())
+                            || executed_tool_use_ids.contains(tool_use_id)
+                        {
+                            Some(tool_use_id.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(tool_use_id) = duplicate {
+                        yield QueryYield::Message(Message::Assistant(make_error_message(
+                            &deps,
+                            &format!(
+                                "duplicate Codex tool_use_id `{tool_use_id}`; refusing a second execution"
+                            ),
+                        )));
+                        break 'query_loop;
+                    }
+                    executed_tool_use_ids.extend(attempt_tool_ids);
+                }
+
                 let tool_results = if let Some(executor) = streaming_tool_executor {
                     let streamed = executor.finish().await;
                     let remaining_tool_uses = tool_uses
@@ -1137,12 +1261,6 @@ fn should_accept_partial_response_after_chunk_read_error(
     });
 
     has_text && !has_tool_use
-}
-
-fn stream_attempt_is_empty(
-    accumulator: &allthecodes_api::api::streaming::StreamAccumulator,
-) -> bool {
-    accumulator.content_blocks.is_empty()
 }
 
 async fn record_verification_finished(

@@ -383,6 +383,11 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
 
         SdkMessage::StreamEvent(sdk_stream) => {
             match sdk_stream.event {
+                StreamEvent::MessageStart { .. } => {
+                    // A retry notification temporarily replaces the normal spinner text.
+                    // Restore it as soon as the replacement stream is established.
+                    app.set_spinner_message("Thinking...".to_string());
+                }
                 StreamEvent::ContentBlockStart {
                     index,
                     content_block,
@@ -590,9 +595,14 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
         }
 
         SdkMessage::ApiRetry(retry) => {
+            let action = if retry.phase.as_deref() == Some("stream") {
+                "Reconnecting"
+            } else {
+                "Retrying"
+            };
             app.set_spinner_message(format!(
-                "Retrying ({}/{})...",
-                retry.attempt, retry.max_retries
+                "{} ({}/{})...",
+                action, retry.attempt, retry.max_retries
             ));
         }
 

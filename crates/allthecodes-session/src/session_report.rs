@@ -40,6 +40,8 @@ pub struct SessionReportV1 {
     pub risk_events: Vec<RiskEventSummary>,
     pub unverified_assumptions: Vec<String>,
     pub cost: Option<SessionCostReportSummary>,
+    #[serde(default)]
+    pub recovery: RecoverySummary,
     pub human_review_required: bool,
     pub reviewed_by_human: bool,
     pub record_head_digest: String,
@@ -81,6 +83,13 @@ pub struct SessionCostReportSummary {
     pub backfilled_count: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoverySummary {
+    pub request_retries: u64,
+    pub stream_retries: u64,
+    pub model_fallbacks: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionReportOptions {
     pub human_initiator: Option<String>,
@@ -111,6 +120,7 @@ pub fn project_session_report(
     let mut security_decisions = Vec::new();
     let mut has_security_evidence = false;
     let mut recorded_changed_files = Vec::new();
+    let mut recovery = RecoverySummary::default();
 
     for line in lines {
         match &line.item {
@@ -159,6 +169,18 @@ pub fn project_session_report(
                     recorded_changed_files.push(path.clone());
                 }
             }
+            RecordItem::QueryEvent(
+                crate::record_replay::types::QueryEventRecord::RequestStart {
+                    is_retry: true,
+                    retry_phase,
+                    ..
+                },
+            ) => match retry_phase.as_deref() {
+                Some("request") => recovery.request_retries += 1,
+                Some("stream") => recovery.stream_retries += 1,
+                Some("fallback") => recovery.model_fallbacks += 1,
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -242,6 +264,7 @@ pub fn project_session_report(
         risk_events,
         unverified_assumptions: assumptions,
         cost: options.cost,
+        recovery,
         human_review_required,
         reviewed_by_human: false,
         record_head_digest: record_head_digest(lines),

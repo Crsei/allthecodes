@@ -66,6 +66,8 @@ pub struct MockDeps {
     pub tool_result_override: parking_lot::Mutex<Option<ToolExecResult>>,
     pub agent_events: parking_lot::Mutex<Vec<AgentEvent>>,
     pub verification_incomplete: parking_lot::Mutex<Option<String>>,
+    pub provider_name: Option<String>,
+    pub recovery_policy: Option<allthecodes_api::api::client::ProviderRecoveryPolicy>,
 }
 
 impl MockDeps {
@@ -112,6 +114,8 @@ impl MockDeps {
             tool_result_override: parking_lot::Mutex::new(None),
             agent_events: parking_lot::Mutex::new(Vec::new()),
             verification_incomplete: parking_lot::Mutex::new(None),
+            provider_name: None,
+            recovery_policy: None,
         }
     }
 
@@ -132,6 +136,16 @@ impl MockDeps {
 
     pub fn with_app_state(self, app_state: AppState) -> Self {
         *self.app_state.lock() = app_state;
+        self
+    }
+
+    pub fn with_provider_recovery(
+        mut self,
+        provider_name: &str,
+        recovery_policy: allthecodes_api::api::client::ProviderRecoveryPolicy,
+    ) -> Self {
+        self.provider_name = Some(provider_name.to_string());
+        self.recovery_policy = Some(recovery_policy);
         self
     }
 
@@ -389,6 +403,22 @@ impl QueryDeps for MockDeps {
 
     fn audit_context(&self) -> allthecodes_observability::AuditContext {
         allthecodes_observability::AuditContext::noop(self.audit_session_id.lock().clone())
+    }
+
+    fn langfuse_provider_name(&self) -> Option<String> {
+        self.provider_name.clone()
+    }
+
+    fn provider_recovery_policy(
+        &self,
+    ) -> Option<allthecodes_api::api::client::ProviderRecoveryPolicy> {
+        self.recovery_policy
+    }
+
+    fn uses_codex_responses(&self) -> bool {
+        self.provider_name
+            .as_deref()
+            .is_some_and(|provider| provider.eq_ignore_ascii_case("openai-codex"))
     }
 
     fn session_id(&self) -> &str {

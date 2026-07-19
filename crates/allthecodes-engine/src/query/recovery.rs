@@ -5,6 +5,9 @@ use std::time::Duration;
 
 use tracing::{debug, warn};
 
+use allthecodes_api::api::provider_runtime::{ProviderError, ProviderStreamFailure};
+use allthecodes_api::api::retry::{retry_delay, RetryConfig};
+
 use crate::types::message::{AssistantMessage, ContentBlock, Message, StreamEvent};
 use crate::types::state::QueryLoopState;
 use crate::types::transitions::Continue;
@@ -16,11 +19,6 @@ use super::loop_helpers::make_user_message;
 const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
 #[cfg(not(test))]
 const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-
-#[cfg(test)]
-const DEFAULT_STREAM_STALL_TIMEOUT: Duration = Duration::from_millis(25);
-#[cfg(not(test))]
-const DEFAULT_STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Maximum number of max_output_tokens recovery attempts.
 pub(crate) const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT: usize = 3;
@@ -129,16 +127,28 @@ fn is_recoverable_model_capacity_error(error: &str) -> bool {
         || lower.contains("capacity")
 }
 
-pub(crate) fn stream_idle_timeout() -> Duration {
+pub(crate) fn stream_idle_timeout(
+    policy: Option<allthecodes_api::api::client::ProviderRecoveryPolicy>,
+) -> Duration {
     duration_from_env("ALLTHECODES_STREAM_IDLE_TIMEOUT_MS")
         .or_else(|| duration_from_env("CC_RUST_STREAM_IDLE_TIMEOUT_MS"))
+        .or_else(|| policy.map(|policy| policy.stream_idle_timeout))
         .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT)
 }
 
-pub(crate) fn stream_stall_timeout() -> Duration {
-    duration_from_env("ALLTHECODES_STREAM_STALL_TIMEOUT_MS")
-        .or_else(|| duration_from_env("CC_RUST_STREAM_STALL_TIMEOUT_MS"))
-        .unwrap_or(DEFAULT_STREAM_STALL_TIMEOUT)
+pub(crate) fn stream_retry_limit(
+    policy: Option<allthecodes_api::api::client::ProviderRecoveryPolicy>,
+    is_codex: bool,
+) -> usize {
+    policy
+        .map(|policy| policy.stream_max_retries)
+        .unwrap_or_else(|| if is_codex { 5 } else { 1 })
+}
+
+pub(crate) fn request_retry_limit(
+    policy: Option<allthecodes_api::api::client::ProviderRecoveryPolicy>,
+) -> usize {
+    policy.map(|policy| policy.request_max_retries).unwrap_or(0)
 }
 
 fn duration_from_env(name: &str) -> Option<Duration> {
@@ -150,18 +160,6 @@ fn duration_from_env(name: &str) -> Option<Duration> {
     Some(Duration::from_millis(millis))
 }
 
-pub(crate) fn is_stream_progress_event(event: &StreamEvent) -> bool {
-    matches!(
-        event,
-        StreamEvent::MessageStart { .. }
-            | StreamEvent::ContentBlockStart { .. }
-            | StreamEvent::ContentBlockDelta { .. }
-            | StreamEvent::ContentBlockStop { .. }
-            | StreamEvent::MessageDelta { .. }
-            | StreamEvent::MessageStop
-    )
-}
-
 /// Transport interruptions that are safe to retry only when the current
 /// attempt has not produced assistant content or a tool call.
 pub(crate) fn is_retryable_stream_interruption(error: &str) -> bool {
@@ -169,6 +167,62 @@ pub(crate) fn is_retryable_stream_interruption(error: &str) -> bool {
     (lower.contains("error reading") && lower.contains("response chunk"))
         || lower.contains("stream idle timeout")
         || lower.contains("stream stalled")
+        || lower.contains("incompleteresponse")
+        || lower.contains("idle_timeout")
+}
+
+pub(crate) fn typed_stream_failure(error: &anyhow::Error) -> Option<&ProviderStreamFailure> {
+    error.downcast_ref::<ProviderStreamFailure>()
+}
+
+pub(crate) fn typed_provider_error(error: &anyhow::Error) -> Option<&ProviderError> {
+    error.downcast_ref::<ProviderError>()
+}
+
+pub(crate) fn stream_failure_category(error: &anyhow::Error) -> String {
+    typed_stream_failure(error)
+        .map(|failure| format!("{:?}", failure.category).to_ascii_lowercase())
+        .unwrap_or_else(|| "transport".to_string())
+}
+
+pub(crate) fn retryable_stream_failure(error: &anyhow::Error) -> bool {
+    typed_stream_failure(error)
+        .map(ProviderStreamFailure::is_retryable)
+        .unwrap_or_else(|| is_retryable_stream_interruption(&format!("{error:#}")))
+}
+
+pub(crate) fn recovery_delay(error: Option<&anyhow::Error>, attempt: usize) -> Duration {
+    if let Some(delay) = error.and_then(|error| {
+        typed_stream_failure(error)
+            .and_then(|failure| failure.retry_after_ms)
+            .or_else(|| typed_provider_error(error).and_then(|failure| failure.retry_after_ms))
+    }) {
+        return Duration::from_millis(delay);
+    }
+    #[cfg(test)]
+    let config = {
+        let mut config = RetryConfig::default();
+        config.initial_delay_ms = 1;
+        config.max_delay_ms = 10;
+        config
+    };
+    #[cfg(not(test))]
+    let config = RetryConfig::default();
+    retry_delay(&config, attempt)
+}
+
+pub(crate) async fn cancellable_retry_sleep(deps: &Arc<dyn QueryDeps>, duration: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + duration;
+    loop {
+        if deps.is_aborted() {
+            return false;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        tokio::time::sleep((deadline - now).min(Duration::from_millis(100))).await;
+    }
 }
 
 /// Handle prompt_too_long error recovery.

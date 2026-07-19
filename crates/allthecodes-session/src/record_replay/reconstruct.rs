@@ -373,6 +373,10 @@ fn recorded_system_subtype_to_typed(subtype: &RecordedSystemSubtype) -> SystemSu
             error: allthecodes_types::message::ApiErrorInfo {
                 status: error.status,
                 message: error.message.clone(),
+                phase: error.phase.clone(),
+                category: error.category.clone(),
+                provider: error.provider.clone(),
+                model: error.model.clone(),
             },
         },
         RecordedSystemSubtype::Informational { level } => {

@@ -168,6 +168,14 @@ pub struct SdkApiRetry {
     pub retry_delay_ms: u64,
     pub error_status: Option<u16>,
     pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub session_id: String,
     pub uuid: Uuid,
 }

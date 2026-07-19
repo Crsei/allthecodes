@@ -347,6 +347,169 @@ async fn streaming_tool_execution_gate_starts_safe_tools_before_message_stop() {
     assert_eq!(request_start_count(&items), 2);
 }
 
+fn codex_test_recovery_policy(
+    stream_max_retries: usize,
+) -> allthecodes_api::api::client::ProviderRecoveryPolicy {
+    allthecodes_api::api::client::ProviderRecoveryPolicy {
+        request_max_retries: 0,
+        stream_max_retries,
+        stream_idle_timeout: Duration::from_millis(100),
+        request_timeout: Duration::from_millis(100),
+    }
+}
+
+fn codex_tool_events(include_stop: bool) -> Vec<(Duration, Result<StreamEvent, String>)> {
+    let mut events = vec![
+        (
+            Duration::ZERO,
+            Ok(StreamEvent::MessageStart {
+                usage: Usage::default(),
+            }),
+        ),
+        (
+            Duration::ZERO,
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlock::ToolUse {
+                    id: "codex_tool_1".to_string(),
+                    name: "SafeTool".to_string(),
+                    input: serde_json::json!({}),
+                },
+            }),
+        ),
+        (
+            Duration::ZERO,
+            Ok(StreamEvent::ContentBlockStop { index: 0 }),
+        ),
+    ];
+    if include_stop {
+        events.push((
+            Duration::from_millis(5),
+            Ok(StreamEvent::MessageDelta {
+                delta: crate::types::message::MessageDelta {
+                    stop_reason: Some("tool_use".to_string()),
+                },
+                usage: Some(Usage::default()),
+            }),
+        ));
+        events.push((Duration::ZERO, Ok(StreamEvent::MessageStop)));
+    }
+    events
+}
+
+#[tokio::test]
+async fn codex_completion_barrier_defers_tools_until_message_stop() {
+    let tools: Tools = vec![Arc::new(LoopTestTool {
+        name: "SafeTool",
+        concurrency_safe: true,
+    })];
+    let deps = Arc::new(
+        MockDeps::from_steps(vec![
+            MockStreamStep::DelayedEvents(codex_tool_events(true)),
+            MockStreamStep::Response(make_text_response("tool complete")),
+        ])
+        .with_tools(tools)
+        .with_provider_recovery("openai-codex", codex_test_recovery_policy(1)),
+    );
+    let mut params = make_query_params(vec![make_user_message_for_test("run tool")]);
+    params.gates.streaming_tool_execution = true;
+    params.gates.deferred_tool_loading = false;
+
+    let _items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+
+    assert!(!deps
+        .tool_executed_before_stream_finished
+        .load(Ordering::SeqCst));
+    assert_eq!(deps.tool_execution_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn codex_interrupted_tool_attempt_is_tombstoned_and_executes_once_after_retry() {
+    let mut interrupted = codex_tool_events(false);
+    interrupted.push((
+        Duration::ZERO,
+        Err("error reading OpenAI response chunk: connection reset".to_string()),
+    ));
+    let tools: Tools = vec![Arc::new(LoopTestTool {
+        name: "SafeTool",
+        concurrency_safe: true,
+    })];
+    let deps = Arc::new(
+        MockDeps::from_steps(vec![
+            MockStreamStep::DelayedEvents(interrupted),
+            MockStreamStep::DelayedEvents(codex_tool_events(true)),
+            MockStreamStep::Response(make_text_response("tool complete after retry")),
+        ])
+        .with_tools(tools)
+        .with_provider_recovery("openai-codex", codex_test_recovery_policy(1)),
+    );
+    let mut params = make_query_params(vec![make_user_message_for_test("run tool")]);
+    params.gates.streaming_tool_execution = true;
+    params.gates.deferred_tool_loading = false;
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+
+    assert!(items
+        .iter()
+        .any(|item| matches!(item, QueryYield::Tombstone(_))));
+    assert!(!deps
+        .tool_executed_before_stream_finished
+        .load(Ordering::SeqCst));
+    assert_eq!(deps.tool_execution_count.load(Ordering::SeqCst), 1);
+    assert_eq!(request_start_count(&items), 3);
+}
+
+#[tokio::test]
+async fn codex_duplicate_tool_use_id_is_rejected_before_execution() {
+    let duplicate_response = ModelResponse {
+        assistant_message: AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "codex_duplicate".to_string(),
+                    name: "SafeTool".to_string(),
+                    input: serde_json::json!({"call": 1}),
+                },
+                ContentBlock::ToolUse {
+                    id: "codex_duplicate".to_string(),
+                    name: "SafeTool".to_string(),
+                    input: serde_json::json!({"call": 2}),
+                },
+            ],
+            usage: Some(Usage::default()),
+            stop_reason: Some("tool_use".to_string()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        },
+        stream_events: vec![],
+        usage: Usage::default(),
+    };
+    let deps = Arc::new(
+        MockDeps::new(vec![duplicate_response])
+            .with_tools(vec![Arc::new(LoopTestTool {
+                name: "SafeTool",
+                concurrency_safe: true,
+            })])
+            .with_provider_recovery("openai-codex", codex_test_recovery_policy(1)),
+    );
+
+    let items: Vec<QueryYield> = query(
+        make_query_params(vec![make_user_message_for_test("run duplicate tools")]),
+        deps.clone(),
+    )
+    .collect()
+    .await;
+
+    assert_eq!(deps.tool_execution_count.load(Ordering::SeqCst), 0);
+    assert!(has_api_error_containing(
+        &items,
+        "duplicate Codex tool_use_id"
+    ));
+}
+
 #[tokio::test]
 async fn streaming_tool_execution_aborts_started_tools_on_stream_fallback() {
     let events = vec![

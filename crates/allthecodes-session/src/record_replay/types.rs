@@ -217,6 +217,12 @@ pub enum QueryEventRecord {
         provider: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        #[serde(default = "default_request_attempt")]
+        attempt: u32,
+        #[serde(default)]
+        is_retry: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_phase: Option<String>,
     },
     RawStream {
         event: serde_json::Value,
@@ -522,6 +528,14 @@ pub struct RecordedApiErrorInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<u16>,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl From<&ApiErrorInfo> for RecordedApiErrorInfo {
@@ -529,8 +543,16 @@ impl From<&ApiErrorInfo> for RecordedApiErrorInfo {
         Self {
             status: error.status,
             message: error.message.clone(),
+            phase: error.phase.clone(),
+            category: error.category.clone(),
+            provider: error.provider.clone(),
+            model: error.model.clone(),
         }
     }
+}
+
+fn default_request_attempt() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -821,6 +843,9 @@ mod tests {
                 RecordItem::QueryEvent(QueryEventRecord::RequestStart {
                     provider: Some("anthropic".into()),
                     model: Some("claude-4".into()),
+                    attempt: 1,
+                    is_retry: false,
+                    retry_phase: None,
                 }),
             ),
             (

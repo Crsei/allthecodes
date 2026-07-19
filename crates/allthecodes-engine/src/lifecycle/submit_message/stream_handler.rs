@@ -81,6 +81,9 @@ impl QueryTurnEvent {
                         .model
                         .clone()
                         .or_else(|| Some(model_name.to_string())),
+                    attempt: request_start.attempt.max(1),
+                    is_retry: request_start.is_retry,
+                    retry_phase: request_start.retry_phase.clone(),
                 })]
             }
             _ => Vec::new(),
@@ -704,16 +707,16 @@ fn handle_system_message(
             error,
         } => {
             let mut transaction = SubmitTransaction::new();
-            transaction.append_message(Message::System(system_msg.clone()));
-
-            ctx.submit_turn.collected_errors.push(error.message.clone());
-
             transaction.emit(SdkMessage::ApiRetry(SdkApiRetry {
                 attempt: *retry_attempt,
                 max_retries: *max_retries,
                 retry_delay_ms: *retry_in_ms,
                 error_status: error.status,
                 error: error.message.clone(),
+                phase: error.phase.clone(),
+                category: error.category.clone(),
+                provider: error.provider.clone(),
+                model: error.model.clone(),
                 session_id: ctx.session_id.to_string(),
                 uuid: system_msg.uuid,
             }));
@@ -1288,6 +1291,9 @@ mod tests {
                 crate::session::record_replay::types::QueryEventRecord::RequestStart {
                     provider: Some(provider),
                     model: Some(model),
+                    attempt: 1,
+                    is_retry: false,
+                    retry_phase: None,
                 },
             )] if provider == "anthropic" && model == "claude-test"
         ));
