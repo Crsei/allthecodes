@@ -440,7 +440,6 @@ pub struct ApiClient {
     /// terminate healthy long-lived SSE responses after `timeout_secs`.
     pub stream_http: reqwest::Client,
     pub stream_provider: Box<dyn crate::api::stream_provider::StreamProvider>,
-    pub recovery_policy: ProviderRecoveryPolicy,
 }
 
 #[cfg(test)]

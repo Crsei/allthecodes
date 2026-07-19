@@ -1726,8 +1726,10 @@ fn provider_recovery_policy_schema_and_validation_share_bounds() {
 
 #[test]
 fn active_profile_projects_recovery_policy_into_effective_settings() {
-    let mut effective = EffectiveSettings::default();
-    effective.active_auth_profile = Some("codex".to_string());
+    let mut effective = EffectiveSettings {
+        active_auth_profile: Some("codex".to_string()),
+        ..Default::default()
+    };
     effective.auth_profiles.insert(
         "codex".to_string(),
         ProviderProfileSettings {

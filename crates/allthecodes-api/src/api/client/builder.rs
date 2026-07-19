@@ -265,11 +265,7 @@ fn resolve_recovery_policy(
         });
     }
 
-    use allthecodes_config::settings::{
-        validate_recovery_policy, CODEX_REQUEST_MAX_RETRIES_DEFAULT,
-        CODEX_REQUEST_TIMEOUT_MS_DEFAULT, CODEX_STREAM_IDLE_TIMEOUT_MS_DEFAULT,
-        CODEX_STREAM_MAX_RETRIES_DEFAULT,
-    };
+    use allthecodes_config::settings::validate_recovery_policy;
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let loaded = allthecodes_config::settings::load_effective(&cwd)?;
     if let Some(profile) = loaded
@@ -289,19 +285,21 @@ fn codex_policy_from_effective(
     ProviderRecoveryPolicy {
         request_max_retries: effective
             .request_max_retries
-            .unwrap_or(CODEX_REQUEST_MAX_RETRIES_DEFAULT) as usize,
+            .unwrap_or(allthecodes_config::settings::CODEX_REQUEST_MAX_RETRIES_DEFAULT)
+            as usize,
         stream_max_retries: effective
             .stream_max_retries
-            .unwrap_or(CODEX_STREAM_MAX_RETRIES_DEFAULT) as usize,
+            .unwrap_or(allthecodes_config::settings::CODEX_STREAM_MAX_RETRIES_DEFAULT)
+            as usize,
         stream_idle_timeout: std::time::Duration::from_millis(
             effective
                 .stream_idle_timeout_ms
-                .unwrap_or(CODEX_STREAM_IDLE_TIMEOUT_MS_DEFAULT),
+                .unwrap_or(allthecodes_config::settings::CODEX_STREAM_IDLE_TIMEOUT_MS_DEFAULT),
         ),
         request_timeout: std::time::Duration::from_millis(
             effective
                 .request_timeout_ms
-                .unwrap_or(CODEX_REQUEST_TIMEOUT_MS_DEFAULT),
+                .unwrap_or(allthecodes_config::settings::CODEX_REQUEST_TIMEOUT_MS_DEFAULT),
         ),
     }
 }
@@ -341,13 +339,20 @@ impl ApiClient {
             http: build_http_client(timeout, proxy.clone(), false, false),
             stream_http: build_http_client(timeout, proxy, true, codex_stream),
             stream_provider,
-            recovery_policy,
             config,
         })
     }
 
     pub fn recovery_policy(&self) -> ProviderRecoveryPolicy {
-        self.recovery_policy
+        self.config.recovery_policy.unwrap_or_else(|| {
+            let timeout = std::time::Duration::from_secs(self.config.timeout_secs);
+            ProviderRecoveryPolicy {
+                request_max_retries: self.config.max_retries,
+                stream_max_retries: 1,
+                stream_idle_timeout: timeout,
+                request_timeout: timeout,
+            }
+        })
     }
 
     /// Construct a new `ApiClient`, panicking on invalid config.
@@ -1111,7 +1116,7 @@ mod provider_profile_tests {
                 .expect("write final chunk");
         });
 
-        let client = build_http_client(std::time::Duration::from_secs(1), None, true);
+        let client = build_http_client(std::time::Duration::from_secs(1), None, true, false);
         let started = std::time::Instant::now();
         let response = client
             .get(format!("http://{address}/stream"))
