@@ -2,11 +2,15 @@
 
 日期：2026-07-19
 
-状态：Implemented
+状态：Active (Reopened)
 
-2026-07-20 复核：本文件是该问题的唯一权威计划。实施使用
+2026-07-20 复核：本文件是该问题的唯一权威计划。原始实施使用
 `worktree/codex-stream-recovery-cli-contract`，artifact 固定为
 `development/worktree-workflow-artifacts/2026-07-20-codex-stream-recovery-cli-contract.html`。
+后续工具状态、会话恢复和收尾卡死修复使用
+`worktree/codex-cli-session-tool-state-hardening`，artifact 固定为
+`development/worktree-workflow-artifacts/2026-07-20-codex-cli-session-tool-state-hardening.html`。不创建同主题
+sibling plan。
 
 ### 2026-07-20 实施记录
 
@@ -30,6 +34,24 @@ smoke 覆盖 positional、stdin、JSON stdin、空输入和 max-turns stderr。
 console/page/failed-request 全为 0；长流协议边界由缩放自动化和可控 SSE fixture 覆盖。完整命令、计数、
 限制和 release provenance 均记录在 artifact。
 
+### 2026-07-20 重开证据
+
+原始 Codex Responses 长流修复仍有效，但真实 CLI 验收暴露了后续工具与会话状态缺陷，
+`PROVIDER-002` 因此重开：
+
+1. Session `5a1a8694-a5d5-4723-bf6e-255364f291c4`：`TaskUpdate` 已完成，但 tool result 未在进程
+   退出前可靠刷入 canonical rollout/session，query 停在工具后的刷新/收尾窗口。
+2. Session `155e5992-0936-474c-bc4b-a93f39597383`：resume 向 provider 发送了缺少匹配 tool output
+   的历史并收到 HTTP 400；该 synthetic API error 因含文本被误判为成功，污染 stdout 且进程 exit 0。
+3. Session `d4fe751e-becd-482a-8855-367219b20609`：未设置 timeout/stall 环境变量时，同一
+   `gpt-5.6-sol` 模型调用约 218 秒后成功，证明长流 timeout/completion 修复本身有效。
+4. Session `ce228c8e-0f76-41ca-a9ee-985c082d4b33`：同一 submit 共 26 个 tool turn，尾部
+   反复 `Read -> Edit`；`Read` 的已读状态没有进入后续 `Edit` 所见的 session-owned cache，
+   最终两次 Edit 均错误返回 `File has not been read yet`。
+
+本轮不回退已完成的 SSE/retry 契约；重开范围仅补齐工具结果耐久性、resume 协议修复、
+跨 turn 文件状态、工具错误循环保护以及非交互退出语义。
+
 问题域：OpenAI Codex OAuth、Responses API、SSE、超时、重试、工具执行幂等性
 
 Codex 对照基线：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/codex`，分支
@@ -50,6 +72,11 @@ Codex 对照基线：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/codex`，分�
   `Reconnecting...` / `Retrying (n/N)...`，而不是等待后直接收到终止错误。
 - 保留 Anthropic、OpenAI Chat Completions、Google、Bedrock、Vertex 等非 Codex provider 的现有协议语义；
   共享传输层变化必须有针对性回归测试，不能用 Codex 修复改变其它 provider 的完成判定。
+- 工具完成后先耐久化 tool result，再进入下一模型 turn；MCP 刷新忙时使用当前快照，
+  不得让全局 manager 锁阻塞 query 收尾。
+- resume 前修复 orphan tool call/result 协议，但不自动重放已执行工具。
+- 将 Read/Edit 安全前置状态收敛到 session-owned cache，并对反复的同类工具验证失败 fail closed。
+- 统一 print/JSON/resume/max-turns/provider/tool-loop 的 `SdkResult` 错误与进程退出契约。
 
 ## 2. 已确认的现场证据
 
@@ -188,6 +215,17 @@ drain/history ledger。** 延迟代价预计为几十毫秒到数秒，优先换
 | retry UI | 已有 `ApiRetry` 消息与 TUI spinner，但 query stream retry 未使用 | 主动显示 reconnect 次数 | 用户只能看到长等待和终止错误 |
 | 工具幂等 | gate 开启时在 `ContentBlockStop` 直接 `tokio::spawn`；断流只 abort，已发生副作用无法撤销 | `output_item.done` 只入冷 future；completed 或断流后才 drain，记录输出并从新 history 重试 | 直接增加 retry 会重复工具副作用；照搬 drain/history 又会显著扩大状态机 |
 
+### 4.1 重开后的工具/会话差距
+
+| 边界 | 当前问题 | 目标 |
+| --- | --- | --- |
+| 工具后刷新 | 工具执行后重复 `refresh_tools()`，可等待全局 MCP manager 锁 | 下一模型请求前是唯一正常刷新点；忙时非阻塞使用快照 |
+| tool result 耐久性 | 内存消息、rollout 与 session projection 是分散副作用 | canonical rollout 先 append+flush；成功后才继续或降级 projection 错误 |
+| resume 完整性 | orphan assistant tool call 可直接发给 provider | 优先用 legacy projection 补回，否则插入确定性 synthetic error，不重放工具 |
+| 文件已读状态 | `ToolUseContext` 临时副作用在 turn 之间丢失 | 所有 turn/deferred execution 共享 session-owned `FileStateCache` |
+| 错误循环 | 模型可无界重复相同 validation failure | 相同 tool+输入摘要+验证错误第 3 次触发 `tool_error_loop` |
+| CLI 成功判定 | 有文本的 API error assistant block 可被当作正常 result | `base_success && !is_api_error_message`；plain stderr/exit 1，JSONL 保留错误但 exit 1 |
+
 ## 5. 目标行为契约
 
 ### 5.1 Codex Responses timeout
@@ -293,6 +331,46 @@ completion barrier 约束。这样本任务无需处理“已经启动但未完�
   `SdkResult.result` 写到 stderr 并 exit 1。
 - `--resume` 成功加载会话后若命中 `--max-turns N`，stderr 必须显示
   `Reached maximum of N turns`，不得误报成 resume 加载失败。
+
+### 5.7 工具收尾与 MCP 刷新
+
+- 删除工具执行后的重复 `refresh_tools()`；下一轮模型调用前的刷新是唯一正常刷新点。
+- MCP manager 忙时使用 `try_lock`，立即沿用当前工具快照；刷新结果显式分为
+  `ToolRefreshOutcome::{Fresh, CachedBusy, CachedError}`。
+- 记录刷新耗时与安全降级原因，并发布 `tool_results_durable`、`tool_refresh_cached`、
+  `next_turn_ready` 事件，消除工具完成后的不可观测空窗。
+
+### 5.8 Tool result 强持久化与 resume
+
+- 将 assistant/tool-result 的内存更新、rollout record 和 session projection 纳入异步
+  `SubmitTransaction`。
+- 工具完成后先把 result append 并 flush 到 canonical rollout，再允许下一次 provider 请求。
+  canonical 写入失败时 fail closed，不得继续或重执行工具；rollout 已落盘后的
+  session/transcript projection 失败可降级告警。
+- 每个 tool-result user message 立即保存 session，不等待下一条 assistant message。
+- resume 前检查每个 assistant tool call 在下一模型请求前恰有一个匹配 result。rollout
+  缺失时优先从 legacy session projection 恢复精确结果；仍缺失时插入 `is_error=true`
+  的确定性 synthetic result，声明上次结果因中断不可用。两种情况都不自动重放原工具，
+  且在 provider 调用前将修复后完整消息投影追加为 rollout snapshot。
+
+### 5.9 Read/Edit 会话状态与循环保护
+
+- 增加内部 `FileStateReceipt`，只含规范化路径、resolved path、内容 hash 和 mtime，不携带文件内容。
+- `Read`、`Edit`、`Write`、`HashEdit`、`NotebookEdit` 返回 receipt；canonical tool executor 负责提交到
+  session-owned `FileStateCache`。所有 turn 和 deferred tool execution 共享同一 cache handle，删除临时
+  `ToolUseContext` 的双重更新。
+- Edit 继续执行 hash/stale-read 校验；文件外部修改后必须要求重新 Read。
+- submit 级按 tool、输入摘要和 validation error 构建安全指纹；第 3 次相同失败以
+  `tool_error_loop` 终止。审计只记录摘要 hash，不记录敏感输入。
+
+### 5.10 SDK 与非交互退出语义
+
+- 最终成功条件是 `base_success && !is_api_error_message`；不再用“有非空文本”将 synthetic API error
+  误判为成功。
+- plain print mode 不把 `is_api_error_message` assistant block 写入 stdout；最终安全错误仅写 stderr
+  并 exit 1。JSON mode 继续输出完整 JSONL，但 error result 必须 exit 1。
+- `--continue`、`--resume`、max-turns、provider 400 与 `tool_error_loop` 共用同一 `SdkResult`
+  错误语义。不增加公开配置，`SdkResult` wire shape 保持兼容。
 
 ## 6. 实施阶段
 
@@ -416,6 +494,31 @@ completion barrier 约束。这样本任务无需处理“已经启动但未完�
 涉及启动参数解析、print/json runner 及其定向测试。集中实现位置参数/stdin 优先级、TTY/空输入错误，以及
 `SdkResult.is_error` 的 stderr/exit contract；覆盖位置参数、stdin、JSON stdin、resume 成功和 max-turns 可见错误。
 
+### 阶段 H：非阻塞工具刷新与耐久事务
+
+1. 删除 post-tool 重复刷新，用 typed outcome 固定 fresh/cached-busy/cached-error 三条路径。
+2. 引入 `SubmitTransaction`，固定 assistant/tool result 的 rollout-first 顺序和 fail-closed 边界。
+3. 增加 durability/refresh/next-turn 事件及持锁不阻塞回归。
+
+### 阶段 I：resume 协议修复
+
+1. 在 session resume 进入 provider 前运行 tool call/result 完整性检查。
+2. 分别覆盖 rollout 完整、projection 补回、双方都缺失的 synthetic error 三条路径。
+3. 断言修复前后工具执行计数不增加，且修复快照先耐久化再请求 provider。
+
+### 阶段 J：文件状态与工具循环保护
+
+1. 定义 receipt/cache 并由 canonical executor 统一提交，在同一 submit 所有 turn 及 deferred
+   execution 间共享。
+2. 回归 `Read -> Edit` 一次成功、外部变更后 stale 拒绝和所有文件写工具 receipt 语义。
+3. 实现 submit 级失败指纹，三次相同 validation failure 终止为 `tool_error_loop`。
+
+### 阶段 K：SDK/CLI 错误语义与证据收口
+
+1. 收紧 SDK 成功判定，统一 plain/JSON/resume/continue/max-turns/provider/tool-loop 退出契约。
+2. 增加进程级 stdout/stderr/exit-code 回归，保持 `SdkResult` wire shape。
+3. 生成本轮 artifact，执行自动化与真实 OAuth/Playwright 验收，然后才关闭重开项。
+
 ## 7. 验证矩阵
 
 ### 7.1 API/配置层
@@ -492,7 +595,28 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 5. 工具 smoke 使用只读、可计数 fixture，确认 completed 前执行次数为 0、retry 后总执行次数为 1，不用真实
    破坏性工具验证幂等性。
 
+### 7.6 重开项验证
+
+- Engine：工具结果后持有 MCP manager 锁不得阻塞下一 turn；必须继续使用缓存工具。
+- Durability：在 tool result 已执行、下一 assistant 前模拟崩溃，rollout 必须已含 result。
+- Resume：完整 rollout、projection 补回、synthetic error 三路径都无 orphan，且工具执行数不增加。
+- File tools：同 submit 跨 turn `Read -> Edit` 成功且只修改一次；外部修改后 Edit 拒绝；
+  三次相同 validation failure 触发 guard。
+- CLI：provider 400、resume 错误、max-turns 与 tool loop 均覆盖 plain stdout/stderr/exit code 和
+  JSONL error exit 1。
+- 回归：保留既有 Codex SSE、stream retry、completion barrier 及非 Codex provider 测试。
+
+主分支自动化通过后，使用 `gpt-5.6-sol` 且不设置 timeout/stall 环境变量完成：
+
+1. 空目录自主完成银河系网页构建和浏览器验收，不限制 Task/Read/Edit 等正常工具；
+2. CLI 完成一次 favicon `Read -> Edit`，最多 3 个工具 turn 且只修改一次；
+3. 中断一个工具已完成但尚未进入下一模型调用的受控 session，resume 无 400 且不重复执行工具；
+4. Playwright 确认 HTTP 200、桌面/移动交互、键盘焦点、reduced-motion 及
+   console/page/failed-request 全为 0。
+
 ## 8. 实施提交与 worktree 工作流
+
+### 8.1 原始长流修复（已完成）
 
 1. 本计划先在主分支 `allthecodes` 单独提交。
 2. 从包含本计划的主分支 HEAD 创建：
@@ -513,7 +637,37 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 6. 完成后回主树执行 `git merge --ff-only worktree/codex-stream-recovery-cli-contract`，验证、推送
    `origin allthecodes`，再移除 worktree 和分支。
 
+### 8.2 工具状态、resume 与 CLI 收尾加固（本轮）
+
+1. 先在主分支单独提交本计划重开和 `PROVIDER-002` 状态更新。
+2. 从该 HEAD 创建：
+
+   ```bash
+   git worktree add -b worktree/codex-cli-session-tool-state-hardening \
+     .worktrees/codex-cli-session-tool-state-hardening allthecodes
+   ```
+
+3. 所有代码、测试、文档与 artifact 修改/提交只在该 worktree 内完成；worktree 内禁止运行任何
+   Rust 构建、测试、clippy 或 Rust 测试二进制。
+4. artifact 固定为
+   `development/worktree-workflow-artifacts/2026-07-20-codex-cli-session-tool-state-hardening.html`。
+5. 建议提交顺序：
+   - `Make tool refresh non-blocking`
+   - `Persist tool results before continuation`
+   - `Repair resumable tool histories`
+   - `Preserve file read state across turns`
+   - `Enforce non-interactive failure exits`
+   - `Record real CLI recovery evidence`
+6. 回主分支 `git merge --ff-only worktree/codex-cli-session-tool-state-hardening`，再按 SOP 执行 Rust 验证。
+   任何失败都回同一 worktree 修复、commit、再次 fast-forward 和复验。
+7. 全部通过后，主分支单独将本计划改回 `Implemented`、`PROVIDER-002` 改回 `Fixed`；
+   推送 `origin allthecodes` 后才移除 worktree 和分支。
+8. 不触碰或暂存主工作树现有四个 UI 改动、`.spec/` 和
+   `development/tui/2026-07-20-tui-panel-gap-audit-vs-claude-code-bun.md`；实施前后核对状态和指纹。
+
 ## 9. 完成标准
+
+### 9.1 原始长流修复（已完成）
 
 - [x] 现场两种错误都有确定性回归测试，修复前失败、修复后通过。
 - [x] Codex Responses 不再受 120 秒 HTTP total timeout 约束。
@@ -530,6 +684,19 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 - [x] `development/archive/KNOWN_ISSUES.md` 与历史 gap/current-status 状态同步。
 - [x] fast-forward 合并、推送和 worktree 清理完成。
 - [x] print/json 从非 TTY stdin 读取 prompt，空输入明确失败，print mode 的最终错误写入 stderr。
+
+### 9.2 重开项收口条件
+
+- [ ] post-tool 重复刷新已删除，MCP manager 忙/错误时非阻塞降级并有 typed outcome/事件。
+- [ ] canonical rollout 在下一 provider 请求前已 flush tool result；rollout 失败 fail closed。
+- [ ] resume 三条修复路径均保持 tool call/result 完整且不重放工具。
+- [ ] session-owned file cache 支持跨 turn `Read -> Edit`，同时拒绝外部变更后的 stale edit。
+- [ ] 三次相同 validation failure 终止为 `tool_error_loop`，审计不记录敏感输入。
+- [ ] plain/JSON/resume/continue/max-turns/provider 400/tool loop 共用错误 `SdkResult` 语义并满足
+  stdout/stderr/exit-code 契约。
+- [ ] 分层 Rust 验证、release build、真实 OAuth 三步验收和 Playwright 矩阵通过。
+- [ ] artifact 记录完整证据，计划改回 `Implemented`，`PROVIDER-002` 改回 `Fixed`。
+- [ ] fast-forward 合并、推送、指纹复核和 worktree 清理完成。
 
 ## 10. 明确不接受的“修复”
 
