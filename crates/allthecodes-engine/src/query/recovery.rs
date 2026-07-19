@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 use allthecodes_api::api::provider_runtime::{ProviderError, ProviderStreamFailure};
 use allthecodes_api::api::retry::{retry_delay, RetryConfig};
 
-use crate::types::message::{AssistantMessage, ContentBlock, Message, StreamEvent};
+use crate::types::message::{AssistantMessage, ContentBlock, Message};
 use crate::types::state::QueryLoopState;
 use crate::types::transitions::Continue;
 

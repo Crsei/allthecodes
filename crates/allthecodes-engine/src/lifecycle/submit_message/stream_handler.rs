@@ -1202,6 +1202,7 @@ mod tests {
                 model: Some("claude-test".to_string()),
                 attempt: 2,
                 is_retry: true,
+                retry_phase: Some("stream".to_string()),
             },
         ));
         let QueryTurnEvent::RequestStart(request_event) = event else {
@@ -1213,6 +1214,7 @@ mod tests {
         assert_eq!(request_event.provider.as_deref(), Some("anthropic"));
         assert_eq!(request_event.backend.as_deref(), Some("native"));
         assert_eq!(request_event.model.as_deref(), Some("claude-test"));
+        assert_eq!(request_event.retry_phase.as_deref(), Some("stream"));
         assert_eq!(request_event.attempt, 2);
         assert!(request_event.is_retry);
     }
