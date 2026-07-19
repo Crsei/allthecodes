@@ -11,7 +11,7 @@ use crate::session::record_replay::types::{
 use crate::types::config::QueryEngineConfig;
 use crate::types::message::{
     Attachment, ContentBlock, Message, MessageContent, QueryYield, RequestStartEvent, StreamEvent,
-    SystemSubtype, ToolResultContent, Usage,
+    SystemMessage, SystemSubtype, ToolResultContent, Usage,
 };
 
 use super::super::types::AbortReason;
