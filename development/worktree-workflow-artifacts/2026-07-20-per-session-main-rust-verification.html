@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Per-Session Worktree 主分支 Rust 验证规则</title>
+  <style>
+    body { max-width: 960px; margin: 40px auto; padding: 0 24px; color: #1f2937; background: #f8fafc; font: 16px/1.6 system-ui, sans-serif; }
+    main { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 32px; box-shadow: 0 8px 24px #0f172a12; }
+    h1, h2 { color: #0f3d70; }
+    code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; }
+    li { margin: 6px 0; }
+    .ok { color: #137333; font-weight: 650; }
+    .muted { color: #64748b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Per-Session Worktree 主分支 Rust 验证规则</h1>
+    <p class="muted">2026-07-20 · isolated worktree <code>worktree/per-session-main-rust-verification</code></p>
+
+    <h2>任务目标</h2>
+    <p>统一 <code>AGENTS.md</code> 与 <code>CLAUDE.md</code> 的 Per-Session Worktree 声明：代码和文档在 worktree 中修改并提交，worktree 内禁止任何 Rust 构建或测试；候选提交合并后只在主分支验证，失败则回保留的 worktree 修复，任务全部完成后才删除 worktree。</p>
+
+    <h2>计划来源</h2>
+    <p><code>development/workflow/2026-07-16-per-session-worktree-workflow-plan.md</code>。权威计划已在创建本 worktree 前由主分支 commit <code>6276e31d</code> 更新。</p>
+
+    <h2>执行流程</h2>
+    <ol>
+      <li>在主分支单独提交权威计划更新，并保留已有未提交 TUI 改动。</li>
+      <li>从该计划 commit 创建独立 worktree。</li>
+      <li>只在 worktree 修改 <code>AGENTS.md</code>、<code>CLAUDE.md</code> 和本 artifact。</li>
+      <li>提交候选文档后 fast-forward 合并到主分支。</li>
+      <li>在主分支完成所需验证；若失败，回同一 worktree 修复后再次合并。</li>
+      <li>任务完成并推送成功后才删除 worktree 和任务分支。</li>
+    </ol>
+
+    <h2>改动列表</h2>
+    <ul>
+      <li>明确主分支不直接修改任务代码，只接收计划前置提交和 worktree 的 fast-forward 合并。</li>
+      <li>明确 worktree 内禁止 <code>cargo check</code>、<code>cargo build</code>、<code>cargo clippy</code>、<code>cargo test</code>、<code>cargo nextest</code> 及直接 Rust 测试二进制。</li>
+      <li>明确 Rust 构建和测试仅在候选提交合并后的主分支执行。</li>
+      <li>明确主分支验证失败时回保留的同一 worktree 修复，并重复 ff 合并与验证。</li>
+      <li>明确只有任务全部完成、验证通过并推送后才能删除 worktree。</li>
+    </ul>
+
+    <h2>提交</h2>
+    <ul>
+      <li><code>6276e31d</code> — <code>Define main-branch Rust verification workflow</code>（主分支权威计划提交）</li>
+      <li>本 artifact 与两份声明由后续 worktree 文档提交记录。</li>
+    </ul>
+
+    <h2>验证依据</h2>
+    <ul>
+      <li class="ok"><code>git diff --check</code></li>
+      <li class="ok">两份 Per-Session Worktree 声明逐行一致。</li>
+      <li class="ok">权威计划与两份声明均包含“worktree 禁止 Rust 验证、主分支验证、失败回 worktree、完成后删树”边界。</li>
+      <li>本任务仅修改 Markdown/HTML 工作流文档，未运行 Rust 构建或测试；worktree 内也未执行任何 Rust 命令。</li>
+    </ul>
+  </main>
+</body>
+</html>

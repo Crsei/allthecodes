@@ -308,8 +308,9 @@ ApiClient::from_backend()
 
 1. **计划文件先上主分支**：本次任务的计划文件（`development/workflow/<task>-plan.md` 或既有 `development/<域>/<...-plan.md>`）必须在主分支 `allthecodes` 上单独 commit 后，再开 worktree；计划文件**不进 worktree 改**。
 2. **独立 worktree**：从主分支当前 HEAD 起，`git worktree add -b worktree/<task-slug> .worktrees/<task-slug> allthecodes`。worktree 目录统一在 `.worktrees/`，分支统一以 `worktree/<task-slug>` 命名。
-3. **改动只在 worktree 内**：所有 `CLAUDE.md` / `AGENTS.md` / 代码 / 文档 / 产物的修改、`cargo` 编译测试、`git add` / `git commit` 全部在 worktree 内完成；不要回到主分支 working tree 改动会污染并行任务的内容。
+3. **改动只在 worktree 内，禁止 Rust 验证**：所有 `CLAUDE.md` / `AGENTS.md` / 代码 / 文档 / 产物的修改以及 `git add` / `git commit` 全部在 worktree 内完成；主分支只接受计划文件前置提交和 worktree 的 fast-forward 合并，不直接修改任务代码。**worktree 内禁止运行任何 Rust 构建或测试**，包括 `cargo check` / `build` / `clippy` / `test` / `nextest` 和直接执行 Rust 测试二进制。
 4. **HTML artifact 必须随本次任务落地**：artifact 路径固定为 `development/worktree-workflow-artifacts/<YYYY-MM-DD>-<task-slug>.html`，必须能独立打开阅读，含任务目标 / 流程步骤 / 改动列表 / 计划文件路径 / commit 列表 / 验证依据。artifact 跟随 worktree 提交一起合并到主分支。
-5. **fast-forward 合并并删树**：worktree 内做完所有 commit 后，回主分支 `git merge --ff-only worktree/<task-slug>`，再 `git push origin allthecodes`；合并成功后 `git worktree remove .worktrees/<task-slug>` + `git branch -d worktree/<task-slug>`。只允许 ff；ff 失败时先 rebase worktree 分支再 ff，不要产生 `--no-ff` merge commit。
+5. **合并后只在主分支验证并循环修复**：worktree 内做完候选 commit 后，回主分支 `git merge --ff-only worktree/<task-slug>`，再只在主分支运行任务要求的 Rust 构建与测试。若主分支出现构建或测试问题，保留并回到同一 worktree 修改、commit，再次 ff 合并并在主分支复验；不得直接在主分支修代码。只允许 ff；ff 失败时先 rebase worktree 分支再 ff，不要产生 `--no-ff` merge commit。
+6. **任务完成后才删树**：只有全部任务要求完成、主分支所需验证通过并成功 `git push origin allthecodes` 后，才运行 `git worktree remove .worktrees/<task-slug>` + `git branch -d worktree/<task-slug>`。首次合并成功不代表可以删除；修复和复验期间必须保留 worktree。
 
-> 这条流程与上文「文档更新按任务拆分」「显式路径手动提交」不冲突：worktree 内部仍然遵守那些规则，只是在更外层多了一道「隔离 + artifact + ff 合并 + 删树」的固定动作。
+> 这条流程与上文「文档更新按任务拆分」「显式路径手动提交」不冲突：worktree 内部仍然遵守那些规则；完整边界是「worktree 修改与提交 + 主分支 Rust 验证 + 失败回 worktree 修复 + 完成后删树」。
