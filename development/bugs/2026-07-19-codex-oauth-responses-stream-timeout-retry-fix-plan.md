@@ -528,7 +528,7 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 - [x] 非 Codex provider 回归测试通过。
 - [x] 分层验证、release build、真实 OAuth smoke 证据写入 artifact 和本计划实施记录。
 - [x] `development/archive/KNOWN_ISSUES.md` 与历史 gap/current-status 状态同步。
-- [ ] fast-forward 合并、推送和 worktree 清理完成。
+- [x] fast-forward 合并、推送和 worktree 清理完成。
 - [x] print/json 从非 TTY stdin 读取 prompt，空输入明确失败，print mode 的最终错误写入 stderr。
 
 ## 10. 明确不接受的“修复”
