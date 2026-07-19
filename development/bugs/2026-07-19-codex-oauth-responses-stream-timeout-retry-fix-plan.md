@@ -2,7 +2,11 @@
 
 日期：2026-07-19
 
-状态：Draft
+状态：Active
+
+2026-07-20 复核：本文件是该问题的唯一权威计划。实施使用
+`worktree/codex-stream-recovery-cli-contract`，artifact 固定为
+`development/worktree-workflow-artifacts/2026-07-20-codex-stream-recovery-cli-contract.html`。
 
 问题域：OpenAI Codex OAuth、Responses API、SSE、超时、重试、工具执行幂等性
 
@@ -24,6 +28,21 @@ Codex 对照基线：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/codex`，分�
   共享传输层变化必须有针对性回归测试，不能用 Codex 修复改变其它 provider 的完成判定。
 
 ## 2. 已确认的现场证据
+
+### 2.1 2026-07-20 最新复核
+
+1. Session `0359e5bd-15cf-43c5-917e-b668f8e35baf` 在第五次模型调用中因 120 秒
+   semantic idle 超时失败。
+2. 设置 `ALLTHECODES_STREAM_IDLE_TIMEOUT_MS=300000` 后，Session
+   `0812dfa1-bb43-4553-adcb-bdc87b84ca6c` 完成真实网页构建，证明 300 秒 idle policy 能覆盖该类
+   长推理，而不是依赖降低 reasoning effort。
+3. 当前公开 `StreamEvent` 的所有变体都属于有效进度，因此 60 秒 stall watchdog 的 non-progress 分支不可达；
+   该 watchdog 对 Codex 没有独立语义价值，应删除，而不是继续调高阈值。
+4. `--print` 帮助声称支持 stdin，但当前实现会在没有位置参数时提前拒绝，尚未读取非 TTY stdin。
+5. `--resume --max-turns 4` 的 exit 1 是正常的 max-turns 终止，不是 resume 加载失败；真正缺陷是
+   print mode 没有把非空 `SdkResult.result` 写到 stderr，导致错误原因静默丢失。
+
+### 2.2 2026-07-19 初始现场
 
 现场 session：`506cbdda-5836-4a4a-ae79-2222d480b9ec`。
 
@@ -153,10 +172,14 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
 - Codex provider 默认采用上面的值；现有配置没有这些字段时自动获得新默认，不要求用户迁移。
 - `requestMaxRetries`、`streamMaxRetries` 范围 `0..=100`。
 - timeout 必须大于 0，并设置合理上限以避免单位错误；实现时在 schema、validation 与运行时采用同一边界。
+- `requestMaxRetries`、`streamMaxRetries` 的统一合法范围是 `0..=100`；`streamIdleTimeoutMs`、
+  `requestTimeoutMs` 的统一合法范围是 `1..=3600000`。
+- 覆盖优先级固定为 `ALLTHECODES_STREAM_IDLE_TIMEOUT_MS` →
+  `CC_RUST_STREAM_IDLE_TIMEOUT_MS` → active profile → provider 默认值。
 - 现有 `ALLTHECODES_STREAM_IDLE_TIMEOUT_MS` 可作为兼容/诊断覆盖，但 profile 值应成为正常持久化入口；
   `CC_RUST_*` 只保留历史兼容，不在新文案中推荐。
-- 不再使用 `ALLTHECODES_STREAM_STALL_TIMEOUT_MS` 控制 Codex。确认其它 provider 无依赖后删除该 legacy
-  变量；若本任务不能删除，必须在代码和文档标记仅 legacy provider 生效。
+- `ALLTHECODES_STREAM_STALL_TIMEOUT_MS` 和对应 legacy 变量不再控制 Codex；删除无实际作用的 semantic
+  stall watchdog。非 Codex provider 保留现有默认值与完成协议。
 
 ### 5.3 request retry 与 stream retry 分离
 
@@ -208,6 +231,15 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
   一条永久红色 API error 消息。
 - retry 耗时计入 submit 总耗时，但 UI/日志同时保留每次 request duration，避免再次把 `worked for` 误读为
   工具耗时。
+
+### 5.6 非交互 CLI 契约
+
+- print/json mode 共用一处 prompt 解析：位置参数存在时优先；否则 stdin 非 TTY 时读取并 trim；stdin 为 TTY
+  或 trim 后为空时立即给出明确错误并 exit 1。
+- `run_print_mode` 继续只把正常助手正文写到 stdout；最终 `SdkResult.is_error=true` 时，把非空
+  `SdkResult.result` 写到 stderr 并 exit 1。
+- `--resume` 成功加载会话后若命中 `--max-turns N`，stderr 必须显示
+  `Reached maximum of N turns`，不得误报成 resume 加载失败。
 
 ## 6. 实施阶段
 
@@ -318,9 +350,14 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
 2. 如旧的 60/120 秒逻辑属于历史简化实现，在 `development/archive/IMPLEMENTATION_GAPS.md` / 对应当前状态索引中完成
    TODO -> full 迁移，不能只改代码不更新状态。
 3. 生成
-   `development/worktree-workflow-artifacts/2026-07-19-codex-oauth-stream-recovery.html`，记录问题、Codex
+   `development/worktree-workflow-artifacts/2026-07-20-codex-stream-recovery-cli-contract.html`，记录问题、Codex
    对照、改动、commit 和验证结果。
 4. 实施完成后在本计划顶部追加实施记录；本文件继续作为唯一修复计划，不另建同主题 sibling plan。
+
+### 阶段 G：非交互 CLI 修复
+
+涉及启动参数解析、print/json runner 及其定向测试。集中实现位置参数/stdin 优先级、TTY/空输入错误，以及
+`SdkResult.is_error` 的 stderr/exit contract；覆盖位置参数、stdin、JSON stdin、resume 成功和 max-turns 可见错误。
 
 ## 7. 验证矩阵
 
@@ -400,19 +437,19 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 2. 从包含本计划的主分支 HEAD 创建：
 
    ```bash
-   git worktree add -b worktree/codex-oauth-stream-recovery \
-     .worktrees/codex-oauth-stream-recovery allthecodes
+   git worktree add -b worktree/codex-stream-recovery-cli-contract \
+     .worktrees/codex-stream-recovery-cli-contract allthecodes
    ```
 
 3. worktree 使用独立 `CARGO_TARGET_DIR=.../.tmp/atc-codex-stream-recovery`。
 4. 推荐提交拆分：
-   - `Add Codex stream policy and completion tests`
-   - `Separate Codex request and stream timeouts`
-   - `Retry interrupted Codex response streams safely`
-   - `Surface Codex stream recovery status`
-   - `Document Codex stream recovery evidence`
+   - `Define Codex stream recovery policy`
+   - `Enforce Codex Responses completion semantics`
+   - `Retry interrupted Codex streams safely`
+   - `Fix non-interactive prompt and error output`
+   - `Document Codex recovery evidence`
 5. 每次只暂存本阶段明确路径；HTML artifact 跟随最后一个实施提交。
-6. 完成后回主树执行 `git merge --ff-only worktree/codex-oauth-stream-recovery`，验证、推送
+6. 完成后回主树执行 `git merge --ff-only worktree/codex-stream-recovery-cli-contract`，验证、推送
    `origin allthecodes`，再移除 worktree 和分支。
 
 ## 9. 完成标准
@@ -430,6 +467,7 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 - [ ] 分层验证、release build、真实 OAuth smoke 证据写入 artifact 和本计划实施记录。
 - [ ] `development/archive/KNOWN_ISSUES.md` 与历史 gap/current-status 状态同步。
 - [ ] fast-forward 合并、推送和 worktree 清理完成。
+- [ ] print/json 从非 TTY stdin 读取 prompt，空输入明确失败，print mode 的最终错误写入 stderr。
 
 ## 10. 明确不接受的“修复”
 
