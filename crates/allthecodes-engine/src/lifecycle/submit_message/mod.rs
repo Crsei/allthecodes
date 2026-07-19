@@ -1079,6 +1079,7 @@ impl QueryEngine {
                 submit_overrides: overrides.clone(),
                 submit_tools: None,
                 verification_incomplete: verification_incomplete.clone(),
+                tool_error_loop_guard: Arc::new(parking_lot::Mutex::new(Default::default())),
             });
 
             prime_goal_runtime_for_session(session_id.as_str(), &state_ref);

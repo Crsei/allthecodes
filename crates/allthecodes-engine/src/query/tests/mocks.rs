@@ -73,6 +73,7 @@ pub struct MockDeps {
         parking_lot::Mutex<Vec<allthecodes_session::record_replay::RecordItem>>,
     pub agent_events: parking_lot::Mutex<Vec<AgentEvent>>,
     pub verification_incomplete: parking_lot::Mutex<Option<String>>,
+    pub tool_error_loop_after_executions: Option<usize>,
     pub provider_name: Option<String>,
     pub recovery_policy: Option<allthecodes_api::api::client::ProviderRecoveryPolicy>,
 }
@@ -126,6 +127,7 @@ impl MockDeps {
             recorded_query_items: parking_lot::Mutex::new(Vec::new()),
             agent_events: parking_lot::Mutex::new(Vec::new()),
             verification_incomplete: parking_lot::Mutex::new(None),
+            tool_error_loop_after_executions: None,
             provider_name: None,
             recovery_policy: None,
         }
@@ -187,6 +189,11 @@ impl MockDeps {
 
     pub fn with_persist_tool_results_error(self, error: &str) -> Self {
         *self.persist_tool_results_error.lock() = Some(error.to_string());
+        self
+    }
+
+    pub fn with_tool_error_loop_after(mut self, executions: usize) -> Self {
+        self.tool_error_loop_after_executions = Some(executions);
         self
     }
 
@@ -388,6 +395,16 @@ impl QueryDeps for MockDeps {
         items: Vec<allthecodes_session::record_replay::RecordItem>,
     ) {
         self.recorded_query_items.lock().extend(items);
+    }
+
+    fn tool_error_loop_error(&self) -> Option<String> {
+        self.tool_error_loop_after_executions
+            .filter(|threshold| self.tool_execution_count.load(Ordering::SeqCst) >= *threshold)
+            .map(|threshold| {
+                format!(
+                    "tool_error_loop: repeated validation failure reached threshold {threshold}"
+                )
+            })
     }
 
     async fn persist_tool_results(&self, messages: Vec<Message>) -> Result<()> {

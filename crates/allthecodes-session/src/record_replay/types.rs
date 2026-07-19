@@ -235,6 +235,12 @@ pub enum QueryEventRecord {
         elapsed_ms: u64,
         reason: String,
     },
+    ToolErrorLoop {
+        tool_name: String,
+        input_digest: String,
+        validation_error_digest: String,
+        attempts: u32,
+    },
     NextTurnReady {
         turn: usize,
     },

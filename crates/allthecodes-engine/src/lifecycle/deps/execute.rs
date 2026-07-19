@@ -272,6 +272,21 @@ impl QueryEngineDeps {
     ) -> Result<ToolExecResult> {
         use crate::types::tool::PermissionResult;
 
+        if let Some(error) = self.tool_error_loop_guard.lock().terminal_message() {
+            return Ok(tool_exec_result(
+                &request,
+                crate::types::tool::ToolResult {
+                    data: serde_json::json!(error),
+                    ..Default::default()
+                },
+                true,
+                false,
+                request.input.clone(),
+                Some(0),
+                Some(AgentRuntimePermissionDecision::NotRequired),
+            ));
+        }
+
         // Hook dispatcher trait object — decouples the engine from the concrete
         // concrete shell-hook runner (see issue #74, full-build parity).
         let hooks = self.hook_runner.as_ref();
@@ -756,6 +771,7 @@ impl crate::lifecycle::QueryEngine {
             submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
             submit_tools: Some(tools.clone()),
             verification_incomplete: Arc::new(parking_lot::Mutex::new(None)),
+            tool_error_loop_guard: Arc::new(parking_lot::Mutex::new(Default::default())),
         };
         let parent_message = crate::types::message::AssistantMessage {
             uuid: uuid::Uuid::new_v4(),

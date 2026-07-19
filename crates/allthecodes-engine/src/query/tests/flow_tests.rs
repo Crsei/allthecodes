@@ -196,6 +196,45 @@ async fn tool_result_persistence_failure_stops_before_next_provider_request() {
 }
 
 #[tokio::test]
+async fn tool_error_loop_stops_before_a_fourth_provider_request() {
+    let mut responses = (1..=3)
+        .map(|attempt| ModelResponse {
+            assistant_message: AssistantMessage {
+                uuid: Uuid::new_v4(),
+                timestamp: chrono::Utc::now().timestamp_millis(),
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: format!("invalid-{attempt}"),
+                    name: "Edit".to_string(),
+                    input: serde_json::json!({
+                        "file_path": "/tmp/same",
+                        "old_string": "same",
+                        "new_string": "replacement"
+                    }),
+                }],
+                usage: Some(Usage::default()),
+                stop_reason: Some("tool_use".to_string()),
+                is_api_error_message: false,
+                api_error: None,
+                cost_usd: 0.0,
+            },
+            stream_events: vec![],
+            usage: Usage::default(),
+        })
+        .collect::<Vec<_>>();
+    responses.push(make_text_response("this fourth response must not be requested"));
+    let deps = Arc::new(MockDeps::new(responses).with_tool_error_loop_after(3));
+    let params = make_query_params(vec![make_user_message_for_test("trigger loop guard")]);
+
+    let items: Vec<QueryYield> = query(params, deps.clone()).collect().await;
+
+    assert_eq!(deps.recorded_params().len(), 3);
+    assert_eq!(deps.tool_execution_count.load(Ordering::SeqCst), 3);
+    assert_eq!(deps.persisted_tool_results.lock().len(), 3);
+    assert!(has_api_error_containing(&items, "tool_error_loop"));
+}
+
+#[tokio::test]
 async fn tool_use_summary_gate_defaults_off() {
     let items = tool_use_summary_gate_case(false).await;
 

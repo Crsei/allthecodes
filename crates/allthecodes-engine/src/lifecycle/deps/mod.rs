@@ -50,7 +50,9 @@ mod autocompact;
 mod execute;
 mod model_call;
 mod permission;
+mod tool_error_loop;
 mod tool_pipeline;
+use tool_error_loop::ToolErrorLoopGuard;
 pub(crate) use model_call::{model_for_autocompact, tool_execution_result_to_exec_result};
 pub(crate) use permission::{
     auto_classifier_needed, central_permission_decision_for_tool, emit_hook_permission_decision,
@@ -121,6 +123,8 @@ pub(crate) struct QueryEngineDeps {
     pub(crate) submit_tools: Option<Tools>,
     /// Terminal verification failure shared with the outer submit lifecycle.
     pub(crate) verification_incomplete: Arc<Mutex<Option<String>>>,
+    /// Per-submit protection against repeated identical tool validation failures.
+    pub(crate) tool_error_loop_guard: Arc<Mutex<ToolErrorLoopGuard>>,
 }
 
 fn auto_mode_allows_without_classifier(tool_name: &str) -> bool {
@@ -287,6 +291,10 @@ impl QueryDeps for QueryEngineDeps {
 
     fn is_aborted(&self) -> bool {
         self.aborted.load(Ordering::Relaxed)
+    }
+
+    fn tool_error_loop_error(&self) -> Option<String> {
+        self.tool_error_loop_guard.lock().terminal_message()
     }
 
     fn get_tools(&self) -> Tools {

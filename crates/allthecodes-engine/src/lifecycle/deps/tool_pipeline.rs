@@ -156,6 +156,9 @@ impl<'a> ToolExecutionPipeline<'a> {
         match self.tool.validate_input(input, self.ctx).await {
             ValidationResult::Ok => PipelineStageResult::Continue(()),
             ValidationResult::Error { message, .. } => {
+                self.deps
+                    .record_tool_validation_failure(self.request, input, &message)
+                    .await;
                 let data = match kind {
                     InputValidationKind::Original => serde_json::json!(format!(
                         "Input validation error: {}. The schema was not sent - please check the tool's input requirements.",

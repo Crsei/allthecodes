@@ -1146,6 +1146,14 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                     }
                 }
 
+                if let Some(error) = deps.tool_error_loop_error() {
+                    warn!(%error, "terminating repeated tool validation failure loop");
+                    yield QueryYield::Message(Message::Assistant(make_error_message(
+                        &deps, &error,
+                    )));
+                    break 'query_loop;
+                }
+
                 let steer_messages = drain_steer_messages(&deps);
                 if !steer_messages.is_empty() {
                     for steer_msg in steer_messages {

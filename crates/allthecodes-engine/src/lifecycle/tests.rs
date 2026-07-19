@@ -11,7 +11,7 @@ use crate::types::config::{AgentContext, QueryEngineConfig, QuerySource};
 use crate::types::message::{
     AssistantMessage, ContentBlock, Message, MessageContent, Usage, UserMessage,
 };
-use crate::types::tool::{PermissionMode, PermissionResult, ToolResult};
+use crate::types::tool::{PermissionMode, PermissionResult, ToolResult, ValidationResult};
 use allthecodes_types::agent_runtime_record::AgentRuntimePermissionDecision;
 use allthecodes_types::callbacks::{PermissionCallback, PermissionResponsePayload};
 use allthecodes_types::hooks::{
@@ -182,6 +182,51 @@ impl crate::types::tool::Tool for TestTool {
         _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
     ) -> anyhow::Result<crate::types::tool::ToolResult> {
         Ok(crate::types::tool::ToolResult::default())
+    }
+
+    async fn prompt(&self) -> String {
+        String::new()
+    }
+}
+
+struct AlwaysInvalidTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl crate::types::tool::Tool for AlwaysInvalidTool {
+    fn name(&self) -> &str {
+        "AlwaysInvalid"
+    }
+
+    async fn description(&self, _input: &Value) -> String {
+        "always invalid test tool".to_string()
+    }
+
+    fn input_json_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    async fn validate_input(
+        &self,
+        _input: &Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+    ) -> ValidationResult {
+        ValidationResult::Error {
+            message: "stable validation failure".to_string(),
+            error_code: 7,
+        }
+    }
+
+    async fn call(
+        &self,
+        _input: Value,
+        _ctx: &crate::types::tool::ToolUseContext,
+        _parent_message: &AssistantMessage,
+        _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
+    ) -> anyhow::Result<ToolResult> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult::default())
     }
 
     async fn prompt(&self) -> String {
@@ -875,6 +920,7 @@ async fn execute_tool_execution_baseline(
         submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
         submit_tools: None,
         verification_incomplete: Arc::new(parking_lot::Mutex::new(None)),
+        tool_error_loop_guard: Arc::new(parking_lot::Mutex::new(Default::default())),
     };
     let Message::Assistant(parent) = assistant_message("tool execution parent") else {
         unreachable!("assistant_message returns an assistant message");
@@ -924,6 +970,7 @@ fn make_lifecycle_deps(
         submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
         submit_tools: None,
         verification_incomplete: Arc::new(parking_lot::Mutex::new(None)),
+        tool_error_loop_guard: Arc::new(parking_lot::Mutex::new(Default::default())),
     }
 }
 
@@ -1154,6 +1201,89 @@ async fn tool_result_flush_makes_assistant_call_and_result_replayable_before_nex
             }
         ) if tool_use_ids.as_slice() == ["toolu_durable"]
     )));
+
+    engine.shutdown_session_record().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn third_identical_tool_validation_failure_records_terminal_loop_guard() {
+    let home = tempdir().unwrap();
+    let _home_guard = EnvGuard::set("ALLTHECODES_HOME", home.path());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tools: crate::types::tool::Tools = vec![Arc::new(AlwaysInvalidTool {
+        calls: calls.clone(),
+    })];
+    let mut config = make_config();
+    config.tools = tools.clone();
+    let engine = QueryEngine::new(config);
+    let recorder = engine
+        .ensure_session_recorder()
+        .await
+        .unwrap()
+        .expect("record replay is enabled for the loop guard test");
+    let mut deps = make_lifecycle_deps(
+        &engine,
+        Arc::new(allthecodes_types::hooks::NoopHookRunner),
+        None,
+    );
+    deps.session_id = engine.current_session_id().to_string();
+    let Message::Assistant(parent) = assistant_message("loop guard parent") else {
+        unreachable!();
+    };
+    let input = json!({"secret": "must-not-enter-audit"});
+
+    for attempt in 1..=3 {
+        let result = deps
+            .execute_tool_impl(
+                crate::query::deps::ToolExecRequest {
+                    tool_use_id: format!("invalid-{attempt}"),
+                    tool_name: "AlwaysInvalid".to_string(),
+                    input: input.clone(),
+                    langfuse_batch_span: None,
+                },
+                &tools,
+                &parent,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(result.is_error);
+    }
+
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let terminal = crate::query::deps::QueryDeps::tool_error_loop_error(&deps)
+        .expect("third matching validation failure must stop the submit");
+    assert!(terminal.contains("tool_error_loop"));
+    assert!(!terminal.contains("must-not-enter-audit"));
+
+    recorder.flush().await.unwrap();
+    let read = crate::session::record_replay::read_rollout_file(recorder.rollout_path()).unwrap();
+    let event = read.lines.iter().find_map(|line| match &line.item {
+        crate::session::record_replay::types::RecordItem::QueryEvent(
+            crate::session::record_replay::types::QueryEventRecord::ToolErrorLoop {
+                tool_name,
+                input_digest,
+                validation_error_digest,
+                attempts,
+            },
+        ) => Some((
+            tool_name,
+            input_digest,
+            validation_error_digest,
+            attempts,
+        )),
+        _ => None,
+    });
+    let (tool_name, input_digest, validation_error_digest, attempts) =
+        event.expect("tool_error_loop event must be recorded");
+    assert_eq!(tool_name, "AlwaysInvalid");
+    assert_eq!(*attempts, 3);
+    assert!(input_digest.starts_with("sha256:"));
+    assert!(validation_error_digest.starts_with("sha256:"));
+    assert!(!serde_json::to_string(&read.lines)
+        .unwrap()
+        .contains("must-not-enter-audit"));
 
     engine.shutdown_session_record().await.unwrap();
 }
@@ -1956,6 +2086,7 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
         submit_overrides: crate::types::config::SubmitMessageOverrides::default(),
         submit_tools: None,
         verification_incomplete: Arc::new(parking_lot::Mutex::new(None)),
+        tool_error_loop_guard: Arc::new(parking_lot::Mutex::new(Default::default())),
     };
     let Message::Assistant(parent) = assistant_message("tool parent") else {
         unreachable!("assistant_message returns an assistant message");

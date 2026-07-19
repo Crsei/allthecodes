@@ -237,6 +237,12 @@ pub trait QueryDeps: Send + Sync {
 
     fn is_aborted(&self) -> bool;
 
+    /// Return a terminal per-submit tool validation loop error, if one has
+    /// reached the fail-closed threshold.
+    fn tool_error_loop_error(&self) -> Option<String> {
+        None
+    }
+
     fn get_tools(&self) -> Tools;
 
     async fn refresh_tools(&self) -> ToolRefreshOutcome;
