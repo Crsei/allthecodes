@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TUI TaskList default and stream recovery worktree record</title>
+  <style>
+    body { max-width: 960px; margin: 40px auto; padding: 0 24px; color: #1f2937; background: #f8fafc; font: 16px/1.6 system-ui, sans-serif; }
+    main { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 32px; box-shadow: 0 8px 24px #0f172a12; }
+    h1, h2 { color: #0f3d70; }
+    code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; }
+    li { margin: 6px 0; }
+    .ok { color: #137333; font-weight: 650; }
+    .boundary { color: #92400e; font-weight: 650; }
+    .muted { color: #64748b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TUI TaskList default and stream recovery</h1>
+    <p class="muted">2026-07-19 · isolated worktree <code>worktree/tui-task-list-default-and-stream-recovery</code></p>
+
+    <h2>Task goal</h2>
+    <p>Replace visible <code>TaskCreate</code>/<code>TaskUpdate</code> message rows with the default <code>✔</code>/<code>◻</code> TaskList above the spinner, while retaining the manual <code>Ctrl+T</code> view control. Also recover safely from the reported <code>Error occurred: API error: error reading OpenAI response chunk</code> failure when an OpenAI-compatible streaming response is interrupted before any usable output is produced.</p>
+
+    <h2>Plan files</h2>
+    <ul>
+      <li><code>development/tui/2026-07-19-tui-task-list-default-display-plan.md</code></li>
+      <li><code>development/runtime/2026-07-19-openai-stream-timeout-recovery-plan.md</code></li>
+    </ul>
+
+    <h2>Workflow</h2>
+    <ol>
+      <li>Committed both plan files on the main branch before opening the isolated worktree.</li>
+      <li>Implemented and verified the TUI default TaskList behavior independently from the runtime stream-recovery change.</li>
+      <li>Ran formatting, lint, non-PTY tests, targeted API/engine/UI tests, deterministic streaming timeout coverage, the PTY suite, and a full release build in the worktree-specific target directory.</li>
+      <li>Recorded the user-visible issue status and this self-contained artifact before fast-forward integration.</li>
+    </ol>
+
+    <h2>Implemented changes</h2>
+    <ul>
+      <li>Normal and verbose message flows suppress task mutation tool rows and their paired ToolResult rows.</li>
+      <li>Task mutations automatically open the spinner-adjacent TaskList and refresh its session/team-scoped snapshot after ToolResult; unrelated tools do not open it.</li>
+      <li>The TaskList uses <code>✔</code> and <code>◻</code> status markers by default, while <code>Ctrl+T</code> remains available for explicit view cycling.</li>
+      <li>Streaming clients use connect timeout plus per-read timeout instead of a fixed total timeout that can cut off an active SSE response.</li>
+      <li>OpenAI/generic/Gemini chunk-read failures retain their complete cause chain and are recognized consistently by recovery logic.</li>
+      <li>An empty-output chunk/idle/stall interruption may retry once on the same model. Partial tool use is never retried, preventing duplicate side effects.</li>
+      <li>A chunk-read interruption after text but before tool use remains an accepted partial response in this narrow fix; the broader typed retry/tombstone design remains documented separately.</li>
+    </ul>
+
+    <h2>Worktree commits</h2>
+    <ul>
+      <li><code>5ef91fdc</code> — <code>fix(tui): show task list by default</code></li>
+      <li><code>9dedc9aa</code> — <code>fix(runtime): recover interrupted model streams</code></li>
+      <li><code>15e66b93</code> — <code>docs: record task list and stream fixes</code></li>
+      <li>This artifact is recorded by its own following documentation commit.</li>
+    </ul>
+
+    <h2>Verification evidence</h2>
+    <ul>
+      <li class="ok"><code>cargo fmt --all --check</code></li>
+      <li class="ok"><code>cargo clippy --workspace --all-targets -- -D warnings</code></li>
+      <li class="ok"><code>cargo test --workspace --exclude allthecodes --lib</code></li>
+      <li class="ok">TUI app tests: 111 passed; TUI render tests: 22 passed</li>
+      <li class="ok"><code>allthecodes-api</code>: 188 passed, 2 ignored; engine recovery: 14 passed</li>
+      <li class="ok">Deterministic network test: a 1.2-second stream with data every 600 ms completed as <code>abc</code> despite a one-second read timeout configuration</li>
+      <li class="ok"><code>cargo build --workspace --release</code>: passed in 7m 19s with the isolated target</li>
+      <li class="ok"><code>git diff --check</code></li>
+      <li class="boundary">PTY nextest boundary: 221 passed, 2 failed, 36 skipped</li>
+    </ul>
+
+    <h2>Known PTY boundary</h2>
+    <p>The two PTY failures reproduced when rerun individually and are existing copy-wait mismatches unrelated to this task:</p>
+    <ul>
+      <li><code>effort_set_high_reports_profile_result</code></li>
+      <li><code>surface_mcp_remove_action_updates_project_settings</code> — the setting removal completed successfully, but the test still waited for an obsolete success string.</li>
+    </ul>
+    <p class="muted">PTY script logs are retained under <code>crates/allthecodes/logs/pty_tui_e2e_scripts/</code> in this worktree at validation time.</p>
+  </main>
+</body>
+</html>
