@@ -83,6 +83,8 @@ struct CommandHighlightCache {
     metadata: Vec<allthecodes_commands::CommandMetadata>,
 }
 
+const TASK_LIST_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The compact view floated above the prompt spinner.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum ExpandedView {
@@ -278,6 +280,7 @@ pub struct App {
     show_agent_footer: bool,
     expanded_view: ExpandedView,
     task_list_completed_since: Option<Instant>,
+    task_list_last_refresh: Option<Instant>,
 
     // Prompt suggestions
     /// Next-prompt suggestions shown after an assistant turn completes.
@@ -393,6 +396,7 @@ impl App {
             show_agent_footer: true,
             expanded_view: ExpandedView::None,
             task_list_completed_since: None,
+            task_list_last_refresh: None,
             render_layout: RenderLayoutStore::default(),
             mouse_focus: MouseFocus::Messages,
             dirty: true,
@@ -694,23 +698,39 @@ impl App {
 
     fn cycle_expanded_view(&mut self) {
         let has_teammates = self.runtime_view.agent_nav().active_non_primary_count() > 0;
-        self.runtime_view.refresh_task_list_items();
         self.expanded_view = self.expanded_view.cycle(has_teammates);
         self.task_list_completed_since = None;
+        if self.expanded_view == ExpandedView::Tasks {
+            self.refresh_expanded_task_view_at(Instant::now(), true);
+        }
         self.dirty = true;
     }
 
     fn refresh_expanded_task_view(&mut self) {
+        self.refresh_expanded_task_view_at(Instant::now(), false);
+    }
+
+    fn refresh_expanded_task_view_at(&mut self, now: Instant, force: bool) {
         if self.expanded_view != ExpandedView::Tasks {
             self.task_list_completed_since = None;
             return;
         }
 
-        if self.runtime_view.refresh_task_list_items() {
-            self.dirty = true;
+        let refresh_due = force
+            || self
+                .task_list_last_refresh
+                .is_none_or(|last| now.duration_since(last) >= TASK_LIST_REFRESH_INTERVAL);
+        if refresh_due {
+            if self
+                .runtime_view
+                .refresh_task_list_items(&self.session_ui.session_id)
+            {
+                self.dirty = true;
+            }
+            self.task_list_last_refresh = Some(now);
         }
 
-        self.collapse_expanded_task_view_if_complete(Instant::now());
+        self.collapse_expanded_task_view_if_complete(now);
     }
 
     fn collapse_expanded_task_view_if_complete(&mut self, now: Instant) {
@@ -755,6 +775,7 @@ impl App {
     pub fn set_session_id(&mut self, id: String) {
         let previous_session_id = self.session_ui.session_id.clone();
         self.session_ui.session_id = id;
+        self.task_list_last_refresh = None;
         if !previous_session_id.is_empty() && previous_session_id != self.session_ui.session_id {
             self.runtime_view
                 .agent_nav_mut()
@@ -1048,6 +1069,11 @@ impl App {
                         surface.sync_items(self.runtime_view.task_items());
                         self.dirty = true;
                     }
+                }
+                if matches!(message, BackendMessage::ToolResult { .. })
+                    && self.expanded_view == ExpandedView::Tasks
+                {
+                    self.refresh_expanded_task_view_at(Instant::now(), true);
                 }
                 self.update_agent_navigation_from_backend(message);
                 match message {

@@ -40,8 +40,20 @@ pub(crate) fn task_surface_items() -> Vec<TaskSurfaceItem> {
 /// Team activity deliberately stays out of this list: the `Teammates` view
 /// owns that surface, while this one mirrors the plan/task state maintained by
 /// `allthecodes_tasks`.
-pub(crate) fn task_list_items() -> Vec<TaskListItem> {
-    allthecodes_tasks::global_store()
+pub(crate) fn task_list_items(session_id: &str) -> Vec<TaskListItem> {
+    let team_name = allthecodes_teams::reconnection::restore_team_context_for_session(session_id)
+        .ok()
+        .flatten()
+        .map(|context| context.team_name);
+    let task_list_id =
+        allthecodes_tasks::task_list_id_from_parts(allthecodes_tasks::TaskListScope {
+            explicit_task_list_id: None,
+            scoped_team_name: None,
+            app_team_name: team_name,
+            session_id: Some(session_id.to_string()),
+        });
+
+    allthecodes_tasks::store_for_task_list_id(&task_list_id)
         .list()
         .into_iter()
         .map(|task| TaskListItem {
@@ -266,6 +278,71 @@ pub(crate) fn ui_task_state_from_team_status(
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_ref() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn task_list_items_reads_the_session_scoped_store() {
+        let home = tempfile::tempdir().expect("allthecodes home");
+        let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        allthecodes_tasks::store_for_task_list_id(&session_id)
+            .try_create("Scoped task", "visible only in this session")
+            .expect("create scoped task");
+
+        let items = task_list_items(&session_id);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Scoped task");
+    }
+
+    #[test]
+    #[serial]
+    fn task_list_items_reads_the_restored_team_scoped_store() {
+        let home = tempfile::tempdir().expect("allthecodes home");
+        let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        let team = allthecodes_teams::helpers::create_team(
+            "task-list-adapter",
+            None,
+            Some(session_id.clone()),
+            "/tmp",
+        )
+        .expect("create team");
+        allthecodes_tasks::store_for_task_list_id(&team.name)
+            .try_create("Team task", "visible to the restored team session")
+            .expect("create team task");
+
+        let items = task_list_items(&session_id);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Team task");
+        allthecodes_teams::helpers::cleanup_team_directories(&team.name)
+            .expect("cleanup team directories");
+    }
 
     #[test]
     fn workflow_task_surfaces_adapter_uses_local_workflow_metadata() {

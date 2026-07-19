@@ -243,14 +243,6 @@ impl App {
             return AppAction::None;
         }
 
-        if matches!(
-            (key.modifiers, key.code),
-            (KeyModifiers::CONTROL, KeyCode::Char('t'))
-        ) {
-            self.cycle_expanded_view();
-            return AppAction::None;
-        }
-
         // Ctrl+C / Ctrl+D retain their "abort or quit" semantics even in
         // transcript / focus modes; the user always needs a way out.
         match (key.modifiers, key.code) {
@@ -1024,6 +1016,10 @@ impl App {
             }
             "app:toggleTranscript" => {
                 self.cycle_view_mode();
+                return Some(AppAction::None);
+            }
+            "app:toggleTodos" => {
+                self.cycle_expanded_view();
                 return Some(AppAction::None);
             }
             "app:toggleVim" => {

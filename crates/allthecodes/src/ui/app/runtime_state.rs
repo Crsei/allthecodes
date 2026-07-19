@@ -27,7 +27,7 @@ impl Default for RuntimeViewState {
             task_items: live_task_items.clone(),
             live_task_items,
             backend_task_items: Vec::new(),
-            task_list_items: task_list_items(),
+            task_list_items: Vec::new(),
         }
     }
 }
@@ -71,10 +71,10 @@ impl RuntimeViewState {
 
     /// Refresh the list that drives the expanded Spinner task view.
     ///
-    /// The task adapter is the single conversion point for the in-process
-    /// store, so this refresh has the same source-of-truth as `/tasks`.
-    pub(super) fn refresh_task_list_items(&mut self) -> bool {
-        let next = task_list_items();
+    /// The task adapter is the single conversion point for the scoped
+    /// in-process store used by TaskCreate and TaskUpdate.
+    pub(super) fn refresh_task_list_items(&mut self, session_id: &str) -> bool {
+        let next = task_list_items(session_id);
         if self.task_list_items == next {
             return false;
         }

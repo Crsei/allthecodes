@@ -1707,6 +1707,65 @@ fn ctrl_t_cycles_tasks_and_teammates_only_when_available() {
 }
 
 #[test]
+fn toggle_todos_action_honors_user_keybinding_remap() {
+    let dir = tempfile::tempdir().expect("keybinding dir");
+    let path = dir.path().join("keybindings.json");
+    std::fs::write(
+        &path,
+        r#"{
+            "bindings": [
+                {
+                    "context": "Global",
+                    "bindings": {
+                        "ctrl+t": null,
+                        "ctrl+y": "app:toggleTodos"
+                    }
+                }
+            ]
+        }"#,
+    )
+    .expect("write keybindings");
+    let mut app = App::new();
+    app.set_keybindings(allthecodes_keybindings::KeybindingRegistry::with_user_path(
+        Some(path),
+    ));
+
+    send_key_with_modifiers(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    assert_eq!(app.expanded_view, ExpandedView::None);
+
+    send_key_with_modifiers(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+    assert_eq!(app.expanded_view, ExpandedView::Tasks);
+}
+
+#[test]
+#[serial]
+fn expanded_task_view_throttles_fallback_store_refreshes() {
+    let home = tempfile::tempdir().expect("allthecodes home");
+    let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+    let session_id = format!("session-{}", uuid::Uuid::new_v4());
+    let store = allthecodes_tasks::store_for_task_list_id(&session_id);
+    store
+        .try_create("First task", "initial snapshot")
+        .expect("create first task");
+    let mut app = App::new();
+    app.set_session_id(session_id);
+    app.expanded_view = ExpandedView::Tasks;
+    let started = Instant::now();
+
+    app.refresh_expanded_task_view_at(started, true);
+    assert_eq!(app.runtime_view.task_list_items().len(), 1);
+
+    store
+        .try_create("Second task", "must wait for fallback poll")
+        .expect("create second task");
+    app.refresh_expanded_task_view_at(started + std::time::Duration::from_secs(1), false);
+    assert_eq!(app.runtime_view.task_list_items().len(), 1);
+
+    app.refresh_expanded_task_view_at(started + TASK_LIST_REFRESH_INTERVAL, false);
+    assert_eq!(app.runtime_view.task_list_items().len(), 2);
+}
+
+#[test]
 fn completed_task_list_collapses_after_five_seconds() {
     use crate::ui::messages::task_list_content::TaskListItem;
     use crate::ui::tasks::TaskState;
