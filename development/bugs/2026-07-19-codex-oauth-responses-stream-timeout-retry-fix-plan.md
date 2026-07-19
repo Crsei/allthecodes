@@ -11,7 +11,8 @@
 问题域：OpenAI Codex OAuth、Responses API、SSE、超时、重试、工具执行幂等性
 
 Codex 对照基线：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/codex`，分支
-`feat/disable-websockets`，commit `e9641ad51`
+`feat/disable-websockets`，commit `e9641ad51`。2026-07-20 另以本机已安装的
+`codex-cli 0.144.6` 对应官方 tag `rust-v0.144.6`（commit `5d1fbf26c`）复核工具执行时序。
 
 ## 1. 目标
 
@@ -21,7 +22,8 @@ Codex 对照基线：`/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/codex`，分�
   仅在 SSE 空闲超过阈值、流在 `response.completed` 前关闭或收到明确服务端错误时进入恢复。
 - 将 `response.completed` 建立为 Codex Responses 成功的唯一完成边界，禁止 EOF 被伪装成正常
   `MessageStop`。
-- 对可恢复断流执行同模型重连，并保证已经开始或完成的工具调用不会被重复执行、丢失结果或污染下一次请求。
+- 对可恢复断流执行同模型重连；Codex Responses 在 `response.completed` 前只积累工具块、不启动本地工具，
+  从源头消除重连重复副作用，而不是在本任务中引入跨 attempt 的 in-flight drain/ledger。
 - 复用已有 `SystemSubtype::ApiError` / `SdkMessage::ApiRetry` / TUI spinner 通道，让用户看到
   `Reconnecting...` / `Retrying (n/N)...`，而不是等待后直接收到终止错误。
 - 保留 Anthropic、OpenAI Chat Completions、Google、Bedrock、Vertex 等非 Codex provider 的现有协议语义；
@@ -116,16 +118,39 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
    5 次，尊重服务端建议 delay，并向客户端发送 `Reconnecting... n/N`。
 
 `core/src/session/turn.rs::run_sampling_request()` 在同一 turn 内重试；首次失败后从 session 当前 history
-重新构建 prompt。已完成的 response item 会先记录，in-flight 工具会 drain 并记录 tool output，然后重试，
-因此不会把已完成工具当成从未发生而整段重放。
+重新构建 prompt。response item 会先记录，已确认的工具调用及其结果因而可以进入下一次 prompt。
 
-### 3.5 Codex 已有测试证据
+### 3.5 Codex 工具执行时序复核与本项目决策
+
+`codex-cli 0.144.6` 的实际实现不是在 `response.output_item.done` 到达时立即执行工具：
+
+1. `handle_output_item_done()` 先持久化 tool call，再构造一个尚未被轮询的冷 future。
+2. `try_run_sampling_request()` 把该 future 放入 `FuturesOrdered`，继续读取 Responses stream；入队本身不会启动
+   async tool body。
+3. 收到 `response.completed` 时 stream loop 以成功结束；若提前 EOF/transport error，则以错误结束。
+4. 两种结果都会在离开 stream loop 后无条件调用 `drain_in_flight()`；工具真正从这里开始执行，结果随后写入
+   conversation history。
+5. 若前一步是可恢复断流，`run_sampling_request()` 再从更新后的 history 构造 prompt 并重连。
+
+因此，Codex 采用的是“冷 future 队列 + 流结束后 drain + history 续传”的混合方案：它没有在
+`response.completed` 前并发执行工具，但会在未完成响应已经断流后执行已闭合的工具。该实现降低了普通自动重连的
+重复执行概率，却不是进程崩溃场景下的 durable exactly-once ledger；副作用完成后、tool output 持久化前崩溃仍有
+不可证明窗口。
+
+allthecodes 当前 streaming gate 开启时会在 `ContentBlockStop` 处直接 `tokio::spawn` 工具，断流路径只
+`abort()` task，无法撤销已经发生的副作用。为降低本次修复复杂度和安全风险，本项目明确选择更保守的 provider
+边界：**仅对 Codex Responses 延迟本地工具执行到 `response.completed`；本任务不移植 Codex 的断流后
+drain/history ledger。** 延迟代价预计为几十毫秒到数秒，优先换取可证明的“未完成 attempt 零工具副作用”。
+
+### 3.6 Codex 已有测试证据
 
 - `core/tests/suite/stream_no_completed.rs`：第一次 SSE 未发 `response.completed` 就关闭，第二次返回完整流，
   断言发生两次 `/responses` POST 且 turn 成功。
 - `core/tests/suite/websocket_fallback.rs`：覆盖 retry 通知与 transport fallback。
 - `codex-api/tests/sse_end_to_end.rs`：覆盖 Responses SSE item 和 completed 解析。
 - `core/tests/suite/stream_error_allows_next_turn.rs`：失败 turn 必须释放运行状态，下一次提交仍可完成。
+- 当前 `stream_no_completed.rs` 的首个未完成事件不包含合法 tool item；Codex 上游没有直接覆盖“合法
+  function call 已 done、随后断流”的执行次数断言。本项目必须补上该安全边界测试，不能只依赖源码推断。
 
 ## 4. allthecodes 当前差距
 
@@ -139,7 +164,7 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
 | request retry | 只覆盖 `StreamProvider::stream()` 建立失败，默认 3 retries | provider request retry，默认 4 | 建立前能力接近但配置不可见且错误分类较弱 |
 | stream retry | 无同模型重连；只对容量错误跨模型 fallback | 默认 5 次同 turn reconnect | 短暂代理/TLS/SSE 中断直接终止 |
 | retry UI | 已有 `ApiRetry` 消息与 TUI spinner，但 query stream retry 未使用 | 主动显示 reconnect 次数 | 用户只能看到长等待和终止错误 |
-| 工具幂等 | 断流时直接 abort streaming executor；已完成副作用无法撤销，结果也可能丢失 | drain 已启动工具、记录输出、从新 history 重试 | 直接增加 retry 会重复工具副作用 |
+| 工具幂等 | gate 开启时在 `ContentBlockStop` 直接 `tokio::spawn`；断流只 abort，已发生副作用无法撤销 | `output_item.done` 只入冷 future；completed 或断流后才 drain，记录输出并从新 history 重试 | 直接增加 retry 会重复工具副作用；照搬 drain/history 又会显著扩大状态机 |
 
 ## 5. 目标行为契约
 
@@ -201,23 +226,29 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
 - assistant UUID 与 accumulator；
 - 是否收到 `response.completed`；
 - 已向 UI 发送的 text/reasoning/tool block；
-- 已启动、运行中、已完成的 streaming tool IDs；
-- 已完成工具结果及其原始顺序；
+- 已闭合但尚未执行的工具调用及其原始顺序；
 - 本次 attempt 是否允许安全重放。
 
-恢复规则：
+provider 边界与恢复规则：
 
-1. 断流前没有完成 tool use：向 UI 发 tombstone 撤销孤立 partial assistant，然后用原请求同模型重试。
-2. 只产生 text/reasoning partial：不得把 partial 文本伪装为 `end_turn`；tombstone 后重试。
-3. 已经启动 streaming-safe 工具：不能简单 `abort()` 后重放整次请求。应等待已经完成/不可安全撤销的工具，
-   将对应 assistant tool use 和 tool result 按顺序写入下一次请求 history，再从当前 history 继续模型 turn。
-4. 尚未完成且可取消的工具可以取消，但必须产生明确 cancelled tool result，避免悬空 tool_use。
-5. 同一 `tool_use_id` 在一个 submit 内最多执行一次；增加 attempt ledger/去重断言。
-6. 如果实现无法证明某个工具的幂等边界，必须终止自动重试并显示具体原因，不能冒险重复有副作用工具。
-7. retry 成功后，失败 attempt 的 partial UI 不得出现在最终 transcript、session replay 或下一次模型上下文；
-   已确认完成的工具结果除外。
+1. 仅 Codex Responses 使用 completion barrier。`response.output_item.done` 可以形成 UI/accumulator 中的完整
+   tool block，但不得调用 `StreamingToolExecutor::add_tool_use()`、`tokio::spawn` 或任何 canonical tool
+   execution 入口。
+2. 只有收到 `response.completed` 并完成本次 attempt 校验后，才把已积累工具按原顺序交给现有 post-stream
+   批处理；现有 concurrency-safe batch 与 serial barrier 语义保持不变。
+3. EOF、idle timeout、transport error、decode failure 或 `response.failed` 发生在 completed 前时，本 attempt
+   的本地工具执行次数必须为 0。向 UI 发 tombstone 撤销孤立 partial assistant/tool block，再用原请求同模型重试。
+4. 只产生 text/reasoning partial 时同样不得伪装为 `end_turn`；失败 attempt 的 partial 内容不得进入最终
+   transcript、session replay 或下一次模型上下文。
+5. 同一成功 attempt 内相同 `tool_use_id` 最多执行一次；保留轻量去重断言，但不为未启动工具建立跨 attempt
+   in-flight ledger。
+6. Anthropic、OpenAI Chat Completions、Google、Bedrock、Vertex 等非 Codex provider 不受该 completion
+   barrier 影响，原 streaming tool execution 契约保持不变。
+7. 若未来要恢复 Codex 的 pre-completed speculative execution，必须作为独立任务设计 durable ledger、崩溃恢复、
+   已完成副作用记账和 cancellation output；不得在本修复中隐式扩展。
 
-这部分不能以“当前 streaming tool gate 通常关闭”为理由省略；全量构建阶段必须覆盖 gate 开启路径。
+这部分不能以“当前 streaming tool gate 默认关闭”为理由省略；必须在 gate 开启时证明 Codex Responses 仍受
+completion barrier 约束。这样本任务无需处理“已经启动但未完成”的工具，因为该状态在 completed 前按契约不可达。
 
 ### 5.5 错误与可观测性
 
@@ -254,7 +285,8 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
    - chunk transport error 保留底层类别。
 3. 在 engine mock 中先固定 early EOF/chunk error 会触发同模型第二次 request，第二次 completed 后 turn 成功。
 4. 增加 retry exhaustion、用户取消 during backoff、non-retryable auth/invalid request 不重试测试。
-5. 增加 partial text tombstone、partial tool、运行中 tool、已完成 tool result 和 tool ID 去重测试。
+5. 增加 completion barrier 测试：合法 tool item done 后、completed 前执行次数保持 0；completed 后执行一次；
+   tool item 后直接 EOF/transport error 时首次 attempt 执行次数为 0，重试成功后总执行次数为 1。
 6. 固定 retry UI event 的 attempt/max/delay/error category，并证明 session 最终仍只产生一次正常完成状态。
 
 ### 阶段 B：配置与传输策略分层
@@ -299,6 +331,8 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
    保持连接活动但不污染上层消息。
 5. `response.failed` 提取 code/message/retry delay；明确 retryable 与 terminal 类别。
 6. 不把 Chat Completions 的 `[DONE]` 终止规则错误套到 Codex Responses；两个 parser 继续保持协议边界。
+7. 向 engine 保留明确的 Codex Responses provider/completion provenance，使 completion barrier 不依赖模型名、
+   stop reason 字符串猜测或当前 gate 默认值。
 
 ### 阶段 D：同模型 stream retry 与 attempt 状态
 
@@ -316,9 +350,10 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
 
 1. 将 request-start retry 和 stream retry 分成两个计数器及记录字段。
 2. Codex 路径移除 semantic stall；其它 provider 若保留则通过 policy 明确选择。
-3. stream failure 后先完成 attempt 收口：partial tombstone、streaming tool drain/cancel、结果记账、audit finish。
-4. 无工具副作用时重放相同 request；已有 completed tool 时构造包含 tool result 的后续 history 再继续，不能重放
-   原始 tool call。
+3. 在 Codex Responses 路径建立 completion barrier：stream 接收期间只积累 tool block；completed 后才进入现有
+   tool batch。不要在 `ContentBlockStop` 处创建 streaming executor task。
+4. stream failure 后完成 attempt 收口：确认工具执行计数为 0、partial tombstone、audit finish，然后重放同一请求；
+   不实现 streaming tool drain/cancel 或跨 attempt tool result ledger。
 5. retry 前刷新 token/OAuth 的逻辑必须走现有 auth resolver；认证失败不消耗 stream retry 预算。
 6. stream retry 耗尽后再评估现有 capacity fallback；普通 transport error 不应偷偷换模型。
 7. 删除 Codex chunk error 的 partial-success 特例；若 Anthropic generic chunk partial acceptance 仍保留，增加 provider
@@ -387,8 +422,11 @@ Codex 没有第二个 60 秒“可见内容 progress stall”阈值，因此
 - auth/invalid/context/quota -> 0 stream retry。
 - cancel during request/backoff -> 立即停止，无下一次 POST。
 - partial text/reasoning 被 tombstone，不进入下一次 context。
-- streaming tool 未完成、已完成、多个并发结果、serial barrier 均不重复 tool ID，结果顺序稳定。
-- retry 成功后的 transcript/replay 不含孤立失败 attempt；已完成工具结果可恢复。
+- Codex 合法 tool item done、尚未 completed -> 工具执行次数为 0；completed 后执行次数变为 1。
+- Codex tool item 后 early EOF/chunk error -> 失败 attempt 工具执行次数为 0；重试 completed 后总执行次数为 1。
+- completed 后多个工具仍遵守并发 batch、serial barrier、原始顺序与同 attempt tool ID 去重。
+- retry 成功后的 transcript/replay 不含孤立失败 attempt 或失败 attempt 的 tool block。
+- 非 Codex provider 的 streaming tool execution 行为保持现状。
 - 失败 turn 释放 busy 状态，下一次“继续”可正常提交。
 
 ### 7.4 分层命令
@@ -429,7 +467,8 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 2. 生成持续超过 120 秒但仍有 SSE 活动的任务，确认不再被 total timeout 杀死；
 3. 在可控本地代理中断一次连接，确认出现 retry UI 且同一 turn 恢复；
 4. 检查 session events：attempt、duration、retry category 正确，无 token/header；
-5. 工具 smoke 使用只读、可计数 fixture，确认 retry 后执行次数为 1，不用真实破坏性工具验证幂等性。
+5. 工具 smoke 使用只读、可计数 fixture，确认 completed 前执行次数为 0、retry 后总执行次数为 1，不用真实
+   破坏性工具验证幂等性。
 
 ## 8. 实施提交与 worktree 工作流
 
@@ -461,7 +500,8 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 - [ ] EOF without `response.completed` 不会成功结束。
 - [ ] request retry、stream retry、capacity fallback 三层语义和计数分离。
 - [ ] partial text/reasoning、streaming tool 开关两种状态均有测试。
-- [ ] 已开始/完成工具不会因 retry 重复执行或丢失结果。
+- [ ] Codex Responses 在 `response.completed` 前不会启动本地工具；断流 attempt 工具执行次数为 0。
+- [ ] completed 后工具只执行一次，原有并发 batch、serial barrier 与结果顺序不回退。
 - [ ] retry 状态对 TUI/SDK 可见，最终错误包含具体类别与安全错误链。
 - [ ] 非 Codex provider 回归测试通过。
 - [ ] 分层验证、release build、真实 OAuth smoke 证据写入 artifact 和本计划实施记录。
@@ -477,5 +517,7 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 - 在 EOF 时继续合成 `end_turn` / `MessageStop`。
 - 对所有错误无差别重试，包含 auth、invalid request、quota、policy 或用户取消。
 - 在断流后重放已经执行过的工具，或通过 abort 丢掉已完成工具结果。
+- Codex Responses 在 `response.completed` 前继续 `tokio::spawn` 工具，再用 task abort 冒充副作用回滚。
+- 为保留几十毫秒到数秒的 speculative tool latency，在本任务中引入跨 attempt in-flight ledger。
 - 以 fallback model 代替同模型 stream reconnect。
-- 仅验证短响应成功，不覆盖 >120 秒总时长、idle、early EOF 和 partial tool 四类关键边界。
+- 仅验证短响应成功，不覆盖 >120 秒总时长、idle、early EOF 和 completed 前工具零执行四类关键边界。
