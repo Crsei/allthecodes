@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenAI stream stall progress recovery worktree record</title>
+  <style>
+    body { max-width: 960px; margin: 40px auto; padding: 0 24px; color: #1f2937; background: #f8fafc; font: 16px/1.6 system-ui, sans-serif; }
+    main { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 32px; box-shadow: 0 8px 24px #0f172a12; }
+    h1, h2 { color: #0f3d70; }
+    code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; }
+    li { margin: 6px 0; }
+    .ok { color: #137333; font-weight: 650; }
+    .muted { color: #64748b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>OpenAI stream stall progress recovery</h1>
+    <p class="muted">2026-07-20 · isolated worktree <code>worktree/openai-stream-stall-progress-recovery</code></p>
+
+    <h2>Task goal</h2>
+    <p>Correct the follow-up regression where a long-reasoning OpenAI/Codex stream resumed after 76121 ms but the query loop rejected the newly arrived progress as <code>stream stalled</code>, then retried a second stream that also did not finish before the session ended.</p>
+
+    <h2>Plan source</h2>
+    <p><code>development/runtime/2026-07-19-openai-stream-timeout-recovery-plan.md</code>, section “2026-07-20 stall-progress regression follow-up”. The follow-up plan was committed on the main branch before this worktree was created.</p>
+
+    <h2>Live evidence</h2>
+    <ul>
+      <li>Session/run: <code>ddc64e0a-e103-43ec-8a37-dbd5f784a65d</code>.</li>
+      <li>At <code>2026-07-19T16:00:51.662768Z</code>, the first request failed with <code>stream stalled for 76121ms without progress</code>.</li>
+      <li>The same-model retry started immediately and established HTTP 200 SSE at <code>16:00:54.815274Z</code>, but no <code>model_request_finish</code> was recorded before <code>session_end</code> at <code>16:02:25.785742Z</code>.</li>
+      <li>The old watchdog checked elapsed stall time only when a genuine progress event arrived. It therefore rejected recovery instead of accepting it.</li>
+    </ul>
+
+    <h2>Worktree/merge audit</h2>
+    <ul>
+      <li><code>worktree/tui-tool-render-review-fixes</code> was already fast-forward merged into <code>86229963</code> on 2026-07-19 at 17:02.</li>
+      <li>The earlier stream recovery commits <code>5ef91fdc</code>, <code>9dedc9aa</code>, <code>15e66b93</code>, and <code>06676a48</code> are all ancestors of the main branch.</li>
+      <li>No current unmerged branch changes the stream stall symbols. The only unmerged branch touching <code>loop_impl.rs</code> changes background-agent notification handling.</li>
+      <li><code>.tmp/atc-tui-tool-render-review-fixes</code> is a retained build target, not an unmerged worktree.</li>
+    </ul>
+
+    <h2>Implemented correction</h2>
+    <ul>
+      <li><code>MessageStart</code>, content block events, message delta, and message stop are all treated as semantic stream progress.</li>
+      <li>Every real progress event is accepted first and resets <code>last_progress_at</code>, regardless of the preceding pause length.</li>
+      <li>The stall comparison is restricted to non-progress events; the independent idle timeout still guards a stream whose next semantic event never arrives.</li>
+      <li>The regression test delays both the initial <code>MessageStart</code> and the following content event by 40 ms with a 25 ms test stall threshold, and verifies one successful request with assistant text <code>Recovered</code>.</li>
+    </ul>
+
+    <h2>Commits</h2>
+    <ul>
+      <li><code>0ae6118a</code> — <code>docs(runtime): plan stream stall progress recovery</code> (main-branch plan commit)</li>
+      <li><code>a6e9aff9</code> — <code>fix(runtime): accept delayed stream progress</code></li>
+      <li><code>927fa058</code> — <code>docs(runtime): record delayed stream progress fix</code></li>
+      <li>This artifact is recorded by its own following documentation commit.</li>
+    </ul>
+
+    <h2>Verification evidence</h2>
+    <ul>
+      <li class="ok"><code>cargo fmt --all --check</code></li>
+      <li class="ok">Stream recovery suite: 15 passed, 0 failed</li>
+      <li class="ok"><code>allthecodes-engine --lib</code>: 621 passed, 4 ignored, 0 failed</li>
+      <li class="ok"><code>cargo clippy --workspace --all-targets -- -D warnings</code>: passed in 3m 31s</li>
+      <li class="ok"><code>cargo test --workspace --exclude allthecodes --lib</code>: exit 0</li>
+      <li class="ok"><code>cargo build --workspace --release</code>: passed in 5m 51s</li>
+      <li class="ok"><code>git diff --check</code></li>
+      <li>PTY TUI tests were not run because this is an engine-only stream watchdog correction, as scoped by the follow-up plan.</li>
+    </ul>
+  </main>
+</body>
+</html>
