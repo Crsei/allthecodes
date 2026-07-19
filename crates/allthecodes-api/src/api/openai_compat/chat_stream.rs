@@ -6,7 +6,8 @@ use serde_json::{json, Value};
 
 use crate::api::client::{build_openai_compat_url, is_openai_codex_provider, MessagesRequest};
 use crate::api::provider_runtime::{
-    metadata_from_response, provider_error_from_response, ProviderEndpoint, ProviderStreamTransport,
+    metadata_from_response, provider_error_from_response, ProviderEndpoint, ProviderError,
+    ProviderErrorKind, ProviderStreamTransport,
 };
 use allthecodes_types::message::{ContentBlock, MessageDelta, StreamEvent, Usage};
 
@@ -25,7 +26,8 @@ pub(crate) async fn openai_compat_stream(
     request_timeout: std::time::Duration,
     stream_idle_timeout: std::time::Duration,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
-    let mut endpoint = ProviderEndpoint::openai_compat(provider_name, base_url, api_key)?;
+    let request_api_key = resolve_request_api_key(provider_name, api_key)?;
+    let mut endpoint = ProviderEndpoint::openai_compat(provider_name, base_url, &request_api_key)?;
     endpoint.request_timeout = request_timeout;
     endpoint.stream_idle_timeout = stream_idle_timeout;
     let url = build_openai_compat_url(base_url, provider_name);
@@ -84,6 +86,36 @@ pub(crate) async fn openai_compat_stream(
         )))
     } else {
         Ok(Box::pin(parse_chat_sse_byte_stream(byte_stream)))
+    }
+}
+
+fn resolve_request_api_key(provider_name: &str, configured_api_key: &str) -> Result<String> {
+    if !is_openai_codex_provider(provider_name) {
+        return Ok(configured_api_key.to_string());
+    }
+
+    resolve_codex_request_api_key(configured_api_key, || {
+        allthecodes_auth::try_resolve_codex_auth_token()
+    })
+}
+
+fn resolve_codex_request_api_key<F>(configured_api_key: &str, resolver: F) -> Result<String>
+where
+    F: FnOnce() -> Result<Option<String>>,
+{
+    match resolver() {
+        Ok(Some(token)) => Ok(token),
+        Ok(None) => Ok(configured_api_key.to_string()),
+        Err(error) => Err(ProviderError {
+            provider: "openai-codex".to_string(),
+            kind: ProviderErrorKind::AuthenticationFailed,
+            status: None,
+            request_id: None,
+            error_type: Some("oauth_refresh_failed".to_string()),
+            message: format!("Codex OAuth refresh failed: {error:#}"),
+            retry_after_ms: None,
+        }
+        .into()),
     }
 }
 
@@ -329,6 +361,42 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_request_uses_freshly_resolved_oauth_token() {
+        let token =
+            resolve_codex_request_api_key("stale-token", || Ok(Some("fresh-token".to_string())))
+                .expect("fresh token");
+
+        assert_eq!(token, "fresh-token");
+    }
+
+    #[test]
+    fn codex_request_keeps_configured_token_when_resolver_has_no_token() {
+        let token = resolve_codex_request_api_key("configured-token", || Ok(None))
+            .expect("configured token fallback");
+
+        assert_eq!(token, "configured-token");
+    }
+
+    #[test]
+    fn codex_oauth_refresh_failure_is_typed_and_non_retryable() {
+        let error = resolve_codex_request_api_key("stale-token", || {
+            Err(anyhow::anyhow!("refresh infrastructure unavailable"))
+        })
+        .expect_err("refresh failure");
+        let provider_error = error
+            .downcast_ref::<ProviderError>()
+            .expect("typed provider error");
+
+        assert_eq!(provider_error.kind, ProviderErrorKind::AuthenticationFailed);
+        assert_eq!(
+            provider_error.error_type.as_deref(),
+            Some("oauth_refresh_failed")
+        );
+        assert!(!provider_error.kind.is_retryable());
+        assert!(!error.to_string().contains("stale-token"));
+    }
 
     #[tokio::test]
     async fn test_parse_deepseek_empty_reasoning_content_tool_call() {
