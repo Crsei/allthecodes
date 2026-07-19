@@ -1,6 +1,6 @@
 # cc-rust 当前问题汇总
 
-> 更新日期: 2026-07-18
+> 更新日期: 2026-07-19
 
 本文是当前开放问题、代码审查发现和文档状态问题的唯一活跃入口。已修复、已失效或只具历史价值的问题已迁移到：
 
@@ -29,6 +29,7 @@
 | ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
 | --- | --- | --- | --- | --- | --- |
 | PROVIDER-001 | 高 | Fixed | Rust TUI / provider profile | Rust TUI 缺少删除和管理 provider profile 的入口，Web `/api/profiles` 更新还会把完整 profile 重建为空配置；运行时只允许 Anthropic/OpenAI/Codex。 | 新增 `/providers` 配置与 preset 分区、创建/完整替换/激活/删除向导和非交互命令；TUI、provider API 与 profile API 统一使用无损原子存储。17 个静态 provider、Bedrock、Vertex 可从 active profile 构造运行时，Foundry 与未知/custom/ACP 保持可管理但拒绝激活；所有读取与快照隐藏秘密。 |
+| PROVIDER-002 | 高 | Fixed | OpenAI-compatible SSE | 用户反馈长推理在约 120 秒后显示 `Error occurred: API error: error reading OpenAI response chunk`；共享 reqwest client 把 `timeout_secs=120` 作为整个 response body 的总截止时间，即使流持续有数据也会被截断。 | Streaming client 已改为 connect/read timeout，不再继承 non-streaming total timeout；chunk/idle/stall 在空 accumulator 时同模型安全重试一次，完整错误链用于诊断，已有 partial tool use 时禁止重试。确定性测试以 1 秒 timeout 验证 1.2 秒持续流完整成功。 |
 
 当前无开放项。已关闭记录见 [archive/resolved-model-context-2026-05-07.md](resolved-model-context-2026-05-07.md)。
 
@@ -56,6 +57,7 @@
 | UI-012 | 中 | Fixed | Rust TUI welcome logo | 0.1.13 logo 将九宫格与 `ALLTHECODES` tracker 分开，3×3 整格密度不足以清晰表达全部字母；后续运行态发现各逻辑列之间仍有固定空格，整体宽度过大。 | 已按 [integrated glyph plan](../tui/2026-07-16-allthecodes-tui-logo-integrated-glyph-plan.md) 改为九宫格内 6×6 子像素/half-block 多边形和五帧单色几何渐变，并按 [grid spacing plan](../tui/2026-07-16-tui-grid-spacing-tightening-plan.md) 删除列间固定空格、将外框和布局宽度收紧为 8 列；颜色阶段等待单色运行态确认。 |
 | UI-013 | 中 | Fixed | Rust TUI command panels | 会话区已有文本时打开斜杠命令列表或命令 surface，鼠标滚轮仍会滚动底层会话，文本会移动到面板下方并从未覆盖的单元格透出。 | 命令面板打开时滚轮不再修改会话 `scroll_offset`；command palette 与 prompt-adjacent command surface 绘制前都会清空占用矩形。回归测试覆盖两类面板的输入隔离与缓冲区遮挡。 |
 | UI-014 | 中 | Fixed | Rust TUI prompt/status/startup/layout | 大粘贴、有效 slash command、启动期用户可见 WARN、重复 model、请求级 context 状态和短会话 prompt 锚点曾出现用户可见不一致。 | [2026-07-18 TUI fix plan](../tui/2026-07-18-tui-paste-command-warning-status-bottom-layout-fix-plan.md) 与 follow-up `c29a329f` 已落地结构化 paste range、cwd/registry/TTL command metadata cache、覆盖 API key/云凭据/JWT/通用 secret assignment 的 startup diagnostic 脱敏、最新单次 Assistant request usage、优先 effective `context_window` 的 capacity resolver、model/agent/context 单一 status owner 和 bottom-anchored layout。新增真实 PTY 2/2 通过，覆盖 512 字符 paste、model fallback warning、单一 model 与 100x24 的 prompt/context/footer 坐标；fmt、相关 unit、clippy、非 PTY workspace lib 与 release build 通过。完整 PTY 10 线程结果为 221 passed、36 ignored、2 个独立既有等待窗口失败，未标为全绿。 |
+| UI-015 | 中 | Fixed | Rust TUI task mutations | 用户反馈消息流仍显示 `TaskCreate` / `TaskUpdate`，而任务状态应默认通过 spinner 上方的 `✔` / `◻` TaskList 呈现。 | 普通与 verbose 消息流均隐藏 task mutation tool use 及配对 result；收到 TaskCreate/TaskUpdate 时自动打开并在 result 后刷新 session/team-scoped TaskList，非任务工具不自动打开，Ctrl+T 手动切换保持不变。 |
 
 ## 6. 文档状态问题
 
