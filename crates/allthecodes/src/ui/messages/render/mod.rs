@@ -451,8 +451,8 @@ fn message_detail_lines(msg: &Message, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        message_copy_text, message_copy_text_with_mode, message_primary_reference,
-        render_single_message, CopyTextMode,
+        build_message_render_context_with_options, message_copy_text, message_copy_text_with_mode,
+        message_primary_reference, render_single_message, CopyTextMode, MessageRenderOptions,
     };
     use crate::ui::diff::file_edit_diff::unified_hunk_lines_from_edit;
     use crate::ui::messages::user_text_message::CONVERSATION_INTERRUPTED_MESSAGE;
@@ -467,6 +467,91 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::Color;
     use serde_json::json;
+
+    #[test]
+    fn task_mutation_tools_and_results_are_hidden_in_normal_and_verbose_streams() {
+        let task_create_id = "task-create-1".to_string();
+        let task_update_id = "task-update-1".to_string();
+        let assistant = Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1_700_000_000,
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "Working on the checklist".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: task_create_id.clone(),
+                    name: "TaskCreate".to_string(),
+                    input: json!({"subject": "Build page"}),
+                },
+                ContentBlock::ToolUse {
+                    id: task_update_id.clone(),
+                    name: "TaskUpdate".to_string(),
+                    input: json!({"task_id": "1", "status": "in_progress"}),
+                },
+            ],
+            usage: None,
+            stop_reason: Some("tool_use".to_string()),
+            is_api_error_message: false,
+            api_error: None,
+            cost_usd: 0.0,
+        });
+        let results = Message::User(UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: 1_700_000_001,
+            role: "user".to_string(),
+            content: MessageContent::Blocks(vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: task_create_id,
+                    content: ToolResultContent::Text("created".to_string()),
+                    is_error: false,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: task_update_id,
+                    content: ToolResultContent::Text("updated".to_string()),
+                    is_error: false,
+                },
+            ]),
+            is_meta: true,
+            tool_use_result: Some("task mutations complete".to_string()),
+            source_tool_assistant_uuid: None,
+        });
+
+        for verbose in [false, true] {
+            let context = build_message_render_context_with_options(
+                &[assistant.clone(), results.clone()],
+                None,
+                false,
+                MessageRenderOptions {
+                    verbose,
+                    ..Default::default()
+                },
+            );
+            let rendered = context
+                .renderable_messages()
+                .iter()
+                .flat_map(|message| {
+                    super::render_renderable_message_with_context(
+                        message,
+                        0,
+                        &Theme::default(),
+                        100,
+                        &context,
+                    )
+                })
+                .flat_map(|line| line.spans)
+                .map(|span| span.content.into_owned())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            assert!(rendered.contains("Working on the checklist"));
+            assert!(!rendered.contains("TaskCreate"));
+            assert!(!rendered.contains("TaskUpdate"));
+            assert!(!rendered.contains("created"));
+            assert!(!rendered.contains("updated"));
+        }
+    }
 
     #[test]
     fn renders_file_edit_tool_preview_from_tool_use_result() {

@@ -1061,6 +1061,12 @@ impl App {
             }
             AppEvent::Backend { message } => {
                 let message = message.as_ref();
+                if backend_message_opens_task_list(message) {
+                    self.expanded_view = ExpandedView::Tasks;
+                    self.task_list_completed_since = None;
+                    self.refresh_expanded_task_view_at(Instant::now(), true);
+                    self.dirty = true;
+                }
                 if backend_message_updates_tasks(message) {
                     self.runtime_view.apply_task_event(message);
                     if let Some(CommandSurface::Tasks(surface)) =
@@ -2066,6 +2072,14 @@ fn backend_message_updates_tasks(message: &BackendMessage) -> bool {
             | BackendMessage::BackgroundAgentComplete { .. }
             | BackendMessage::AgentEvent { .. }
             | BackendMessage::TeamEvent { .. }
+    )
+}
+
+fn backend_message_opens_task_list(message: &BackendMessage) -> bool {
+    matches!(
+        message,
+        BackendMessage::ToolUse { name, .. }
+            if matches!(name.as_str(), "TaskCreate" | "TaskUpdate" | "task_create" | "task_update")
     )
 }
 

@@ -28,6 +28,7 @@ pub(crate) fn group_by_operation(
     options: MessageRenderOptions,
     tool_operations: &HashMap<String, ToolOperation>,
 ) -> Vec<RenderableMessage> {
+    let messages = suppress_task_mutation_messages(messages, tool_operations);
     if options.verbose {
         return messages;
     }
@@ -73,6 +74,36 @@ pub(crate) fn group_by_operation(
     }
 
     result
+}
+
+fn suppress_task_mutation_messages(
+    messages: Vec<RenderableMessage>,
+    tool_operations: &HashMap<String, ToolOperation>,
+) -> Vec<RenderableMessage> {
+    let task_tool_ids = messages
+        .iter()
+        .filter_map(|message| classify_message(message, tool_operations))
+        .filter_map(|(id, operation)| is_task_mutation_tool(&operation.raw_tool_name).then_some(id))
+        .collect::<HashSet<_>>();
+
+    messages
+        .into_iter()
+        .filter(|message| {
+            if classify_message(message, tool_operations)
+                .is_some_and(|(id, _)| task_tool_ids.contains(&id))
+            {
+                return false;
+            }
+            !tool_result_id_for_message(message).is_some_and(|id| task_tool_ids.contains(id))
+        })
+        .collect()
+}
+
+fn is_task_mutation_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "TaskCreate" | "TaskUpdate" | "task_create" | "task_update"
+    )
 }
 
 /// Try to classify a RenderableMessage as a ToolUse with a known ToolOperation.

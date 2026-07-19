@@ -1766,6 +1766,66 @@ fn expanded_task_view_throttles_fallback_store_refreshes() {
 }
 
 #[test]
+#[serial]
+fn task_mutation_tool_opens_and_refreshes_the_scoped_task_list() {
+    let home = tempfile::tempdir().expect("allthecodes home");
+    let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
+    let session_id = format!("session-{}", uuid::Uuid::new_v4());
+    let store = allthecodes_tasks::store_for_task_list_id(&session_id);
+    let mut app = App::new();
+    app.set_session_id(session_id);
+
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::ToolUse {
+            id: "task-create-1".to_string(),
+            name: "TaskCreate".to_string(),
+            input: serde_json::json!({"subject": "Visible checklist task"}),
+            operation: None,
+        }),
+    });
+
+    assert_eq!(app.expanded_view, ExpandedView::Tasks);
+    assert!(app.runtime_view.task_list_items().is_empty());
+
+    store
+        .try_create("Visible checklist task", "refresh after tool result")
+        .expect("create task");
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::ToolResult {
+            tool_use_id: "task-create-1".to_string(),
+            output: "created".to_string(),
+            is_error: false,
+            content_blocks: None,
+            result_summary: None,
+            operation: None,
+        }),
+    });
+
+    assert_eq!(app.expanded_view, ExpandedView::Tasks);
+    assert_eq!(app.runtime_view.task_list_items().len(), 1);
+    assert_eq!(
+        app.runtime_view.task_list_items()[0].title,
+        "Visible checklist task"
+    );
+}
+
+#[test]
+fn non_task_tool_does_not_open_the_task_list() {
+    let mut app = App::new();
+
+    app.handle_app_event(AppEvent::Backend {
+        message: Box::new(BackendMessage::ToolUse {
+            id: "read-1".to_string(),
+            name: "Read".to_string(),
+            input: serde_json::json!({"file_path": "src/main.rs"}),
+            operation: None,
+        }),
+    });
+
+    assert_eq!(app.expanded_view, ExpandedView::None);
+}
+
+#[test]
 fn completed_task_list_collapses_after_five_seconds() {
     use crate::ui::messages::task_list_content::TaskListItem;
     use crate::ui::tasks::TaskState;
