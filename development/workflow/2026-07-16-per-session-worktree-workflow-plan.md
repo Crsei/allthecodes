@@ -7,7 +7,7 @@
 
 ## 1. 目标
 
-让每次任务在独立的 git worktree 中完成，避免与主分支上的并行任务相互污染；除「对应任务的计划文件」必须先同步到主分支外，任务期间的代码、文档、产物都在 worktree 内改、在 worktree 内 commit；完成后 fast-forward 合并回主分支 `allthecodes`，并删除该 worktree 与其分支。
+让每次任务在独立的 git worktree 中完成，避免与主分支上的并行任务相互污染；除「对应任务的计划文件」必须先同步到主分支外，任务期间的代码、文档、产物都在 worktree 内改、在 worktree 内 commit。worktree 内禁止运行任何 Rust 构建或测试；候选提交 fast-forward 合并回主分支 `allthecodes` 后，才在主分支执行 Rust 构建与测试。若主分支验证失败，保留并回到同一 worktree 修复，再次合并、验证；只有任务全部完成后才能删除 worktree 与其分支。
 
 ## 2. 适用对象
 
@@ -34,7 +34,8 @@
    - 进入 worktree 后再做任何改动。
 
 3. **在 worktree 内完成改动**
-   - 所有代码 / 文档 / 产物的修改、`cargo` 编译、测试、`git add`、`git commit` 都在 worktree 内进行。
+   - 所有代码 / 文档 / 产物的修改、`git add`、`git commit` 都在 worktree 内进行。
+   - **worktree 内禁止运行任何 Rust 构建或测试**，包括但不限于 `cargo check`、`cargo build`、`cargo clippy`、`cargo test`、`cargo nextest` 以及直接执行 Rust 测试二进制。允许执行不编译、不运行 Rust 代码的只读检查与文档静态检查。
    - 严禁回到主分支 working tree 改动会污染并行任务的内容；若必须临时回到主分支核对，只读，不写、不 commit。
 
 4. **构建 HTML artifact**
@@ -43,20 +44,27 @@
    - artifact 必须能独立打开阅读，包含：任务目标、流程步骤、本次改动列表、对应的计划文件路径、本次 commit 列表、验证依据（编译/测试结果或截图描述）。
    - artifact 跟随 worktree 的提交一起合并到主分支。
 
-5. **fast-forward 合并回主分支**
+5. **fast-forward 合并候选提交回主分支**
    - 在 worktree 内做完所有 commit（含 artifact）后，切回主分支：
      ```bash
      cd /data2-HDD-SATA-20T/Digital_avatar/haoweiyao/allthecodes
      git merge --ff-only worktree/<task-slug>
      ```
    - 只允许 fast-forward；如果无法 fast-forward，说明主分支在 task 进行期间被别人推进了，需要先解决再说，绝不产生不必要的 merge commit。
-   - 合并后推送主分支：
+   - 此时保留 worktree 和 `worktree/<task-slug>` 分支，不得提前删除。
+
+6. **只在主分支执行 Rust 构建与测试，并循环修复**
+   - 候选提交合并后，只在主分支 `allthecodes` 运行本任务要求的 Rust 构建与测试；禁止在 worktree 中运行这些命令。
+   - 若主分支出现构建或测试问题，不得直接在主分支 working tree 修改代码。回到仍然保留的同一 worktree 完成修复并 commit，再 fast-forward 合并回主分支，重新在主分支验证。
+   - 按「worktree 修改并 commit → 主分支 ff 合并 → 主分支构建/测试」循环，直到任务要求全部完成且验证通过。
+   - 文档专用任务若按变更风险不需要 Rust 构建或测试，应在 artifact 中明确记录“未运行 Rust 构建/测试”及理由。
+
+7. **最终推送并删除 worktree 与分支**
+   - 只有任务要求全部完成、主分支所需验证通过后，才推送主分支：
      ```bash
      git push origin allthecodes
      ```
-
-6. **删除 worktree 与分支**
-   - 合并成功后清理：
+   - 推送成功后清理：
      ```bash
      git worktree remove .worktrees/<task-slug>
      git branch -d worktree/<task-slug>
@@ -65,11 +73,11 @@
 
 ## 4. 计划文件 vs worktree 改动的边界
 
-| 类型 | 主分支 commit（前置） | worktree commit |
-|------|------------------------|------------------|
-| 计划文件本身（`development/workflow/<task>-plan.md`、`development/<域>/<...-plan.md>`） | ✅ 必须 | ❌ 不在 worktree 内改 |
-| `CLAUDE.md` / `AGENTS.md` 内容 | ❌ | ✅ 在 worktree 内改 |
-| 代码、其它文档、HTML artifact | ❌ | ✅ 在 worktree 内改 |
+| 类型 | 主分支 commit（前置） | worktree commit | Rust 构建/测试 |
+|------|------------------------|-----------------|---------------|
+| 计划文件本身（`development/workflow/<task>-plan.md`、`development/<域>/<...-plan.md>`） | ✅ 必须 | ❌ 不在 worktree 内改 | 按风险决定；如需执行，仅在合并后的主分支 |
+| `CLAUDE.md` / `AGENTS.md` 内容 | ❌ | ✅ 在 worktree 内改 | 按风险决定；如需执行，仅在合并后的主分支 |
+| 代码、其它文档、HTML artifact | ❌ | ✅ 在 worktree 内改 | 如任务要求执行，仅在合并后的主分支 |
 
 > 反例：不要把 `CLAUDE.md` 改动直接 commit 到主分支 working tree，否则违背 §1「worktree 隔离」目标。
 
@@ -83,11 +91,12 @@
 
 - 本规范是对 `CLAUDE.md` / `AGENTS.md` 中「工作树」「提交」「文档更新按任务拆分」相关条目的细化，不取代它们的提交路径、env、镜像等约定。
 - 本规范与 [`docs/KNOWN_ISSUES.md`](../archive/KNOWN_ISSUES.md) 解耦：worktree 流程不改变已知问题的记录方式。
-- `using-git-worktrees` superpowers 与本规范可以并存；本规范规定的是仓库级「主分支前置 + ff 合并 + 删树」的固定动作。
+- `using-git-worktrees` superpowers 与本规范可以并存；本规范规定的是仓库级「主分支前置 + worktree 修改 + 主分支验证 + 完成后删树」的固定动作。
 
 ## 7. 失败回退
 
 - §3-1 主分支前置提交失败：放弃本次任务，不创建 worktree。
 - §3-2 worktree 创建失败：清理未完成的 worktree 目录与分支后，回到主分支重试。
 - §3-5 fast-forward 失败：不要改用 `--no-ff`；先 `git fetch` + 评估冲突，必要时 `git rebase worktree/<task-slug>` 将 worktree 分支重放到最新主分支后再 ff 合并。
+- §3-6 主分支 Rust 构建或测试失败：保留 worktree；在同一 worktree 修复并 commit，再按 §3-5 和 §3-6 重新合并、验证。不得在主分支直接修代码，也不得提前删除 worktree。
 - 任何回退都要在 artifact 的「验证依据」里写清发生了什么。
