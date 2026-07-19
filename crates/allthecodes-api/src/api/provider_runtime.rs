@@ -95,6 +95,7 @@ impl ProviderErrorKind {
             || lower.contains("high demand")
             || lower.contains("capacity")
             || lower.contains("unavailable")
+            || lower.contains("server_error")
         {
             return Self::ServerOverloaded;
         }
