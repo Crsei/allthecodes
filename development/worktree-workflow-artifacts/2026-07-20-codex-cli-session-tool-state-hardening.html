@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex CLI 会话工具状态加固实施记录</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --text: #172033;
+      --muted: #5a6475;
+      --line: #d8deea;
+      --accent: #3659d9;
+      --ok: #147d4f;
+      --pending: #9a5d00;
+      --code: #eef1f7;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111522;
+        --card: #191f2e;
+        --text: #eef2fb;
+        --muted: #aab4c8;
+        --line: #323b50;
+        --accent: #8ea4ff;
+        --ok: #73d9a9;
+        --pending: #f2bd68;
+        --code: #222a3b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1100px, calc(100% - 32px)); margin: 32px auto 64px; }
+    header, section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 24px;
+      margin-bottom: 18px;
+      box-shadow: 0 8px 30px rgb(20 32 64 / 7%);
+    }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(24px, 4vw, 38px); margin-bottom: 10px; }
+    h2 { font-size: 21px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    h3 { font-size: 16px; margin-top: 20px; }
+    p:last-child, ul:last-child { margin-bottom: 0; }
+    code {
+      background: var(--code);
+      border-radius: 5px;
+      padding: 1px 5px;
+      overflow-wrap: anywhere;
+    }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+    th, td { border: 1px solid var(--line); padding: 9px 11px; text-align: left; vertical-align: top; }
+    th { background: var(--code); }
+    .meta { color: var(--muted); margin: 0; }
+    .badge {
+      display: inline-block;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      padding: 2px 9px;
+      margin-right: 6px;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .ok { color: var(--ok); }
+    .pending { color: var(--pending); }
+    .flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+    .flow div { border: 1px solid var(--line); border-radius: 9px; padding: 10px; text-align: center; }
+    @media (max-width: 760px) {
+      main { width: min(100% - 20px, 1100px); margin-top: 10px; }
+      header, section { padding: 17px; }
+      .flow { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge ok">worktree 候选实现已提交</span>
+    <span class="badge pending">主分支 Rust / OAuth 验收待执行</span>
+    <h1>Codex CLI 工具状态、会话恢复与收尾卡死修复</h1>
+    <p class="meta">日期：2026-07-20 · 分支：<code>worktree/codex-cli-session-tool-state-hardening</code></p>
+    <p>本页记录独立 worktree 中的候选实现、提交边界与验证依据。主分支验证完成后将在同一文件追加最终证据。</p>
+  </header>
+
+  <section>
+    <h2>任务目标与权威计划</h2>
+    <p>唯一权威计划：<code>development/bugs/2026-07-19-codex-oauth-responses-stream-timeout-retry-fix-plan.md</code>。</p>
+    <ul>
+      <li>消除工具完成后重复 MCP 刷新造成的 query 收尾阻塞。</li>
+      <li>在下一 provider 请求前，将 assistant tool call 与 tool result 强制写入并 flush canonical rollout。</li>
+      <li>resume 前修复 orphan tool call/result，不自动重放已执行工具。</li>
+      <li>让 Read/Edit 等文件工具跨 turn 共用 session-owned 文件状态，并拒绝 stale edit。</li>
+      <li>第三次相同工具验证失败时 fail closed，避免无界工具循环。</li>
+      <li>统一 provider、resume、max-turns 与 tool-loop 的非交互错误和退出语义。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>强制工作流</h2>
+    <div class="flow" aria-label="工作流步骤">
+      <div>主分支单独提交计划<br><code>da3975ca</code></div>
+      <div>创建独立 worktree</div>
+      <div>仅在 worktree 修改/提交</div>
+      <div>ff-only 合并主分支</div>
+      <div>仅在主分支 Rust 验证</div>
+    </div>
+    <p>worktree 路径：<code>.worktrees/codex-cli-session-tool-state-hardening</code>。候选实现阶段未在 worktree 内运行 cargo、Rust 构建、clippy、测试或 Rust 测试二进制。</p>
+  </section>
+
+  <section>
+    <h2>实施提交</h2>
+    <table>
+      <thead><tr><th>提交</th><th>目的</th><th>主要结果</th></tr></thead>
+      <tbody>
+        <tr><td><code>f7f01aae</code></td><td>Make tool refresh non-blocking</td><td>请求前单一刷新点；MCP manager 忙或失败时使用 typed cached outcome。</td></tr>
+        <tr><td><code>bd0c7a7f</code></td><td>Persist tool results before continuation</td><td>tool call/result 进入事务并在下一请求前 append + flush rollout；canonical 失败即终止。</td></tr>
+        <tr><td><code>03ac69f8</code></td><td>Repair resumable tool histories</td><td>完整 rollout、legacy projection 补回、synthetic error 三路恢复；修复后写入 snapshot。</td></tr>
+        <tr><td><code>a3f4c2e4</code></td><td>Preserve file read state across turns</td><td>引入不含文件内容的 receipt；canonical executor 统一提交 shared file-state cache。</td></tr>
+        <tr><td><code>6f7ec327</code></td><td>Stop repeated tool validation loops</td><td>第三次相同摘要验证失败产生 <code>tool_error_loop</code>，审计仅记录 SHA-256 摘要。</td></tr>
+        <tr><td><code>1d41b1e3</code></td><td>Enforce non-interactive failure exits</td><td>synthetic API error 不再伪成功；plain/JSON 与 resume/continue 均返回 error 结果和 exit 1。</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>改动范围</h2>
+    <table>
+      <thead><tr><th>子系统</th><th>关键路径</th><th>契约</th></tr></thead>
+      <tbody>
+        <tr><td>Engine lifecycle</td><td><code>crates/allthecodes-engine/src/lifecycle/</code><br><code>crates/allthecodes-engine/src/query/</code></td><td>非阻塞刷新、durable turn boundary、loop guard、terminal error。</td></tr>
+        <tr><td>Session resume</td><td><code>crates/allthecodes-session/src/resume.rs</code><br><code>record_replay/types.rs</code></td><td>协议完整性检查、精确补回、synthetic result、snapshot。</td></tr>
+        <tr><td>File tools</td><td><code>crates/allthecodes-tools/src/fs/</code><br><code>deferred_tools.rs</code><br><code>tool.rs</code></td><td>receipt 携带规范化路径、resolved path、hash、mtime；共享 cache。</td></tr>
+        <tr><td>CLI/startup</td><td><code>crates/allthecodes-startup/src/modes.rs</code><br><code>crates/allthecodes/src/startup/</code></td><td>plain stdout/stderr 隔离、JSONL 保真、history failure fail closed。</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>候选测试与可观测性</h2>
+    <ul>
+      <li><code>ToolRefreshOutcome::{Fresh,CachedBusy,CachedError}</code> 及刷新耗时/原因。</li>
+      <li><code>tool_results_durable</code>、<code>tool_refresh_cached</code>、<code>next_turn_ready</code> rollout/query 事件。</li>
+      <li>tool result 后崩溃边界、三路 resume 修复与不重放断言。</li>
+      <li>有限窗口 Read 后 Edit、外部修改拒绝、deferred receipt 对普通 Edit 可见。</li>
+      <li>第三次相同 validation failure 终止且审计中没有原始敏感输入。</li>
+      <li>API error 的 final success 分类，以及 plain、JSONL、resume/continue terminal output 单元覆盖。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>当前验证依据</h2>
+    <table>
+      <thead><tr><th>检查</th><th>结果</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>git diff --check</code></td><td class="ok">通过</td><td>各提交前均完成 staged whitespace 检查。</td></tr>
+        <tr><td>worktree 状态</td><td class="ok">提交后干净</td><td>所有候选源码均已按显式路径提交。</td></tr>
+        <tr><td>主树受保护文件指纹</td><td class="ok">5/5 匹配</td><td>4 个 UI 文件与 TUI audit 报告保持原 SHA-256。</td></tr>
+        <tr><td>Rust 格式/编译/测试/release</td><td class="pending">待主分支</td><td>按 per-session worktree 规则，禁止在本 worktree 执行。</td></tr>
+        <tr><td>真实 OAuth / Playwright</td><td class="pending">待主分支 release</td><td>目标模型 <code>gpt-5.6-sol</code>，不设置 timeout/stall 覆盖。</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>保护边界</h2>
+    <p>本任务未触碰或暂存主工作树中的 <code>crates/allthecodes/src/ui/app/render.rs</code>、<code>app/tests.rs</code>、welcome snapshot、<code>components/welcome.rs</code>、<code>.spec/</code> 与 <code>development/tui/2026-07-20-tui-panel-gap-audit-vs-claude-code-bun.md</code>。</p>
+  </section>
+</main>
+</body>
+</html>
