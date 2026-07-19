@@ -117,6 +117,14 @@ pub struct ProviderCreateRequest {
     pub models: Option<Vec<String>>,
     #[serde(default)]
     pub provider_options: Option<Value>,
+    #[serde(default, alias = "requestMaxRetries")]
+    pub request_max_retries: Option<u8>,
+    #[serde(default, alias = "streamMaxRetries")]
+    pub stream_max_retries: Option<u8>,
+    #[serde(default, alias = "streamIdleTimeoutMs")]
+    pub stream_idle_timeout_ms: Option<u64>,
+    #[serde(default, alias = "requestTimeoutMs")]
+    pub request_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +148,14 @@ pub struct ProviderUpdateRequest {
     pub models: Option<Vec<String>>,
     #[serde(default)]
     pub provider_options: Option<Value>,
+    #[serde(default, alias = "requestMaxRetries")]
+    pub request_max_retries: Option<u8>,
+    #[serde(default, alias = "streamMaxRetries")]
+    pub stream_max_retries: Option<u8>,
+    #[serde(default, alias = "streamIdleTimeoutMs")]
+    pub stream_idle_timeout_ms: Option<u64>,
+    #[serde(default, alias = "requestTimeoutMs")]
+    pub request_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +187,10 @@ pub struct ProviderReplaceRequest {
     pub available_models: Option<Vec<String>>,
     pub model_capabilities: Option<HashMap<String, Value>>,
     pub model_reasoning_effort: Option<String>,
+    pub request_max_retries: Option<u8>,
+    pub stream_max_retries: Option<u8>,
+    pub stream_idle_timeout_ms: Option<u64>,
+    pub request_timeout_ms: Option<u64>,
     pub base_url: Option<String>,
     pub extra: HashMap<String, Value>,
     pub secret_updates: ProviderSecretUpdates,
@@ -189,6 +209,10 @@ pub struct ProviderDetailResponse {
     pub available_models: Option<Vec<String>>,
     pub model_capabilities: Option<HashMap<String, Value>>,
     pub model_reasoning_effort: Option<String>,
+    pub request_max_retries: Option<u8>,
+    pub stream_max_retries: Option<u8>,
+    pub stream_idle_timeout_ms: Option<u64>,
+    pub request_timeout_ms: Option<u64>,
     pub base_url: Option<String>,
     pub api_key_configured: bool,
     pub env_keys: Vec<String>,

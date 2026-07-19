@@ -115,6 +115,14 @@ pub struct ProviderCreateRequest {
     pub models: Option<Vec<String>>,
     #[serde(default)]
     pub provider_options: Option<Value>,
+    #[serde(default, alias = "requestMaxRetries")]
+    pub request_max_retries: Option<u8>,
+    #[serde(default, alias = "streamMaxRetries")]
+    pub stream_max_retries: Option<u8>,
+    #[serde(default, alias = "streamIdleTimeoutMs")]
+    pub stream_idle_timeout_ms: Option<u64>,
+    #[serde(default, alias = "requestTimeoutMs")]
+    pub request_timeout_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +145,14 @@ pub struct ProviderUpdateRequest {
     pub models: PatchField<Vec<String>>,
     #[serde(default)]
     pub provider_options: PatchField<Value>,
+    #[serde(default, alias = "requestMaxRetries")]
+    pub request_max_retries: PatchField<u8>,
+    #[serde(default, alias = "streamMaxRetries")]
+    pub stream_max_retries: PatchField<u8>,
+    #[serde(default, alias = "streamIdleTimeoutMs")]
+    pub stream_idle_timeout_ms: PatchField<u64>,
+    #[serde(default, alias = "requestTimeoutMs")]
+    pub request_timeout_ms: PatchField<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

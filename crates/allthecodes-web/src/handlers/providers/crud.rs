@@ -110,6 +110,10 @@ fn detail_response(
                 .collect()
         }),
         model_reasoning_effort: detail.model_reasoning_effort,
+        request_max_retries: detail.request_max_retries,
+        stream_max_retries: detail.stream_max_retries,
+        stream_idle_timeout_ms: detail.stream_idle_timeout_ms,
+        request_timeout_ms: detail.request_timeout_ms,
         base_url: detail.base_url,
         api_key_configured: detail.api_key_configured,
         env_keys: detail.env_keys,
@@ -170,6 +174,10 @@ pub async fn providers_create_handler(Json(req): Json<ProviderCreateRequest>) ->
         available_models: req.models.map(normalize_models),
         model_capabilities: None,
         model_reasoning_effort: None,
+        request_max_retries: req.request_max_retries,
+        stream_max_retries: req.stream_max_retries,
+        stream_idle_timeout_ms: req.stream_idle_timeout_ms,
+        request_timeout_ms: req.request_timeout_ms,
         base_url: req.base_url.clone(),
         api_key: normalized_non_empty(req.api_key.as_deref()),
         env: req.env,
@@ -232,6 +240,10 @@ pub async fn providers_replace_handler(
             available_models: req.available_models.map(normalize_models),
             model_capabilities,
             model_reasoning_effort: req.model_reasoning_effort,
+            request_max_retries: req.request_max_retries,
+            stream_max_retries: req.stream_max_retries,
+            stream_idle_timeout_ms: req.stream_idle_timeout_ms,
+            request_timeout_ms: req.request_timeout_ms,
             base_url: req
                 .base_url
                 .and_then(|value| normalized_non_empty(Some(&value))),
@@ -270,6 +282,13 @@ pub async fn providers_update_handler(
             apply_optional_string(&mut profile.base_url, req.base_url);
             apply_optional_string(&mut profile.api_key, req.api_key);
             apply_patch(&mut profile.env, req.env);
+            apply_patch(&mut profile.request_max_retries, req.request_max_retries);
+            apply_patch(&mut profile.stream_max_retries, req.stream_max_retries);
+            apply_patch(
+                &mut profile.stream_idle_timeout_ms,
+                req.stream_idle_timeout_ms,
+            );
+            apply_patch(&mut profile.request_timeout_ms, req.request_timeout_ms);
             match req.command {
                 PatchField::Missing => {}
                 PatchField::Null => {

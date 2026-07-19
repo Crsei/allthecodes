@@ -213,6 +213,12 @@ fn apply_codex_profile_to_settings(settings: &mut RawSettings, default_model: &s
         available_models: Some(models.clone()),
         model_capabilities: Some(codex_model_capabilities()),
         model_reasoning_effort: Some("medium".to_string()),
+        request_max_retries: Some(allthecodes_config::settings::CODEX_REQUEST_MAX_RETRIES_DEFAULT),
+        stream_max_retries: Some(allthecodes_config::settings::CODEX_STREAM_MAX_RETRIES_DEFAULT),
+        stream_idle_timeout_ms: Some(
+            allthecodes_config::settings::CODEX_STREAM_IDLE_TIMEOUT_MS_DEFAULT,
+        ),
+        request_timeout_ms: Some(allthecodes_config::settings::CODEX_REQUEST_TIMEOUT_MS_DEFAULT),
         base_url: None,
         api_key: None,
         env: None,
