@@ -29,9 +29,9 @@
 | ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
 | --- | --- | --- | --- | --- | --- |
 | PROVIDER-001 | 高 | Fixed | Rust TUI / provider profile | Rust TUI 缺少删除和管理 provider profile 的入口，Web `/api/profiles` 更新还会把完整 profile 重建为空配置；运行时只允许 Anthropic/OpenAI/Codex。 | 新增 `/providers` 配置与 preset 分区、创建/完整替换/激活/删除向导和非交互命令；TUI、provider API 与 profile API 统一使用无损原子存储。17 个静态 provider、Bedrock、Vertex 可从 active profile 构造运行时，Foundry 与未知/custom/ACP 保持可管理但拒绝激活；所有读取与快照隐藏秘密。 |
-| PROVIDER-002 | 高 | Reopened / In Progress | OpenAI-compatible SSE | Session `0359e5bd-15cf-43c5-917e-b668f8e35baf` 的第五次模型调用仍在 120 秒 semantic idle 边界失败；设置 `ALLTHECODES_STREAM_IDLE_TIMEOUT_MS=300000` 后，Session `0812dfa1-bb43-4553-adcb-bdc87b84ca6c` 完成真实网页构建。当前公开 `StreamEvent` 全部属于有效进度，旧 60 秒 stall non-progress 分支不可达；EOF/提前 `[DONE]` 仍需与 `response.completed` 成功边界严格分离。 | 按 `development/bugs/2026-07-19-codex-oauth-responses-stream-timeout-retry-fix-plan.md` 实施 provider policy、原始 SSE frame idle、typed stream failure、同模型 stream retry、工具执行幂等和非交互 CLI 错误输出；完成分层测试、真实 OAuth 与 release 验收后再标记 Fixed。 |
+| PROVIDER-002 | 高 | Fixed | OpenAI-compatible SSE | Session `0359e5bd-15cf-43c5-917e-b668f8e35baf` 的第五次模型调用曾在 120 秒 semantic idle 边界失败；设置 `ALLTHECODES_STREAM_IDLE_TIMEOUT_MS=300000` 后，Session `0812dfa1-bb43-4553-adcb-bdc87b84ca6c` 完成真实网页构建。根因是 Codex 继承 total timeout、idle 只观察公开事件、EOF 伪完成且 established stream 无同模型恢复。 | 已按 `development/bugs/2026-07-19-codex-oauth-responses-stream-timeout-retry-fix-plan.md` 落地 provider policy、原始 SSE frame idle、`response.completed` 唯一完成边界、typed failure、同模型 reconnect、completed 前工具零执行、OAuth retry refresh 与非交互 CLI stderr。配置/API/engine/session/Web/CLI/UI 定向测试、workspace clippy、release build 和可控三次 POST 断流验收通过；证据见 `development/worktree-workflow-artifacts/2026-07-20-codex-stream-recovery-cli-contract.html`。 |
 
-当前开放项为 `PROVIDER-002`。已关闭记录见
+当前无开放 provider 项。已关闭记录见
 [archive/resolved-model-context-2026-05-07.md](resolved-model-context-2026-05-07.md)。
 
 ## 4. Context / compact

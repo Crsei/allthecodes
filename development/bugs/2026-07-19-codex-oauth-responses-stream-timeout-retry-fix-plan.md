@@ -2,11 +2,33 @@
 
 日期：2026-07-19
 
-状态：Active
+状态：Implemented
 
 2026-07-20 复核：本文件是该问题的唯一权威计划。实施使用
 `worktree/codex-stream-recovery-cli-contract`，artifact 固定为
 `development/worktree-workflow-artifacts/2026-07-20-codex-stream-recovery-cli-contract.html`。
+
+### 2026-07-20 实施记录
+
+实现提交从 `ffe0870c` 到 `f95e920e`，证据 artifact 为 `12eae743`。最终实现包括 provider
+recovery policy、Codex Responses 原始 SSE frame idle、`response.completed` 唯一成功边界、typed
+stream failure、同模型 reconnect、completed 前工具零执行、重复 tool ID 拒绝、partial tombstone、三类
+recovery 计数与 SDK/TUI/session report 可观测性，以及 print/json stdin 和 stderr 契约。每次 Codex
+请求建立前还会重新走现有 OAuth resolver；刷新失败分类为不可重试的 `AuthenticationFailed`，不泄露旧
+token。
+
+主分支验证通过 `cargo fmt --all --check`、workspace clippy `-D warnings`、配置/API/engine/session/Web/CLI/UI
+定向测试和 `cargo build --workspace --release`。可控本地 SSE 验收证明：第一次完整 tool block 后 EOF，
+第二次 completed，第三次最终完成；只出现一次 stream reconnect、一个 tool result 和三次 POST。CLI 进程级
+smoke 覆盖 positional、stdin、JSON stdin、空输入和 max-turns stderr。
+
+真实 OAuth 默认配置验收确认新 release 使用 `openai-codex / codex / gpt-5.6-sol`，且所有 timeout/stall
+环境覆盖均未设置；session `cee7800a-ccd1-4bc8-b4f5-9511658e8d8b` 的前三轮模型调用成功。该次银河任务随后
+停在工具结果持久化后的工具收口/刷新路径，另一次无工具尝试停在 query 启动前，因此没有把它们误记为
+“新 release 单次真实 SSE 超过 120 秒”的通过证据。历史成功 session
+`0812dfa1-bb43-4553-adcb-bdc87b84ca6c` 的网页由 Playwright 重新验收为 HTTP 200、交互正常、
+console/page/failed-request 全为 0；长流协议边界由缩放自动化和可控 SSE fixture 覆盖。完整命令、计数、
+限制和 release provenance 均记录在 artifact。
 
 问题域：OpenAI Codex OAuth、Responses API、SSE、超时、重试、工具执行幂等性
 
@@ -493,21 +515,21 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 
 ## 9. 完成标准
 
-- [ ] 现场两种错误都有确定性回归测试，修复前失败、修复后通过。
-- [ ] Codex Responses 不再受 120 秒 HTTP total timeout 约束。
-- [ ] Codex 不再使用 60 秒 semantic progress stall。
-- [ ] 300 秒默认 idle 与 5 次 stream retry 可由 active profile 配置。
-- [ ] EOF without `response.completed` 不会成功结束。
-- [ ] request retry、stream retry、capacity fallback 三层语义和计数分离。
-- [ ] partial text/reasoning、streaming tool 开关两种状态均有测试。
-- [ ] Codex Responses 在 `response.completed` 前不会启动本地工具；断流 attempt 工具执行次数为 0。
-- [ ] completed 后工具只执行一次，原有并发 batch、serial barrier 与结果顺序不回退。
-- [ ] retry 状态对 TUI/SDK 可见，最终错误包含具体类别与安全错误链。
-- [ ] 非 Codex provider 回归测试通过。
-- [ ] 分层验证、release build、真实 OAuth smoke 证据写入 artifact 和本计划实施记录。
-- [ ] `development/archive/KNOWN_ISSUES.md` 与历史 gap/current-status 状态同步。
+- [x] 现场两种错误都有确定性回归测试，修复前失败、修复后通过。
+- [x] Codex Responses 不再受 120 秒 HTTP total timeout 约束。
+- [x] Codex 不再使用 60 秒 semantic progress stall。
+- [x] 300 秒默认 idle 与 5 次 stream retry 可由 active profile 配置。
+- [x] EOF without `response.completed` 不会成功结束。
+- [x] request retry、stream retry、capacity fallback 三层语义和计数分离。
+- [x] partial text/reasoning、streaming tool 开关两种状态均有测试。
+- [x] Codex Responses 在 `response.completed` 前不会启动本地工具；断流 attempt 工具执行次数为 0。
+- [x] completed 后工具只执行一次，原有并发 batch、serial barrier 与结果顺序不回退。
+- [x] retry 状态对 TUI/SDK 可见，最终错误包含具体类别与安全错误链。
+- [x] 非 Codex provider 回归测试通过。
+- [x] 分层验证、release build、真实 OAuth smoke 证据写入 artifact 和本计划实施记录。
+- [x] `development/archive/KNOWN_ISSUES.md` 与历史 gap/current-status 状态同步。
 - [ ] fast-forward 合并、推送和 worktree 清理完成。
-- [ ] print/json 从非 TTY stdin 读取 prompt，空输入明确失败，print mode 的最终错误写入 stderr。
+- [x] print/json 从非 TTY stdin 读取 prompt，空输入明确失败，print mode 的最终错误写入 stderr。
 
 ## 10. 明确不接受的“修复”
 
