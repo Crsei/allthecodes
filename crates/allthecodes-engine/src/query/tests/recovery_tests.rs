@@ -408,7 +408,7 @@ async fn test_chunk_read_error_after_text_accepts_partial_assistant() {
                 "text": "partial but usable"
             }),
         }),
-        Err("error reading response chunk: connection closed".to_string()),
+        Err("error reading OpenAI response chunk: connection closed".to_string()),
     ])]));
 
     let stream = query(
@@ -418,7 +418,7 @@ async fn test_chunk_read_error_after_text_accepts_partial_assistant() {
     let items: Vec<QueryYield> = stream.collect().await;
 
     assert!(
-        !has_api_error_containing(&items, "error reading response chunk"),
+        !has_api_error_containing(&items, "error reading OpenAI response chunk"),
         "chunk read errors after text should not replace the response with an API error"
     );
     assert!(
@@ -432,6 +432,73 @@ async fn test_chunk_read_error_after_text_accepts_partial_assistant() {
         )),
         "partial text should be finalized as the assistant response"
     );
+}
+
+#[tokio::test]
+async fn test_empty_chunk_read_error_retries_same_model_once() {
+    let deps = Arc::new(MockDeps::from_steps(vec![
+        MockStreamStep::Events(vec![
+            Ok(StreamEvent::MessageStart {
+                usage: Usage::default(),
+            }),
+            Err("error reading OpenAI response chunk: connection reset".to_string()),
+        ]),
+        MockStreamStep::Response(make_text_response("Recovered on the same model")),
+    ]));
+
+    let stream = query(
+        make_query_params(vec![make_user_message_for_test("Retry empty stream")]),
+        deps.clone(),
+    );
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    assert_eq!(request_start_count(&items), 2);
+    let recorded = deps.recorded_params();
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[0].model, recorded[1].model);
+    assert!(
+        !has_api_error_containing(&items, "error reading OpenAI response chunk"),
+        "the recovered interruption should not become a terminal API error"
+    );
+    assert!(items.iter().any(|item| matches!(
+        item,
+        QueryYield::Message(Message::Assistant(message))
+            if message.content.iter().any(|block| matches!(
+                block,
+                ContentBlock::Text { text } if text == "Recovered on the same model"
+            ))
+    )));
+}
+
+#[tokio::test]
+async fn test_chunk_error_after_partial_tool_use_is_not_retried() {
+    let deps = Arc::new(MockDeps::from_steps(vec![MockStreamStep::Events(vec![
+        Ok(StreamEvent::MessageStart {
+            usage: Usage::default(),
+        }),
+        Ok(StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::ToolUse {
+                id: "toolu_partial".to_string(),
+                name: "Read".to_string(),
+                input: serde_json::json!({}),
+            },
+        }),
+        Err("error reading OpenAI response chunk: connection reset".to_string()),
+    ])]));
+
+    let stream = query(
+        make_query_params(vec![make_user_message_for_test("Do not duplicate tools")]),
+        deps.clone(),
+    );
+    let items: Vec<QueryYield> = stream.collect().await;
+
+    assert_eq!(request_start_count(&items), 1);
+    assert_eq!(deps.recorded_params().len(), 1);
+    assert!(has_api_error_containing(
+        &items,
+        "error reading OpenAI response chunk"
+    ));
 }
 
 #[tokio::test]
@@ -467,14 +534,20 @@ async fn test_fallback_exhaustion_releases_terminal_stream_start_error() {
 
 #[tokio::test]
 async fn test_stream_idle_watchdog_errors_when_first_event_never_arrives() {
-    let deps = Arc::new(MockDeps::from_steps(vec![MockStreamStep::DelayedEvents(
-        vec![(
+    let deps = Arc::new(MockDeps::from_steps(vec![
+        MockStreamStep::DelayedEvents(vec![(
             Duration::from_millis(75),
             Ok(StreamEvent::MessageStart {
                 usage: Usage::default(),
             }),
-        )],
-    )]));
+        )]),
+        MockStreamStep::DelayedEvents(vec![(
+            Duration::from_millis(75),
+            Ok(StreamEvent::MessageStart {
+                usage: Usage::default(),
+            }),
+        )]),
+    ]));
 
     let stream = query(
         make_query_params(vec![make_user_message_for_test("Wait for stream")]),
@@ -482,7 +555,7 @@ async fn test_stream_idle_watchdog_errors_when_first_event_never_arrives() {
     );
     let items: Vec<QueryYield> = stream.collect().await;
 
-    assert_eq!(request_start_count(&items), 1);
+    assert_eq!(request_start_count(&items), 2);
     assert!(
         has_api_error_containing(&items, "stream idle timeout"),
         "idle watchdog should surface a stream timeout error: {:?}",
@@ -492,7 +565,7 @@ async fn test_stream_idle_watchdog_errors_when_first_event_never_arrives() {
 
 #[tokio::test]
 async fn test_stream_stall_detection_errors_after_handshake_without_progress() {
-    let deps = Arc::new(MockDeps::from_steps(vec![MockStreamStep::DelayedEvents(
+    let stalled_events = || {
         vec![
             (
                 Duration::from_millis(0),
@@ -509,8 +582,12 @@ async fn test_stream_stall_detection_errors_after_handshake_without_progress() {
                     },
                 }),
             ),
-        ],
-    )]));
+        ]
+    };
+    let deps = Arc::new(MockDeps::from_steps(vec![
+        MockStreamStep::DelayedEvents(stalled_events()),
+        MockStreamStep::DelayedEvents(stalled_events()),
+    ]));
 
     let stream = query(
         make_query_params(vec![make_user_message_for_test("Detect stall")]),
@@ -518,6 +595,7 @@ async fn test_stream_stall_detection_errors_after_handshake_without_progress() {
     );
     let items: Vec<QueryYield> = stream.collect().await;
 
+    assert_eq!(request_start_count(&items), 2);
     assert!(
         items
             .iter()

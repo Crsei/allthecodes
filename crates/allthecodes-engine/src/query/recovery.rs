@@ -161,6 +161,15 @@ pub(crate) fn is_stream_progress_event(event: &StreamEvent) -> bool {
     )
 }
 
+/// Transport interruptions that are safe to retry only when the current
+/// attempt has not produced assistant content or a tool call.
+pub(crate) fn is_retryable_stream_interruption(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    (lower.contains("error reading") && lower.contains("response chunk"))
+        || lower.contains("stream idle timeout")
+        || lower.contains("stream stalled")
+}
+
 /// Handle prompt_too_long error recovery.
 ///
 /// Three-step recovery:

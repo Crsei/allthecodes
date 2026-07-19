@@ -121,6 +121,7 @@ async fn messages_stream_retries_retryable_stream_start_errors() {
     let client = ApiClient {
         config: anthropic_config(),
         http: reqwest::Client::new(),
+        stream_http: reqwest::Client::new(),
         stream_provider: Box::new(FlakyStreamProvider {
             calls: calls.clone(),
             fail_times: 1,
@@ -155,6 +156,7 @@ async fn messages_stream_does_not_retry_nonretryable_stream_start_errors() {
     let client = ApiClient {
         config: anthropic_config(),
         http: reqwest::Client::new(),
+        stream_http: reqwest::Client::new(),
         stream_provider: Box::new(FlakyStreamProvider {
             calls: calls.clone(),
             fail_times: 1,
@@ -185,6 +187,7 @@ async fn messages_collects_stream_events_into_assistant_message() {
     let client = ApiClient {
         config: anthropic_config(),
         http: reqwest::Client::new(),
+        stream_http: reqwest::Client::new(),
         stream_provider: Box::new(StaticStreamProvider {
             events: vec![
                 StreamEvent::MessageStart {
@@ -245,6 +248,7 @@ async fn messages_propagates_partial_stream_error_instead_of_fake_success() {
     let client = ApiClient {
         config: anthropic_config(),
         http: reqwest::Client::new(),
+        stream_http: reqwest::Client::new(),
         stream_provider: Box::new(PartialThenErrorStreamProvider),
     };
 

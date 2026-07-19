@@ -58,9 +58,9 @@ use super::loop_helpers::{
 };
 use super::recovery::{
     classify_model_call_failure, handle_max_output_tokens, handle_prompt_too_long,
-    is_stream_progress_event, stream_idle_timeout, stream_stall_timeout,
-    strip_fallback_signature_blocks, MaxTokensRecovery, ModelCallFailureRecovery,
-    ModelCallFailureStage, PromptRecovery,
+    is_retryable_stream_interruption, is_stream_progress_event, stream_idle_timeout,
+    stream_stall_timeout, strip_fallback_signature_blocks, MaxTokensRecovery,
+    ModelCallFailureRecovery, ModelCallFailureStage, PromptRecovery,
 };
 use super::stop_hooks::{self, StopHookResult};
 use super::token_budget::check_token_budget;
@@ -182,6 +182,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
             let mut attempt_params = call_params.clone();
             let mut fallback_used = false;
             let mut retry_count = 0_u32;
+            let mut empty_stream_retry_used = false;
 
             use futures::StreamExt;
             let (assistant_message, streaming_tool_executor, runtime_record_turn_context) = loop {
@@ -422,7 +423,7 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                             yield QueryYield::Stream(event);
                         }
                         Err(e) => {
-                            stream_error = Some(e.to_string());
+                            stream_error = Some(format!("{e:#}"));
                             break;
                         }
                     }
@@ -474,6 +475,21 @@ pub fn query(params: QueryParams, deps: Arc<dyn QueryDeps>) -> impl Stream<Item 
                         &attempt_model,
                         err,
                     );
+
+                    if !empty_stream_retry_used
+                        && is_retryable_stream_interruption(err)
+                        && stream_attempt_is_empty(&accumulator)
+                    {
+                        warn!(
+                            error = %err,
+                            model = %attempt_model,
+                            "stream failed before assistant content; retrying the same model once"
+                        );
+                        empty_stream_retry_used = true;
+                        retry_count += 1;
+                        continue;
+                    }
+
                     if !fallback_used {
                         if let ModelCallFailureRecovery::Fallback { model: fallback } = recovery {
                             let tombstone_message = accumulator.build(&attempt_model);
@@ -1100,7 +1116,9 @@ fn should_accept_partial_response_after_chunk_read_error(
     err: &str,
     accumulator: &allthecodes_api::api::streaming::StreamAccumulator,
 ) -> bool {
-    if !err.contains("error reading response chunk") {
+    if !is_retryable_stream_interruption(err)
+        || !err.to_ascii_lowercase().contains("response chunk")
+    {
         return false;
     }
 
@@ -1118,6 +1136,12 @@ fn should_accept_partial_response_after_chunk_read_error(
     });
 
     has_text && !has_tool_use
+}
+
+fn stream_attempt_is_empty(
+    accumulator: &allthecodes_api::api::streaming::StreamAccumulator,
+) -> bool {
+    accumulator.content_blocks.is_empty()
 }
 
 async fn record_verification_finished(

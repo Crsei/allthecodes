@@ -397,7 +397,11 @@ impl ApiClient {
         let mut retry_attempt = 0;
 
         loop {
-            match self.stream_provider.stream(&self.http, &request).await {
+            match self
+                .stream_provider
+                .stream(&self.stream_http, &request)
+                .await
+            {
                 Ok(stream) => return Ok(stream),
                 Err(error) => {
                     let error_message = error.to_string();

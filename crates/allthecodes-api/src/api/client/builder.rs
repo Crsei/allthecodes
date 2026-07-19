@@ -209,6 +209,26 @@ fn validate_provider_config(provider: &ApiProvider) -> Result<()> {
     Ok(())
 }
 
+fn build_http_client(
+    timeout: std::time::Duration,
+    proxy: Option<reqwest::Proxy>,
+    streaming: bool,
+) -> reqwest::Client {
+    let mut builder =
+        reqwest::Client::builder().user_agent(allthecodes_config::user_agent::api_user_agent());
+    builder = if streaming {
+        builder.connect_timeout(timeout).read_timeout(timeout)
+    } else {
+        builder.timeout(timeout)
+    };
+    if let Some(proxy) = proxy {
+        builder = builder.proxy(proxy);
+    } else {
+        builder = builder.no_proxy();
+    }
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
 // ---------------------------------------------------------------------------
 // ApiClient construction methods
 // ---------------------------------------------------------------------------
@@ -221,29 +241,21 @@ impl ApiClient {
         require_non_empty(&config.default_model, "default model")?;
 
         let stream_provider = make_stream_provider(&config.provider);
-        Ok(Self {
-            http: {
-                let mut builder = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(config.timeout_secs))
-                    .user_agent(allthecodes_config::user_agent::api_user_agent());
-
-                // Honor a proxy URL from settings.json::proxyUrl first, then
-                // HTTPS_PROXY/HTTP_PROXY/ALL_PROXY explicitly. This keeps the
-                // client working under TUN/fake-ip DNS hijacking (e.g. Clash
-                // TUN) where the system DNS resolves API hosts to private IPs
-                // and direct TLS handshakes fail with "unexpected EOF", without
-                // requiring the user to export proxy env vars in every shell.
-                if let Some(proxy_url) = resolve_proxy_url() {
-                    if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
-                        tracing::info!(proxy = %proxy_url, "using explicit HTTP proxy");
-                        builder = builder.proxy(proxy);
-                    } else {
-                        tracing::warn!(proxy = %proxy_url, "invalid proxy URL, ignoring");
-                    }
+        let timeout = std::time::Duration::from_secs(config.timeout_secs);
+        let proxy =
+            resolve_proxy_url().and_then(|proxy_url| match reqwest::Proxy::all(&proxy_url) {
+                Ok(proxy) => {
+                    tracing::info!(proxy = %proxy_url, "using explicit HTTP proxy");
+                    Some(proxy)
                 }
-
-                builder.build().unwrap_or_else(|_| reqwest::Client::new())
-            },
+                Err(_) => {
+                    tracing::warn!(proxy = %proxy_url, "invalid proxy URL, ignoring");
+                    None
+                }
+            });
+        Ok(Self {
+            http: build_http_client(timeout, proxy.clone(), false),
+            stream_http: build_http_client(timeout, proxy, true),
             stream_provider,
             config,
         })
@@ -874,7 +886,9 @@ impl ApiClient {
 #[cfg(test)]
 mod provider_profile_tests {
     use super::*;
+    use futures::StreamExt;
     use std::collections::HashMap;
+    use std::io::{Read, Write};
 
     #[test]
     fn every_static_provider_builds_from_profile_credentials() {
@@ -928,5 +942,52 @@ mod provider_profile_tests {
             ..Default::default()
         };
         assert!(ApiClient::from_vertex_profile_result(Some(&vertex)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn streaming_http_timeout_resets_after_each_successful_read() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept request");
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .expect("set request read timeout");
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).expect("read request");
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n1\r\na\r\n",
+                )
+                .expect("write response headers");
+            socket.flush().expect("flush first chunk");
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            socket.write_all(b"1\r\nb\r\n").expect("write second chunk");
+            socket.flush().expect("flush second chunk");
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            socket
+                .write_all(b"1\r\nc\r\n0\r\n\r\n")
+                .expect("write final chunk");
+        });
+
+        let client = build_http_client(std::time::Duration::from_secs(1), None, true);
+        let started = std::time::Instant::now();
+        let response = client
+            .get(format!("http://{address}/stream"))
+            .send()
+            .await
+            .expect("establish streaming response");
+        let mut body = response.bytes_stream();
+        let mut received = Vec::new();
+        while let Some(chunk) = body.next().await {
+            received.extend_from_slice(&chunk.expect("read streaming chunk"));
+        }
+        server.join().expect("join test server");
+
+        assert_eq!(received, b"abc");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(1_100),
+            "stream should outlive the one-second timeout as long as every read makes progress"
+        );
     }
 }

@@ -423,6 +423,10 @@ pub struct ApiClientConfig {
 pub struct ApiClient {
     pub config: ApiClientConfig,
     pub http: reqwest::Client,
+    /// Streaming requests use per-connect/per-read timeouts instead of the
+    /// non-streaming client's total request deadline. A total deadline would
+    /// terminate healthy long-lived SSE responses after `timeout_secs`.
+    pub stream_http: reqwest::Client,
     pub stream_provider: Box<dyn crate::api::stream_provider::StreamProvider>,
 }
 
