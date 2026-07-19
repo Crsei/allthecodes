@@ -52,6 +52,9 @@ pub async fn run_print_mode(engine: &QueryEngine, prompt: &str) -> anyhow::Resul
             }
             allthecodes_types::sdk::SdkMessage::Result(result) => {
                 if result.is_error {
+                    if !result.result.trim().is_empty() {
+                        eprintln!("{}", result.result);
+                    }
                     exit_code = ExitCode::FAILURE;
                 }
             }

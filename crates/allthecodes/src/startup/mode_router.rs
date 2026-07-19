@@ -1,3 +1,4 @@
+use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -32,7 +33,7 @@ fn daemon_allowed_by_features() -> bool {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::daemon_allowed_by_features;
+    use super::{daemon_allowed_by_features, resolve_non_interactive_prompt};
 
     struct FeatureOverrideGuard;
 
@@ -57,6 +58,37 @@ mod tests {
         let _guard = FeatureOverrideGuard::set(flags);
         assert!(daemon_allowed_by_features());
     }
+
+    #[test]
+    fn positional_prompt_wins_without_reading_stdin() {
+        let mut stdin = std::io::Cursor::new("ignored stdin");
+        assert_eq!(
+            resolve_non_interactive_prompt(&["positional".to_string()], &mut stdin, false).unwrap(),
+            "positional"
+        );
+        assert_eq!(stdin.position(), 0);
+    }
+
+    #[test]
+    fn non_tty_stdin_is_trimmed_for_print_and_json_modes() {
+        let mut stdin = std::io::Cursor::new("  from stdin\n");
+        assert_eq!(
+            resolve_non_interactive_prompt(&[], &mut stdin, false).unwrap(),
+            "from stdin"
+        );
+    }
+
+    #[test]
+    fn tty_and_empty_stdin_fail_immediately() {
+        let mut tty = std::io::Cursor::new("ignored");
+        assert!(resolve_non_interactive_prompt(&[], &mut tty, true)
+            .unwrap_err()
+            .contains("non-TTY stdin"));
+        let mut empty = std::io::Cursor::new(" \n\t");
+        assert!(resolve_non_interactive_prompt(&[], &mut empty, false)
+            .unwrap_err()
+            .contains("stdin is empty"));
+    }
 }
 
 async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
@@ -64,22 +96,34 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
 
     // JSON output mode takes priority (SDK sends both -p and --output-format json).
     if cli.output_format.as_deref() == Some("json") {
-        let prompt = cli.prompt.join(" ");
-        if prompt.is_empty() {
-            use std::io::Read;
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            return allthecodes_startup::modes::run_json_mode(&runtime.engine, buf.trim()).await;
-        }
+        let mut stdin = std::io::stdin();
+        let prompt = match resolve_non_interactive_prompt(
+            &cli.prompt,
+            &mut stdin,
+            std::io::stdin().is_terminal(),
+        ) {
+            Ok(prompt) => prompt,
+            Err(message) => {
+                eprintln!("error: {message}");
+                return Ok(ExitCode::FAILURE);
+            }
+        };
         return allthecodes_startup::modes::run_json_mode(&runtime.engine, &prompt).await;
     }
 
     if cli.print {
-        let prompt = cli.prompt.join(" ");
-        if prompt.is_empty() {
-            error!("print mode requires a prompt argument");
-            return Ok(ExitCode::FAILURE);
-        }
+        let mut stdin = std::io::stdin();
+        let prompt = match resolve_non_interactive_prompt(
+            &cli.prompt,
+            &mut stdin,
+            std::io::stdin().is_terminal(),
+        ) {
+            Ok(prompt) => prompt,
+            Err(message) => {
+                eprintln!("error: {message}");
+                return Ok(ExitCode::FAILURE);
+            }
+        };
         return allthecodes_startup::modes::run_print_mode(&runtime.engine, &prompt).await;
     }
 
@@ -207,6 +251,34 @@ async fn run_ready_runtime(runtime: RuntimeReady) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+fn resolve_non_interactive_prompt<R: Read>(
+    positional: &[String],
+    stdin: &mut R,
+    stdin_is_tty: bool,
+) -> Result<String, String> {
+    if !positional.is_empty() {
+        let prompt = positional.join(" ");
+        if prompt.trim().is_empty() {
+            return Err("non-interactive positional prompt is empty".to_string());
+        }
+        return Ok(prompt);
+    }
+    if stdin_is_tty {
+        return Err(
+            "non-interactive mode requires a positional prompt or non-TTY stdin".to_string(),
+        );
+    }
+    let mut input = String::new();
+    stdin
+        .read_to_string(&mut input)
+        .map_err(|error| format!("failed to read prompt from stdin: {error}"))?;
+    let input = input.trim();
+    if input.is_empty() {
+        return Err("non-interactive prompt from stdin is empty".to_string());
+    }
+    Ok(input.to_string())
 }
 
 fn subagent_dashboard_companion_enabled() -> bool {
