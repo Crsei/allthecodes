@@ -4,7 +4,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::tool::{Tool, ToolProgress, ToolResult, ToolUseContext, ValidationResult};
+use crate::tool::{
+    FileStateReceipt, Tool, ToolProgress, ToolResult, ToolUseContext, ValidationResult,
+};
 use allthecodes_types::message::AssistantMessage;
 
 use super::safe_write::{
@@ -185,6 +187,12 @@ impl Tool for FileWriteTool {
 
         let line_count = report.line_count;
         let byte_count = report.bytes_written;
+        let file_state_receipt = FileStateReceipt::from_content(
+            &ctx.cwd,
+            &file_path,
+            &report.target_path,
+            content.as_bytes(),
+        );
 
         // Fire FileChanged hook
         {
@@ -226,6 +234,7 @@ impl Tool for FileWriteTool {
                 },
             }),
             new_messages: vec![super::edited_text_file_message(file_path)],
+            file_state_receipts: vec![file_state_receipt],
             ..Default::default()
         })
     }

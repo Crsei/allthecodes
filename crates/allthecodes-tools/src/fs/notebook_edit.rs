@@ -1,7 +1,6 @@
 use std::fs::OpenOptions;
 use std::io;
 use std::path::Path;
-use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -9,8 +8,8 @@ use serde_json::{json, Map, Value};
 use similar::TextDiff;
 
 use crate::tool::{
-    FileCacheEntry, FileStateCache, Tool, ToolProgress, ToolResult, ToolUseContext,
-    ValidationResult,
+    FileCacheEntry, FileStateCache, FileStateReceipt, Tool, ToolProgress, ToolResult,
+    ToolUseContext, ValidationResult,
 };
 use allthecodes_types::message::{AssistantMessage, ToolResultContent};
 
@@ -142,15 +141,6 @@ impl NotebookEditTool {
         })
     }
 
-    fn modified_millis(metadata: &std::fs::Metadata) -> i64 {
-        metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-            .unwrap_or(0)
-    }
-
     fn state_keys(file_path: &str, path: &Path) -> Vec<String> {
         let mut keys = Vec::new();
         Self::push_unique_key(&mut keys, file_path.to_string());
@@ -187,19 +177,6 @@ impl NotebookEditTool {
             return Err(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
         }
         Ok(())
-    }
-
-    fn record_edit_state(ctx: &ToolUseContext, file_path: &str, path: &Path, content: &str) {
-        let timestamp = std::fs::metadata(path)
-            .map(|metadata| Self::modified_millis(&metadata))
-            .unwrap_or(0);
-        let entry = FileCacheEntry {
-            content_hash: FileStateCache::hash_content(content.as_bytes()),
-            last_read_timestamp: timestamp,
-        };
-        for key in Self::state_keys(file_path, path) {
-            ctx.read_file_state.insert(key, entry.clone());
-        }
     }
 
     fn validate_file_writable(path: &Path) -> std::result::Result<(), String> {
@@ -742,7 +719,12 @@ impl Tool for NotebookEditTool {
             }
         };
 
-        Self::record_edit_state(ctx, &parsed.notebook_path, path, &updated_content);
+        let file_state_receipt = FileStateReceipt::from_content(
+            &ctx.cwd,
+            &parsed.notebook_path,
+            path,
+            updated_content.as_bytes(),
+        );
         {
             let app_state = (ctx.get_app_state)();
             let configs =
@@ -816,6 +798,7 @@ impl Tool for NotebookEditTool {
             new_messages: vec![super::edited_text_file_message(
                 path.to_string_lossy().to_string(),
             )],
+            file_state_receipts: vec![file_state_receipt],
             ..Default::default()
         })
     }
@@ -945,16 +928,14 @@ mod tests {
     }
 
     fn cache_file_state(ctx: &ToolUseContext, path: &Path, content: &str) {
-        let timestamp = std::fs::metadata(path)
-            .map(|metadata| NotebookEditTool::modified_millis(&metadata))
-            .unwrap_or(0);
-        ctx.read_file_state.insert(
-            path.to_string_lossy().to_string(),
-            FileCacheEntry {
-                content_hash: FileStateCache::hash_content(content.as_bytes()),
-                last_read_timestamp: timestamp,
-            },
+        let requested_path = path.to_string_lossy();
+        let receipt = FileStateReceipt::from_content(
+            &ctx.cwd,
+            requested_path.as_ref(),
+            path,
+            content.as_bytes(),
         );
+        ctx.read_file_state.commit_receipt(&receipt);
     }
 
     #[test]

@@ -107,6 +107,9 @@ pub struct ToolResult {
     pub new_messages: Vec<allthecodes_types::message::Message>,
     pub shell: Option<allthecodes_types::ShellExecutionOutput>,
     pub taint: allthecodes_types::security::TaintContext,
+    /// Internal state updates committed by the canonical executor after a
+    /// successful file tool call. Receipts never include file contents.
+    pub file_state_receipts: Vec<FileStateReceipt>,
 }
 
 impl ToolResult {
@@ -122,6 +125,7 @@ impl ToolResult {
             new_messages: vec![],
             shell: None,
             taint: allthecodes_types::security::TaintContext::default(),
+            file_state_receipts: vec![],
         }
     }
 
@@ -153,6 +157,60 @@ pub struct FileCacheEntry {
     pub last_read_timestamp: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileStateReceipt {
+    pub normalized_path: String,
+    pub resolved_path: String,
+    pub content_hash: u64,
+    pub modified_millis: i64,
+}
+
+impl FileStateReceipt {
+    pub fn from_content(
+        cwd: &str,
+        requested_path: &str,
+        resolved_path: &std::path::Path,
+        content: &[u8],
+    ) -> Self {
+        let requested = std::path::Path::new(requested_path);
+        let absolute = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            std::path::Path::new(cwd).join(requested)
+        };
+        let normalized = normalize_lexical_path(&absolute);
+        let resolved = std::fs::canonicalize(resolved_path)
+            .unwrap_or_else(|_| normalize_lexical_path(resolved_path));
+        let modified_millis = std::fs::metadata(&resolved)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+            .unwrap_or(0);
+
+        Self {
+            normalized_path: normalized.to_string_lossy().to_string(),
+            resolved_path: resolved.to_string_lossy().to_string(),
+            content_hash: FileStateCache::hash_content(content),
+            modified_millis,
+        }
+    }
+}
+
+fn normalize_lexical_path(path: &std::path::Path) -> std::path::PathBuf {
+    let mut normalized = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
 impl FileStateCache {
     pub fn get(&self, path: &str) -> Option<FileCacheEntry> {
         self.entries.read().get(path).cloned()
@@ -164,6 +222,16 @@ impl FileStateCache {
 
     pub fn invalidate(&self, path: &str) {
         self.entries.write().remove(path);
+    }
+
+    pub fn commit_receipt(&self, receipt: &FileStateReceipt) {
+        let entry = FileCacheEntry {
+            content_hash: receipt.content_hash,
+            last_read_timestamp: receipt.modified_millis,
+        };
+        let mut entries = self.entries.write();
+        entries.insert(receipt.normalized_path.clone(), entry.clone());
+        entries.insert(receipt.resolved_path.clone(), entry);
     }
 
     pub fn hash_content(content: &[u8]) -> u64 {

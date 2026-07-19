@@ -1,13 +1,11 @@
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
-
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde_json::{json, Value};
 
 use crate::tool::{
-    FileCacheEntry, InterruptBehavior, Tool, ToolProgress, ToolResult, ToolUseContext,
+    FileStateReceipt, InterruptBehavior, Tool, ToolProgress, ToolResult, ToolUseContext,
     ValidationResult,
 };
 use allthecodes_types::message::AssistantMessage;
@@ -72,29 +70,17 @@ impl FileReadTool {
         (file_path, offset, limit, pages)
     }
 
-    fn modified_millis(metadata: &std::fs::Metadata) -> i64 {
-        metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-            .unwrap_or(0)
-    }
-
-    fn record_text_read(ctx: &ToolUseContext, target: &ReadTarget, content: &str, timestamp: i64) {
-        let entry = FileCacheEntry {
-            content_hash: crate::tool::FileStateCache::hash_content(content.as_bytes()),
-            last_read_timestamp: timestamp,
-        };
-
-        let keys = [
-            target.original_path.clone(),
-            target.read_path.to_string_lossy().to_string(),
-            target.resolved_path.clone(),
-        ];
-        for key in keys {
-            ctx.read_file_state.insert(key, entry.clone());
-        }
+    fn text_read_receipt(
+        ctx: &ToolUseContext,
+        target: &ReadTarget,
+        content: &str,
+    ) -> FileStateReceipt {
+        FileStateReceipt::from_content(
+            &ctx.cwd,
+            &target.original_path,
+            &target.read_path,
+            content.as_bytes(),
+        )
     }
 
     /// Detect if content is likely binary by checking for null bytes
@@ -423,13 +409,10 @@ impl FileReadTool {
         read_state: Option<(&ToolUseContext, &ReadTarget)>,
     ) -> Result<ToolResult> {
         let content = tokio::fs::read_to_string(file_path).await?;
-        if let Some((ctx, target)) = read_state {
-            let modified_at = tokio::fs::metadata(file_path)
-                .await
-                .map(|metadata| Self::modified_millis(&metadata))
-                .unwrap_or(0);
-            Self::record_text_read(ctx, target, &content, modified_at);
-        }
+        let file_state_receipts = read_state
+            .map(|(ctx, target)| Self::text_read_receipt(ctx, target, &content))
+            .into_iter()
+            .collect();
         let notebook: Value = serde_json::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse notebook JSON: {}", e))?;
 
@@ -494,6 +477,7 @@ impl FileReadTool {
                 "file_path": file_path,
             }),
             new_messages: vec![],
+            file_state_receipts,
             ..Default::default()
         })
     }
@@ -642,10 +626,6 @@ impl FileReadTool {
         ctx: Option<&ToolUseContext>,
     ) -> Result<ToolResult> {
         let bytes = tokio::fs::read(&target.read_path).await?;
-        let modified_at = tokio::fs::metadata(&target.read_path)
-            .await
-            .map(|metadata| Self::modified_millis(&metadata))
-            .unwrap_or(0);
         let decoded = match Self::decode_text_bytes(&bytes)? {
             Some(decoded) => decoded,
             None => {
@@ -661,6 +641,8 @@ impl FileReadTool {
                 });
             }
         };
+        let file_state_receipt =
+            ctx.map(|ctx| Self::text_read_receipt(ctx, target, &decoded.content));
 
         let effective_offset = offset.unwrap_or(0);
         let hashline_mode = ctx
@@ -676,8 +658,6 @@ impl FileReadTool {
         } else {
             Self::format_text_window(&decoded.content, effective_offset, limit)
         };
-        let is_full_read_request = effective_offset == 0 && limit.is_none();
-
         if formatted.output.is_empty() && formatted.total_lines > 0 {
             return Ok(ToolResult {
                 data: json!({
@@ -692,16 +672,12 @@ impl FileReadTool {
                     "hashline_mode": hashline_mode,
                 }),
                 new_messages: vec![],
+                file_state_receipts: file_state_receipt.clone().into_iter().collect(),
                 ..Default::default()
             });
         }
 
         if formatted.output.is_empty() {
-            if is_full_read_request {
-                if let Some(ctx) = ctx {
-                    Self::record_text_read(ctx, target, &decoded.content, modified_at);
-                }
-            }
             return Ok(ToolResult {
                 data: json!({
                     "output": "(empty file)",
@@ -716,6 +692,7 @@ impl FileReadTool {
                     "hashline_mode": hashline_mode,
                 }),
                 new_messages: vec![],
+                file_state_receipts: file_state_receipt.clone().into_iter().collect(),
                 ..Default::default()
             });
         }
@@ -733,12 +710,6 @@ impl FileReadTool {
             output = output.chars().take(max_chars).collect();
             output.push_str("\n... (output truncated)");
         }
-        if is_full_read_request && !formatted.line_limited && !truncated_by_chars {
-            if let Some(ctx) = ctx {
-                Self::record_text_read(ctx, target, &decoded.content, modified_at);
-            }
-        }
-
         Ok(ToolResult {
             data: json!({
                 "output": output,
@@ -758,6 +729,7 @@ impl FileReadTool {
                 "symlink_resolved": target.symlink_resolved,
             }),
             new_messages: vec![],
+            file_state_receipts: file_state_receipt.into_iter().collect(),
             ..Default::default()
         })
     }

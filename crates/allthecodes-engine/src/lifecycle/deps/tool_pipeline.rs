@@ -1176,6 +1176,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                                         e
                                     )),
                                     new_messages: vec![],
+                                    file_state_receipts: result.file_state_receipts.clone(),
                                     ..Default::default()
                                 },
                                 true,

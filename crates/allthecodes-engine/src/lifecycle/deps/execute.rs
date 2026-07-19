@@ -674,6 +674,11 @@ impl QueryEngineDeps {
             }
         };
 
+        let file_state_cache = self.state.read().tools.file_state_cache.clone();
+        for receipt in &result.result.file_state_receipts {
+            file_state_cache.commit_receipt(receipt);
+        }
+
         if let Some(evidence) = evidence_from_tool_result_with_duration(
             &result.tool_use_id,
             &result.tool_name,

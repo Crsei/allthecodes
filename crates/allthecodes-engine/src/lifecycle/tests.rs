@@ -522,16 +522,30 @@ impl crate::types::tool::Tool for DeferredTargetTool {
     async fn call(
         &self,
         input: Value,
-        _ctx: &crate::types::tool::ToolUseContext,
+        ctx: &crate::types::tool::ToolUseContext,
         _parent_message: &AssistantMessage,
         _on_progress: Option<Box<dyn Fn(crate::types::tool::ToolProgress) + Send + Sync>>,
     ) -> anyhow::Result<ToolResult> {
+        let file_state_receipts = if let Some(file_path) =
+            input.get("file_path").and_then(serde_json::Value::as_str)
+        {
+            let content = tokio::fs::read(file_path).await?;
+            vec![crate::types::tool::FileStateReceipt::from_content(
+                &ctx.cwd,
+                file_path,
+                std::path::Path::new(file_path),
+                &content,
+            )]
+        } else {
+            Vec::new()
+        };
         Ok(ToolResult {
             data: json!({
                 "target": self.name,
                 "input": input,
             }),
             display_preview: Some(format!("{} executed", self.name)),
+            file_state_receipts,
             ..Default::default()
         })
     }
@@ -911,6 +925,108 @@ fn make_lifecycle_deps(
         submit_tools: None,
         verification_incomplete: Arc::new(parking_lot::Mutex::new(None)),
     }
+}
+
+#[tokio::test]
+async fn file_state_receipts_survive_turns_and_reject_external_changes() {
+    let workspace = tempdir().unwrap();
+    let file_path = workspace.path().join("receipt-state.txt");
+    std::fs::write(&file_path, "alpha\nbeta\n").unwrap();
+    let tools: crate::types::tool::Tools = vec![
+        Arc::new(allthecodes_tools::fs::file_read::FileReadTool::new()),
+        Arc::new(allthecodes_tools::fs::file_edit::FileEditTool::new()),
+    ];
+    let mut config = make_config();
+    config.cwd = workspace.path().to_string_lossy().into_owned();
+    config.tools = tools.clone();
+    let engine = QueryEngine::new(config);
+    engine
+        .state
+        .write()
+        .app_state
+        .tool_permission_context
+        .mode = PermissionMode::Bypass;
+    let mut deps = make_lifecycle_deps(
+        &engine,
+        Arc::new(allthecodes_types::hooks::NoopHookRunner::new()),
+        None,
+    );
+    deps.cwd = workspace.path().to_string_lossy().into_owned();
+    let Message::Assistant(parent) = assistant_message("file receipt parent") else {
+        unreachable!();
+    };
+
+    let read = deps
+        .execute_tool_impl(
+            crate::query::deps::ToolExecRequest {
+                tool_use_id: "limited-read".into(),
+                tool_name: "Read".into(),
+                input: json!({
+                    "file_path": file_path.to_string_lossy(),
+                    "offset": 1,
+                    "limit": 1
+                }),
+                langfuse_batch_span: None,
+            },
+            &tools,
+            &parent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!read.is_error, "unexpected read error: {:?}", read.result.data);
+    assert_eq!(read.result.file_state_receipts.len(), 1);
+
+    let edit = deps
+        .execute_tool_impl(
+            crate::query::deps::ToolExecRequest {
+                tool_use_id: "edit-after-limited-read".into(),
+                tool_name: "Edit".into(),
+                input: json!({
+                    "file_path": file_path.to_string_lossy(),
+                    "old_string": "alpha",
+                    "new_string": "ALPHA"
+                }),
+                langfuse_batch_span: None,
+            },
+            &tools,
+            &parent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!edit.is_error, "unexpected edit error: {:?}", edit.result.data);
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "ALPHA\nbeta\n");
+
+    std::fs::write(&file_path, "externally changed\nbeta\n").unwrap();
+    let stale_edit = deps
+        .execute_tool_impl(
+            crate::query::deps::ToolExecRequest {
+                tool_use_id: "edit-after-external-change".into(),
+                tool_name: "Edit".into(),
+                input: json!({
+                    "file_path": file_path.to_string_lossy(),
+                    "old_string": "beta",
+                    "new_string": "BETA"
+                }),
+                langfuse_batch_span: None,
+            },
+            &tools,
+            &parent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(stale_edit.is_error);
+    assert!(stale_edit
+        .result
+        .data
+        .as_str()
+        .is_some_and(|message| message.contains("unexpectedly modified")));
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "externally changed\nbeta\n"
+    );
 }
 
 #[tokio::test]
@@ -1777,6 +1893,9 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
         ["DeferredTarget".to_string(), "DeniedTarget".to_string()],
     );
 
+    let workspace = tempdir().unwrap();
+    let file_path = workspace.path().join("deferred-state.txt");
+    std::fs::write(&file_path, "alpha\nbeta\n").unwrap();
     let tools: crate::types::tool::Tools = vec![
         Arc::new(allthecodes_tools::deferred_tools::ExecuteExtraToolTool),
         Arc::new(DeferredTargetTool {
@@ -1787,8 +1906,10 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
             name: "DeniedTarget",
             deny: true,
         }),
+        Arc::new(allthecodes_tools::fs::file_edit::FileEditTool::new()),
     ];
     let mut config = make_config();
+    config.cwd = workspace.path().to_string_lossy().into_owned();
     config.tools = tools.clone();
     let engine = QueryEngine::new(config);
     {
@@ -1805,13 +1926,17 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
             .app_state
             .tool_permission_context
             .grant_session_allow("DeniedTarget");
+        state
+            .app_state
+            .tool_permission_context
+            .grant_session_allow("Edit");
     }
     let hook_runner = Arc::new(RecordingToolHookRunner::default());
     let deps = super::deps::QueryEngineDeps {
         aborted: engine.aborted.clone(),
         state: engine.state.clone(),
         runtime_services: engine.runtime_services.clone(),
-        cwd: "/tmp".to_string(),
+        cwd: workspace.path().to_string_lossy().into_owned(),
         session_id: "canonical-deferred".to_string(),
         query_source: crate::types::config::QuerySource::ReplMainThread,
         audit_ctx: crate::observability::AuditContext::noop("canonical-deferred"),
@@ -1843,7 +1968,10 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
                 tool_name: "ExecuteExtraTool".to_string(),
                 input: json!({
                     "tool_name": "DeferredTarget",
-                    "params": {"value": 7}
+                    "params": {
+                        "value": 7,
+                        "file_path": file_path.to_string_lossy()
+                    }
                 }),
                 langfuse_batch_span: None,
             },
@@ -1860,6 +1988,27 @@ async fn execute_extra_tool_reenters_canonical_target_boundary() {
     );
     assert_eq!(result.result.data["tool_name"], "DeferredTarget");
     assert_eq!(result.result.data["result"]["target"], "DeferredTarget");
+
+    let edit = deps
+        .execute_tool_impl(
+            crate::query::deps::ToolExecRequest {
+                tool_use_id: "normal-edit-after-deferred-read".to_string(),
+                tool_name: "Edit".to_string(),
+                input: json!({
+                    "file_path": file_path.to_string_lossy(),
+                    "old_string": "alpha",
+                    "new_string": "ALPHA"
+                }),
+                langfuse_batch_span: None,
+            },
+            &tools,
+            &parent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!edit.is_error, "unexpected edit error: {:?}", edit.result.data);
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "ALPHA\nbeta\n");
 
     let pre_tool_names = hook_runner.pre_tool_names.lock().clone();
     assert!(pre_tool_names.contains(&"ExecuteExtraTool".to_string()));

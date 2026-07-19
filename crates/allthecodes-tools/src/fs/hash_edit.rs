@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::Path;
-use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -11,8 +10,8 @@ use serde_json::{json, Value};
 use similar::TextDiff;
 
 use crate::tool::{
-    FileCacheEntry, FileStateCache, Tool, ToolProgress, ToolResult, ToolUseContext,
-    ValidationResult,
+    FileCacheEntry, FileStateCache, FileStateReceipt, Tool, ToolProgress, ToolResult,
+    ToolUseContext, ValidationResult,
 };
 use allthecodes_types::message::{AssistantMessage, ToolResultContent};
 
@@ -98,15 +97,6 @@ impl HashEditTool {
             .unwrap_or(false)
     }
 
-    fn modified_millis(metadata: &std::fs::Metadata) -> i64 {
-        metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-            .unwrap_or(0)
-    }
-
     fn state_keys(file_path: &str, path: &Path) -> Vec<String> {
         let mut keys = Vec::new();
         Self::push_unique_key(&mut keys, file_path.to_string());
@@ -180,19 +170,6 @@ impl HashEditTool {
             err.kind(),
             io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock
         ) || matches!(err.raw_os_error(), Some(5 | 32 | 33))
-    }
-
-    fn record_edit_state(ctx: &ToolUseContext, file_path: &str, path: &Path, content: &str) {
-        let timestamp = std::fs::metadata(path)
-            .map(|metadata| Self::modified_millis(&metadata))
-            .unwrap_or(0);
-        let entry = FileCacheEntry {
-            content_hash: FileStateCache::hash_content(content.as_bytes()),
-            last_read_timestamp: timestamp,
-        };
-        for key in Self::state_keys(file_path, path) {
-            ctx.read_file_state.insert(key, entry.clone());
-        }
     }
 
     fn resolve_anchor(
@@ -463,7 +440,12 @@ impl HashEditTool {
             }
         };
 
-        Self::record_edit_state(ctx, &parsed.file_path, path, &new_content);
+        let file_state_receipt = FileStateReceipt::from_content(
+            &ctx.cwd,
+            &parsed.file_path,
+            path,
+            new_content.as_bytes(),
+        );
         let output = format!(
             "Successfully applied {} hash edit operation(s) in {}",
             operation_count, parsed.file_path
@@ -515,6 +497,7 @@ impl HashEditTool {
             model_content: Some(ToolResultContent::Text(output)),
             display_preview: Some(display_preview),
             new_messages: vec![super::edited_text_file_message(parsed.file_path)],
+            file_state_receipts: vec![file_state_receipt],
             ..Default::default()
         })
     }
@@ -813,13 +796,14 @@ mod tests {
     }
 
     fn cache_file_state(ctx: &ToolUseContext, path: &Path, content: &str) {
-        ctx.read_file_state.insert(
-            path.to_string_lossy().to_string(),
-            FileCacheEntry {
-                content_hash: FileStateCache::hash_content(content.as_bytes()),
-                last_read_timestamp: 0,
-            },
+        let requested_path = path.to_string_lossy();
+        let receipt = FileStateReceipt::from_content(
+            &ctx.cwd,
+            requested_path.as_ref(),
+            path,
+            content.as_bytes(),
         );
+        ctx.read_file_state.commit_receipt(&receipt);
     }
 
     #[tokio::test]

@@ -716,6 +716,7 @@ impl Tool for ExecuteExtraToolTool {
             new_messages: result.result.new_messages,
             shell: result.result.shell,
             taint: result.result.taint,
+            file_state_receipts: result.result.file_state_receipts,
         })
     }
 
