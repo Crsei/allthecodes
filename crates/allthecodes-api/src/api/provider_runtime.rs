@@ -693,6 +693,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_failed_stream_retryability_uses_status_and_safe_error_type() {
+        let mut server_error = ProviderStreamFailure::new(
+            ProviderStreamFailureCategory::ProviderFailed,
+            "openai-codex",
+            "temporary provider failure",
+        );
+        server_error.error_type = Some("server_error".to_string());
+        assert!(server_error.is_retryable());
+
+        let mut invalid = ProviderStreamFailure::new(
+            ProviderStreamFailureCategory::ProviderFailed,
+            "openai-codex",
+            "invalid request",
+        );
+        invalid.status = Some(400);
+        assert!(!invalid.is_retryable());
+    }
+
+    #[test]
     fn classifies_provider_error_fixtures() {
         assert_eq!(
             ProviderErrorKind::classify(

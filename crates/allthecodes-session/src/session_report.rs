@@ -424,7 +424,7 @@ fn status_label(status: &VerificationStatus) -> &'static str {
 mod tests {
     use super::*;
     use crate::record_replay::types::{
-        SecurityDecisionRecord, SessionMetaRecord, VerificationEvidenceRecord,
+        QueryEventRecord, SecurityDecisionRecord, SessionMetaRecord, VerificationEvidenceRecord,
         VerificationFinishedRecord, VerificationStartedRecord,
     };
     use allthecodes_types::security::{TaintDecisionKind, TaintSink};
@@ -518,6 +518,37 @@ mod tests {
         assert!(!json.contains("private/repo"));
         assert!(!json.contains("digest-source"));
         assert_eq!(report.security_gate_passed, None);
+    }
+
+    #[test]
+    fn projection_counts_request_stream_and_fallback_recovery_separately() {
+        let mut records = lines();
+        for (offset, phase) in ["request", "stream", "stream", "fallback"]
+            .into_iter()
+            .enumerate()
+        {
+            records.push(RecordLine::new(
+                "session-1",
+                5 + offset as u64,
+                RecordItem::QueryEvent(QueryEventRecord::RequestStart {
+                    provider: Some("openai-codex".to_string()),
+                    model: Some("gpt-test".to_string()),
+                    attempt: offset as u32 + 2,
+                    is_retry: true,
+                    retry_phase: Some(phase.to_string()),
+                }),
+            ));
+        }
+
+        let report = project_session_report(
+            "session-1",
+            &records,
+            "test",
+            SessionReportOptions::default(),
+        );
+        assert_eq!(report.recovery.request_retries, 1);
+        assert_eq!(report.recovery.stream_retries, 2);
+        assert_eq!(report.recovery.model_fallbacks, 1);
     }
 
     #[test]

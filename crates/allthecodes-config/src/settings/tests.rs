@@ -1747,3 +1747,57 @@ fn active_profile_projects_recovery_policy_into_effective_settings() {
     assert_eq!(effective.stream_idle_timeout_ms, Some(300_000));
     assert_eq!(effective.request_timeout_ms, Some(120_000));
 }
+
+#[test]
+#[serial]
+fn stream_idle_timeout_env_precedence_is_new_then_legacy_then_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("repo");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        home.join("settings.json"),
+        r#"{
+            "activeAuthProfile":"codex",
+            "authProfiles":{
+                "codex":{
+                    "apiProvider":"openai-codex",
+                    "streamIdleTimeoutMs":111
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let _home = EnvGuard::set_path("ALLTHECODES_HOME", &home);
+    let _managed = EnvGuard::unset("ALLTHECODES_MANAGED_SETTINGS");
+    let new_unset = EnvGuard::unset("ALLTHECODES_STREAM_IDLE_TIMEOUT_MS");
+    let legacy_unset = EnvGuard::unset("CC_RUST_STREAM_IDLE_TIMEOUT_MS");
+    assert_eq!(
+        load_effective(&project)
+            .unwrap()
+            .effective
+            .stream_idle_timeout_ms,
+        Some(111)
+    );
+    drop(legacy_unset);
+    let legacy = EnvGuard::set_value("CC_RUST_STREAM_IDLE_TIMEOUT_MS", "222");
+    assert_eq!(
+        load_effective(&project)
+            .unwrap()
+            .effective
+            .stream_idle_timeout_ms,
+        Some(222)
+    );
+    drop(new_unset);
+    let _new = EnvGuard::set_value("ALLTHECODES_STREAM_IDLE_TIMEOUT_MS", "333");
+    assert_eq!(
+        load_effective(&project)
+            .unwrap()
+            .effective
+            .stream_idle_timeout_ms,
+        Some(333)
+    );
+    drop(legacy);
+}

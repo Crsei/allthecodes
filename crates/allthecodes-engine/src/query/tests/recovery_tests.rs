@@ -534,6 +534,36 @@ async fn request_start_retry_uses_independent_budget_and_attempt_phase() {
 }
 
 #[tokio::test]
+async fn request_start_retry_exhaustion_surfaces_only_the_final_failure() {
+    let deps = Arc::new(
+        MockDeps::from_steps(vec![
+            MockStreamStep::Error("failed to send HTTP request: first reset".to_string()),
+            MockStreamStep::Error("failed to send HTTP request: final reset".to_string()),
+        ])
+        .with_provider_recovery(
+            "openai-codex",
+            allthecodes_api::api::client::ProviderRecoveryPolicy {
+                request_max_retries: 1,
+                stream_max_retries: 0,
+                stream_idle_timeout: Duration::from_millis(100),
+                request_timeout: Duration::from_millis(100),
+            },
+        ),
+    );
+
+    let items: Vec<QueryYield> = query(
+        make_query_params(vec![make_user_message_for_test("Exhaust request retry")]),
+        deps,
+    )
+    .collect()
+    .await;
+
+    assert_eq!(request_start_count(&items), 2);
+    assert!(!has_api_error_containing(&items, "first reset"));
+    assert!(has_api_error_containing(&items, "final reset"));
+}
+
+#[tokio::test]
 async fn test_chunk_error_after_partial_tool_use_is_not_retried() {
     let deps = Arc::new(MockDeps::from_steps(vec![MockStreamStep::Events(vec![
         Ok(StreamEvent::MessageStart {

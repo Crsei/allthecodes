@@ -595,11 +595,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
         }
 
         SdkMessage::ApiRetry(retry) => {
-            let action = if retry.phase.as_deref() == Some("stream") {
-                "Reconnecting"
-            } else {
-                "Retrying"
-            };
+            let action = retry_spinner_action(retry.phase.as_deref());
             app.set_spinner_message(format!(
                 "{} ({}/{})...",
                 action, retry.attempt, retry.max_retries
@@ -650,6 +646,14 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: SdkMessage, ss: &mut Stream
         }
 
         _ => {}
+    }
+}
+
+fn retry_spinner_action(phase: Option<&str>) -> &'static str {
+    if phase == Some("stream") {
+        "Reconnecting"
+    } else {
+        "Retrying"
     }
 }
 
@@ -835,5 +839,12 @@ mod tests {
 
         assert!(matches!(rx.recv().await, Some(EngineEvent::Done)));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn retry_spinner_distinguishes_stream_reconnect_from_request_retry() {
+        assert_eq!(retry_spinner_action(Some("stream")), "Reconnecting");
+        assert_eq!(retry_spinner_action(Some("request")), "Retrying");
+        assert_eq!(retry_spinner_action(None), "Retrying");
     }
 }

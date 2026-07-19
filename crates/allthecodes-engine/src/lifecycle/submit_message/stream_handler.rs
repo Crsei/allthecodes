@@ -44,6 +44,10 @@ impl From<QueryYield> for QueryTurnEvent {
 impl QueryTurnEvent {
     pub(super) fn record_items(&self, backend_name: &str, model_name: &str) -> Vec<RecordItem> {
         match self {
+            Self::Message(Message::System(SystemMessage {
+                subtype: SystemSubtype::ApiError { .. },
+                ..
+            })) => Vec::new(),
             Self::Message(message) => {
                 let mut items = vec![RecordItem::Message(MessageRecord::from_message(message))];
                 if let Message::System(system) = message {
@@ -1278,6 +1282,27 @@ mod tests {
             records.as_slice(),
             [crate::session::record_replay::types::RecordItem::Message(_)]
         ));
+
+        let transient_retry =
+            QueryTurnEvent::from(QueryYield::Message(Message::System(SystemMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: 2,
+                subtype: SystemSubtype::ApiError {
+                    retry_attempt: 1,
+                    max_retries: 5,
+                    retry_in_ms: 1_000,
+                    error: crate::types::message::ApiErrorInfo {
+                        status: Some(503),
+                        message: "reconnecting".to_string(),
+                        phase: Some("stream".to_string()),
+                        category: Some("transport".to_string()),
+                        provider: Some("openai-codex".to_string()),
+                        model: Some("gpt-test".to_string()),
+                    },
+                },
+                content: "Reconnecting (1/5)...".to_string(),
+            })));
+        assert!(transient_retry.record_items("codex", "gpt-test").is_empty());
 
         let request_start = QueryTurnEvent::from(QueryYield::RequestStart(
             crate::types::message::RequestStartEvent {
