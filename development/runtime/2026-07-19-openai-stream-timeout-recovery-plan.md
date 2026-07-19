@@ -41,3 +41,36 @@ recognizes the generic `error reading response chunk` text for partial-response 
 Implement in the same per-session worktree as the paired TaskList correction, but commit
 runtime changes separately. Include the live 120014 ms failure evidence and all validation
 results in `development/worktree-workflow-artifacts/2026-07-19-tui-task-list-default-and-stream-recovery.html`.
+
+## 2026-07-20 stall-progress regression follow-up
+
+> Follow-up task slug: `openai-stream-stall-progress-recovery`
+
+### Live evidence
+
+Session `ddc64e0a-e103-43ec-8a37-dbd5f784a65d` received no assistant progress for
+76121 ms and then delivered a progress event. The query loop checked the elapsed stall
+duration only after identifying that event as real progress, rejected the newly arrived
+progress, and retried the same model. The retry established an HTTP 200 SSE stream but did
+not complete before the session ended. This exposes an inverted watchdog boundary:
+non-progress events never trigger the stall check, while the first useful event after a
+long reasoning pause does.
+
+### Correction
+
+- Always accept a progress event and reset `last_progress_at`, even when it follows a pause
+  longer than the stall threshold.
+- Apply the stall threshold when a non-progress event arrives without intervening assistant
+  progress. This preserves protection against heartbeat-only streams.
+- Keep the independent idle timeout for streams that produce no events at all.
+- Add deterministic query-loop tests for delayed useful progress and heartbeat-only stall
+  recovery, while retaining the single empty-stream retry and no-duplicate-tool boundaries.
+
+### Follow-up workflow and verification
+
+Implement in `.worktrees/openai-stream-stall-progress-recovery` on branch
+`worktree/openai-stream-stall-progress-recovery`. Record the change and live evidence in
+`development/worktree-workflow-artifacts/2026-07-20-openai-stream-stall-progress-recovery.html`.
+Run focused engine recovery tests, formatting, workspace clippy, non-PTY workspace library
+tests, a workspace release build, and `git diff --check`. This engine-only correction does
+not require the PTY TUI suite.
