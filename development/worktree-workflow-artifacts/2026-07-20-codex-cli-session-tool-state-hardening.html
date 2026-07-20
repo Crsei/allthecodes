@@ -85,11 +85,11 @@
 <body>
 <main>
   <header>
-    <span class="badge ok">worktree 候选实现已提交</span>
-    <span class="badge pending">主分支 Rust / OAuth 验收待执行</span>
+    <span class="badge ok">实现与主分支验证完成</span>
+    <span class="badge ok">真实 OAuth / Playwright 通过</span>
     <h1>Codex CLI 工具状态、会话恢复与收尾卡死修复</h1>
     <p class="meta">日期：2026-07-20 · 分支：<code>worktree/codex-cli-session-tool-state-hardening</code></p>
-    <p>本页记录独立 worktree 中的候选实现、提交边界与验证依据。主分支验证完成后将在同一文件追加最终证据。</p>
+    <p>本页记录独立 worktree 中的实现、提交边界、主分支 Rust 验证、真实 OAuth 恢复与浏览器验收证据。</p>
   </header>
 
   <section>
@@ -128,6 +128,12 @@
         <tr><td><code>a3f4c2e4</code></td><td>Preserve file read state across turns</td><td>引入不含文件内容的 receipt；canonical executor 统一提交 shared file-state cache。</td></tr>
         <tr><td><code>6f7ec327</code></td><td>Stop repeated tool validation loops</td><td>第三次相同摘要验证失败产生 <code>tool_error_loop</code>，审计仅记录 SHA-256 摘要。</td></tr>
         <tr><td><code>1d41b1e3</code></td><td>Enforce non-interactive failure exits</td><td>synthetic API error 不再伪成功；plain/JSON 与 resume/continue 均返回 error 结果和 exit 1。</td></tr>
+        <tr><td><code>893f9e9d</code>–<code>e55d9e64</code></td><td>主分支验证修复</td><td>补齐格式、测试编译、clippy、运行态与 receipt ownership 回归问题；修复均回到同一 worktree 提交。</td></tr>
+        <tr><td><code>9064c68a</code></td><td>Flush query boundary records immediately</td><td><code>tool_refresh_cached</code>、<code>next_turn_ready</code> 与 provider <code>request_start</code> 当场 flush，不再依赖后续 tool-result/terminal flush 才可见。</td></tr>
+        <tr><td><code>35974b25</code></td><td>Format query lifecycle regression test</td><td>按主分支 fmt 结果回 worktree 修正。</td></tr>
+        <tr><td><code>ba1494e4</code></td><td>Serialize post-sampling hook registry tests</td><td>消除两个共享全局 registry 单测之间的确定性并发污染。</td></tr>
+        <tr><td><code>290d21c8</code></td><td>Preserve SVG read state for later edits</td><td>真实 CLI 发现 SVG 走 image 分支且未产生 receipt；现为 SVG/二进制 image Read 返回 receipt，并增加 canonical <code>Read → Edit</code> 回归。</td></tr>
+        <tr><td><code>06766689</code></td><td>Format SVG receipt regression</td><td>按主分支 fmt 结果回 worktree 修正。</td></tr>
       </tbody>
     </table>
   </section>
@@ -158,22 +164,64 @@
   </section>
 
   <section>
-    <h2>当前验证依据</h2>
+    <h2>主分支 Rust 与进程级验证</h2>
     <table>
       <thead><tr><th>检查</th><th>结果</th><th>说明</th></tr></thead>
       <tbody>
         <tr><td><code>git diff --check</code></td><td class="ok">通过</td><td>各提交前均完成 staged whitespace 检查。</td></tr>
-        <tr><td>worktree 状态</td><td class="ok">提交后干净</td><td>所有候选源码均已按显式路径提交。</td></tr>
-        <tr><td>主树受保护文件指纹</td><td class="ok">5/5 匹配</td><td>4 个 UI 文件与 TUI audit 报告保持原 SHA-256。</td></tr>
-        <tr><td>Rust 格式/编译/测试/release</td><td class="pending">待主分支</td><td>按 per-session worktree 规则，禁止在本 worktree 执行。</td></tr>
-        <tr><td>真实 OAuth / Playwright</td><td class="pending">待主分支 release</td><td>目标模型 <code>gpt-5.6-sol</code>，不设置 timeout/stall 覆盖。</td></tr>
+        <tr><td><code>cargo fmt --all --check</code></td><td class="ok">exit 0</td><td>最终 SVG receipt 修复合并后复验。</td></tr>
+        <tr><td><code>cargo clippy --workspace --all-targets -- -D warnings</code></td><td class="ok">exit 0</td><td>最终代码无 warning。</td></tr>
+        <tr><td>Engine lifecycle 定向测试</td><td class="ok">49 passed</td><td>覆盖 non-blocking refresh、durability、resume、loop guard、file receipt 与立即可见的 query boundary。</td></tr>
+        <tr><td>SVG receipt 定向测试</td><td class="ok">2/2 passed</td><td><code>test_read_svg_emits_file_state_receipt</code> 与 canonical executor 的 SVG <code>Read → Edit</code> 均通过。</td></tr>
+        <tr><td>分 crate lib 回归</td><td class="ok">exit 0</td><td><code>allthecodes-commands</code> 547/547（<code>--test-threads=1</code>）、<code>allthecodes-tools</code> 全量、<code>allthecodes-engine</code> 637 passed / 4 ignored。</td></tr>
+        <tr><td><code>cargo build --workspace --release</code></td><td class="ok">exit 0</td><td>最终 SVG 修复后的 release 构建耗时 4m12s；二进制版本 <code>0.1.14</code>。</td></tr>
+        <tr><td>provider 400 / max-turns / tool loop 进程 fixture</td><td class="ok">通过</td><td>plain/JSON 错误均 exit 1；max-turns 仅 1 次 POST；tool loop 恰好 3 次 POST 后 <code>tool_error_loop</code>，无第 4 次请求，审计仅含 SHA-256 摘要。</td></tr>
+      </tbody>
+    </table>
+    <p><code>cargo test --workspace --exclude allthecodes --lib</code> 曾在前序合并点 exit 0。最终 SVG 修复后的并行复跑仅在无关的 <code>allthecodes-commands::branch</code> 全局 <code>ALLTHECODES_HOME</code> 环境竞争处出现一次 <code>ENOENT</code>；精确复跑 exit 0。依照全仓重跑上限，后续降级为上述分 crate 验证并全部通过，没有把该次 exit 101 记为全绿。</p>
+  </section>
+
+  <section>
+    <h2>真实 OAuth resume 证据</h2>
+    <ul>
+      <li>受控原 session：<code>f2215445-4186-45de-b78e-93e6b311bfb6</code>；原 rollout 在 seq 16–19 含 4 个 Write result，seq 20 为 <code>tool_results_durable</code>，尚无下一次 <code>next_turn_ready/request_start</code>。</li>
+      <li>恢复前共 7 个 tool call，每个均有且仅有一个非错误 result；页面四文件 SHA-256 与纳秒级 mtime 已冻结。</li>
+      <li>使用最终 release、<code>gpt-5.6-sol</code>、真实 Codex OAuth 恢复；显式移除新旧 idle/stall override 环境变量。一次 provider 5xx 被正常重试，未出现 HTTP 400/orphan tool call。</li>
+      <li>恢复 submit rollout：<code>1220515c-bf00-484d-a6d0-f3a4a3542d76</code>。原 4 个 Write call ID 均未出现；恢复后的唯一 Write 只创建临时验收脚本 <code>/tmp/galaxy_acceptance.py</code>。</li>
+      <li>恢复进程 exit 0；原 <code>index.html</code>、<code>styles.css</code>、<code>script.js</code>、<code>favicon.svg</code> 的恢复前后 hash/mtime 完全一致，证明已完成 Write 未被重放。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>真实 Read → Edit 闭环</h2>
+    <p>首次严格 3-turn 验收 session <code>7250a73b-5d06-491f-bec2-0d07e4cf3159</code> 真实暴露 SVG image 分支漏 receipt：Read 成功，随后唯一 Edit 被判“File has not been read yet”，文件 hash/mtime 未变。该证据直接促成 <code>290d21c8</code>。</p>
+    <p>最终验收 session <code>fa75fa5f-c7c9-4f93-9c77-570ad2558999</code> 使用同一提示与 <code>--max-turns 3</code>：</p>
+    <ul>
+      <li>turn 1：恰好 1 次 <code>Read favicon.svg</code>；result <code>is_error=false</code>。</li>
+      <li>turn 2：恰好 1 次 <code>Edit favicon.svg</code>；result <code>is_error=false</code>。</li>
+      <li>turn 3：纯文本完成；总计 Read=1、Edit=1、Write=0。</li>
+      <li>favicon 只在根 <code>&lt;svg&gt;</code> 增加 <code>role="img"</code> 与 <code>aria-label="Galaxy orbit"</code>；SHA-256 从 <code>cb779b4b…</code> 变为 <code>d7ea8395…</code>，仅一次修改。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>独立 Playwright 验收</h2>
+    <p>在 <code>/tmp/allthecodes-galaxy-oauth.IqyfSf</code> 启动临时 loopback HTTP server，使用系统 Chrome 与 Python Playwright 独立复验；完成后 server 已正常关闭。</p>
+    <table>
+      <thead><tr><th>检查</th><th>结果</th></tr></thead>
+      <tbody>
+        <tr><td>HTTP 首页与静态资源</td><td class="ok">200 / 无 ≥400 response</td></tr>
+        <tr><td>桌面与 390×844 移动布局/交互</td><td class="ok">通过</td></tr>
+        <tr><td>Tab / Enter / Space / ArrowRight、skip link、dialog focus trap</td><td class="ok">通过</td></tr>
+        <tr><td><code>prefers-reduced-motion: reduce</code></td><td class="ok">media=true、scroll=auto、animation 1e-05s × 1</td></tr>
+        <tr><td>console errors / page errors / failed requests / bad responses</td><td class="ok">0 / 0 / 0 / 0</td></tr>
       </tbody>
     </table>
   </section>
 
   <section>
     <h2>保护边界</h2>
-    <p>本任务未触碰或暂存主工作树中的 <code>crates/allthecodes/src/ui/app/render.rs</code>、<code>app/tests.rs</code>、welcome snapshot、<code>components/welcome.rs</code>、<code>.spec/</code> 与 <code>development/tui/2026-07-20-tui-panel-gap-audit-vs-claude-code-bun.md</code>。</p>
+    <p>本任务提交未触碰或暂存并发 UI/代码拆分工作、<code>.spec/</code> 或 <code>development/tui/2026-07-20-tui-panel-gap-audit-vs-claude-code-bun.md</code>。TUI audit 报告在实施前后 SHA-256 均为 <code>28cfada5376a229d0de99557878fdb9057245c954a3f811efb9a1636b7c59789</code>；其未跟踪状态保持不变。<code>.spec/</code> 在本任务开始时为 12,611 个未跟踪文件、组合摘要 <code>ae0068a1…</code>，后续由并发主分支工作处理，不属于本任务提交。</p>
   </section>
 </main>
 </body>
