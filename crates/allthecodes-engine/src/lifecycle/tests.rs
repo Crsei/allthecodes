@@ -1050,6 +1050,60 @@ async fn file_state_receipts_survive_turns_and_reject_external_changes() {
         "ALPHA\nbeta\n"
     );
 
+    let svg_path = workspace.path().join("receipt-state.svg");
+    std::fs::write(
+        &svg_path,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>\n",
+    )
+    .unwrap();
+    let svg_read = deps
+        .execute_tool_impl(
+            crate::query::deps::ToolExecRequest {
+                tool_use_id: "svg-read".into(),
+                tool_name: "Read".into(),
+                input: json!({"file_path": svg_path.to_string_lossy()}),
+                langfuse_batch_span: None,
+            },
+            &tools,
+            &parent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !svg_read.is_error,
+        "unexpected SVG read error: {:?}",
+        svg_read.result.data
+    );
+    assert_eq!(svg_read.result.file_state_receipts.len(), 1);
+
+    let svg_edit = deps
+        .execute_tool_impl(
+            crate::query::deps::ToolExecRequest {
+                tool_use_id: "svg-edit-after-read".into(),
+                tool_name: "Edit".into(),
+                input: json!({
+                    "file_path": svg_path.to_string_lossy(),
+                    "old_string": "<svg ",
+                    "new_string": "<svg role=\"img\" "
+                }),
+                langfuse_batch_span: None,
+            },
+            &tools,
+            &parent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !svg_edit.is_error,
+        "unexpected SVG edit error: {:?}",
+        svg_edit.result.data
+    );
+    assert!(std::fs::read_to_string(&svg_path)
+        .unwrap()
+        .contains("<svg role=\"img\" xmlns="));
+
     std::fs::write(&file_path, "externally changed\nbeta\n").unwrap();
     let stale_edit = deps
         .execute_tool_impl(

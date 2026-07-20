@@ -160,17 +160,28 @@ impl FileReadTool {
     }
 
     /// Read an image file and return the appropriate result
-    async fn read_image(file_path: &str) -> Result<ToolResult> {
+    async fn read_image(
+        file_path: &str,
+        read_state: Option<(&str, &ReadTarget)>,
+    ) -> Result<ToolResult> {
         let path = Path::new(file_path);
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
+        let bytes = tokio::fs::read(file_path).await?;
+        let file_state_receipt = read_state.map(|(cwd, target)| {
+            FileStateReceipt::from_content(
+                cwd,
+                &target.original_path,
+                &target.read_path,
+                &bytes,
+            )
+        });
 
         // SVG is text-based, return content directly
         if ext == "svg" {
-            let bytes = tokio::fs::read(file_path).await?;
             let decoded = Self::decode_text_bytes(&bytes)?
                 .ok_or_else(|| anyhow::anyhow!("SVG file appears to be binary"))?;
             return Ok(ToolResult {
@@ -183,12 +194,12 @@ impl FileReadTool {
                     "file_path": file_path,
                 }),
                 new_messages: vec![],
+                file_state_receipts: file_state_receipt.into_iter().collect(),
                 ..Default::default()
             });
         }
 
         // Binary image: read bytes and base64-encode
-        let bytes = tokio::fs::read(file_path).await?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
         let media_type = Self::image_media_type(&ext);
 
@@ -200,6 +211,7 @@ impl FileReadTool {
                 "file_path": file_path,
             }),
             new_messages: vec![],
+            file_state_receipts: file_state_receipt.into_iter().collect(),
             ..Default::default()
         })
     }
@@ -871,7 +883,7 @@ impl Tool for FileReadTool {
 
         // Route based on file extension BEFORE binary detection
         if Self::target_matches(&target, Self::is_image_file) {
-            return match Self::read_image(&read_path).await {
+            return match Self::read_image(&read_path, Some((&ctx.cwd, &target))).await {
                 Ok(mut result) => {
                     Self::attach_read_target(&mut result, &target);
                     Ok(result)
@@ -1306,5 +1318,32 @@ mod tests {
         assert_eq!(FileReadTool::image_media_type("webp"), "image/webp");
         assert_eq!(FileReadTool::image_media_type("svg"), "image/svg+xml");
         assert_eq!(FileReadTool::image_media_type("PNG"), "image/png");
+    }
+
+    #[tokio::test]
+    async fn test_read_svg_emits_file_state_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("icon.svg");
+        let content = b"<svg viewBox=\"0 0 1 1\"></svg>";
+        tokio::fs::write(&file_path, content).await.unwrap();
+        let target = FileReadTool::resolve_read_target(file_path.to_str().unwrap())
+            .await
+            .unwrap();
+
+        let result = FileReadTool::read_image(
+            target.read_path.to_str().unwrap(),
+            Some((dir.path().to_str().unwrap(), &target)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.file_state_receipts.len(), 1);
+        let receipt = &result.file_state_receipts[0];
+        assert_eq!(receipt.normalized_path, file_path.to_string_lossy().to_string());
+        assert_eq!(receipt.resolved_path, target.resolved_path);
+        assert_eq!(
+            receipt.content_hash,
+            crate::tool::FileStateCache::hash_content(content)
+        );
     }
 }
