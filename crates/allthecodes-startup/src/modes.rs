@@ -175,7 +175,11 @@ mod tests {
             permission_denials: Vec::new(),
             structured_output: None,
             uuid: Default::default(),
-            errors: is_error.then(|| vec![text.to_string()]).unwrap_or_default(),
+            errors: if is_error {
+                vec![text.to_string()]
+            } else {
+                Vec::new()
+            },
         }
     }
 

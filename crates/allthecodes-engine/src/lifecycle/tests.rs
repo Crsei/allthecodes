@@ -1081,9 +1081,9 @@ async fn file_state_receipts_survive_turns_and_reject_external_changes() {
     );
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn tool_refresh_uses_cached_snapshot_when_mcp_manager_is_busy() {
+fn tool_refresh_uses_cached_snapshot_when_mcp_manager_is_busy() {
     struct ManagerRestore(Option<allthecodes_mcp::runtime::SharedMcpManager>);
 
     impl Drop for ManagerRestore {
@@ -1111,13 +1111,17 @@ async fn tool_refresh_uses_cached_snapshot_when_mcp_manager_is_busy() {
         None,
     );
 
-    let _manager_guard = manager.lock().await;
-    let outcome = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        deps.refresh_tools_impl(),
-    )
-    .await
-    .expect("busy MCP manager must not block tool refresh");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _manager_guard = runtime.block_on(manager.lock());
+    let outcome = runtime
+        .block_on(tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            deps.refresh_tools_impl(),
+        ))
+        .expect("busy MCP manager must not block tool refresh");
 
     assert!(matches!(
         &outcome,
