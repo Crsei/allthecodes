@@ -212,7 +212,6 @@ impl App {
                     version: env!("CARGO_PKG_VERSION"),
                     model_name: &self.session_ui.model_name,
                     session_id: &self.session_ui.session_id,
-                    cwd: &self.session_ui.cwd,
                 },
                 self.welcome_logo.frame(),
                 self.design_theme_provider.colors(),
@@ -324,7 +323,6 @@ impl App {
             argument_hint.as_deref()
         };
         let placeholder = self.prompt_placeholder();
-        let mode_indicator = self.prompt_mode_indicator();
         let prompt_layout = self.prompt.render_with_context(
             bottom_chunks.input,
             frame.buffer_mut(),
@@ -332,8 +330,8 @@ impl App {
             PromptInputRenderContext {
                 hint: prompt_hint,
                 placeholder: Some(placeholder),
-                mode_indicator: Some(mode_indicator),
                 command_highlights: &command_highlights,
+                mode_indicator: None,
             },
         );
 
@@ -641,18 +639,6 @@ impl App {
         }
     }
 
-    fn prompt_mode_indicator(&self) -> &'static str {
-        if self.is_streaming {
-            "BUSY"
-        } else if self.prompt.input.starts_with('/') || self.command_palette.active() {
-            "CMD"
-        } else if self.vim.enabled {
-            self.vim.mode.indicator()
-        } else {
-            "INS"
-        }
-    }
-
     fn render_status_bar(
         &self,
         area: Rect,
@@ -713,9 +699,6 @@ impl App {
         }
         if let Some(verification) = &self.session_ui.verification {
             parts.push(verification.render_inline());
-        }
-        if !self.session_ui.cwd.is_empty() {
-            parts.push(self.session_ui.cwd.clone());
         }
 
         let status_text = format!(" {}", parts.join(" | "));

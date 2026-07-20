@@ -15,7 +15,7 @@ use crate::ui::brand_logo::{
 use crate::ui::theme::ThemeColors;
 
 const PANEL_WIDTH: u16 = 64;
-const PANEL_HEIGHT: u16 = 8;
+const PANEL_HEIGHT: u16 = 7;
 const LOGO_LAYOUT_MIN_WIDTH: u16 = 48;
 const BRAND_GAP: u16 = 2;
 
@@ -24,7 +24,6 @@ pub(crate) struct WelcomeInfo<'a> {
     pub(crate) version: &'a str,
     pub(crate) model_name: &'a str,
     pub(crate) session_id: &'a str,
-    pub(crate) cwd: &'a str,
 }
 
 /// Render a small rectangular welcome summary.
@@ -101,7 +100,6 @@ fn render_info_lines(area: Rect, buf: &mut Buffer, info: WelcomeInfo<'_>, colors
         .chars()
         .take(max_value_width.min(8))
         .collect::<String>();
-    let display_cwd = truncate_start(info.cwd, max_value_width);
     let tip = truncate_str("Enter to send, /help for commands", max_value_width);
     let label = Style::default().fg(colors.mutedText);
     let value = Style::default().fg(colors.surfaceText);
@@ -125,10 +123,6 @@ fn render_info_lines(area: Rect, buf: &mut Buffer, info: WelcomeInfo<'_>, colors
             Span::styled(short_session, value),
         ]),
         Line::from(vec![
-            Span::styled("CWD:     ", label),
-            Span::styled(display_cwd, label),
-        ]),
-        Line::from(vec![
             Span::styled("Tips:    ", label),
             Span::styled(tip, value),
         ]),
@@ -147,18 +141,6 @@ fn left_aligned_panel(area: Rect) -> Rect {
         y: area.y,
         width,
         height,
-    }
-}
-
-fn truncate_start(s: &str, max_width: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max_width {
-        s.to_string()
-    } else if max_width <= 3 {
-        ".".repeat(max_width)
-    } else {
-        let start = chars.len() - (max_width - 3);
-        format!("...{}", chars[start..].iter().collect::<String>())
     }
 }
 
@@ -217,7 +199,7 @@ mod tests {
         assert!(content.contains("Version:"));
         assert!(content.contains("Model:"));
         assert!(content.contains("Session:"));
-        assert!(content.contains("CWD:"));
+        assert!(!content.contains("CWD:"));
         assert!(content.contains("Tips:"));
     }
 
@@ -333,7 +315,6 @@ mod tests {
             version: "0.1.0",
             model_name: "claude-sonnet-4",
             session_id: "abcdef1234567890",
-            cwd: "/home/user/project",
         }
     }
 

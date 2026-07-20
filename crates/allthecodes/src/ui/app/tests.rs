@@ -64,7 +64,7 @@ fn render_places_prompt_after_compact_welcome() {
     );
     assert!(app.welcome_logo_visible);
     assert!(
-        content[8].trim().is_empty(),
+        content[7].trim().is_empty(),
         "welcome panel and prompt input should have a blank spacer row"
     );
     let prompt_area = app.render_layout.prompt_area.expect("prompt area");
@@ -73,9 +73,18 @@ fn render_places_prompt_after_compact_welcome() {
         .position(|line| line.trim_start().starts_with(">"))
         .expect("prompt row");
     assert_eq!(prompt_row as u16, prompt_area.y + 1);
-    assert!(
-        prompt_area.y + prompt_area.height == 23,
+    assert_eq!(
+        prompt_area.y + prompt_area.height,
+        23,
         "prompt area should end immediately above the footer"
+    );
+    assert!(
+        content.iter().all(|line| !line.contains("CWD:")),
+        "welcome panel should hide the current working directory"
+    );
+    assert!(
+        content.iter().all(|line| !line.contains("[INS]")),
+        "prompt should hide the insert-mode indicator"
     );
 }
 
@@ -1233,7 +1242,7 @@ fn agent_tree_dialog_renders_above_prompt_input() {
 
 #[test]
 #[serial]
-fn status_bar_does_not_duplicate_model_owned_by_context_layer() {
+fn status_bar_does_not_duplicate_model_or_workspace() {
     let home = tempfile::tempdir().expect("allthecodes home");
     let _home_guard = EnvGuard::set_path("ALLTHECODES_HOME", home.path());
     let mut app = App::new();
@@ -1256,6 +1265,9 @@ fn status_bar_does_not_duplicate_model_owned_by_context_layer() {
     assert!(content.contains("model: deepseek-v4-pro"));
     assert_eq!(content.matches("model: deepseek-v4-pro").count(), 1);
     assert!(content.contains("repo: /repo/workspace"));
+    assert!(content.contains("deepseek-v4-pro"));
+    assert!(!content.contains("deepseek-v4-pro | /repo/workspace"));
+    assert!(!content.contains("CWD:"));
     assert!(!content.contains("perm:acceptEdits"));
     assert!(!content.contains("sandbox:workspace,no-net"));
     assert!(!content.contains("effort:medium"));
