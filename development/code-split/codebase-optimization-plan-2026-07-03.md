@@ -5,6 +5,7 @@
 > 输入来源: 4 个只读 subagent 分区审计 + 本地粗复杂度扫描
 > 当前阶段: Full Build。不得再以 Lite 缩减为理由保留行为缺口。
 > 最新校准: 2026-07-20。此前若干结构已落地，但原跟踪表仍停留在 `todo`；本次按当前 HEAD、实际行数和一次隔离冷构建重新分级。
+> 总执行清单: [`codebase-optimization-execution-checklist-2026-07-20.md`](codebase-optimization-execution-checklist-2026-07-20.md)
 > 当前证据: [`current-state-audit-2026-07-20.md`](current-state-audit-2026-07-20.md)
 > 编译专项: [`compile-performance-plan-2026-07-20.md`](compile-performance-plan-2026-07-20.md)
 
@@ -24,7 +25,7 @@
 
 ## 2026-07-20 现状校准
 
-本计划继续作为代码拆分与复杂度治理的唯一总跟踪入口。状态含义如下：
+本计划继续作为代码拆分与复杂度治理的架构、范围和验收权威来源。实际执行顺序与 checkbox 状态只在总执行清单维护，避免本计划、编译专项和审计报告形成平行台账。下表状态是 2026-07-20 校准基线，含义如下：
 
 - `open`：尚未形成计划要求的权威结构。
 - `partial`：结构已经落地，但主函数、重复判定或验收目标仍未收口。
@@ -584,7 +585,10 @@ record is `development/code-split/query-loop-boundary-decision-2026-07-03.md`.
 
 ---
 
-## 跟踪清单
+## 范围与状态基线（2026-07-20）
+
+此表用于保存 CS 范围和本轮审计起点，不作为持续勾选台账。后续任务状态以
+[`codebase-optimization-execution-checklist-2026-07-20.md`](codebase-optimization-execution-checklist-2026-07-20.md) 为准；一个 CS 映射到多个执行项时，必须全部满足验收后才能关闭。
 
 | ID | 模块 | 优先级 | 状态 | 目标 |
 |---|---|---:|---|---|
