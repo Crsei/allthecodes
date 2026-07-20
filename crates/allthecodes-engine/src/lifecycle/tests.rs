@@ -1117,10 +1117,13 @@ fn tool_refresh_uses_cached_snapshot_when_mcp_manager_is_busy() {
         .unwrap();
     let _manager_guard = runtime.block_on(manager.lock());
     let outcome = runtime
-        .block_on(tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            deps.refresh_tools_impl(),
-        ))
+        .block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                deps.refresh_tools_impl(),
+            )
+            .await
+        })
         .expect("busy MCP manager must not block tool refresh");
 
     assert!(matches!(

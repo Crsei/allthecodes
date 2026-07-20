@@ -1441,9 +1441,13 @@ mod tests {
         assert!(matches!(
             &saved[1],
             Message::User(crate::types::message::UserMessage {
-                tool_use_result: Some(value),
+                content: MessageContent::Blocks(blocks),
                 ..
-            }) if value == "ok"
+            }) if matches!(blocks.as_slice(), [ContentBlock::ToolResult {
+                tool_use_id,
+                content: ToolResultContent::Text(value),
+                is_error: false,
+            }] if tool_use_id == "toolu_projection" && value == "ok")
         ));
     }
 }
