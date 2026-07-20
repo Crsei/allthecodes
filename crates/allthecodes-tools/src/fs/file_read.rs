@@ -172,12 +172,7 @@ impl FileReadTool {
             .to_lowercase();
         let bytes = tokio::fs::read(file_path).await?;
         let file_state_receipt = read_state.map(|(cwd, target)| {
-            FileStateReceipt::from_content(
-                cwd,
-                &target.original_path,
-                &target.read_path,
-                &bytes,
-            )
+            FileStateReceipt::from_content(cwd, &target.original_path, &target.read_path, &bytes)
         });
 
         // SVG is text-based, return content directly
@@ -1339,7 +1334,10 @@ mod tests {
 
         assert_eq!(result.file_state_receipts.len(), 1);
         let receipt = &result.file_state_receipts[0];
-        assert_eq!(receipt.normalized_path, file_path.to_string_lossy().to_string());
+        assert_eq!(
+            receipt.normalized_path,
+            file_path.to_string_lossy().to_string()
+        );
         assert_eq!(receipt.resolved_path, target.resolved_path);
         assert_eq!(
             receipt.content_hash,
