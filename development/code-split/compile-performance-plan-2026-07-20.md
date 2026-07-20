@@ -4,6 +4,7 @@
 > 状态：Proposed
 > 范围：本地增量开发、隔离 worktree、CI、最终 release 验证
 > 总入口：[`codebase-optimization-plan-2026-07-03.md`](codebase-optimization-plan-2026-07-03.md)
+> 执行台账：[`codebase-optimization-execution-checklist-2026-07-20.md`](codebase-optimization-execution-checklist-2026-07-20.md)
 > 现状证据：[`current-state-audit-2026-07-20.md`](current-state-audit-2026-07-20.md)
 
 ## 结论
@@ -271,6 +272,8 @@ types ─┬─> config/session ─> tools ─> mcp/engine ─> commands/service
 - 安装并验证 `mold`/`lld` 后才允许改 Linux linker；仓库配置不能指向本机不存在的工具。
 
 ## 状态跟踪
+
+下表保存 CP 范围与提出时的基线状态，不单独维护 checkbox。实际依赖顺序、拆分后的原子任务和完成状态以总执行清单为准。
 
 | ID | 优先级 | 状态 | 退出条件 |
 |---|---:|---|---|
