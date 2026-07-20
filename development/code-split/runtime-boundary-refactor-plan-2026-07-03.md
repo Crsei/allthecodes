@@ -1,6 +1,7 @@
-# 组合根与运行时边界收敛实施计划
+# 组合根与运行时边界收敛实施记录
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **状态校准（2026-07-20）：** 本计划已在 2026-07-03 至 2026-07-04 执行。下文 checkbox 保留为当时的实施规格，不代表当前任务仍是 `not started`；当前残留项统一回到
+> [`codebase-optimization-plan-2026-07-03.md`](codebase-optimization-plan-2026-07-03.md) 跟踪。
 
 **Goal:** 将当前架构评审中指出的组合根、运行时服务、工具策略、QueryEngine 状态和配置映射边界收窄，避免 full build 阶段重新形成隐性大耦合。
 
@@ -23,6 +24,24 @@ export RUSTUP_HOME=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.rust/rustup
 export CARGO_TARGET_DIR=/data2-HDD-SATA-20T/Digital_avatar/haoweiyao/.tmp/allthecodes-target
 export PATH="$CARGO_HOME/bin:$PATH"
 ```
+
+## 实施状态与残留边界
+
+九个任务均能在当前 Git 历史和源码结构中找到落地证据：
+
+| 任务 | 落地证据 | 当前边界 |
+|---|---|---|
+| RB-001 | `a268787a` | 质量门与 query boundary 文档已落地 |
+| RB-002 | `b78639f8`, `dfa63a74` | startup composition 已拆分；后续新增模式仍需防止组合根回涨 |
+| RB-003 | `7bc67cf1`, `ed0ab9ce` | `RuntimeServices` 已显式注入，包括 ACP engine 路径 |
+| RB-004 | `e61322b9`, `679d2a8b` | tool metadata/policy 已落地；typed permission 与 shell 单一判定仍由 CS-003/006 跟踪 |
+| RB-005 | `0dd53b12` | `EngineSharedState` 已领域化；锁粒度与高扇出状态仍是残留治理 |
+| RB-006 | `95eddec6`, `9b278004` | `ToolExecutionPipeline` 已落地；主函数和 pipeline 体量仍由 CS-001 跟踪 |
+| RB-007 | `21ea2b0d`, `4f22e341`, `cf49004f` | `QueryTurnState`、`SubmitTransaction` 和 typed events 已落地；巨型主函数仍由 CS-004/005 跟踪 |
+| RB-008 | `aa3b7d92` | runtime settings 已领域化 |
+| RB-009 | `d40be644` | query loop ADR 已记录，且继续禁止平行 `allthecodes-query` 实现 |
+
+因此，本文件的用途是解释原始迁移设计和提交边界。新工作不得重新执行整套任务，也不得因下文保留的未勾选 checkbox 把已存在的结构判定为未实现。
 
 ---
 
@@ -914,7 +933,7 @@ git commit -m "docs: record query loop boundary"
 
 ---
 
-## Recommended Execution Order
+## Historical Execution Order
 
 1. Task 1: quality gates and docs.
 2. Task 2: split startup composition root.
@@ -932,17 +951,17 @@ This order keeps behavior stable while reducing coupling. The first four tasks s
 
 ## Tracking Table
 
-| ID | Area | Priority | Deliverable | Status |
-|---|---|---:|---|---|
-| RB-001 | CI/docs | P0 | PR quality gate + query boundary docs + comment cleanup | not started |
-| RB-002 | Startup | P0 | `run_full_init` becomes composition orchestration | not started |
-| RB-003 | Runtime services | P0 | engine receives explicit services object | not started |
-| RB-004 | Tools | P0 | metadata/capability policy replaces name strings | not started |
-| RB-005 | Engine state | P1 | `QueryEngineState` split into domain sub-states | not started |
-| RB-006 | Tool execution | P1 | canonical execution boundary becomes testable pipeline | not started |
-| RB-007 | Query/submit | P1 | query turn state + submit transaction | not started |
-| RB-008 | Config | P1 | domain settings + projection drift tests | not started |
-| RB-009 | Query boundary | P2 | recorded long-term decision | not started |
+| ID | Area | Priority | Deliverable | Status | Evidence |
+|---|---|---:|---|---|---|
+| RB-001 | CI/docs | P0 | PR quality gate + query boundary docs + comment cleanup | done | `a268787a` |
+| RB-002 | Startup | P0 | `run_full_init` becomes composition orchestration | done | `b78639f8`, `dfa63a74` |
+| RB-003 | Runtime services | P0 | engine receives explicit services object | done | `7bc67cf1`, `ed0ab9ce` |
+| RB-004 | Tools | P0 | metadata/capability policy replaces name strings | done / residual | `e61322b9`, `679d2a8b` |
+| RB-005 | Engine state | P1 | `QueryEngineState` split into domain sub-states | done / residual | `0dd53b12` |
+| RB-006 | Tool execution | P1 | canonical execution boundary becomes testable pipeline | done / residual | `95eddec6`, `9b278004` |
+| RB-007 | Query/submit | P1 | query turn state + submit transaction | done / residual | `21ea2b0d`, `4f22e341`, `cf49004f` |
+| RB-008 | Config | P1 | domain settings + projection drift tests | done | `aa3b7d92` |
+| RB-009 | Query boundary | P2 | recorded long-term decision | done | `d40be644` |
 
 ---
 
