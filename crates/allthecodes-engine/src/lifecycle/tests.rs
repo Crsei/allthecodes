@@ -1242,9 +1242,11 @@ async fn query_lifecycle_event_is_visible_without_a_later_tool_result_flush() {
 
     crate::query::deps::QueryDeps::record_query_items(
         &deps,
-        vec![crate::session::record_replay::types::RecordItem::QueryEvent(
-            crate::session::record_replay::types::QueryEventRecord::NextTurnReady { turn: 2 },
-        )],
+        vec![
+            crate::session::record_replay::types::RecordItem::QueryEvent(
+                crate::session::record_replay::types::QueryEventRecord::NextTurnReady { turn: 2 },
+            ),
+        ],
     )
     .await;
 
