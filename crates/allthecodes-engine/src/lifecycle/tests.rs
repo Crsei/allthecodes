@@ -1179,7 +1179,7 @@ async fn tool_result_flush_makes_assistant_call_and_result_replayable_before_nex
         source_tool_assistant_uuid: Some(assistant_uuid),
     });
 
-    deps.persist_tool_results_impl(vec![assistant, result])
+    crate::query::deps::QueryDeps::persist_tool_results(&deps, vec![assistant, result])
         .await
         .unwrap();
 

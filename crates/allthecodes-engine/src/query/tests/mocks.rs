@@ -1109,6 +1109,7 @@ impl QueryDeps for CuMockDeps {
                 new_messages: vec![],
                 shell: None,
                 taint: Default::default(),
+                file_state_receipts: Vec::new(),
             }
         } else {
             // click, type_text, key, scroll 鈫?text confirmation
