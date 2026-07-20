@@ -64,6 +64,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn test_register_and_clear() {
         clear_post_sampling_hooks();
         assert_eq!(post_sampling_hook_count(), 0);
@@ -76,6 +77,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_execute_hooks() {
         clear_post_sampling_hooks();
 
