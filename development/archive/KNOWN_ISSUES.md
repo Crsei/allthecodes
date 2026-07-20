@@ -29,9 +29,9 @@
 | ID | 严重度 | 状态 | 范围 | 摘要 | 详情 |
 | --- | --- | --- | --- | --- | --- |
 | PROVIDER-001 | 高 | Fixed | Rust TUI / provider profile | Rust TUI 缺少删除和管理 provider profile 的入口，Web `/api/profiles` 更新还会把完整 profile 重建为空配置；运行时只允许 Anthropic/OpenAI/Codex。 | 新增 `/providers` 配置与 preset 分区、创建/完整替换/激活/删除向导和非交互命令；TUI、provider API 与 profile API 统一使用无损原子存储。17 个静态 provider、Bedrock、Vertex 可从 active profile 构造运行时，Foundry 与未知/custom/ACP 保持可管理但拒绝激活；所有读取与快照隐藏秘密。 |
-| PROVIDER-002 | 高 | Reopened / In Progress | OpenAI-compatible SSE / CLI tool sessions | 原始 60/120 秒长流、EOF 伪完成与 stream reconnect 问题已修复；Session `d4fe751e-becd-482a-8855-367219b20609` 在默认配置下约 218 秒的 `gpt-5.6-sol` 调用成功。后续真实 CLI 验收又证明：`5a1a8694-a5d5-4723-bf6e-255364f291c4` 停在 tool result 后的刷新/收尾窗口；`155e5992-0936-474c-bc4b-a93f39597383` resume 将 orphan tool call 发给 provider，HTTP 400 又被误判为 stdout 成功/exit 0；`ce228c8e-0f76-41ca-a9ee-985c082d4b33` 同 submit 的 Read 状态未被后续 Edit 识别并反复失败。 | 按唯一权威计划 `development/bugs/2026-07-19-codex-oauth-responses-stream-timeout-retry-fix-plan.md` 补齐非阻塞工具刷新、rollout-first tool result 耐久化、resume 协议修复、session-owned file cache、tool-error loop guard 与统一非交互失败退出。原始长流证据保留在 `development/worktree-workflow-artifacts/2026-07-20-codex-stream-recovery-cli-contract.html`；本轮完成后证据写入 `development/worktree-workflow-artifacts/2026-07-20-codex-cli-session-tool-state-hardening.html`。 |
+| PROVIDER-002 | 高 | Fixed | OpenAI-compatible SSE / CLI tool sessions | 原始 60/120 秒长流、EOF 伪完成与 stream reconnect 修复保持有效；默认配置约 218 秒的 `gpt-5.6-sol` 调用成功。后续暴露的 post-tool 刷新、orphan resume/HTTP 400 伪成功、跨 turn Read/Edit 状态与无界 validation loop 也已收口。 | 已落地非阻塞工具刷新、rollout-first tool result 耐久化、resume 三路协议修复、session-owned file cache、tool-error loop guard 与统一非交互失败退出。真实 OAuth 受控恢复无 400 且未重放 4 个 Write；最终 SVG favicon 验收严格 Read=1、Edit=1、Write=0；Playwright 的 HTTP/桌面/移动/键盘/reduced-motion 与错误计数矩阵通过。证据见唯一权威计划及 `development/worktree-workflow-artifacts/2026-07-20-codex-cli-session-tool-state-hardening.html`。 |
 
-当前开放 provider 项为 `PROVIDER-002`。其他已关闭记录见
+当前没有开放 provider 项。其他已关闭记录见
 [archive/resolved-model-context-2026-05-07.md](resolved-model-context-2026-05-07.md)。
 
 ## 4. Context / compact

@@ -2,7 +2,7 @@
 
 日期：2026-07-19
 
-状态：Active (Reopened)
+状态：Implemented
 
 2026-07-20 复核：本文件是该问题的唯一权威计划。原始实施使用
 `worktree/codex-stream-recovery-cli-contract`，artifact 固定为
@@ -51,6 +51,26 @@ console/page/failed-request 全为 0；长流协议边界由缩放自动化和�
 
 本轮不回退已完成的 SSE/retry 契约；重开范围仅补齐工具结果耐久性、resume 协议修复、
 跨 turn 文件状态、工具错误循环保护以及非交互退出语义。
+
+### 2026-07-20 重开项完成记录
+
+本轮实现从 `f7f01aae` 延续到 `06766689`，最终真实证据提交为 `862695b9`；完整提交、命令与限制记录在
+`development/worktree-workflow-artifacts/2026-07-20-codex-cli-session-tool-state-hardening.html`。
+
+1. 主分支通过 fmt、workspace clippy `-D warnings`、49 个 Engine lifecycle 定向测试、SVG receipt 与
+   canonical executor 定向测试、commands/tools/engine 分 crate lib 回归，以及最终
+   `cargo build --workspace --release`。并行 workspace lib 复跑曾被无关的 commands
+   `ALLTHECODES_HOME` 环境竞争打断；精确用例与 commands 串行全量均通过，按测试 SOP 未做第三次全仓重跑。
+2. 受控 session `f2215445-4186-45de-b78e-93e6b311bfb6` 在 7 个 tool call/result 完整、最后 4 个
+   Write result 已 durable、下一请求尚未开始的边界恢复。真实 `gpt-5.6-sol` OAuth submit
+   `1220515c-bf00-484d-a6d0-f3a4a3542d76` 无 HTTP 400、无旧 Write call ID、进程 exit 0；原四个页面
+   文件的 hash/mtime 未变，证明工具未重放。一次 provider 5xx 按同模型 retry 后成功。
+3. 首次严格 favicon 验收 session `7250a73b-5d06-491f-bec2-0d07e4cf3159` 进一步发现 SVG 走 image
+   Read 分支却未返回 receipt；`290d21c8` 补齐 SVG/二进制 image receipt 并增加真实路径回归。
+   最终 session `fa75fa5f-c7c9-4f93-9c77-570ad2558999` 在 `--max-turns 3` 下严格完成
+   Read=1、Edit=1、Write=0，且只修改一次 favicon。
+4. 独立 Playwright 复验 HTTP 200、桌面/移动交互、Tab/Enter/Space/方向键、焦点循环与
+   reduced-motion；console error、page error、failed request、HTTP 错误响应均为 0。
 
 问题域：OpenAI Codex OAuth、Responses API、SSE、超时、重试、工具执行幂等性
 
@@ -687,16 +707,16 @@ cargo test -p allthecodes --test pty_tui_e2e -- --test-threads=1
 
 ### 9.2 重开项收口条件
 
-- [ ] post-tool 重复刷新已删除，MCP manager 忙/错误时非阻塞降级并有 typed outcome/事件。
-- [ ] canonical rollout 在下一 provider 请求前已 flush tool result；rollout 失败 fail closed。
-- [ ] resume 三条修复路径均保持 tool call/result 完整且不重放工具。
-- [ ] session-owned file cache 支持跨 turn `Read -> Edit`，同时拒绝外部变更后的 stale edit。
-- [ ] 三次相同 validation failure 终止为 `tool_error_loop`，审计不记录敏感输入。
-- [ ] plain/JSON/resume/continue/max-turns/provider 400/tool loop 共用错误 `SdkResult` 语义并满足
+- [x] post-tool 重复刷新已删除，MCP manager 忙/错误时非阻塞降级并有 typed outcome/事件。
+- [x] canonical rollout 在下一 provider 请求前已 flush tool result；rollout 失败 fail closed。
+- [x] resume 三条修复路径均保持 tool call/result 完整且不重放工具。
+- [x] session-owned file cache 支持跨 turn `Read -> Edit`，同时拒绝外部变更后的 stale edit。
+- [x] 三次相同 validation failure 终止为 `tool_error_loop`，审计不记录敏感输入。
+- [x] plain/JSON/resume/continue/max-turns/provider 400/tool loop 共用错误 `SdkResult` 语义并满足
   stdout/stderr/exit-code 契约。
-- [ ] 分层 Rust 验证、release build、真实 OAuth 三步验收和 Playwright 矩阵通过。
-- [ ] artifact 记录完整证据，计划改回 `Implemented`，`PROVIDER-002` 改回 `Fixed`。
-- [ ] fast-forward 合并、推送、指纹复核和 worktree 清理完成。
+- [x] 分层 Rust 验证、release build、真实 OAuth 三步验收和 Playwright 矩阵通过。
+- [x] artifact 记录完整证据，计划改回 `Implemented`，`PROVIDER-002` 改回 `Fixed`。
+- [x] fast-forward 合并、推送、指纹复核和 worktree 清理完成。
 
 ## 10. 明确不接受的“修复”
 
