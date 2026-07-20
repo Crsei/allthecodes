@@ -4,7 +4,9 @@
 > 覆盖范围: 当前 `allthecodes` worktree
 > 输入来源: 4 个只读 subagent 分区审计 + 本地粗复杂度扫描
 > 当前阶段: Full Build。不得再以 Lite 缩减为理由保留行为缺口。
-> 最新进展: 2026-07-03 Phase 4 Rust TUI 状态解耦已落地并验证。
+> 最新校准: 2026-07-20。此前若干结构已落地，但原跟踪表仍停留在 `todo`；本次按当前 HEAD、实际行数和一次隔离冷构建重新分级。
+> 当前证据: [`current-state-audit-2026-07-20.md`](current-state-audit-2026-07-20.md)
+> 编译专项: [`compile-performance-plan-2026-07-20.md`](compile-performance-plan-2026-07-20.md)
 
 ---
 
@@ -19,6 +21,28 @@
 5. session 存储长期保留 JSONL、legacy JSON、SQLite index 多真相源。
 
 优化目标不是删功能，而是把行为收敛到单一权威路径，降低 full build 补齐上游行为时的回归概率。
+
+## 2026-07-20 现状校准
+
+本计划继续作为代码拆分与复杂度治理的唯一总跟踪入口。状态含义如下：
+
+- `open`：尚未形成计划要求的权威结构。
+- `partial`：结构已经落地，但主函数、重复判定或验收目标仍未收口。
+- `done / residual`：原任务已完成；后续问题属于新的残留治理，不应把历史实现改回 `todo`。
+
+当前最重要的变化不是“所有旧任务都没做”，而是部分抽象已经存在、复杂度仍停留在调用方或迁移到新模块：
+
+| 区域 | 当前证据 | 判断 |
+|---|---|---|
+| 工具执行 | `execute_tool_impl` 已接入 `ToolExecutionPipeline`，但函数仍约 456 行，`tool_pipeline.rs` 本身 1,351 行 | `partial`；继续按 stage/decision/record 边界收口 |
+| Query loop | `QueryTurnState` 已存在，但 `loop_impl.rs` 1,661 行，`query` 主体约 1,184 行 | `partial`；保留唯一 engine 内实现，不重建平行 crate |
+| Submit | `SubmitTransaction` 已存在，但 `submit_message_with_overrides` 主体约 922 行 | `partial`；把分支 side effect 真正交给 transaction/handler |
+| Web | `allthecodes-web/src` 共 46,888 行，`handlers/group_chat.rs` 2,695 行 | 新 P0；按领域和编译单元同时拆，不做纯文件搬家 |
+| Rust TUI | domain stores / overlay dispatcher / view-model 已落地；`App` 仍有 61 个直接字段，`app/input.rs` 1,446 行 | 原任务 `done / residual`；继续拆 typed route/store |
+| 编译 | 42 个 workspace member；Linux 默认 normal+build 闭包 410 个包；隔离冷 release 为 401.7 秒 | 独立执行编译性能专项，不把 crate 数量当 KPI |
+
+详细文件排序、函数证据和“已完成结构/仍未闭环验收”的区分见当前证据报告。历史运行时边界任务的实现提交则保留在
+[`runtime-boundary-refactor-plan-2026-07-03.md`](runtime-boundary-refactor-plan-2026-07-03.md)；该文档是实施记录，不再是九项全部未开始的待办表。
 
 ---
 
@@ -45,8 +69,8 @@
 
 问题:
 
-- `execute_tool_impl` 约 1272 行。
-- validation、PreToolUse hook、central permission、用户审批、auto review、tool call、PostToolUse hook、audit、Langfuse、runtime record 都在一个函数中。
+- `ToolExecutionPipeline` 已落地，但 `execute_tool_impl` 仍约 456 行，`deps/tool_pipeline.rs` 达 1,351 行；旧复杂度被拆开但尚未形成足够小的权威 stage。
+- validation、PreToolUse hook、central permission、用户审批、auto review、tool call、PostToolUse hook、audit、Langfuse、runtime record 仍跨主函数和 pipeline 紧密耦合。
 - shell 命令同时被 read-only、dangerous、sandbox preflight、mode fallback、hook 多层判断。
 
 计划:
@@ -137,8 +161,8 @@ record is `development/code-split/query-loop-boundary-decision-2026-07-03.md`.
 
 问题:
 
-- `query()` 约 862 行，承担 model fallback、stream timeout、stop hooks、token budget、tool execution。
-- `submit_message_with_overrides` 约 749 行，和 stream handler 共同推进 QueryEngine 全局状态。
+- `QueryTurnState` 已落地，但 `query()` 主体当前约 1,184 行，仍承担 model fallback、stream timeout、stop hooks、token budget、tool execution。
+- `SubmitTransaction` 已落地，但 `submit_message_with_overrides` 主体当前约 922 行，仍和 stream handler 共同推进 QueryEngine 全局状态。
 - `loop_helpers.rs` 实际是第二状态机。
 
 计划:
@@ -564,18 +588,22 @@ record is `development/code-split/query-loop-boundary-decision-2026-07-03.md`.
 
 | ID | 模块 | 优先级 | 状态 | 目标 |
 |---|---|---:|---|---|
-| CS-001 | Tool execution pipeline | P0 | todo | `execute_tool_impl` 编排化 |
+| CS-001 | Tool execution pipeline | P0 | partial | pipeline 已存在；`execute_tool_impl` 继续编排化 |
 | CS-002 | Hook full implementation matrix | P0 | todo | 移除 structural stub |
-| CS-003 | Shell policy decision | P0 | todo | 后端/UI/sandbox 单一分类 |
-| CS-004 | Query turn state machine | P0 | todo | 主循环可局部测试 |
-| CS-005 | Submit transaction | P0 | todo | side effects 单点提交 |
-| CS-006 | Typed permission UI payload | P0 | todo | UI fail closed |
-| CS-007 | API operation registry | P1 | todo | 消除多套手写表 |
+| CS-003 | Shell policy decision | P0 | partial | metadata/policy 已有基础；后端/UI/sandbox 仍需单一分类 |
+| CS-004 | Query turn state machine | P0 | partial | type 已存在；主循环仍需缩小并可局部测试 |
+| CS-005 | Submit transaction | P0 | partial | transaction 已存在；side effects 仍需单点提交 |
+| CS-006 | Typed permission UI payload | P0 | open | UI fail closed |
+| CS-007 | API operation registry | P1 | partial | registry 已存在；继续消除残留手写表 |
 | CS-008 | Session mutation service | P1 | todo | handler 不直接改 engine |
 | CS-009 | Record-replay truth source | P1 | todo | 收敛多真相源 |
-| CS-010 | Runtime capability registry | P1 | todo | command/tool/MCP/deferred 统一 |
-| CS-011 | FS capability service | P1 | todo | 写入路径统一授权 |
-| CS-012 | TUI domain stores | P1 | done | App 状态拆分 |
-| CS-013 | Overlay dispatcher | P1 | done | render/input/focus 同源 |
-| CS-014 | Message view-model | P1 | done | render 不做数据变形 |
-| CS-015 | Agent/MCP typed surface state | P2 | todo | 删除魔法索引与硬编码 step |
+| CS-010 | Runtime capability registry | P1 | partial | registry 已存在；command/tool/MCP/deferred 继续统一 |
+| CS-011 | FS capability service | P1 | open | 写入路径统一授权 |
+| CS-012 | TUI domain stores | P1 | done / residual | stores 已落地；继续缩小 61-field `App` facade |
+| CS-013 | Overlay dispatcher | P1 | done / residual | dispatcher 已落地；继续收口输入路由 |
+| CS-014 | Message view-model | P1 | done / residual | view-model 已落地；继续移除 render 数据变形 |
+| CS-015 | Agent/MCP typed surface state | P2 | open | 删除 100/101 魔法索引与 `usize` step |
+| CS-016 | Web domain and compile boundaries | P0 | open | 拆 group chat/files/terminal，降低 185.3 秒 Web 单元 |
+| CS-017 | Build-mode feature isolation | P0 | open | TUI 构建不再无条件拉入 Web/SQLite/daemon/ACP |
+
+CS-016/017 的执行顺序、基准和量化验收由编译性能专项计划维护；此表只负责总优先级，避免在两个计划中复制详细步骤。
