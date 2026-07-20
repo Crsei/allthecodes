@@ -3,6 +3,7 @@
 > 审计日期：2026-07-20
 > 源码快照：`35974b25`（独立 clean worktree；已包含审计期间主分支新增的 query boundary flush 回归修复）
 > 权威总计划：[`codebase-optimization-plan-2026-07-03.md`](codebase-optimization-plan-2026-07-03.md)
+> 总执行清单：[`codebase-optimization-execution-checklist-2026-07-20.md`](codebase-optimization-execution-checklist-2026-07-20.md)
 > 编译专项：[`compile-performance-plan-2026-07-20.md`](compile-performance-plan-2026-07-20.md)
 > 结论类型：只读代码/依赖/历史审计；本任务不实施产品代码重构
 
