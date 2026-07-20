@@ -1044,6 +1044,9 @@ fn main() {
             .await
             .unwrap();
         assert_eq!(read_result.data["truncated"], false);
+        for receipt in &read_result.file_state_receipts {
+            ctx.read_file_state.commit_receipt(receipt);
+        }
 
         let first_edit = FileEditTool::new()
             .call(
@@ -1095,6 +1098,9 @@ fn main() {
             std::fs::read_to_string(backup_path).unwrap(),
             "alpha\nbeta\n"
         );
+        for receipt in &first_edit.file_state_receipts {
+            ctx.read_file_state.commit_receipt(receipt);
+        }
 
         let second_edit = FileEditTool::new()
             .call(

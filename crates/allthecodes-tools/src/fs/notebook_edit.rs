@@ -1026,10 +1026,13 @@ mod tests {
         std::fs::write(&path, notebook_json()).unwrap();
         let ctx = test_context();
         let read_input = json!({ "file_path": path.to_string_lossy() });
-        FileReadTool::new()
+        let read_result = FileReadTool::new()
             .call(read_input, &ctx, &parent_message(), None)
             .await
             .unwrap();
+        for receipt in &read_result.file_state_receipts {
+            ctx.read_file_state.commit_receipt(receipt);
+        }
         let input = json!({
             "notebook_path": path.to_string_lossy(),
             "cell_id": "code-1",
@@ -1040,6 +1043,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.data["error"], "");
+        for receipt in &result.file_state_receipts {
+            ctx.read_file_state.commit_receipt(receipt);
+        }
         let updated = std::fs::read_to_string(&path).unwrap();
         assert!(updated.contains("print('new')"));
         assert!(ctx.read_file_state.get(&path.to_string_lossy()).is_some());
