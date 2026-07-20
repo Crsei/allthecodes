@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>allthecodes 代码拆分总执行清单交付证据</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0b1020;
+      --panel: #151d32;
+      --text: #e8edf7;
+      --muted: #aeb9cc;
+      --line: #34415e;
+      --accent: #6ed6c4;
+      --ok: #8ddd8a;
+      --pending: #f2c66d;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, sans-serif; }
+    .page { width: min(1080px, calc(100% - 32px)); margin: 32px auto 64px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; margin-bottom: 18px; }
+    h1, h2 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.8rem, 4vw, 2.65rem); }
+    h2 { color: var(--accent); font-size: 1.25rem; }
+    code { background: #0a1224; border: 1px solid #293754; border-radius: 5px; padding: .1em .35em; overflow-wrap: anywhere; }
+    .meta, .note { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+    .metric { background: #0f1729; border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+    .metric strong { display: block; color: var(--accent); font-size: 1.55rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); }
+    .ok { color: var(--ok); }
+    .pending { color: var(--pending); }
+    @media (prefers-color-scheme: light) {
+      :root { --bg: #eef2f7; --panel: #fff; --text: #182033; --muted: #58657a; --line: #d4dce8; --accent: #087a69; --ok: #176d21; --pending: #8b5b00; }
+      code, .metric { background: #f4f7fb; border-color: #d9e0ea; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+  <div class="card">
+    <p class="meta">2026-07-20 · worktree/code-split-master-checklist</p>
+    <h1>代码拆分与编译性能总执行清单</h1>
+    <p>本次交付把现有代码热点审计、CS 跟踪项和 CP 编译性能任务收敛成一个可持续勾选的执行台账。详细设计仍保留在原计划中，执行状态只在总清单维护。</p>
+  </div>
+
+  <div class="card">
+    <h2>清单规模</h2>
+    <div class="grid">
+      <div class="metric"><strong>6</strong>执行阶段</div>
+      <div class="metric"><strong>46</strong>顶层任务/门禁</div>
+      <div class="metric"><strong>4</strong>已有证据并预勾选</div>
+      <div class="metric"><strong>42</strong>待验证任务/门禁</div>
+      <div class="metric"><strong>17</strong>CS 项完整映射</div>
+      <div class="metric"><strong>7</strong>CP 项完整映射</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>阶段与关键依赖</h2>
+    <table>
+      <thead><tr><th>阶段</th><th>范围</th><th>关键门禁</th></tr></thead>
+      <tbody>
+        <tr><td>Phase 0</td><td>审计、编译基线、计划校准</td><td class="ok">已有证据</td></tr>
+        <tr><td>Phase 1</td><td>benchmark/cache、真实 mode features、characterization、hook contract</td><td>GATE-1</td></tr>
+        <tr><td>Phase 2</td><td>record truth、tool policy、permission/FS、query/submit、session</td><td>GATE-2</td></tr>
+        <tr><td>Phase 3</td><td>高扇出 contracts、Web 编译单元和领域服务</td><td>GATE-3</td></tr>
+        <tr><td>Phase 4</td><td>TUI residual、shell、测试可维护性</td><td>GATE-4</td></tr>
+        <tr><td>Phase 5</td><td>CI compile-once、最终性能、release 收尾</td><td>CLOSE-001</td></tr>
+      </tbody>
+    </table>
+    <p class="note">清单明确禁止并行修改 query/submit consumer-producer、把 Web 业务 ownership 与 crate 搬迁合并，以及一次合入多个高扇出 contract，从而保留回归定位和性能 A/B 因果。</p>
+  </div>
+
+  <div class="card">
+    <h2>Per-Session Worktree 流程</h2>
+    <ol>
+      <li><span class="ok">完成</span>：在主分支创建总执行清单并单独提交。</li>
+      <li><span class="ok">完成</span>：在主分支分别更新权威总计划和编译专项的台账指向。</li>
+      <li><span class="ok">完成</span>：从计划提交后的 HEAD 创建专属 worktree。</li>
+      <li><span class="ok">完成</span>：worktree 内更新审计导航并创建本 HTML artifact。</li>
+      <li><span class="ok">完成</span>：worktree 内仅运行 git/Markdown/HTML 静态检查，未运行 Rust。</li>
+      <li><span class="pending">交付阶段</span>：ff-only 合并、主分支静态复核、推送、远端 SHA 确认后删除 worktree。</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>文件与职责</h2>
+    <table>
+      <thead><tr><th>路径</th><th>职责</th><th>状态来源</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>development/code-split/codebase-optimization-execution-checklist-2026-07-20.md</code></td>
+          <td>唯一总执行台账；包含依赖、冲突、checkbox、完成条件与验证模板。</td>
+          <td>唯一可勾选</td>
+        </tr>
+        <tr>
+          <td><code>development/code-split/codebase-optimization-plan-2026-07-03.md</code></td>
+          <td>架构、范围和验收权威来源。</td>
+          <td>2026-07-20 基线快照</td>
+        </tr>
+        <tr>
+          <td><code>development/code-split/compile-performance-plan-2026-07-20.md</code></td>
+          <td>编译基线、方法、门槛和 CP 详细方案。</td>
+          <td>范围快照</td>
+        </tr>
+        <tr>
+          <td><code>development/code-split/current-state-audit-2026-07-20.md</code></td>
+          <td>代码和依赖事实证据；新增总清单导航。</td>
+          <td>不维护状态</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>提交清单</h2>
+    <table>
+      <thead><tr><th>提交</th><th>目的</th></tr></thead>
+      <tbody>
+        <tr><td><code>52310381</code></td><td>add code split execution checklist</td></tr>
+        <tr><td><code>429a5e6d</code></td><td>link the canonical execution ledger</td></tr>
+        <tr><td><code>c8d919a6</code></td><td>route compile work through checklist</td></tr>
+        <tr><td><code>a90be562</code></td><td>link audit to execution checklist</td></tr>
+        <tr><td>本 artifact 所在提交</td><td>记录任务流程与验证证据；准确 SHA 由最终 git log 给出。</td></tr>
+      </tbody>
+    </table>
+    <p class="note">每个文档任务单独提交，只显式暂存对应路径；主分支既有未跟踪 TUI 文档不属于本任务。</p>
+  </div>
+
+  <div class="card">
+    <h2>静态验证依据</h2>
+    <ul>
+      <li><code>git diff --check</code> 和逐 commit <code>git show --check</code>。</li>
+      <li>总清单相对链接存在且非空。</li>
+      <li>CS-001..017 与 CP-001..007 在覆盖映射中各出现一次。</li>
+      <li>46 个顶层 checkbox 中，仅 BASE-001/002/003 与 TUI-BASE 按既有证据预勾选。</li>
+      <li>HTML doctype、charset、viewport、title 和标签闭合检查。</li>
+      <li><strong>worktree 内未运行 cargo check/build/clippy/test/nextest 或任何 Rust 测试二进制。</strong></li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>
