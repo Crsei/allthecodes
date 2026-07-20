@@ -86,6 +86,7 @@
       <li><span class="ok">完成</span>：在主分支新增编译性能专项计划。</li>
       <li><span class="ok">完成</span>：从上述计划提交后的 HEAD 创建独立 worktree。</li>
       <li><span class="ok">完成</span>：只在 worktree 新增当前状态审计和本 HTML artifact。</li>
+      <li><span class="ok">完成</span>：主分支并发新增 query boundary 修复后，把任务分支 rebase 到 <code>35974b25</code> 并刷新受影响指标。</li>
       <li><span class="ok">完成</span>：worktree 内仅运行 Markdown/HTML/git 静态检查，未运行 Rust build/test。</li>
       <li><span class="warn">交付阶段</span>：fast-forward 合并后在主分支复核静态证据、推送，再删除本 worktree。</li>
     </ol>
@@ -133,8 +134,10 @@
         <tr><td><code>170add63</code></td><td>refresh code split priorities</td></tr>
         <tr><td><code>20bb709b</code></td><td>reconcile runtime boundary history</td></tr>
         <tr><td><code>296c251c</code></td><td>plan Rust compile performance work</td></tr>
-        <tr><td><code>95d735b1</code></td><td>audit current refactor hotspots</td></tr>
-        <tr><td>本 artifact 所在提交</td><td>记录 worktree 流程与验证证据；准确 SHA 由最终 git log 给出。</td></tr>
+        <tr><td><code>90b7f1a5</code></td><td>audit current refactor hotspots（rebase 后 SHA）</td></tr>
+        <tr><td><code>8603ca7b</code></td><td>record code split audit artifact（rebase 后 SHA）</td></tr>
+        <tr><td><code>258a615a</code></td><td>refresh audit after query updates</td></tr>
+        <tr><td>本 artifact 刷新提交</td><td>记录 rebase 与最终静态验证；准确 SHA 由最终 git log 给出。</td></tr>
       </tbody>
     </table>
     <p class="note">每个文档任务单独提交，只显式暂存对应路径。主分支已有的 TUI 修改和未跟踪 TUI 审计不属于本任务，未进入上述提交。</p>
