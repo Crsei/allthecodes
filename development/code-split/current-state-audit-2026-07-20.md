@@ -1,7 +1,7 @@
 # 当前代码拆分与重构审计
 
 > 审计日期：2026-07-20
-> 源码快照：`296c251c`（独立 clean worktree）
+> 源码快照：`35974b25`（独立 clean worktree；已包含审计期间主分支新增的 query boundary flush 回归修复）
 > 权威总计划：[`codebase-optimization-plan-2026-07-03.md`](codebase-optimization-plan-2026-07-03.md)
 > 编译专项：[`compile-performance-plan-2026-07-20.md`](compile-performance-plan-2026-07-20.md)
 > 结论类型：只读代码/依赖/历史审计；本任务不实施产品代码重构
@@ -28,12 +28,12 @@
 - 生成文件、测试文件和生产主路径分开评估。
 - 编译结论来自一次全新 isolated target 的 release timing；不把 warm no-op 当冷构建。
 
-仓库 `crates/` 下共有约 495,163 行、1,455 个 Rust 文件。最大的五个源码域为：
+仓库 `crates/` 下共有约 495,232 行、1,455 个 Rust 文件。最大的五个源码域为：
 
 | 源码域 | Rust 文件 | 物理行数 |
 |---|---:|---:|
 | `crates/allthecodes/src` | 407 | 83,777 |
-| `crates/allthecodes-engine/src` | 112 | 49,107 |
+| `crates/allthecodes-engine/src` | 112 | 49,176 |
 | `crates/allthecodes-web/src` | 96 | 46,888 |
 | `crates/allthecodes-commands/src` | 107 | 38,968 |
 | `crates/allthecodes-tools/src` | 77 | 37,446 |
@@ -48,7 +48,7 @@
 |---|---|---|
 | 工具执行 | `ToolExecutionPipeline` / `ToolExecutionPlan` 位于 `lifecycle/deps/tool_pipeline.rs`；`execute_tool_impl` 已调用 pipeline | 主函数仍约 456 行；`maybe_prompt_user` 约 518 行，stage/decision/record 仍紧耦合 |
 | Query | `QueryTurnState` 位于 `query/turn_state.rs:49`，`query/recovery.rs` 已承接部分恢复策略 | `query` 主体约 1,184 行，仍负责 fallback、stream、budget、hooks、tools 和 terminal outcome |
-| Submit | `SubmitTransaction` 位于 `submit_message/transaction.rs:24` | `submit_message_with_overrides` 主体约 922 行，多处分支各自创建/提交 transaction |
+| Submit | `SubmitTransaction` 位于 `submit_message/transaction.rs:24`；最新主分支已补 immediate boundary flush | `submit_message_with_overrides` 主体仍约 927 行，多处分支各自创建/提交 transaction |
 | API | `ApiOperationRegistry` 位于 `allthecodes-web/src/api_operation_registry.rs:16` | registry 仍有 92 项手写表；`api_dispatcher.rs:342-1233` 仍是约 892 行大 match，并有 92 次泛型 processor dispatch |
 | Runtime capability | `RuntimeCapabilityRegistry` 位于 `allthecodes-tools/src/runtime_capability.rs:145` | core seed 仍硬编码约 34 个名称，deferred executor 尚未统一消费 registry |
 | TUI state | `ConversationStore`、`OverlayState`、`MessageListViewModel`、`RuntimeViewState` 已存在 | `App` 仍有 61 个直接字段；输入和部分 render 路径继续承担业务路由 |
@@ -95,8 +95,8 @@ query/recording           typed record projection
 
 **证据**
 
-- `crates/allthecodes-engine/src/lifecycle/submit_message/mod.rs`：1,380 行。
-- `submit_message_with_overrides` 从 `:412` 到约 `:1333`，主体约 922 行。
+- `crates/allthecodes-engine/src/lifecycle/submit_message/mod.rs`：1,385 行。
+- `submit_message_with_overrides` 从 `:412` 到约 `:1338`，主体约 927 行。
 - `SubmitTransaction::new()` 在主函数和 `stream_handler.rs` 中多次分支性创建。
 
 **问题**
@@ -120,8 +120,8 @@ transaction type 已落地，但调用方仍决定哪些分支 append/persist/re
 
 **证据**
 
-- `crates/allthecodes-engine/src/lifecycle/deps/execute.rs`：1,620 行。
-- `execute_tool_impl` 从 `:266` 到约 `:721`，约 456 行。
+- `crates/allthecodes-engine/src/lifecycle/deps/execute.rs`：1,634 行。
+- `execute_tool_impl` 从 `:280` 到约 `:735`，约 456 行。
 - `crates/allthecodes-engine/src/lifecycle/deps/tool_pipeline.rs`：1,351 行。
 
 **问题**
