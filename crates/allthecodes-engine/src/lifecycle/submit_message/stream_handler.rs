@@ -102,6 +102,10 @@ impl QueryTurnEvent {
             _ => Vec::new(),
         }
     }
+
+    pub(super) fn requires_immediate_record_flush(&self) -> bool {
+        matches!(self, Self::RequestStart(_))
+    }
 }
 
 pub(super) enum StreamAction {
@@ -1359,6 +1363,7 @@ mod tests {
             },
         ));
         let records = request_start.record_items("native", "fallback-model");
+        assert!(request_start.requires_immediate_record_flush());
         assert!(matches!(
             records.as_slice(),
             [crate::session::record_replay::types::RecordItem::QueryEvent(

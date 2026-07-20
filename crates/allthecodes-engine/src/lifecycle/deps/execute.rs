@@ -13,6 +13,20 @@ impl QueryEngineDeps {
             .await;
     }
 
+    pub(super) async fn flush_record_replay(&self, context: &'static str) {
+        let handle = self.session_recorder.lock().clone();
+        if let Some(handle) = handle {
+            if let Err(error) = handle.flush().await {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    context,
+                    %error,
+                    "failed to flush session replay items"
+                );
+            }
+        }
+    }
+
     pub(super) async fn persist_tool_results_impl(&self, messages: Vec<Message>) -> Result<()> {
         if messages.is_empty() {
             return Ok(());

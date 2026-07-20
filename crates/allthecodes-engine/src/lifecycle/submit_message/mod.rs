@@ -1096,6 +1096,8 @@ impl QueryEngine {
 
             while let Some(item) = inner_stream.next().await {
                 let turn_event = QueryTurnEvent::from(item);
+                let requires_immediate_record_flush =
+                    turn_event.requires_immediate_record_flush();
                 let record_items =
                     turn_event.record_items(&backend_name, &model_name);
                 if !record_items.is_empty() {
@@ -1107,6 +1109,9 @@ impl QueryEngine {
                         "query_yield",
                     )
                     .await;
+                }
+                if requires_immediate_record_flush {
+                    flush_record_best_effort(&session_recorder, &session_id).await;
                 }
                 if let QueryTurnEvent::RequestStart(request_event) = &turn_event {
                     current_request_event = Some(request_event.clone());

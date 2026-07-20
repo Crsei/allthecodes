@@ -258,6 +258,7 @@ impl QueryDeps for QueryEngineDeps {
 
     async fn record_query_items(&self, items: Vec<allthecodes_session::record_replay::RecordItem>) {
         self.record_replay_items(items, "query_lifecycle").await;
+        self.flush_record_replay("query_lifecycle").await;
     }
 
     async fn persist_tool_results(&self, messages: Vec<Message>) -> Result<()> {

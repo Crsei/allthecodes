@@ -1219,6 +1219,48 @@ async fn tool_result_flush_makes_assistant_call_and_result_replayable_before_nex
 
 #[tokio::test]
 #[serial_test::serial]
+async fn query_lifecycle_event_is_visible_without_a_later_tool_result_flush() {
+    let home = tempdir().unwrap();
+    let _home_guard = EnvGuard::set("ALLTHECODES_HOME", home.path());
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let mut config = make_config();
+    config.cwd = workspace.to_string_lossy().to_string();
+    let engine = QueryEngine::new(config);
+    let recorder = engine
+        .ensure_session_recorder()
+        .await
+        .unwrap()
+        .expect("record replay is enabled for the query lifecycle test");
+    let mut deps = make_lifecycle_deps(
+        &engine,
+        Arc::new(allthecodes_types::hooks::NoopHookRunner),
+        None,
+    );
+    deps.session_id = engine.current_session_id().to_string();
+
+    crate::query::deps::QueryDeps::record_query_items(
+        &deps,
+        vec![crate::session::record_replay::types::RecordItem::QueryEvent(
+            crate::session::record_replay::types::QueryEventRecord::NextTurnReady { turn: 2 },
+        )],
+    )
+    .await;
+
+    let read = crate::session::record_replay::read_rollout_file(recorder.rollout_path()).unwrap();
+    assert!(read.lines.iter().any(|line| matches!(
+        &line.item,
+        crate::session::record_replay::types::RecordItem::QueryEvent(
+            crate::session::record_replay::types::QueryEventRecord::NextTurnReady { turn: 2 }
+        )
+    )));
+
+    engine.shutdown_session_record().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn third_identical_tool_validation_failure_records_terminal_loop_guard() {
     let home = tempdir().unwrap();
     let _home_guard = EnvGuard::set("ALLTHECODES_HOME", home.path());
