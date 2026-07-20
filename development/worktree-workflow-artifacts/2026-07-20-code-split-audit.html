@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>allthecodes 代码拆分与编译性能审计证据</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0b1020;
+      --panel: #151d32;
+      --text: #e8edf7;
+      --muted: #aeb9cc;
+      --line: #33405c;
+      --accent: #6ed6c4;
+      --warn: #f2c66d;
+      --ok: #8ddd8a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1080px, calc(100% - 32px)); margin: 32px auto 64px; }
+    header, section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 22px 24px;
+      margin-bottom: 18px;
+    }
+    h1, h2 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.8rem, 4vw, 2.7rem); }
+    h2 { color: var(--accent); font-size: 1.25rem; }
+    p, li { max-width: 88ch; }
+    code {
+      background: #0a1224;
+      border: 1px solid #293754;
+      border-radius: 5px;
+      padding: .1em .35em;
+      overflow-wrap: anywhere;
+    }
+    .meta, .note { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+    .metric { background: #0f1729; border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+    .metric strong { display: block; color: var(--accent); font-size: 1.55rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    @media (prefers-color-scheme: light) {
+      :root { --bg: #eef2f7; --panel: #fff; --text: #182033; --muted: #58657a; --line: #d4dce8; --accent: #087a69; --warn: #8b5b00; --ok: #176d21; }
+      code, .metric { background: #f4f7fb; border-color: #d9e0ea; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="meta">2026-07-20 · worktree/code-split-audit-2026-07-20</p>
+    <h1>代码拆分与编译性能审计证据</h1>
+    <p>目标是检查当前 Rust 代码中的巨型函数、混合职责、安全边界和编译关键链，并把可执行结论落到 <code>development/code-split/</code>。本任务只更新文档，不实施产品代码重构。</p>
+  </header>
+
+  <section>
+    <h2>关键结果</h2>
+    <div class="grid">
+      <div class="metric"><strong>401.7 s</strong>隔离 cold release</div>
+      <div class="metric"><strong>185.3 s</strong>allthecodes-web 单元</div>
+      <div class="metric"><strong>42</strong>workspace members</div>
+      <div class="metric"><strong>410</strong>默认 normal+build 闭包</div>
+      <div class="metric"><strong>1,184 行</strong>query 主体约数</div>
+      <div class="metric"><strong>2,695 行</strong>group_chat.rs</div>
+    </div>
+    <p class="note">结论：优先收口 query/submit/tool execution、typed permission/FS capability、Group Chat/Web 编译边界和真实 Cargo mode features；不按文件行数机械拆分。</p>
+  </section>
+
+  <section>
+    <h2>Per-Session Worktree 流程</h2>
+    <ol>
+      <li><span class="ok">完成</span>：在主分支先校准权威总计划。</li>
+      <li><span class="ok">完成</span>：在主分支把旧 runtime plan 改为有提交证据的历史实施记录。</li>
+      <li><span class="ok">完成</span>：在主分支新增编译性能专项计划。</li>
+      <li><span class="ok">完成</span>：从上述计划提交后的 HEAD 创建独立 worktree。</li>
+      <li><span class="ok">完成</span>：只在 worktree 新增当前状态审计和本 HTML artifact。</li>
+      <li><span class="ok">完成</span>：worktree 内仅运行 Markdown/HTML/git 静态检查，未运行 Rust build/test。</li>
+      <li><span class="warn">交付阶段</span>：fast-forward 合并后在主分支复核静态证据、推送，再删除本 worktree。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>文档与改动清单</h2>
+    <table>
+      <thead><tr><th>路径</th><th>作用</th><th>修改位置</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>development/code-split/codebase-optimization-plan-2026-07-03.md</code></td>
+          <td>唯一总 tracker；更新 partial/done-residual/open 状态和 2026-07-20 优先级。</td>
+          <td>主分支计划提交</td>
+        </tr>
+        <tr>
+          <td><code>development/code-split/runtime-boundary-refactor-plan-2026-07-03.md</code></td>
+          <td>从“全部 not started”校准为 2026-07-03 至 07-04 的历史实施记录。</td>
+          <td>主分支计划提交</td>
+        </tr>
+        <tr>
+          <td><code>development/code-split/compile-performance-plan-2026-07-20.md</code></td>
+          <td>保存 timing 基线、根因、CP-001..007、量化门槛和禁止事项。</td>
+          <td>主分支计划提交</td>
+        </tr>
+        <tr>
+          <td><code>development/code-split/current-state-audit-2026-07-20.md</code></td>
+          <td>逐文件/函数审计，区分生产热点、测试体量、已落地结构与 residual。</td>
+          <td>独立 worktree</td>
+        </tr>
+        <tr>
+          <td><code>development/worktree-workflow-artifacts/2026-07-20-code-split-audit.html</code></td>
+          <td>本次流程、提交和验证依据的独立可读证据。</td>
+          <td>独立 worktree</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>提交边界</h2>
+    <table>
+      <thead><tr><th>提交</th><th>目的</th></tr></thead>
+      <tbody>
+        <tr><td><code>170add63</code></td><td>refresh code split priorities</td></tr>
+        <tr><td><code>20bb709b</code></td><td>reconcile runtime boundary history</td></tr>
+        <tr><td><code>296c251c</code></td><td>plan Rust compile performance work</td></tr>
+        <tr><td><code>95d735b1</code></td><td>audit current refactor hotspots</td></tr>
+        <tr><td>本 artifact 所在提交</td><td>记录 worktree 流程与验证证据；准确 SHA 由最终 git log 给出。</td></tr>
+      </tbody>
+    </table>
+    <p class="note">每个文档任务单独提交，只显式暂存对应路径。主分支已有的 TUI 修改和未跟踪 TUI 审计不属于本任务，未进入上述提交。</p>
+  </section>
+
+  <section>
+    <h2>验证依据</h2>
+    <ul>
+      <li><code>git diff --check</code>：检查 Markdown/HTML 与提交边界。</li>
+      <li>相对链接存在性：总计划、编译计划、现状审计和 artifact 均在预期路径。</li>
+      <li>HTML 结构检查：doctype、charset、viewport、title、闭合 html/body 标签。</li>
+      <li>Cargo timing：全新 isolated target，517 dirty units，cold release 401.7 秒，最大并发 64。</li>
+      <li>源码统计：clean worktree 上用 <code>rg</code>/<code>wc</code> 复核函数起点、test 边界和物理行数。</li>
+      <li>Git 历史：逐个验证 runtime refactor 的 15 个提交 SHA 与源码类型。</li>
+      <li><strong>未在 worktree 运行任何 cargo check/build/clippy/test/nextest 或 Rust 测试二进制。</strong></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>交付判定</h2>
+    <p>文档给出了可执行的 P0/P1/P2 顺序、明确的模块 ownership、量化编译门槛和安全边界。后续每个重构波次应另建任务计划与 worktree；本次审计不授权一次性改动所有热点。</p>
+  </section>
+</main>
+</body>
+</html>
